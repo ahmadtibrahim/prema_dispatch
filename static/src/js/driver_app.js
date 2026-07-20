@@ -194,14 +194,19 @@ S.routeOpts=loadRouteOpts();
     }
 })();
 
-// Google Maps callback — fires when Maps API is ready
-window.__gmReady = function() {
+// Google Maps callback — fires when Maps API is ready. The template
+// installs a stub first so the Google callback can never race ahead of
+// this asset and explode with "__gmReady is not a function".
+window.__driverAppGmReady = function() {
     S.mapsReady=true;
     S.dirSvc=new google.maps.DirectionsService();
     if (S.dataLoaded) {
         initAllMaps();
     }
 };
+if (window.__gmReadyFired) {
+    window.__driverAppGmReady();
+}
 
 // Fallback: if Maps never loads in 10s, show app without maps
 setTimeout(() => {
@@ -441,10 +446,20 @@ function bindPickupDelegates(){
                 break;
             case "edit-delivery-stops":
                 ev.preventDefault();
+                if(!pickupSummary(findStopById(parseInt(btn.dataset.stopId,10)) || S.stop).confirmed){
+                    toast("Confirm pickup first.");
+                    openPickupConfirm(parseInt(btn.dataset.stopId,10));
+                    break;
+                }
                 openPickupStops(findStopById(parseInt(btn.dataset.stopId,10)) || S.stop, {returnScreen:"sStop"});
                 break;
             case "assign-stops-pallets":
                 ev.preventDefault();
+                if(!pickupSummary(findStopById(parseInt(btn.dataset.stopId,10)) || S.stop).confirmed){
+                    toast("Confirm pickup first.");
+                    openPickupConfirm(parseInt(btn.dataset.stopId,10));
+                    break;
+                }
                 openPickupIntake(3);
                 break;
             case "pickup-actual-minus":
@@ -820,6 +835,7 @@ function renderStopDetail() {
     const isDone=["completed","skipped","cancelled"].includes(stop.status);
     const isActive=["arrived","en_route"].includes(stop.status);
     const phone=stop.contact_phone||"";
+    const pickupInfo=isPickup ? pickupSummary(stop) : null;
 
     body.innerHTML=
         `<div class="da-detail-info">`+
@@ -831,7 +847,7 @@ function renderStopDetail() {
         (renderStopTimeLine(stop))+
         (isPickup ? renderPickupActualsCard(stop) : "")+
         (stop.type==="pickup"
-            ?`<div class="da-detail-meta">📦 <strong>${stop.pallets_in||"?"} pallets</strong> to pick up${stop.pallets_in_estimated?' <span class="da-est-badge" title="Estimated from downstream deliveries">✨ est.</span>':""}</div>`
+            ?`<div class="da-detail-meta" data-role="pickup-load-meta">📦 <strong>${pickupInfo?.actual ?? stop.pallets_in ?? "?"} pallets</strong> to pick up${stop.pallets_in_estimated?' <span class="da-est-badge" title="Estimated from downstream deliveries">✨ est.</span>':""}${pickupInfo && !pickupInfo.confirmed && pickupInfo.actual !== pickupInfo.expected ? ' <span class="da-est-badge" title="Changed on device but not confirmed yet">draft</span>' : ""}</div>`
             :stop.type==="cross_dock_pickup"
             ?`<div class="da-detail-meta">📦 <strong>${stop.pallets_in||"?"} pallets</strong> to reload from the cross-dock</div>`
             :stop.type==="cross_dock_drop"
@@ -914,7 +930,8 @@ function renderPickupActualsCard(stop){
     const step=stop.pickup_step_state||{};
     const summary=pickupSummary(stop);
     const statusLabel=pickupStatusLabel(stop);
-    const assignDisabled=summary.deliveryStopCount===0 || !summary.canAssignPallets;
+    const editDisabled=!summary.confirmed;
+    const assignDisabled=!summary.confirmed || summary.deliveryStopCount===0 || !summary.canAssignPallets;
     return `<div class="da-pickup-section" data-stop-id="${stop.id}">
         <h4>Pickup Progress</h4>
         <div class="da-pickup-progress">
@@ -935,11 +952,12 @@ function renderPickupActualsCard(stop){
         </div>
         <div class="da-pickup-note" data-role="pickup-variance">Variance: ${summary.variance>0?"+":""}${summary.variance}</div>
         <div class="da-pickup-note">Current layout: ${esc(summary.layoutType.replace("_","-"))} — ${summary.layoutCapacity ? `${summary.confirmed ? summary.confirmedActual : summary.actual} / ${summary.layoutCapacity}` : "capacity pending"}.</div>
+        ${!summary.confirmed ? `<div class="da-pickup-note">Confirm pickup first, then edit delivery stops, then assign stops to pallets.</div>` : ""}
         <div class="da-pickup-card-actions">
             <button class="da-btn ${summary.confirmed ? "da-btn-primary" : "da-btn-secondary"}" type="button" data-action="confirm-pickup" data-stop-id="${stop.id}">
                 ${summary.confirmed ? "Pickup Confirmed" : "Confirm Pickup"}
             </button>
-            <button class="da-btn da-btn-primary" type="button" data-action="edit-delivery-stops" data-stop-id="${stop.id}" data-job-id="${stop.job_id}">
+            <button class="da-btn da-btn-primary" type="button" data-action="edit-delivery-stops" data-stop-id="${stop.id}" data-job-id="${stop.job_id}" ${editDisabled?"disabled aria-disabled=\"true\"":""}>
                 ${step.needs_stop_entry ? "Add Delivery Stops" : "Edit Delivery Stops"}
             </button>
             <button class="da-btn da-btn-secondary" type="button" data-action="assign-stops-pallets" data-stop-id="${stop.id}" ${assignDisabled?"disabled aria-disabled=\"true\"":""}>
@@ -1235,6 +1253,13 @@ function refreshPickupCardMetrics(stopId){
         status.textContent=pickupStatusLabel(stop);
         status.className=`da-pickup-status ${pickupStatusClass(stop)}`.trim();
     }
+    const loadMeta=q('[data-role="pickup-load-meta"]');
+    if(loadMeta){
+        const draftBadge=!summary.confirmed && summary.actual !== summary.expected
+            ? ' <span class="da-est-badge" title="Changed on device but not confirmed yet">draft</span>'
+            : "";
+        loadMeta.innerHTML=`📦 <strong>${summary.actual} pallets</strong> to pick up${stop.pallets_in_estimated ? ' <span class="da-est-badge" title="Estimated from downstream deliveries">✨ est.</span>' : ""}${draftBadge}`;
+    }
 }
 
 function focusPickupSection(){
@@ -1342,6 +1367,11 @@ function closePickupIntake(){
 
 function openPickupStops(stop=S.stop, opts={}){
     if(!stop) return;
+    if(!pickupSummary(stop).confirmed){
+        toast("Confirm pickup first.");
+        openPickupConfirm(stop.id);
+        return;
+    }
     S.pickupIntake=null;
     S.pickupStops={
         ...pickupFlowState(stop, 2),
@@ -3196,7 +3226,14 @@ async function applyNavState(target){
                 return;
             }
             if(target.screen==="sNav") openNav(stop);
-            else if(target.screen==="sPickupStops") openPickupStops(stop, {returnScreen:target.returnScreen || "sStop"});
+            else if(target.screen==="sPickupStops"){
+                if(!pickupSummary(stop).confirmed){
+                    toast("Confirm pickup first.");
+                    openStop(stop);
+                    return;
+                }
+                openPickupStops(stop, {returnScreen:target.returnScreen || "sStop"});
+            }
             else openStop(stop);
         } else {
             showScreen("sSchedule");
