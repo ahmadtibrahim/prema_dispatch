@@ -1858,6 +1858,30 @@ class PremaDispatchJob(models.Model):
                 ],
             }
 
+        pending_delete_requests = []
+        if any(self.env.user.has_group(g) for g in (
+            "prema_dispatch.group_dispatcher",
+            "prema_dispatch.group_dispatch_manager",
+            "base.group_system",
+        )):
+            requested_stops = self.env["prema.dispatch.stop"].search([
+                ("delete_request_state", "=", "pending"),
+                ("job_id.stage_id.is_cancelled", "=", False),
+                ("job_id.stage_id.is_completed", "=", False),
+            ], order="delete_requested_at asc, id asc")
+            pending_delete_requests = [{
+                "stop_id": stop.id,
+                "job_id": stop.job_id.id,
+                "job_name": stop.job_id.name,
+                "address": stop.address or "",
+                "company_name": self._stop_company_name(stop),
+                "stop_type": stop.stop_type,
+                "planning_only": bool(stop.planning_only),
+                "requested_by": (stop.delete_requested_by.partner_id.name or stop.delete_requested_by.name) if stop.delete_requested_by else "",
+                "requested_at": self._dt_iso_utc(stop.delete_requested_at),
+                "reason": stop.delete_request_reason or "",
+            } for stop in requested_stops]
+
         return {
             "date":            check_date.isoformat(),
             "window_start":    win_start.isoformat(),
@@ -1866,6 +1890,7 @@ class PremaDispatchJob(models.Model):
             "day_summaries":   day_summaries,
             "week_summaries":  week_summaries,
             "week_start":      monday.isoformat(),
+            "pending_stop_delete_requests": pending_delete_requests,
         }
 
     @api.model
@@ -2977,6 +3002,8 @@ class PremaDispatchJob(models.Model):
             "service_time_min":  s.service_time_minutes or 15,
             "address_warning":   s.address_validation_warning or "",
             "planning_only":     bool(s.planning_only),
+            "delete_request_state": s.delete_request_state or "none",
+            "delete_requested_by": (s.delete_requested_by.partner_id.name or s.delete_requested_by.name) if s.delete_requested_by else "",
             "transfer_to_driver_id": s.transfer_to_driver_id.id if s.transfer_to_driver_id else False,
             "transfer_to_driver": s.transfer_to_driver_id.name if s.transfer_to_driver_id else "",
             "transfer_to_vehicle_id": s.transfer_to_vehicle_id.id if s.transfer_to_vehicle_id else False,
@@ -3836,31 +3863,137 @@ class PremaDispatchJob(models.Model):
             return {}
 
     @api.model
-    def driver_delete_stop(self, stop_id):
-        """Remove a future delivery stop from the active pickup workflow.
+    def _apply_stop_removal(self, stop):
+        job = stop.job_id
+        stop.freight_item_ids.write({"delivery_stop_id": False})
+        job.item_ids.mapped("stop_allocation_ids").filtered(lambda a: a.stop_id.id == stop.id and a.active).write({"active": False})
+        if stop.status != "cancelled":
+            stop.action_cancel()
+        if job.route_definition_mode == "stops_pending" and job.stops_confirmation_state == "confirmed":
+            job.write({"stops_confirmation_state": "partial"})
+        stop.write({
+            "delete_request_state": "approved",
+            "delete_reviewed_by": self.env.user.id,
+            "delete_reviewed_at": fields.Datetime.now(),
+        })
+        job.message_post(body=(
+            f"Stop removal approved for {stop.address or stop.name or 'stop'} "
+            f"by {self.env.user.partner_id.name or self.env.user.name}."
+        ))
+        return {"success": True, "job_id": job.id}
 
-        Uses soft-cancel instead of hard unlink so linked route visits,
-        pallet allocations, and audit history stay consistent.
-        """
+    @api.model
+    def _create_stop_delete_request(self, stop, reason=None):
+        stop.write({
+            "delete_request_state": "pending",
+            "delete_requested_by": self.env.user.id,
+            "delete_requested_at": fields.Datetime.now(),
+            "delete_request_reason": reason or False,
+            "delete_reviewed_by": False,
+            "delete_reviewed_at": False,
+            "delete_review_notes": False,
+        })
+        stop.job_id.message_post(body=(
+            f"Driver delete request submitted for stop {stop.address or stop.name or 'stop'} "
+            f"by {self.env.user.partner_id.name or self.env.user.name}."
+            + (f"<br/>Reason: {reason}" if reason else "")
+        ))
+        return {
+            "success": True,
+            "approval_required": True,
+            "request_created": True,
+            "job_id": stop.job_id.id,
+            "message": "Delete request sent to dispatch for approval.",
+        }
+
+    @api.model
+    def request_stop_delete_approval(self, stop_id, reason=None):
         from odoo.addons.prema_dispatch.services.dispatch_auth import check_stop_access
         stop = self.env["prema.dispatch.stop"].browse(stop_id)
         if not stop.exists():
             return {"success": False, "error": "Stop not found"}
         if not check_stop_access(self.env, stop, raise_on_fail=False):
             return {"success": False, "error": "Not authorized for this stop"}
-        if stop.stop_type != "dropoff":
-            return {"success": False, "error": "Only delivery stops can be removed here"}
-        if stop.status in ("arrived", "completed"):
-            return {"success": False, "error": "Started or completed stops cannot be removed"}
-        job = stop.job_id
-        job_id = job.id
-        stop.freight_item_ids.write({"delivery_stop_id": False})
-        stop.job_id.item_ids.mapped("stop_allocation_ids").filtered(lambda a: a.stop_id.id == stop.id and a.active).write({"active": False})
-        if stop.status != "cancelled":
-            stop.action_cancel()
-        if job.route_definition_mode == "stops_pending" and job.stops_confirmation_state == "confirmed":
-            job.write({"stops_confirmation_state": "partial"})
-        return {"success": True, "job_id": job_id}
+        if stop.status in ("completed", "cancelled"):
+            return {"success": False, "error": "Completed or cancelled stops cannot be requested for removal"}
+        if stop.delete_request_state == "pending":
+            return {"success": True, "approval_required": True, "message": "Delete request already pending dispatch approval."}
+        return self._create_stop_delete_request(stop, reason=reason)
+
+    @api.model
+    def approve_stop_delete_request(self, stop_id):
+        stop = self.env["prema.dispatch.stop"].browse(stop_id)
+        if not stop.exists():
+            return {"success": False, "error": "Stop not found"}
+        if not any(self.env.user.has_group(g) for g in (
+            "prema_dispatch.group_dispatcher",
+            "prema_dispatch.group_dispatch_manager",
+            "base.group_system",
+        )):
+            return {"success": False, "error": "Only dispatch staff can approve this request"}
+        if stop.delete_request_state != "pending":
+            return {"success": False, "error": "No pending delete request for this stop"}
+        if stop.status == "completed":
+            return {"success": False, "error": "Completed stops cannot be removed"}
+        return self._apply_stop_removal(stop)
+
+    @api.model
+    def deny_stop_delete_request(self, stop_id, notes=None):
+        stop = self.env["prema.dispatch.stop"].browse(stop_id)
+        if not stop.exists():
+            return {"success": False, "error": "Stop not found"}
+        if not any(self.env.user.has_group(g) for g in (
+            "prema_dispatch.group_dispatcher",
+            "prema_dispatch.group_dispatch_manager",
+            "base.group_system",
+        )):
+            return {"success": False, "error": "Only dispatch staff can deny this request"}
+        if stop.delete_request_state != "pending":
+            return {"success": False, "error": "No pending delete request for this stop"}
+        stop.write({
+            "delete_request_state": "denied",
+            "delete_reviewed_by": self.env.user.id,
+            "delete_reviewed_at": fields.Datetime.now(),
+            "delete_review_notes": notes or False,
+        })
+        stop.job_id.message_post(body=(
+            f"Stop removal denied for {stop.address or stop.name or 'stop'} "
+            f"by {self.env.user.partner_id.name or self.env.user.name}."
+            + (f"<br/>Notes: {notes}" if notes else "")
+        ))
+        return {"success": True}
+
+    @api.model
+    def driver_delete_stop(self, stop_id):
+        """Remove a future delivery stop from the active pickup workflow.
+
+        Uses soft-cancel instead of hard unlink so linked route visits,
+        pallet allocations, and audit history stay consistent.
+        """
+        from odoo.addons.prema_dispatch.services.dispatch_auth import check_stop_access, is_dispatch_staff
+        stop = self.env["prema.dispatch.stop"].browse(stop_id)
+        if not stop.exists():
+            return {"success": False, "error": "Stop not found"}
+        if not check_stop_access(self.env, stop, raise_on_fail=False):
+            return {"success": False, "error": "Not authorized for this stop"}
+        if stop.delete_request_state == "pending" and not is_dispatch_staff(self.env):
+            return {
+                "success": True,
+                "approval_required": True,
+                "request_created": False,
+                "job_id": stop.job_id.id,
+                "message": "Delete request already pending dispatch approval.",
+            }
+        direct_delete_ok = (
+            stop.stop_type == "dropoff"
+            and stop.status not in ("arrived", "completed")
+            and not stop.planning_only
+        )
+        if direct_delete_ok or is_dispatch_staff(self.env):
+            if stop.status == "completed":
+                return {"success": False, "error": "Completed stops cannot be removed"}
+            return self._apply_stop_removal(stop)
+        return self._create_stop_delete_request(stop)
 
     @api.model
     def driver_update_service_time(self, stop_id, minutes):

@@ -98,6 +98,8 @@ export class DispatchBoard extends Component {
 
             // Route summary (total drive + service time for the selected truck)
             routeSummary: null,
+            pendingStopDeleteRequests: [],
+            stopDeletePopup: null,
             // Highlighted single-stop route (click a stop to see route to just that stop)
             highlightStopId: null,
             highlightSummary: null,
@@ -118,6 +120,7 @@ export class DispatchBoard extends Component {
 
         this._boundMouseMove = (e) => this._onMouseMove(e);
         this._boundMouseUp   = (e) => this._onMouseUp(e);
+        this._seenStopDeleteRequestIds = new Set();
 
         onMounted(async () => {
             document.addEventListener("mousemove", this._boundMouseMove);
@@ -545,6 +548,8 @@ export class DispatchBoard extends Component {
             this.state.day_summaries   = data.day_summaries   || {};
             this.state.week_summaries  = data.week_summaries  || {};
             this.state.week_start      = data.week_start      || null;
+            this.state.pendingStopDeleteRequests = data.pending_stop_delete_requests || [];
+            this._syncStopDeletePopup();
             if (this.state.mapTruckId && !this.state.trucks.some(t => t.truck_id === this.state.mapTruckId)) {
                 this.state.mapTruckId = null;
                 this.clearHighlight();
@@ -564,6 +569,25 @@ export class DispatchBoard extends Component {
     }
 
     async refresh() { await this.loadData(); }
+
+    _syncStopDeletePopup() {
+        const pending = this.state.pendingStopDeleteRequests || [];
+        const popup = this.state.stopDeletePopup;
+        if (popup && !pending.some(req => req.stop_id === popup.stop_id)) {
+            this.state.stopDeletePopup = null;
+        }
+        if (!this.state.stopDeletePopup && pending.length) {
+            const next = pending[0];
+            this.state.stopDeletePopup = next;
+            if (!this._seenStopDeleteRequestIds.has(next.stop_id)) {
+                this._seenStopDeleteRequestIds.add(next.stop_id);
+                this.notification.add(
+                    `Driver requested stop removal for ${next.company_name || next.address || "a stop"}.`,
+                    { type: "warning", sticky: true }
+                );
+            }
+        }
+    }
 
     // Multi-monitor / 3-way split: rather than cramming 3 synchronized panes
     // into one page (expensive to build and to keep in sync), open extra
@@ -1326,6 +1350,42 @@ export class DispatchBoard extends Component {
             }
         } catch (e) {
             this.notification.add("Error deleting stop: " + e.message, { type: "danger" });
+        }
+    }
+
+    async approveStopDeleteRequest() {
+        const req = this.state.stopDeletePopup;
+        if (!req) return;
+        try {
+            const r = await this.orm.call("prema.dispatch.job", "approve_stop_delete_request", [req.stop_id]);
+            if (r.success) {
+                this.notification.add("Stop removal approved", { type: "success" });
+                this.state.stopDeletePopup = null;
+                await this.loadData();
+                this._redrawTruckRoute();
+            } else {
+                this.notification.add(r.error || "Could not approve stop removal", { type: "danger", sticky: true });
+            }
+        } catch (e) {
+            this.notification.add("Error approving stop removal: " + e.message, { type: "danger", sticky: true });
+        }
+    }
+
+    async denyStopDeleteRequest() {
+        const req = this.state.stopDeletePopup;
+        if (!req) return;
+        const notes = window.prompt("Why is this request denied? (optional)", "") || "";
+        try {
+            const r = await this.orm.call("prema.dispatch.job", "deny_stop_delete_request", [req.stop_id, notes]);
+            if (r.success) {
+                this.notification.add("Stop removal denied", { type: "info" });
+                this.state.stopDeletePopup = null;
+                await this.loadData();
+            } else {
+                this.notification.add(r.error || "Could not deny stop removal", { type: "danger", sticky: true });
+            }
+        } catch (e) {
+            this.notification.add("Error denying stop removal: " + e.message, { type: "danger", sticky: true });
         }
     }
 

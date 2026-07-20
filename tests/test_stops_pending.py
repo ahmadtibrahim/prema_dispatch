@@ -157,6 +157,16 @@ class TestDriverStopAndLocationAuthorization(TestStopsPendingBase):
             "driver_id": self.driver_partner.id, "vehicle_id": self.vehicle.id,
             "route_definition_mode": "stops_pending", "stops_confirmation_state": "pending",
         })
+        self.driver_user = self.env["res.users"].create({
+            "name": "Assigned Driver User", "login": "sp_assigned_driver@example.com",
+            "partner_id": self.driver_partner.id,
+            "groups_id": [(6, 0, [self.env.ref("prema_dispatch.group_dispatch_driver").id])],
+        })
+        self.dispatcher_user = self.env["res.users"].create({
+            "name": "Dispatch User", "login": "sp_dispatcher_user@example.com",
+            "partner_id": self.env["res.partner"].create({"name": "Dispatcher Partner"}).id,
+            "groups_id": [(6, 0, [self.env.ref("prema_dispatch.group_dispatcher").id])],
+        })
 
     def test_wrong_driver_cannot_add_stop(self):
         from odoo.addons.prema_dispatch.services.dispatch_auth import check_driver_can_add_stop
@@ -170,12 +180,7 @@ class TestDriverStopAndLocationAuthorization(TestStopsPendingBase):
 
     def test_assigned_driver_can_add_stop_and_partial_state(self):
         from odoo.addons.prema_dispatch.services.dispatch_auth import check_driver_can_add_stop
-        driver_user = self.env["res.users"].create({
-            "name": "Assigned Driver User", "login": "sp_assigned_driver@example.com",
-            "partner_id": self.driver_partner.id,
-            "groups_id": [(6, 0, [self.env.ref("prema_dispatch.group_dispatch_driver").id])],
-        })
-        self.assertTrue(check_driver_can_add_stop(self.env(user=driver_user), self.job))
+        self.assertTrue(check_driver_can_add_stop(self.env(user=self.driver_user), self.job))
         stop = self.Stop.create({
             "job_id": self.job.id, "sequence": 10, "stop_type": "dropoff",
             "saved_location_id": self.pickup_location.id,
@@ -185,20 +190,15 @@ class TestDriverStopAndLocationAuthorization(TestStopsPendingBase):
 
     def test_assigned_driver_can_edit_confirmed_route_while_pickup_active(self):
         from odoo.addons.prema_dispatch.services.dispatch_auth import check_driver_can_add_stop
-        driver_user = self.env["res.users"].create({
-            "name": "Confirmed Route Driver", "login": "sp_confirmed_driver@example.com",
-            "partner_id": self.driver_partner.id,
-            "groups_id": [(6, 0, [self.env.ref("prema_dispatch.group_dispatch_driver").id])],
-        })
         pickup = self.Stop.create({
             "job_id": self.job.id, "sequence": 10, "stop_type": "pickup",
             "saved_location_id": self.pickup_location.id, "status": "arrived",
         })
         self.job.write({"stops_confirmation_state": "confirmed"})
-        self.assertTrue(check_driver_can_add_stop(self.env(user=driver_user), self.job))
+        self.assertTrue(check_driver_can_add_stop(self.env(user=self.driver_user), self.job))
         pickup.write({"status": "completed", "actual_departure_time": fields.Datetime.now()})
         with self.assertRaises(AccessError):
-            check_driver_can_add_stop(self.env(user=driver_user), self.job)
+            check_driver_can_add_stop(self.env(user=self.driver_user), self.job)
 
     def test_deleting_stop_reopens_confirmed_stops_pending_route_to_partial(self):
         pickup = self.Stop.create({
@@ -217,6 +217,30 @@ class TestDriverStopAndLocationAuthorization(TestStopsPendingBase):
         self.assertEqual(self.job.stops_confirmation_state, "partial")
         self.assertTrue(pickup.exists())
         self.assertEqual(drop.status, "cancelled")
+
+    def test_driver_delete_protected_stop_creates_dispatch_request(self):
+        planning = self.Stop.create({
+            "job_id": self.job.id, "sequence": 30, "stop_type": "dropoff",
+            "address": "Ottawa, Ontario", "planning_only": True, "status": "pending",
+        })
+        result = self.Job.with_user(self.driver_user).driver_delete_stop(planning.id)
+        self.assertTrue(result["success"])
+        self.assertTrue(result["approval_required"])
+        planning.invalidate_recordset()
+        self.assertEqual(planning.delete_request_state, "pending")
+        self.assertEqual(planning.delete_requested_by.id, self.driver_user.id)
+
+    def test_dispatcher_can_approve_driver_delete_request(self):
+        planning = self.Stop.create({
+            "job_id": self.job.id, "sequence": 30, "stop_type": "dropoff",
+            "address": "Ottawa, Ontario", "planning_only": True, "status": "pending",
+        })
+        self.Job.with_user(self.driver_user).driver_delete_stop(planning.id)
+        result = self.Job.with_user(self.dispatcher_user).approve_stop_delete_request(planning.id)
+        self.assertTrue(result["success"])
+        planning.invalidate_recordset()
+        self.assertEqual(planning.status, "cancelled")
+        self.assertEqual(planning.delete_request_state, "approved")
 
 
 class TestDriverDateAndPickupWorkflow(TestStopsPendingBase):

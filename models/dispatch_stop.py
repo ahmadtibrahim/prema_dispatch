@@ -175,6 +175,18 @@ class PremaDispatchStop(models.Model):
         default=False,
         help="True when this record only preserves planning intent and must not behave as an operational stop.",
     )
+    delete_request_state = fields.Selection([
+        ("none", "None"),
+        ("pending", "Pending Dispatcher Approval"),
+        ("approved", "Approved"),
+        ("denied", "Denied"),
+    ], default="none", string="Driver Delete Request", copy=False)
+    delete_requested_by = fields.Many2one("res.users", copy=False)
+    delete_requested_at = fields.Datetime(copy=False)
+    delete_request_reason = fields.Text(copy=False)
+    delete_reviewed_by = fields.Many2one("res.users", copy=False)
+    delete_reviewed_at = fields.Datetime(copy=False)
+    delete_review_notes = fields.Text(copy=False)
 
     # Time Windows
     time_window_type = fields.Selection([

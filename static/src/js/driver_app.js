@@ -1457,6 +1457,7 @@ function pickupFlowState(stop, step=1){
             address:s.address,
             pallets_out:s.pallets_out||1,
             pod_required:s.pod_required!==false,
+            delete_request_state:s.delete_request_state||"none",
         })),
         saving:false,
     };
@@ -1522,6 +1523,7 @@ function pickupDraftStopFromData(stopData){
         address:stopData.address,
         pallets_out:stopData.pallets_out||1,
         pod_required:stopData.pod_required!==false,
+        delete_request_state:stopData.delete_request_state||"none",
     };
 }
 
@@ -1653,6 +1655,7 @@ function pickupStopCardsHtml(flow){
             <div class="da-stop-mini-meta">
                 <span class="da-pickup-summary-pill">${s.pallets_out||1} pallet${(s.pallets_out||1)===1?"":"s"}</span>
                 <span class="da-pickup-summary-pill">${s.pod_required!==false?"POD required":"POD optional"}</span>
+                ${s.delete_request_state==="pending" ? '<span class="da-pickup-summary-pill">Delete approval pending</span>' : ""}
             </div>
             <div class="da-stop-mini-actions">
                 <button class="da-btn da-btn-ghost" type="button" data-action="pickup-remove-stop" data-stop-id="${s.id}">Remove</button>
@@ -2109,8 +2112,18 @@ async function pickupRemoveStop(stopId){
     if(!confirm("Remove this delivery stop?")) return;
     const res=await rpc("/dispatch/driver/stop/delete",{stop_id:stopId});
     if(!res?.success){ toast(res?.error||"Could not remove stop"); return; }
+    if(res.approval_required){
+        await reloadDay();
+        pickupRefreshDraftStops(flow);
+        S.stop=findStopById(flow.stopId)||S.stop;
+        renderStopList();
+        renderStopDetail();
+        if(S.pickupStops) renderPickupStopsScreen(); else renderPickupIntake();
+        toast(res.message||"Delete request sent to dispatch for approval.");
+        return;
+    }
     await reloadDay();
-    flow.draftStops=pickupStopsForJob(flow.jobId).map(s=>({id:s.id,sequence:s.sequence,name:stopCompany(s),address:s.address,pallets_out:s.pallets_out||1,pod_required:s.pod_required!==false}));
+    pickupRefreshDraftStops(flow);
     S.stop=findStopById(flow.stopId)||S.stop;
     renderStopList();
     renderStopDetail();
