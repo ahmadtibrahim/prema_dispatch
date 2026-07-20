@@ -194,26 +194,36 @@ S.routeOpts=loadRouteOpts();
     }
 })();
 
-// Google Maps callback — fires when Maps API is ready. The template
-// installs a stub first so the Google callback can never race ahead of
-// this asset and explode with "__gmReady is not a function".
-window.__driverAppGmReady = function() {
-    S.mapsReady=true;
-    S.dirSvc=new google.maps.DirectionsService();
+function driverMapsReady(){
+    if (S.mapsReady || !window.google?.maps) return;
+    S.mapsReady = true;
+    S.dirSvc = new google.maps.DirectionsService();
     if (S.dataLoaded) {
         initAllMaps();
     }
-};
-if (window.__gmReadyFired) {
-    window.__driverAppGmReady();
 }
 
-// Fallback: if Maps never loads in 10s, show app without maps
-setTimeout(() => {
-    if (!S.mapsReady && S.dataLoaded) {
-        console.warn("Google Maps not loaded — running without maps");
+function waitForDriverMapsReady(timeoutMs = 10000){
+    if (window.google?.maps) {
+        driverMapsReady();
+        return;
     }
-}, 10000);
+    const startedAt = Date.now();
+    const poll = setInterval(() => {
+        if (window.google?.maps) {
+            clearInterval(poll);
+            driverMapsReady();
+            return;
+        }
+        if (Date.now() - startedAt >= timeoutMs) {
+            clearInterval(poll);
+            if (S.dataLoaded) {
+                console.warn("Google Maps not loaded — running without maps");
+            }
+        }
+    }, 200);
+}
+waitForDriverMapsReady();
 
 document.addEventListener("fullscreenchange", () => {
     setNavFullscreenUI(!!document.fullscreenElement);

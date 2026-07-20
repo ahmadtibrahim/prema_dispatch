@@ -8,16 +8,7 @@
     <meta name="theme-color" content="#1565C0"/>
     <meta name="apple-mobile-web-app-capable" content="yes"/>
     <link t-attf-href="/prema_dispatch/static/src/css/driver_app.css?v=#{cache_ver}" rel="stylesheet"/>
-    <script>
-      window.__gmReadyFired = false;
-      window.__gmReady = function () {
-        window.__gmReadyFired = true;
-        if (typeof window.__driverAppGmReady === "function") {
-          window.__driverAppGmReady();
-        }
-      };
-    </script>
-    <script t-attf-src="https://maps.googleapis.com/maps/api/js?key=#{google_api_key}&amp;libraries=places,geometry&amp;callback=__gmReady" async="1" defer="1"/>
+    <script t-attf-src="https://maps.googleapis.com/maps/api/js?key=#{google_api_key}&amp;libraries=places,geometry" async="1" defer="1"/>
 </t>
 <t t-set="body_classname">da-body</t>
 
