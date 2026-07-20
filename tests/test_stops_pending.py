@@ -328,10 +328,59 @@ class TestDriverDateAndPickupWorkflow(TestStopsPendingBase):
         self.assertEqual(result["actual_received_pallet_count"], 10)
         self.assertEqual(result["layout_type"], "straight")
         self.assertEqual(len(self.job.item_ids.filtered(lambda item: item.status != "cancelled" and not item.pending_future_pickup)), 10)
+        self.assertFalse(any(self.job.item_ids.filtered(lambda item: item.status != "cancelled").mapped("pending_future_pickup")))
         self.Job.with_user(self.driver_user).driver_confirm_pickup_actuals(self.pickup_stop.id, {
             "actual_received_pallet_count": 10,
         })
         self.assertEqual(len(self.job.item_ids.filtered(lambda item: item.status != "cancelled" and not item.pending_future_pickup)), 10)
+        self.assertEqual(
+            sorted(self.job.item_ids.filtered(lambda item: item.status != "cancelled").mapped("name")),
+            [f"U-{idx:02d}" for idx in range(1, 11)],
+        )
+
+    def test_confirm_actual_pickup_normalizes_existing_duplicates(self):
+        duplicate_a = self.Item.create({
+            "job_id": self.job.id,
+            "name": "U-01",
+            "sequence": 10,
+            "pickup_stop_id": self.pickup_stop.id,
+            "available_after_stop_id": self.pickup_stop.id,
+            "load_plan_id": self.plan.id,
+            "load_unit_type": "pallet",
+            "status": "loaded",
+        })
+        duplicate_b = self.Item.create({
+            "job_id": self.job.id,
+            "name": "U-01",
+            "sequence": 20,
+            "pickup_stop_id": self.pickup_stop.id,
+            "available_after_stop_id": self.pickup_stop.id,
+            "load_plan_id": self.plan.id,
+            "load_unit_type": "pallet",
+            "status": "pending",
+        })
+        duplicate_c = self.Item.create({
+            "job_id": self.job.id,
+            "name": "U-01",
+            "sequence": 30,
+            "pickup_stop_id": self.pickup_stop.id,
+            "available_after_stop_id": self.pickup_stop.id,
+            "load_plan_id": self.plan.id,
+            "load_unit_type": "pallet",
+            "status": "pending",
+        })
+        self.Job.with_user(self.driver_user).driver_confirm_pickup_actuals(self.pickup_stop.id, {
+            "actual_received_pallet_count": 2,
+            "load_plan_id": self.plan.id,
+            "version": self.plan.version,
+        })
+        duplicate_a.invalidate_recordset()
+        duplicate_b.invalidate_recordset()
+        duplicate_c.invalidate_recordset()
+        active = self.job.item_ids.filtered(lambda item: item.status != "cancelled").sorted(key=lambda item: item.sequence)
+        self.assertEqual(active.mapped("name"), ["U-01", "U-02"])
+        self.assertFalse(any(active.mapped("pending_future_pickup")))
+        self.assertEqual(len(self.job.item_ids.filtered(lambda item: item.status == "cancelled")), 1)
 
     def test_increasing_confirmed_pickup_assigns_new_items_to_existing_load_plan(self):
         self.Job.with_user(self.driver_user).driver_confirm_pickup_actuals(self.pickup_stop.id, {

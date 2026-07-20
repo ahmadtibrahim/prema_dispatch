@@ -3189,11 +3189,66 @@ class PremaDispatchJob(models.Model):
         letters = "".join(part[:1] for part in re.findall(r"[A-Za-z0-9]+", source)[:2]).upper()
         return letters or "P"
 
+    def _normalize_current_pickup_pallet_items(self, actual_count=None, pickup_stop=None, plan=None):
+        self.ensure_one()
+        pickup_stop = pickup_stop or self.stop_ids.filtered(lambda stop: stop.stop_type == "pickup" and not stop.planning_only)[:1]
+        if not pickup_stop:
+            return self.env["prema.dispatch.item"]
+        actual_count = int(actual_count if actual_count is not None else (self.actual_received_pallet_count or self.expected_pallet_count or 0))
+        prefix = self._actual_pallet_prefix()
+        current_items = self.item_ids.filtered(
+            lambda item: item.consumes_floor_position and item.status != "cancelled" and item.pickup_stop_id.id == pickup_stop.id
+        )
+        if not current_items:
+            return current_items
+
+        loaded_states = {"loaded", "in_transit", "partially_unloaded", "delivered"}
+
+        def item_rank(item):
+            alloc_seqs = item.stop_allocation_ids.filtered("active").mapped("stop_id.sequence")
+            pos_seq = item.position_id.sequence if item.position_id else 999999
+            return (
+                0 if item.position_id else 1,
+                0 if item.status in loaded_states else 1,
+                0 if item.stop_allocation_ids.filtered("active") else 1,
+                pos_seq,
+                min(alloc_seqs) if alloc_seqs else 999999,
+                item.id,
+            )
+
+        ordered = sorted(current_items, key=item_rank)
+        keep_list = ordered[:actual_count] if actual_count > 0 else []
+        keep_ids = {item.id for item in keep_list}
+        keepers = self.env["prema.dispatch.item"].browse(list(keep_ids))
+        extras = current_items.filtered(lambda item: item.id not in keep_ids)
+        blocked_extras = extras.filtered(lambda item: item.position_id or item.status in loaded_states)
+        if blocked_extras:
+            raise exceptions.UserError(
+                "Duplicate pallet repair found positioned or loaded duplicate rows. Review the current load plan before reducing pallets."
+            )
+        if extras:
+            extras.mapped("stop_allocation_ids").write({"active": False})
+            extras.write({"status": "cancelled", "position_id": False, "available_after_stop_id": False})
+
+        if keepers:
+            keepers.filtered(lambda item: item.available_after_stop_id.id == pickup_stop.id).write({"available_after_stop_id": False})
+            if plan:
+                keepers.filtered(lambda item: not item.load_plan_id).write({"load_plan_id": plan.id})
+            for idx, item in enumerate(sorted(keepers, key=item_rank), start=1):
+                item.write({"name": f"__tmp__{prefix}-{idx:02d}"})
+            for idx, item in enumerate(sorted(keepers, key=item_rank), start=1):
+                item.write({
+                    "name": f"{prefix}-{idx:02d}",
+                    "sequence": idx * 10,
+                })
+        return keepers.sorted(key=lambda item: (item.sequence, item.id))
+
     def _sync_actual_pallet_items(self, actual_count, pickup_stop=None):
         self.ensure_one()
         actual_count = int(actual_count or 0)
         prefix = self._actual_pallet_prefix()
         pickup_stop = pickup_stop or self.stop_ids.filtered(lambda stop: stop.stop_type == "pickup" and not stop.planning_only)[:1]
+        self._normalize_current_pickup_pallet_items(actual_count=actual_count, pickup_stop=pickup_stop)
         floor_items = self.item_ids.filtered(
             lambda item: item.consumes_floor_position and item.status != "cancelled" and not item.pending_future_pickup
         ).sorted(key=lambda item: (item.sequence, item.id))
@@ -3208,7 +3263,7 @@ class PremaDispatchJob(models.Model):
                     "name": f"{prefix}-{idx:02d}",
                     "sequence": idx * 10,
                     "pickup_stop_id": pickup_stop.id if pickup_stop else False,
-                    "available_after_stop_id": pickup_stop.id if pickup_stop else False,
+                    "available_after_stop_id": False,
                     "load_plan_id": False,
                     "load_unit_type": "pallet",
                     "current_custody_type": "pending",

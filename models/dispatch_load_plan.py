@@ -210,7 +210,7 @@ class PremaDispatchLoadPlan(models.Model):
         self._check_access()
         tpl = self.layout_template_id
         positions_by_code = {p.position_code: p for p in tpl.position_ids.filtered("active")}
-        items = self.pallet_ids.filtered(lambda i: i.status != "cancelled")
+        items = self.pallet_ids.filtered(lambda i: i.status != "cancelled" and not i.pending_future_pickup)
         items_by_position = {i.position_id.position_code: i for i in items if i.position_id}
 
         def item_payload(item):
@@ -394,6 +394,8 @@ class PremaDispatchLoadPlan(models.Model):
         item = self.env["prema.dispatch.item"].browse(item_id)
         if not item.exists() or item.load_plan_id.id != self.id:
             raise UserError("Item not found on this load plan.")
+        if item.pending_future_pickup:
+            raise UserError("This pallet belongs to a future pickup and cannot be positioned yet.")
         pos = self._get_position(position_id)
         occupant = self.pallet_ids.filtered(lambda i: i.position_id.id == pos.id and i.id != item.id and i.status != "cancelled")
         if occupant:
@@ -450,6 +452,8 @@ class PremaDispatchLoadPlan(models.Model):
         item = self.env["prema.dispatch.item"].browse(item_id)
         if not item.exists() or item.load_plan_id.id != self.id:
             raise UserError("Item not found on this load plan.")
+        if item.pending_future_pickup:
+            raise UserError("This pallet belongs to a future pickup and cannot be allocated yet.")
         stop_allocations = stop_allocations or []
         if len(stop_allocations) > 5:
             raise UserError("A pallet can be allocated to at most five stops.")
