@@ -1,0 +1,188 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<odoo>
+    <record id="view_load_plan_list" model="ir.ui.view">
+        <field name="name">prema.dispatch.load.plan.list</field>
+        <field name="model">prema.dispatch.load.plan</field>
+        <field name="arch" type="xml">
+            <list string="Load Plans">
+                <field name="name"/>
+                <field name="operating_date"/>
+                <field name="vehicle_id"/>
+                <field name="driver_id"/>
+                <field name="state"/>
+                <field name="assigned_pallet_count"/>
+                <field name="vacant_position_count"/>
+                <field name="is_stale"/>
+                <field name="is_locked"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="view_load_plan_form" model="ir.ui.view">
+        <field name="name">prema.dispatch.load.plan.form</field>
+        <field name="model">prema.dispatch.load.plan</field>
+        <field name="arch" type="xml">
+            <form string="Load Plan">
+                <header>
+                    <field name="state" widget="statusbar"/>
+                </header>
+                <sheet>
+                    <group>
+                        <group>
+                            <field name="vehicle_id"/>
+                            <field name="driver_id"/>
+                            <field name="operating_date"/>
+                            <field name="origin_stop_id"/>
+                            <field name="layout_template_id"/>
+                        </group>
+                        <group>
+                            <field name="is_locked"/>
+                            <field name="lock_reason" invisible="not is_locked"/>
+                            <field name="is_stale"/>
+                            <field name="stale_reason" invisible="not is_stale"/>
+                            <field name="version"/>
+                        </group>
+                    </group>
+                    <group string="Counts">
+                        <field name="expected_pallet_count"/>
+                        <field name="confirmed_pallet_count"/>
+                        <field name="assigned_pallet_count"/>
+                        <field name="loaded_pallet_count"/>
+                        <field name="vacant_position_count"/>
+                        <field name="utilization_percentage"/>
+                        <field name="payload_used"/>
+                        <field name="payload_capacity"/>
+                    </group>
+                    <notebook>
+                        <page string="Jobs">
+                            <field name="load_plan_job_ids">
+                                <list editable="bottom">
+                                    <field name="job_id"/>
+                                    <field name="state"/>
+                                    <field name="active"/>
+                                </list>
+                            </field>
+                        </page>
+                        <page string="Pallets / Items">
+                            <field name="pallet_ids">
+                                <list>
+                                    <field name="name"/>
+                                    <field name="load_unit_type"/>
+                                    <field name="position_id"/>
+                                    <field name="status"/>
+                                    <field name="shared_skid"/>
+                                    <field name="exception_state"/>
+                                </list>
+                            </field>
+                        </page>
+                        <page string="Documents">
+                            <field name="document_ids">
+                                <list>
+                                    <field name="document_type"/>
+                                    <field name="attachment_id"/>
+                                    <field name="uploaded_by"/>
+                                    <field name="uploaded_at"/>
+                                </list>
+                            </field>
+                        </page>
+                        <page string="Event Log">
+                            <field name="event_ids" readonly="1">
+                                <list>
+                                    <field name="changed_at"/>
+                                    <field name="event_type"/>
+                                    <field name="changed_by"/>
+                                    <field name="reason"/>
+                                </list>
+                            </field>
+                        </page>
+                    </notebook>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <record id="action_load_plan" model="ir.actions.act_window">
+        <field name="name">Load Plans</field>
+        <field name="res_model">prema.dispatch.load.plan</field>
+        <field name="view_mode">list,form</field>
+    </record>
+
+    <record id="view_layout_template_list" model="ir.ui.view">
+        <field name="name">prema.dispatch.vehicle.layout.template.list</field>
+        <field name="model">prema.dispatch.vehicle.layout.template</field>
+        <field name="arch" type="xml">
+            <list string="Vehicle Layout Templates">
+                <field name="name"/>
+                <field name="layout_type"/>
+                <field name="max_positions"/>
+                <field name="is_verified"/>
+                <field name="revision"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="view_layout_template_form" model="ir.ui.view">
+        <field name="name">prema.dispatch.vehicle.layout.template.form</field>
+        <field name="model">prema.dispatch.vehicle.layout.template</field>
+        <field name="arch" type="xml">
+            <form string="Vehicle Layout Template">
+                <sheet>
+                    <group>
+                        <group>
+                            <field name="name"/>
+                            <field name="layout_type"/>
+                            <field name="applicable_vehicle_ids" widget="many2many_tags"/>
+                            <field name="is_verified"/>
+                            <field name="revision"/>
+                        </group>
+                        <group>
+                            <field name="usable_length_in"/>
+                            <field name="usable_width_in"/>
+                            <field name="interior_height_in"/>
+                            <field name="door_opening_width_in"/>
+                            <field name="liftgate_clearance_in"/>
+                            <field name="reefer_bulkhead_clearance_in"/>
+                            <field name="max_payload_lbs"/>
+                        </group>
+                    </group>
+                    <notebook>
+                        <page string="Positions">
+                            <field name="position_ids">
+                                <list editable="bottom">
+                                    <field name="position_code"/>
+                                    <field name="display_name"/>
+                                    <field name="side"/>
+                                    <field name="sequence"/>
+                                    <field name="distance_from_rear_in"/>
+                                    <field name="x_coordinate"/>
+                                    <field name="y_coordinate"/>
+                                    <field name="four_way_required"/>
+                                    <field name="max_weight_lbs"/>
+                                    <field name="blocked"/>
+                                </list>
+                            </field>
+                        </page>
+                    </notebook>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <record id="action_layout_template" model="ir.actions.act_window">
+        <field name="name">Vehicle Layout Templates</field>
+        <field name="res_model">prema.dispatch.vehicle.layout.template</field>
+        <field name="view_mode">list,form</field>
+    </record>
+
+    <menuitem id="menu_load_plans"
+              name="Load Plans"
+              parent="menu_prema_dispatch_root"
+              action="action_load_plan"
+              sequence="27"/>
+
+    <menuitem id="menu_layout_templates"
+              name="Vehicle Layout Templates"
+              parent="menu_dispatch_settings_parent"
+              action="action_layout_template"
+              sequence="15"/>
+</odoo>

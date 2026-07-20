@@ -1,0 +1,402 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<odoo>
+
+    <!-- ── Stops / Driver report generator wizard ──────────────────── -->
+    <record id="view_dispatch_stop_report_wizard_form" model="ir.ui.view">
+        <field name="name">prema.dispatch.stop.report.wizard.form</field>
+        <field name="model">prema.dispatch.stop.report.wizard</field>
+        <field name="arch" type="xml">
+            <form string="Stops / Driver Report">
+                <sheet>
+                    <group>
+                        <group string="Filter by">
+                            <field name="driver_id"/>
+                            <field name="vehicle_id"/>
+                            <field name="disp_number" placeholder="e.g. DISP/2026/00012"/>
+                            <field name="invoice_ref" placeholder="e.g. INV/2026/0042"/>
+                        </group>
+                        <group string="Date Range">
+                            <field name="date_from"/>
+                            <field name="date_to"/>
+                        </group>
+                    </group>
+                    <div class="text-center mb-3">
+                        <button name="action_generate" type="object" string="Generate" class="btn-primary"/>
+                    </div>
+                    <field name="summary_html" nolabel="1" invisible="not summary_html"/>
+                </sheet>
+                <footer>
+                    <button string="Close" class="btn-secondary" special="cancel"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+
+    <record id="action_stop_report_wizard" model="ir.actions.act_window">
+        <field name="name">Stops / Driver Report</field>
+        <field name="res_model">prema.dispatch.stop.report.wizard</field>
+        <field name="view_mode">form</field>
+        <field name="target">new</field>
+    </record>
+
+    <!-- ── Custody / Handoff report generator wizard ───────────────── -->
+    <record id="view_dispatch_custody_report_wizard_form" model="ir.ui.view">
+        <field name="name">prema.dispatch.custody.report.wizard.form</field>
+        <field name="model">prema.dispatch.custody.report.wizard</field>
+        <field name="arch" type="xml">
+            <form string="Custody / Handoff Report">
+                <sheet>
+                    <group>
+                        <group string="Filter by">
+                            <field name="driver_id"/>
+                            <field name="vehicle_id"/>
+                            <field name="disp_number" placeholder="e.g. DISP/2026/00012"/>
+                        </group>
+                        <group string="Date Range">
+                            <field name="date_from"/>
+                            <field name="date_to"/>
+                        </group>
+                    </group>
+                    <div class="text-center mb-3">
+                        <button name="action_generate" type="object" string="Generate" class="btn-primary"/>
+                    </div>
+                    <field name="summary_html" nolabel="1" invisible="not summary_html"/>
+                </sheet>
+                <footer>
+                    <button string="Close" class="btn-secondary" special="cancel"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+
+    <record id="action_custody_report_wizard" model="ir.actions.act_window">
+        <field name="name">Custody / Handoff Report</field>
+        <field name="res_model">prema.dispatch.custody.report.wizard</field>
+        <field name="view_mode">form</field>
+        <field name="target">new</field>
+    </record>
+
+    <!-- ── Driver Worksheets ────────────────────────────────────────── -->
+    <record id="view_dispatch_driver_worksheet_list" model="ir.ui.view">
+        <field name="name">prema.dispatch.driver.worksheet.list</field>
+        <field name="model">prema.dispatch.driver.worksheet</field>
+        <field name="arch" type="xml">
+            <list string="Driver Worksheets">
+                <field name="name"/>
+                <field name="date"/>
+                <field name="driver_id"/>
+                <field name="vehicle_id"/>
+                <field name="stop_count" string="Stops"/>
+                <field name="total_drive_minutes" string="Drive (min)"/>
+                <field name="total_detention_minutes" string="Detention (min)"/>
+                <field name="is_active" string="Active"/>
+                <field name="generated_at" string="Generated"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="view_dispatch_driver_worksheet_form" model="ir.ui.view">
+        <field name="name">prema.dispatch.driver.worksheet.form</field>
+        <field name="model">prema.dispatch.driver.worksheet</field>
+        <field name="arch" type="xml">
+            <form string="Driver Worksheet">
+                <header>
+                    <button name="action_refresh" type="object" string="Refresh" class="btn-secondary"/>
+                </header>
+                <sheet>
+                    <div class="oe_title"><h1><field name="name" readonly="1"/></h1></div>
+                    <group>
+                        <group>
+                            <field name="driver_id"/>
+                            <field name="vehicle_id"/>
+                            <field name="date"/>
+                        </group>
+                        <group>
+                            <field name="stop_count" readonly="1"/>
+                            <field name="total_drive_minutes" readonly="1"/>
+                            <field name="total_detention_minutes" readonly="1"/>
+                            <field name="is_active" readonly="1"/>
+                            <field name="generated_at" readonly="1"/>
+                        </group>
+                    </group>
+                    <notebook>
+                        <page string="Worksheet">
+                            <field name="worksheet_html" widget="html" readonly="1" nolabel="1"/>
+                        </page>
+                        <page string="Stops">
+                            <field name="stop_ids" readonly="1">
+                                <list string="Worksheet Stops">
+                                    <field name="sequence"/>
+                                    <field name="saved_location_id" string="Company"/>
+                                    <field name="stop_type"/>
+                                    <field name="scheduled_time"/>
+                                    <field name="address"/>
+                                    <field name="pallets_in"/>
+                                    <field name="pallets_out"/>
+                                    <field name="onboard_load_after_stop" string="Onboard"/>
+                                    <field name="status"/>
+                                </list>
+                            </field>
+                        </page>
+                        <page string="Jobs">
+                            <field name="job_ids" readonly="1"/>
+                        </page>
+                    </notebook>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <!-- Live list: today's active sheets only -->
+    <record id="action_driver_worksheet_live" model="ir.actions.act_window">
+        <field name="name">Driver Worksheets</field>
+        <field name="res_model">prema.dispatch.driver.worksheet</field>
+        <field name="view_mode">list,form</field>
+        <field name="domain">[('is_active', '=', True)]</field>
+        <field name="help" type="html">
+            <p>No active worksheets generated yet — use the "Sheet" button on the Dispatch Planner.</p>
+        </field>
+    </record>
+
+    <!-- Historical: all sheets, filterable by driver/date -->
+    <record id="action_driver_worksheet_history" model="ir.actions.act_window">
+        <field name="name">Driver Sheets</field>
+        <field name="res_model">prema.dispatch.driver.worksheet</field>
+        <field name="view_mode">list,form</field>
+    </record>
+
+    <!-- ═══════════════════════════════════════════════════════════════
+         Phase O — Reporting Suite
+         ═══════════════════════════════════════════════════════════════ -->
+
+    <!-- ── On-Time % Report ─────────────────────────────────────────── -->
+    <record id="view_dispatch_ontime_report_wizard_form" model="ir.ui.view">
+        <field name="name">prema.dispatch.ontime.report.wizard.form</field>
+        <field name="model">prema.dispatch.ontime.report.wizard</field>
+        <field name="arch" type="xml">
+            <form string="On-Time % Report">
+                <sheet>
+                    <group>
+                        <group string="Filter by">
+                            <field name="driver_id"/>
+                            <field name="vehicle_id"/>
+                        </group>
+                        <group string="Date Range">
+                            <field name="date_from"/>
+                            <field name="date_to"/>
+                        </group>
+                    </group>
+                    <div class="text-center mb-3">
+                        <button name="action_generate" type="object" string="Generate" class="btn-primary"/>
+                    </div>
+                    <field name="summary_html" nolabel="1" invisible="not summary_html"/>
+                </sheet>
+                <footer>
+                    <button string="Close" class="btn-secondary" special="cancel"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+    <record id="action_ontime_report_wizard" model="ir.actions.act_window">
+        <field name="name">On-Time % Report</field>
+        <field name="res_model">prema.dispatch.ontime.report.wizard</field>
+        <field name="view_mode">form</field>
+        <field name="target">new</field>
+    </record>
+
+    <!-- ── Stop Time by Location Report ────────────────────────────────── -->
+    <record id="view_dispatch_location_dwell_report_wizard_form" model="ir.ui.view">
+        <field name="name">prema.dispatch.location.dwell.report.wizard.form</field>
+        <field name="model">prema.dispatch.location.dwell.report.wizard</field>
+        <field name="arch" type="xml">
+            <form string="Stop Time by Location Report">
+                <sheet>
+                    <group>
+                        <group string="Filter by">
+                            <field name="location_id"/>
+                        </group>
+                        <group string="Date Range">
+                            <field name="date_from"/>
+                            <field name="date_to"/>
+                        </group>
+                    </group>
+                    <div class="text-center mb-3">
+                        <button name="action_generate" type="object" string="Generate" class="btn-primary"/>
+                    </div>
+                    <field name="summary_html" nolabel="1" invisible="not summary_html"/>
+                </sheet>
+                <footer>
+                    <button string="Close" class="btn-secondary" special="cancel"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+    <record id="action_location_dwell_report_wizard" model="ir.actions.act_window">
+        <field name="name">Stop Time by Location</field>
+        <field name="res_model">prema.dispatch.location.dwell.report.wizard</field>
+        <field name="view_mode">form</field>
+        <field name="target">new</field>
+    </record>
+
+    <!-- ── Driver / Truck Performance Report ───────────────────────────── -->
+    <record id="view_dispatch_performance_report_wizard_form" model="ir.ui.view">
+        <field name="name">prema.dispatch.performance.report.wizard.form</field>
+        <field name="model">prema.dispatch.performance.report.wizard</field>
+        <field name="arch" type="xml">
+            <form string="Driver / Truck Performance Report">
+                <sheet>
+                    <group>
+                        <group string="Group / Filter by">
+                            <field name="group_by"/>
+                            <field name="driver_id"/>
+                            <field name="vehicle_id"/>
+                        </group>
+                        <group string="Date Range">
+                            <field name="date_from"/>
+                            <field name="date_to"/>
+                        </group>
+                    </group>
+                    <div class="text-center mb-3">
+                        <button name="action_generate" type="object" string="Generate" class="btn-primary"/>
+                    </div>
+                    <field name="summary_html" nolabel="1" invisible="not summary_html"/>
+                </sheet>
+                <footer>
+                    <button string="Close" class="btn-secondary" special="cancel"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+    <record id="action_performance_report_wizard" model="ir.actions.act_window">
+        <field name="name">Driver / Truck Performance</field>
+        <field name="res_model">prema.dispatch.performance.report.wizard</field>
+        <field name="view_mode">form</field>
+        <field name="target">new</field>
+    </record>
+
+    <!-- ── Lane Profitability Report ───────────────────────────────────── -->
+    <record id="view_dispatch_lane_report_wizard_form" model="ir.ui.view">
+        <field name="name">prema.dispatch.lane.report.wizard.form</field>
+        <field name="model">prema.dispatch.lane.report.wizard</field>
+        <field name="arch" type="xml">
+            <form string="Lane Profitability Report">
+                <sheet>
+                    <group>
+                        <group string="Date Range">
+                            <field name="date_from"/>
+                            <field name="date_to"/>
+                        </group>
+                    </group>
+                    <div class="text-center mb-3">
+                        <button name="action_generate" type="object" string="Generate" class="btn-primary"/>
+                    </div>
+                    <field name="summary_html" nolabel="1" invisible="not summary_html"/>
+                </sheet>
+                <footer>
+                    <button string="Close" class="btn-secondary" special="cancel"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+    <record id="action_lane_report_wizard" model="ir.actions.act_window">
+        <field name="name">Lane Profitability</field>
+        <field name="res_model">prema.dispatch.lane.report.wizard</field>
+        <field name="view_mode">form</field>
+        <field name="target">new</field>
+    </record>
+
+    <!-- ── Fuel Efficiency Report ──────────────────────────────────────── -->
+    <record id="view_dispatch_fuel_report_wizard_form" model="ir.ui.view">
+        <field name="name">prema.dispatch.fuel.report.wizard.form</field>
+        <field name="model">prema.dispatch.fuel.report.wizard</field>
+        <field name="arch" type="xml">
+            <form string="Fuel Efficiency Report">
+                <sheet>
+                    <group>
+                        <field name="vehicle_id" placeholder="Leave blank for all trucks"/>
+                    </group>
+                    <div class="text-center mb-3">
+                        <button name="action_generate" type="object" string="Generate" class="btn-primary"/>
+                    </div>
+                    <field name="summary_html" nolabel="1" invisible="not summary_html"/>
+                </sheet>
+                <footer>
+                    <button string="Close" class="btn-secondary" special="cancel"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+    <record id="action_fuel_report_wizard" model="ir.actions.act_window">
+        <field name="name">Fuel Efficiency</field>
+        <field name="res_model">prema.dispatch.fuel.report.wizard</field>
+        <field name="view_mode">form</field>
+        <field name="target">new</field>
+    </record>
+
+    <!-- ── Missed / Late Stop Report ───────────────────────────────────── -->
+    <record id="view_dispatch_late_stop_report_wizard_form" model="ir.ui.view">
+        <field name="name">prema.dispatch.late.stop.report.wizard.form</field>
+        <field name="model">prema.dispatch.late.stop.report.wizard</field>
+        <field name="arch" type="xml">
+            <form string="Missed / Late Stop Report">
+                <sheet>
+                    <group>
+                        <group string="Filter by">
+                            <field name="driver_id"/>
+                            <field name="vehicle_id"/>
+                        </group>
+                        <group string="Date Range">
+                            <field name="date_from"/>
+                            <field name="date_to"/>
+                        </group>
+                    </group>
+                    <div class="text-center mb-3">
+                        <button name="action_generate" type="object" string="Generate" class="btn-primary"/>
+                    </div>
+                    <field name="summary_html" nolabel="1" invisible="not summary_html"/>
+                </sheet>
+                <footer>
+                    <button string="Close" class="btn-secondary" special="cancel"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+    <record id="action_late_stop_report_wizard" model="ir.actions.act_window">
+        <field name="name">Missed / Late Stops</field>
+        <field name="res_model">prema.dispatch.late.stop.report.wizard</field>
+        <field name="view_mode">form</field>
+        <field name="target">new</field>
+    </record>
+
+    <!-- ── POD Aging Report ────────────────────────────────────────────── -->
+    <record id="view_dispatch_pod_aging_report_wizard_form" model="ir.ui.view">
+        <field name="name">prema.dispatch.pod.aging.report.wizard.form</field>
+        <field name="model">prema.dispatch.pod.aging.report.wizard</field>
+        <field name="arch" type="xml">
+            <form string="POD Aging Report">
+                <sheet>
+                    <group>
+                        <group string="Filter by">
+                            <field name="driver_id"/>
+                            <field name="vehicle_id"/>
+                        </group>
+                    </group>
+                    <div class="text-center mb-3">
+                        <button name="action_generate" type="object" string="Generate" class="btn-primary"/>
+                    </div>
+                    <field name="summary_html" nolabel="1" invisible="not summary_html"/>
+                </sheet>
+                <footer>
+                    <button string="Close" class="btn-secondary" special="cancel"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+    <record id="action_pod_aging_report_wizard" model="ir.actions.act_window">
+        <field name="name">POD Aging</field>
+        <field name="res_model">prema.dispatch.pod.aging.report.wizard</field>
+        <field name="view_mode">form</field>
+        <field name="target">new</field>
+    </record>
+
+</odoo>

@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<odoo>
+
+    <record id="view_dispatch_timeline_list" model="ir.ui.view">
+        <field name="name">prema.dispatch.timeline.event.list</field>
+        <field name="model">prema.dispatch.timeline.event</field>
+        <field name="arch" type="xml">
+            <list string="Timeline" create="false" edit="false" delete="false"
+                  decoration-success="event_type in ('delivered','all_stops_done','invoice_completed')"
+                  decoration-warning="event_type == 'exception'"
+                  decoration-info="event_type in ('truck_assigned','dispatch_confirmed')"
+                  decoration-muted="event_type == 'stage_changed'">
+                <field name="occurred_at" string="When"/>
+                <field name="event_type_label" string="Event"/>
+                <field name="stop_id" string="Stop" optional="show"/>
+                <field name="notes" string="Detail"/>
+                <field name="user_id" string="By"/>
+            </list>
+        </field>
+    </record>
+
+</odoo>

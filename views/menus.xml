@@ -1,0 +1,174 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<odoo>
+    <!-- Root app menu -->
+    <menuitem id="menu_prema_dispatch_root"
+              name="Prema Dispatch"
+              sequence="50"
+              web_icon="prema_dispatch,static/description/icon.png"
+              groups="prema_dispatch.group_dispatch_manager,prema_dispatch.group_dispatcher,prema_dispatch.group_dispatch_readonly"/>
+
+    <!-- 1. Live Map -->
+    <menuitem id="menu_dispatch_live_map"
+              name="Live Map"
+              parent="menu_prema_dispatch_root"
+              action="prema_dispatch.action_dispatch_live_map"
+              sequence="10"/>
+
+    <!-- 2. Booking Board (managers only) — airport-terminal-style status board -->
+    <menuitem id="menu_booking_board"
+              name="Booking Board"
+              parent="menu_prema_dispatch_root"
+              action="action_booking_status_board"
+              sequence="20"
+              groups="prema_dispatch.group_dispatch_manager"/>
+
+    <!-- 4. Dispatch Planner (schedule board) -->
+    <menuitem id="menu_dispatch_planner"
+              name="Dispatch Planner"
+              parent="menu_prema_dispatch_root"
+              action="prema_dispatch.action_dispatch_planner_board"
+              sequence="40"/>
+
+    <!-- 4a. Saved Locations — own top-level entry, before Settings -->
+    <menuitem id="menu_dispatch_locations"
+              name="Saved Locations"
+              parent="menu_prema_dispatch_root"
+              action="prema_dispatch.action_dispatch_locations"
+              sequence="90"
+              groups="prema_dispatch.group_dispatch_manager,prema_dispatch.group_dispatcher"/>
+
+    <!-- 4c. Find Available Truck (mid-day load finder) -->
+    <menuitem id="menu_adhoc_load_finder"
+              name="Find Available Truck"
+              parent="menu_prema_dispatch_root"
+              action="prema_dispatch.action_adhoc_load_finder"
+              sequence="47"
+              groups="prema_dispatch.group_dispatch_manager,prema_dispatch.group_dispatcher"/>
+
+    <!-- 4b. Driver Worksheet — live, today's active sheets only -->
+    <menuitem id="menu_driver_worksheet"
+              name="Driver Worksheets"
+              parent="menu_prema_dispatch_root"
+              action="action_driver_worksheet_live"
+              sequence="45"/>
+
+    <!-- 5. Reports (previously Jobs / Stops / Freight Items) -->
+    <menuitem id="menu_dispatch_reports_parent"
+              name="Reports"
+              parent="menu_prema_dispatch_root"
+              sequence="80"/>
+
+    <menuitem id="menu_dispatch_all_jobs"
+              name="All Jobs"
+              parent="menu_dispatch_reports_parent"
+              action="action_all_jobs_report"
+              sequence="10"/>
+
+    <menuitem id="menu_dispatch_completed"
+              name="Completed"
+              parent="menu_dispatch_reports_parent"
+              action="action_dispatch_completed"
+              sequence="20"/>
+
+    <menuitem id="menu_dispatch_stops"
+              name="Stops"
+              parent="menu_dispatch_reports_parent"
+              action="action_stop_report_wizard"
+              sequence="30"/>
+
+    <menuitem id="menu_dispatch_custody_report"
+              name="Custody / Handoff"
+              parent="menu_dispatch_reports_parent"
+              action="action_custody_report_wizard"
+              sequence="32"/>
+
+    <menuitem id="menu_driver_worksheet_history"
+              name="Driver Sheets"
+              parent="menu_dispatch_reports_parent"
+              action="action_driver_worksheet_history"
+              sequence="35"/>
+
+    <menuitem id="menu_dispatch_items"
+              name="Freight Items"
+              parent="menu_dispatch_reports_parent"
+              action="action_dispatch_items"
+              sequence="40"/>
+
+    <menuitem id="menu_ltl_consolidations"
+              name="LTL Consolidations"
+              parent="menu_dispatch_reports_parent"
+              action="prema_dispatch.action_consolidations"
+              sequence="50"
+              groups="prema_dispatch.group_dispatch_manager,prema_dispatch.group_dispatcher"/>
+
+    <!-- 5a. Phase O — Reporting Suite -->
+    <menuitem id="menu_dispatch_ontime_report"
+              name="On-Time %"
+              parent="menu_dispatch_reports_parent"
+              action="action_ontime_report_wizard"
+              sequence="60"/>
+
+    <menuitem id="menu_dispatch_location_dwell_report"
+              name="Stop Time by Location"
+              parent="menu_dispatch_reports_parent"
+              action="action_location_dwell_report_wizard"
+              sequence="65"/>
+
+    <menuitem id="menu_dispatch_performance_report"
+              name="Driver / Truck Performance"
+              parent="menu_dispatch_reports_parent"
+              action="action_performance_report_wizard"
+              sequence="70"/>
+
+    <menuitem id="menu_dispatch_lane_report"
+              name="Lane Profitability"
+              parent="menu_dispatch_reports_parent"
+              action="action_lane_report_wizard"
+              sequence="75"
+              groups="prema_dispatch.group_dispatch_manager"/>
+
+    <menuitem id="menu_dispatch_fuel_report"
+              name="Fuel Efficiency"
+              parent="menu_dispatch_reports_parent"
+              action="action_fuel_report_wizard"
+              sequence="80"/>
+
+    <menuitem id="menu_dispatch_late_stop_report"
+              name="Missed / Late Stops"
+              parent="menu_dispatch_reports_parent"
+              action="action_late_stop_report_wizard"
+              sequence="85"/>
+
+    <menuitem id="menu_dispatch_pod_aging_report"
+              name="POD Aging"
+              parent="menu_dispatch_reports_parent"
+              action="action_pod_aging_report_wizard"
+              sequence="90"/>
+
+    <!-- 5b. User Manual — opens the standalone printable manual in a new tab -->
+    <menuitem id="menu_dispatch_manual"
+              name="User Manual"
+              parent="menu_prema_dispatch_root"
+              action="action_dispatch_manual"
+              sequence="95"/>
+
+    <!-- 6. Settings -->
+    <menuitem id="menu_dispatch_settings_parent"
+              name="Settings"
+              parent="menu_prema_dispatch_root"
+              sequence="100"
+              groups="prema_dispatch.group_dispatch_manager"/>
+
+    <menuitem id="menu_dispatch_stages"
+              name="Stages"
+              parent="menu_dispatch_settings_parent"
+              action="action_dispatch_stage"
+              sequence="10"/>
+
+    <menuitem id="menu_booking_templates"
+              name="Booking Templates"
+              parent="menu_dispatch_settings_parent"
+              action="prema_dispatch.action_booking_templates"
+              sequence="20"/>
+
+</odoo>

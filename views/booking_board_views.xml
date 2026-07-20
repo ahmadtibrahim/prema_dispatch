@@ -1,0 +1,207 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<odoo>
+
+    <!-- ── Booking Board Kanban ──────────────────────────────────── -->
+    <record id="view_booking_board_kanban" model="ir.ui.view">
+        <field name="name">prema.dispatch.job.booking.kanban</field>
+        <field name="model">prema.dispatch.job</field>
+        <field name="arch" type="xml">
+            <kanban default_group_by="stage_id"
+                    group_create="false"
+                    quick_create="false"
+                    on_drag="web_save">
+                <field name="name"/>
+                <field name="partner_id"/>
+                <field name="vehicle_id"/>
+                <field name="driver_id"/>
+                <field name="stage_id"/>
+                <field name="priority"/>
+                <field name="service_type"/>
+                <field name="equipment_type"/>
+                <field name="delivery_flexibility"/>
+                <field name="requires_reefer"/>
+                <field name="requires_liftgate"/>
+                <field name="approximate_skids"/>
+                <field name="total_skids"/>
+                <field name="pickup_city"/>
+                <field name="delivery_cities"/>
+                <field name="requested_delivery_date"/>
+                <field name="planned_delivery_date"/>
+                <field name="source_document_name"/>
+                <field name="color"/>
+                <field name="scheduled_pickup"/>
+                <field name="sent_to_driver_at"/>
+                <field name="max_onboard_pallets"/>
+                <progressbar field="stage_id"
+                             colors='{"normal":"success","urgent":"warning","emergency":"danger"}'/>
+                <templates>
+                    <t t-name="card">
+                        <div t-attf-class="oe_kanban_color_#{record.color.value} o_kanban_record_top mb8">
+                            <div class="o_kanban_record_headings">
+                                <strong class="o_kanban_record_title">
+                                    <field name="name"/>
+                                </strong>
+                                <span class="o_kanban_record_subtitle text-muted ms-1 small">
+                                    <field name="source_document_name"/>
+                                </span>
+                            </div>
+                            <div class="float-end d-flex gap-1">
+                                <span t-if="record.requires_reefer.value"
+                                      class="badge bg-primary" title="Reefer Required">❄️</span>
+                                <span t-if="record.requires_liftgate.value"
+                                      class="badge bg-secondary" title="Liftgate Required">🏗️</span>
+                                <span t-if="record.priority.value == 'urgent'"
+                                      class="badge bg-warning">URGENT</span>
+                                <span t-if="record.priority.value == 'emergency'"
+                                      class="badge bg-danger">EMERGENCY</span>
+                            </div>
+                        </div>
+
+                        <div class="o_kanban_record_body">
+                            <!-- Customer -->
+                            <div t-if="record.partner_id.value" class="mb4">
+                                <i class="fa fa-building-o me-1 text-muted" title="Customer"/>
+                                <field name="partner_id"/>
+                            </div>
+
+                            <!-- Route: pickup → delivery -->
+                            <div t-if="record.pickup_city.value or record.delivery_cities.value"
+                                 class="mb4 small">
+                                <i class="fa fa-map-marker me-1 text-muted" title="Route"/>
+                                <t t-if="record.pickup_city.value">
+                                    <span t-esc="record.pickup_city.value"/>
+                                </t>
+                                <t t-if="record.pickup_city.value and record.delivery_cities.value">
+                                    <span class="text-muted"> → </span>
+                                </t>
+                                <t t-if="record.delivery_cities.value">
+                                    <span t-esc="record.delivery_cities.value"/>
+                                </t>
+                            </div>
+
+                            <!-- Service type + skids -->
+                            <div class="mb4 d-flex gap-1 flex-wrap">
+                                <t t-if="record.service_type.value">
+                                    <span t-attf-class="badge #{record.service_type.value == 'ftl' ? 'bg-success' : record.service_type.value == 'ltl' ? 'bg-info' : 'bg-secondary'}">
+                                        <t t-esc="record.service_type.value.toUpperCase()"/>
+                                    </span>
+                                </t>
+                                <t t-if="record.delivery_flexibility.value and record.delivery_flexibility.value in ['rush','next_day']">
+                                    <span class="badge bg-danger">
+                                        <t t-esc="record.delivery_flexibility.value === 'rush' ? 'RUSH' : 'NEXT DAY'"/>
+                                    </span>
+                                </t>
+                                <t t-if="record.delivery_flexibility.value and record.delivery_flexibility.value in ['flexible','economy']">
+                                    <span class="badge bg-secondary">FLEXIBLE</span>
+                                </t>
+                            </div>
+
+                            <!-- Requested date -->
+                            <div t-if="record.requested_delivery_date.value" class="mb4 text-muted small">
+                                <i class="fa fa-calendar me-1" title="Requested delivery date"/>
+                                <field name="requested_delivery_date"/>
+                            </div>
+                        </div>
+
+                        <div class="o_kanban_record_bottom">
+                            <div class="oe_kanban_bottom_left small text-muted">
+                                <t t-if="record.max_onboard_pallets.value > 0">
+                                    <i class="fa fa-cubes me-1" title="Max onboard pallets"/>
+                                    <t t-esc="record.max_onboard_pallets.value"/> max onboard
+                                </t>
+                                <t t-elif="record.total_skids.value > 0">
+                                    <i class="fa fa-cubes me-1" title="Skids"/>
+                                    <t t-esc="record.total_skids.value"/> skids
+                                </t>
+                                <t t-elif="record.approximate_skids.value > 0">
+                                    <i class="fa fa-cubes me-1" title="Approx. skids"/>
+                                    ~<t t-esc="record.approximate_skids.value"/> skids
+                                </t>
+                            </div>
+                            <div class="oe_kanban_bottom_right small">
+                                <t t-if="record.vehicle_id.value">
+                                    <i class="fa fa-truck me-1 text-success" title="Assigned truck"/>
+                                    <field name="vehicle_id"/>
+                                </t>
+                                <t t-else="">
+                                    <span class="text-warning">
+                                        <i class="fa fa-exclamation-triangle me-1"/>Unassigned
+                                    </span>
+                                </t>
+                            </div>
+                        </div>
+                    </t>
+                </templates>
+            </kanban>
+        </field>
+    </record>
+
+    <!-- ── Booking Board List ─────────────────────────────────────── -->
+    <record id="view_booking_board_list" model="ir.ui.view">
+        <field name="name">prema.dispatch.job.booking.list</field>
+        <field name="model">prema.dispatch.job</field>
+        <field name="arch" type="xml">
+            <list string="Bookings"
+                  decoration-danger="priority == 'emergency'"
+                  decoration-warning="priority == 'urgent'">
+                <field name="name" string="Booking #"/>
+                <field name="source_document_name" string="Source"/>
+                <field name="stage_id" string="Status"/>
+                <field name="partner_id" string="Customer"/>
+                <field name="pickup_city" string="Pickup"/>
+                <field name="delivery_cities" string="Delivery"/>
+                <field name="service_type" widget="badge" optional="show"/>
+                <field name="delivery_flexibility" optional="show"/>
+                <field name="requires_reefer" optional="show" string="Reefer"/>
+                <field name="approximate_skids" string="~Skids" optional="show"/>
+                <field name="requested_delivery_date" string="Req. Date"/>
+                <field name="vehicle_id" string="Truck" optional="show"/>
+                <field name="driver_id" string="Driver" optional="show"/>
+            </list>
+        </field>
+    </record>
+
+    <!-- ── Actions ───────────────────────────────────────────────── -->
+    <record id="action_booking_board" model="ir.actions.act_window">
+        <field name="name">Booking Board</field>
+        <field name="res_model">prema.dispatch.job</field>
+        <field name="view_mode">kanban,list,form</field>
+        <field name="domain">[('stage_id.is_booking_phase','=',True),('stage_id.is_cancelled','=',False)]</field>
+        <field name="context">{"search_default_active_bookings": 1}</field>
+        <field name="view_ids" eval="[
+            (5, 0, 0),
+            (0, 0, {'view_mode': 'kanban', 'view_id': ref('view_booking_board_kanban')}),
+            (0, 0, {'view_mode': 'list', 'view_id': ref('view_booking_board_list')}),
+        ]"/>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">
+                No active bookings.
+            </p>
+            <p>Click <b>Book Load</b> on a Sales Order or Invoice to create a booking.</p>
+        </field>
+    </record>
+
+    <record id="action_dispatch_board_active" model="ir.actions.act_window">
+        <field name="name">Dispatch Board</field>
+        <field name="res_model">prema.dispatch.job</field>
+        <field name="view_mode">kanban,list,form</field>
+        <field name="domain">[('stage_id.is_dispatched','=',True),('stage_id.is_completed','=',False),('stage_id.is_cancelled','=',False)]</field>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">No active dispatches.</p>
+            <p>Confirm a booking to move it here.</p>
+        </field>
+    </record>
+
+    <record id="action_all_jobs_report" model="ir.actions.act_window">
+        <field name="name">All Jobs</field>
+        <field name="res_model">prema.dispatch.job</field>
+        <field name="view_mode">list,kanban,form</field>
+    </record>
+
+    <!-- Airport-terminal-style status board (replaces the kanban Booking Board) -->
+    <record id="action_booking_status_board" model="ir.actions.client">
+        <field name="name">Booking Board</field>
+        <field name="tag">booking_status_board</field>
+    </record>
+
+</odoo>

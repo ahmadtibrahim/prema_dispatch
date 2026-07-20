@@ -1,0 +1,272 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<odoo>
+<template id="driver_app_page" name="Driver App">
+<t t-call="web.layout">
+<t t-set="head">
+    <title>Prema Driver</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/>
+    <meta name="theme-color" content="#1565C0"/>
+    <meta name="apple-mobile-web-app-capable" content="yes"/>
+    <link t-attf-href="/prema_dispatch/static/src/css/driver_app.css?v=#{cache_ver}" rel="stylesheet"/>
+    <script t-attf-src="https://maps.googleapis.com/maps/api/js?key=#{google_api_key}&amp;libraries=places,geometry&amp;callback=__gmReady" async="1" defer="1"/>
+</t>
+<t t-set="body_classname">da-body</t>
+
+<div id="app" class="da-app"
+     t-attf-data-gmaps-key="#{google_api_key}"
+     t-attf-data-dispatch-phone="#{dispatch_phone}"
+     t-attf-data-dispatch-voip-uri="#{dispatch_voip_uri}">
+
+  <!-- Geofence banner (shown when within 150m of the active stop, on either
+       the Stop Detail or Navigation screen) -->
+  <div id="geoBanner" class="da-geo-banner" style="display:none">
+    <div class="da-geo-icon">📍</div>
+    <div>
+      <div class="da-geo-title">You've arrived!</div>
+      <div id="geoCountdown" class="da-geo-sub"></div>
+    </div>
+    <button class="da-btn da-btn-green da-btn-sm" onclick="APP.confirmArrived()">✓ Yes</button>
+    <button class="da-btn da-btn-ghost da-btn-sm" onclick="APP.dismissGeo()">Not yet</button>
+  </div>
+
+  <!-- Loading -->
+  <div id="sLoading" class="da-screen da-loading-screen">
+    <div class="da-loading-truck">🚛</div>
+    <div class="da-loading-text">Prema Dispatch</div>
+    <div class="da-loading-sub">Loading your route…</div>
+  </div>
+
+  <!-- ── SCREEN: Schedule (Home + Stop List) ──────────────── -->
+  <div id="sSchedule" class="da-screen" style="display:none">
+
+    <!-- Header -->
+    <div class="da-header">
+      <div class="da-header-left">
+        <div id="hDriverName" class="da-driver-name"></div>
+        <div id="hTruckName"  class="da-truck-name"></div>
+      </div>
+      <button class="da-icon-btn" onclick="APP.callDispatch()" title="Call Dispatch">📞</button>
+      <button class="da-icon-btn" onclick="APP.openMapFull()" title="Fullscreen map">⛶</button>
+      <button class="da-icon-btn" onclick="APP.openRouteSettings()" title="Route Options">⚙</button>
+      <button class="da-icon-btn" onclick="APP.openChat()" title="Chat with Dispatcher" style="position:relative">
+        💬<span id="chatUnread" class="da-chat-unread" style="display:none">!</span>
+      </button>
+      <button class="da-icon-btn" onclick="APP.signOut()" title="Sign Out" style="font-size:14px">⏻</button>
+    </div>
+
+    <!-- Week Calendar -->
+    <div class="da-week-bar">
+      <button class="da-week-nav" onclick="APP.prevWeek()">‹</button>
+      <div id="weekLabel" class="da-week-label"></div>
+      <button class="da-week-nav" onclick="APP.nextWeek()">›</button>
+      <!-- Map toggle lives here (not inside routeMapWrap) so it's still
+           reachable when the map is collapsed to 0 height -->
+      <button class="da-week-nav da-week-map-toggle" onclick="APP.toggleMap()" id="mapToggleBtn" title="Show/hide map">▲</button>
+    </div>
+    <div id="weatherBadge" class="da-weather-badge" style="display:none"></div>
+
+    <!-- Today's summary -->
+    <div id="todaySummary" class="da-today-summary"></div>
+
+    <!-- Load Plan status chip — prominent, not buried, per spec -->
+    <div id="loadPlanChip" class="da-loadplan-chip" style="display:none" onclick="openLoadPlan()"></div>
+
+    <!-- Home / Stops tabs -->
+    <div class="da-view-tabs">
+      <button id="tabHome"  class="da-view-tab active" onclick="APP.showHomeTab()">Home</button>
+      <button id="tabStops" class="da-view-tab" onclick="APP.showStopsTab()">Stops</button>
+    </div>
+
+    <div id="weekDays" class="da-week-days"></div>
+
+    <!-- Route Map — fullscreen toggle lives once, in the header (line ~46),
+         not duplicated here as a floating button too. -->
+    <div id="routeMapWrap" class="da-map-wrap">
+      <div id="routeMap" class="da-map"></div>
+    </div>
+
+    <!-- Flat stop list -->
+    <div id="stopList" class="da-job-list" style="display:none"></div>
+  </div>
+
+  <!-- ── SCREEN: Stop Detail ──────────────────────────────── -->
+  <div id="sStop" class="da-screen" style="display:none">
+    <div class="da-header">
+      <button class="da-back-btn" onclick="APP.goBack()">‹</button>
+      <div id="stopDetailTitle" class="da-screen-title"></div>
+      <button class="da-icon-btn" onclick="APP.openMapFull()">⛶</button>
+      <button class="da-icon-btn" onclick="APP.openChat()">💬</button>
+    </div>
+
+    <div id="stopDetailMap" class="da-map da-map-stop" style="position:relative">
+      <div class="da-map-btns" style="bottom:8px;right:8px">
+        <button class="da-map-fab" onclick="APP.toggleSat()" title="Toggle satellite view">🛰</button>
+      </div>
+    </div>
+    <div id="stopDetailBody" class="da-detail-body"></div>
+  </div>
+
+  <!-- ── SCREEN: In-App Navigation (Amazon Flex style) ────── -->
+  <div id="sNav" class="da-screen da-nav-screen" style="display:none">
+    <div id="navMapWrap" class="da-nav-map">
+      <div id="navMap" style="width:100%;height:100%"></div>
+      <button class="da-nav-close-btn" onclick="APP.closeNav()">✕ Close</button>
+      <div class="da-nav-fabs">
+        <button class="da-map-fab" onclick="APP.toggleNavHeading()" id="navHeadingBtn" title="North-up / Heading-up">🧭 North</button>
+        <button class="da-map-fab" onclick="APP.toggleNavVoice()" id="navVoiceBtn" title="Voice guidance">🔊 Voice</button>
+        <button class="da-map-fab" onclick="APP.toggleNavTraffic()" id="navTrafficBtn" title="Traffic layer">🚦 Traffic</button>
+        <button class="da-map-fab" onclick="APP.toggleNavFullscreen()" id="navFsBtn" title="Fullscreen — hide other panels">⛶</button>
+      </div>
+      <div id="navDistBadge" class="da-dist-badge">…</div>
+    </div>
+    <div class="da-nav-body" id="navBody">
+      <div id="navInstruction" class="da-nav-instruction">Calculating route…</div>
+      <div class="da-nav-info">
+        <div id="navDestType" class="da-nav-dest"></div>
+        <div id="navDestName" class="da-nav-name"></div>
+        <div id="navDestAddr" class="da-nav-addr"></div>
+      </div>
+      <div class="da-nav-actions">
+        <button class="da-btn da-btn-secondary" onclick="APP.openExternalNav()">🗺️ Open in Maps app (voice guidance)</button>
+        <button class="da-btn da-btn-green" onclick="APP.navArrived()">✓ I'm Here</button>
+      </div>
+      <div class="da-nav-actions da-nav-actions-row">
+        <button class="da-btn da-btn-secondary" onclick="APP.callDispatch()" title="Call Dispatch">📞 Dispatch</button>
+        <button class="da-btn da-btn-orange" onclick="doDelayed()" title="Report a problem with this stop">⚠ Report Issue</button>
+        <button class="da-btn da-btn-secondary" onclick="APP.recenterNav()" title="Recenter map on my location">🎯 Recenter</button>
+      </div>
+      <div class="da-nav-actions da-nav-actions-row da-nav-actions-row-compact">
+        <button class="da-btn da-btn-ghost" onclick="APP.closeNav()">← Back to Stop</button>
+        <button class="da-btn da-btn-ghost" onclick="doRestoreStop()">↺ Restore Stop</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── SCREEN: Load Plan (Phase 4) ────────────────────────── -->
+  <div id="sLoadPlan" class="da-screen" style="display:none">
+    <div class="da-header">
+      <button class="da-back-btn" onclick="APP.goBack()">‹</button>
+      <div class="da-screen-title">Load Plan</div>
+      <span style="width:32px"/>
+    </div>
+    <div id="loadPlanBody" class="da-loadplan-body"></div>
+  </div>
+
+  <!-- ── OVERLAY: Fullscreen Map ─────────────────────────── -->
+  <div id="oMapFull" class="da-overlay" style="display:none">
+    <div id="fullMap" class="da-fullmap"></div>
+    <div class="da-fullmap-bar">
+      <button class="da-map-fab" onclick="APP.closeMapFull()">✕ Close</button>
+      <button class="da-map-fab" onclick="APP.toggleFullSat()">🛰 Satellite</button>
+    </div>
+  </div>
+
+  <!-- ── OVERLAY: Pin Editor ─────────────────────────────── -->
+  <div id="oPinEdit" class="da-overlay" style="display:none">
+    <div id="pinMap" class="da-fullmap"></div>
+    <div class="da-pin-cross">📍</div>
+    <div class="da-pin-bar">
+      <button class="da-btn da-btn-secondary" onclick="APP.pinGps()">📡 My GPS</button>
+      <button class="da-btn da-btn-secondary" onclick="APP.pinUseAddress()">📍 Use Address</button>
+      <button class="da-btn da-btn-primary" onclick="APP.pinSave()">Save Pin</button>
+      <button class="da-btn da-btn-ghost" onclick="APP.pinClose()">Cancel</button>
+    </div>
+    <div class="da-pin-hint">Drag the pin to the exact parking/entrance spot</div>
+  </div>
+
+  <!-- ── OVERLAY: Photo ──────────────────────────────────── -->
+  <div id="oPhoto" class="da-overlay da-photo-overlay" style="display:none">
+    <button class="da-photo-close" onclick="APP.closePhoto()">✕</button>
+    <img id="photoImg" src="" class="da-photo-img" alt="Entrance"/>
+    <div class="da-photo-caption">Entrance Photo</div>
+  </div>
+
+  <!-- ── OVERLAY: Finish / POD ───────────────────────────── -->
+  <div id="oFinishProof" class="da-overlay da-issue-overlay" style="display:none">
+    <div class="da-finish-card">
+      <div class="da-finish-header">
+        <div id="finishProofTitle" class="da-issue-title">Proof of Delivery</div>
+        <button class="da-chat-close-btn da-finish-close" onclick="APP.closeFinishProof()">✕</button>
+      </div>
+      <div id="finishProofBody" class="da-finish-body"></div>
+    </div>
+  </div>
+
+  <!-- ── OVERLAY: Document Scanner ─────────────────────────── -->
+  <div id="oScanner" class="da-overlay da-scanner-overlay" style="display:none">
+    <div id="scanCameraStage" class="da-scan-stage" style="display:flex">
+      <video id="scanVideo" class="da-scan-video" autoplay="autoplay" playsinline="playsinline" muted="muted"></video>
+      <div class="da-scan-hint">Position the document within the frame</div>
+      <div class="da-scan-bar">
+        <button class="da-map-fab" onclick="closeScanner()">✕ Cancel</button>
+        <button class="da-scan-capture-btn" onclick="captureScan()" title="Capture"></button>
+        <span style="width:80px"/>
+      </div>
+    </div>
+    <div id="scanPreviewStage" class="da-scan-stage" style="display:none">
+      <div class="da-scan-preview-wrap">
+        <canvas id="scanPreviewCanvas" class="da-scan-canvas"></canvas>
+      </div>
+      <div class="da-scan-bar">
+        <button id="scanRetakeBtn" class="da-btn da-btn-ghost" onclick="retakeScan()">↺ Retake</button>
+        <button id="scanEnhanceBtn" class="da-btn da-btn-secondary" onclick="toggleScanEnhance()">✨ Enhance</button>
+        <button id="scanUseBtn" class="da-btn da-btn-primary" onclick="useScan()">✓ Use This</button>
+      </div>
+      <div id="scanStatusRow" class="da-ev-status-row" style="display:none"></div>
+    </div>
+  </div>
+
+  <!-- ── OVERLAY: Route Settings ──────────────────────────── -->
+  <div id="oRouteSettings" class="da-overlay da-issue-overlay" style="display:none">
+    <div class="da-issue-card">
+      <div class="da-issue-title">🚛 Route Options</div>
+      <label class="da-route-opt"><input id="rsTolls"     type="checkbox" onchange="APP.saveRouteSettings()"/> Avoid Tolls</label>
+      <label class="da-route-opt"><input id="rsHighways"  type="checkbox" onchange="APP.saveRouteSettings()"/> Avoid Highways</label>
+      <label class="da-route-opt"><input id="rsFerries"   type="checkbox" onchange="APP.saveRouteSettings()"/> Avoid Ferries</label>
+      <div class="da-route-note">🚛 Truck-friendly routing is on by default. Note: Google's routing APIs don't offer a "no U-turns" option — this isn't supported for web navigation by any provider we have access to.</div>
+      <button class="da-btn da-btn-primary" style="margin-top:12px" onclick="APP.closeRouteSettings()">Done</button>
+    </div>
+  </div>
+
+  <!-- ── OVERLAY: Report Issue ────────────────────────────── -->
+  <div id="oIssue" class="da-overlay da-issue-overlay" style="display:none">
+    <div class="da-issue-card">
+      <div class="da-issue-title">⚠ Report Issue</div>
+      <div class="da-issue-reasons">
+        <button class="da-issue-btn" onclick="APP.pickIssueReason('Road Closure')">🚧 Road Closure</button>
+        <button class="da-issue-btn" onclick="APP.pickIssueReason('Business Closed')">🏪 Business Closed</button>
+        <button class="da-issue-btn" onclick="APP.pickIssueReason('Recipient Unavailable')">🙅 Recipient Unavailable</button>
+        <button class="da-issue-btn" onclick="APP.pickIssueReason('Address Not Found')">📍 Address Not Found</button>
+        <button class="da-issue-btn" onclick="APP.pickIssueReason('Others')">✏️ Others</button>
+      </div>
+      <div id="issueOtherRow" class="da-issue-other-row" style="display:none">
+        <input id="issueOtherInput" type="text" class="da-issue-input" placeholder="Describe the issue…"
+               onkeydown="if(event.key==='Enter')APP.sendIssueOther()"/>
+        <button class="da-btn da-btn-primary da-btn-sm" onclick="APP.sendIssueOther()">Send</button>
+      </div>
+      <button class="da-btn da-btn-ghost" style="margin-top:10px" onclick="APP.closeIssue()">Cancel</button>
+    </div>
+  </div>
+
+  <!-- ── OVERLAY: Chat ───────────────────────────────────── -->
+  <div id="oChat" class="da-overlay da-chat-overlay" style="display:none">
+    <div class="da-chat-header">
+      <span class="da-chat-title">💬 Dispatcher Chat</span>
+      <button class="da-chat-close-btn" onclick="APP.closeChat()">✕</button>
+    </div>
+    <div id="chatMessages" class="da-chat-messages"></div>
+    <div class="da-chat-input-row">
+      <input id="chatInput" type="text" class="da-chat-input" placeholder="Message dispatcher…"
+             onkeydown="if(event.key==='Enter')APP.sendChat()"/>
+      <button class="da-chat-send" onclick="APP.sendChat()">Send</button>
+    </div>
+  </div>
+
+  <!-- Toast -->
+  <div id="toast" class="da-toast" style="display:none"></div>
+</div>
+
+<script t-attf-src="/prema_dispatch/static/src/js/driver_app.js?v=#{cache_ver}"/>
+</t>
+</template>
+</odoo>

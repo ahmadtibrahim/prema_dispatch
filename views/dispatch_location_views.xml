@@ -1,0 +1,186 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<odoo>
+
+    <record id="dispatch_location_form" model="ir.ui.view">
+        <field name="name">prema.dispatch.location.form</field>
+        <field name="model">prema.dispatch.location</field>
+        <field name="arch" type="xml">
+            <form string="Saved Location">
+                <sheet>
+                    <div class="oe_title">
+                        <h1><field name="name" placeholder="Location name…"/></h1>
+                        <field name="business_name" placeholder="Business name (e.g. Acme Warehouse)…"/>
+                    </div>
+                    <div class="alert alert-warning" role="alert" invisible="not address_validation_warning">
+                        <i class="fa fa-exclamation-triangle me-1"/>
+                        <field name="address_validation_warning" nolabel="1" readonly="1" class="d-inline"/>
+                        <span invisible="not address_formatted">
+                            — Google suggests: <field name="address_formatted" nolabel="1" readonly="1" class="d-inline fw-bold"/>
+                        </span>
+                    </div>
+                    <group>
+                        <group string="Address">
+                            <field name="address" widget="google_places" placeholder="Search address…"/>
+                            <field name="partner_id" string="Customer / Warehouse"/>
+                            <field name="location_type"/>
+                            <field name="allow_cross_dock" widget="boolean_toggle"/>
+                            <field name="dock_door" placeholder="e.g. Door 7, Bay 3"/>
+                        </group>
+                        <group string="Parking Pin">
+                            <field name="pin_lat" string="Pin Latitude"/>
+                            <field name="pin_lng" string="Pin Longitude"/>
+                            <field name="pin_set" string="Pin Manually Set" readonly="1"/>
+                            <field name="geofence_radius"/>
+                        </group>
+                    </group>
+                    <group>
+                        <group string="Entrances &amp; Access">
+                            <field name="receiving_entrance"/>
+                            <field name="truck_entrance"/>
+                            <field name="gate_code"/>
+                        </group>
+                        <group string="Equipment / Access Requirements">
+                            <field name="liftgate_required" widget="boolean_toggle"/>
+                            <field name="dock_height_available" widget="boolean_toggle"/>
+                            <field name="pump_truck_required" widget="boolean_toggle"/>
+                            <field name="straight_truck_accessible" widget="boolean_toggle"/>
+                            <field name="trailer_53ft_accessible" widget="boolean_toggle"/>
+                        </group>
+                    </group>
+                    <group string="Driver Instructions">
+                        <field name="parking_notes" placeholder="Entrance side, gate code, dock instructions…"
+                               nolabel="1" colspan="2"/>
+                    </group>
+                    <group string="Structured Driver Guidance">
+                        <field name="driver_instructions" nolabel="1" colspan="2"
+                               placeholder="Turn-by-turn / arrival guidance for drivers…"/>
+                    </group>
+                    <group string="Security Notes">
+                        <field name="security_notes" nolabel="1" colspan="2"/>
+                    </group>
+                    <group string="Photos">
+                        <group string="Entrance Photo">
+                            <field name="entrance_photo" widget="image"
+                                   string="Photo" nolabel="1"
+                                   options="{'size': [400, 300]}"/>
+                        </group>
+                        <group string="Dock Photo">
+                            <field name="dock_photo" widget="image"
+                                   string="Photo" nolabel="1"
+                                   options="{'size': [400, 300]}"/>
+                        </group>
+                        <group string="Parking Photo">
+                            <field name="parking_photo" widget="image"
+                                   string="Photo" nolabel="1"
+                                   options="{'size': [400, 300]}"/>
+                        </group>
+                        <group string="Gate Photo">
+                            <field name="gate_photo" widget="image"
+                                   string="Photo" nolabel="1"
+                                   options="{'size': [400, 300]}"/>
+                        </group>
+                        <group string="Receiving Office Photo">
+                            <field name="receiving_office_photo" widget="image"
+                                   string="Photo" nolabel="1"
+                                   options="{'size': [400, 300]}"/>
+                        </group>
+                        <group string="Scale Photo">
+                            <field name="scale_photo" widget="image"
+                                   string="Photo" nolabel="1"
+                                   options="{'size': [400, 300]}"/>
+                        </group>
+                        <group string="Loading Area Photo">
+                            <field name="loading_area_photo" widget="image"
+                                   string="Photo" nolabel="1"
+                                   options="{'size': [400, 300]}"/>
+                        </group>
+                    </group>
+                    <group string="Stats" groups="prema_dispatch.group_dispatch_manager">
+                        <field name="use_count" readonly="1"/>
+                        <field name="last_visited" readonly="1"/>
+                        <field name="stop_count" readonly="1"/>
+                    </group>
+                    <group string="Performance" groups="prema_dispatch.group_dispatch_manager">
+                        <group string="Timing">
+                            <field name="average_wait_minutes" readonly="1"/>
+                            <field name="average_unload_minutes" readonly="1"/>
+                            <field name="average_total_stop_minutes" readonly="1"/>
+                            <field name="fastest_stop_minutes" readonly="1"/>
+                            <field name="longest_stop_minutes" readonly="1"/>
+                        </group>
+                        <group string="Reliability">
+                            <field name="average_delay_minutes" readonly="1"/>
+                            <field name="appointment_compliance_pct" readonly="1"/>
+                            <field name="arrival_accuracy_pct" readonly="1"/>
+                        </group>
+                        <group string="AI / Heuristic Scores">
+                            <field name="recommended_service_time_minutes" readonly="1"/>
+                            <field name="best_arrival_window_start" readonly="1"/>
+                            <field name="best_arrival_window_end" readonly="1"/>
+                            <field name="avoid_arrival_window_start" readonly="1"/>
+                            <field name="avoid_arrival_window_end" readonly="1"/>
+                            <field name="difficulty_score" readonly="1"/>
+                            <field name="dock_efficiency_score" readonly="1"/>
+                            <field name="traffic_impact_score" readonly="1"/>
+                            <field name="ai_confidence_score" readonly="1"/>
+                        </group>
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <record id="dispatch_location_list" model="ir.ui.view">
+        <field name="name">prema.dispatch.location.list</field>
+        <field name="model">prema.dispatch.location</field>
+        <field name="arch" type="xml">
+            <list string="Saved Locations" decoration-muted="not pin_set">
+                <field name="name"/>
+                <field name="business_name"/>
+                <field name="location_type"/>
+                <field name="allow_cross_dock" string="Cross-Dock"/>
+                <field name="address"/>
+                <field name="partner_id"/>
+                <field name="dock_door"/>
+                <field name="pin_set" string="Pin Set"/>
+                <field name="use_count" string="Visits"/>
+                <field name="last_visited" string="Last Visit"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="dispatch_location_search" model="ir.ui.view">
+        <field name="name">prema.dispatch.location.search</field>
+        <field name="model">prema.dispatch.location</field>
+        <field name="arch" type="xml">
+            <search>
+                <field name="name"/>
+                <field name="address"/>
+                <field name="partner_id"/>
+                <filter name="pin_set" string="Pin Set" domain="[('pin_set','=',True)]"/>
+                <filter name="has_photo" string="Has Photo" domain="[('entrance_photo','!=',False)]"/>
+                <filter name="allow_cross_dock" string="Allow Cross-Dock" domain="[('allow_cross_dock','=',True)]"/>
+                <group expand="0" string="Group By">
+                    <filter name="group_partner" string="Customer" context="{'group_by':'partner_id'}"/>
+                    <filter name="group_location_type" string="Location Type" context="{'group_by':'location_type'}"/>
+                </group>
+            </search>
+        </field>
+    </record>
+
+    <record id="action_dispatch_locations" model="ir.actions.act_window">
+        <field name="name">Saved Locations</field>
+        <field name="res_model">prema.dispatch.location</field>
+        <field name="view_mode">list,form</field>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">
+                No saved locations yet.
+            </p>
+            <p>
+                Saved locations remember the exact parking pin and entrance photo
+                for each warehouse or customer site, so drivers always know where to park.
+            </p>
+        </field>
+    </record>
+
+</odoo>

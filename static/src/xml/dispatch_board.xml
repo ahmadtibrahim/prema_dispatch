@@ -1,0 +1,721 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+
+<t t-name="prema_dispatch.DispatchBoard">
+<div t-attf-class="o_dispatch_board o_layout_#{state.layoutMode}" t-on-click="closeCalendar">
+
+    <!-- ── Header ──────────────────────────────────────────────── -->
+    <div class="o_dispatch_board_header">
+        <h4 class="mb-0">Dispatch Planner</h4>
+
+        <div class="ms-auto d-flex align-items-center gap-2">
+            <button class="btn btn-sm btn-success"
+                    t-on-click.stop="autoPlan"
+                    t-att-disabled="state.autoPlanning"
+                    title="Auto-assign unassigned loads to best available trucks">
+                <i t-attf-class="fa #{state.autoPlanning ? 'fa-spinner fa-spin' : 'fa-magic'} me-1"/>
+                <t t-if="state.autoPlanning">Planning…</t>
+                <t t-else="">Auto Plan</t>
+            </button>
+            <button class="btn btn-sm btn-outline-primary" t-on-click="openFeasibility">
+                <i class="fa fa-search me-1"/>Feasibility
+            </button>
+            <button class="btn btn-sm btn-outline-secondary" t-on-click="toggleTimelineMode"
+                    title="Switch between per-stop timeline markers and the old stretched job-block view">
+                <i class="fa fa-map-signs me-1"/>
+                <t t-esc="state.timelineViewMode === 'stops' ? 'Stop View' : 'Block View'"/>
+            </button>
+            <button class="btn btn-sm btn-outline-secondary" t-on-click="refresh">
+                <i class="fa fa-refresh me-1"/>Refresh
+            </button>
+            <button class="btn btn-sm btn-outline-secondary" t-on-click="openInNewWindow"
+                    title="Open a second independent copy of this planner — drag it to another monitor for a multi-screen setup">
+                <i class="fa fa-clone me-1"/>New Window
+            </button>
+            <div class="o_layout_mode_group btn-group btn-group-sm" role="group" aria-label="Layout mode">
+                <button type="button" t-attf-class="btn btn-outline-secondary #{state.layoutMode === 'normal' ? 'active' : ''}"
+                        t-on-click="() => this.setLayoutMode('normal')"
+                        title="Normal layout — default single-window view">
+                    Normal
+                </button>
+                <button type="button" t-attf-class="btn btn-outline-secondary #{state.layoutMode === 'wide' ? 'active' : ''}"
+                        t-on-click="() => this.setLayoutMode('wide')"
+                        title="Wide layout — collapses the Unassigned and Week side panels for more room on a single large monitor">
+                    Wide
+                </button>
+                <button type="button" t-attf-class="btn btn-outline-secondary #{state.layoutMode === 'multi' ? 'active' : ''}"
+                        t-on-click="() => this.setLayoutMode('multi')"
+                        title="Multi-Screen layout — keeps this window as the primary pane and opens a second popout window for another monitor">
+                    Multi
+                </button>
+            </div>
+            <span t-if="totalUnassigned > 0" class="badge bg-warning text-dark">
+                <t t-esc="totalUnassigned"/> Unassigned
+            </span>
+        </div>
+    </div>
+
+    <!-- ── Assign-mode banner ────────────────────────────────── -->
+    <div t-if="state.assigningJobId" class="o_dispatch_assign_banner">
+        <i class="fa fa-hand-pointer-o me-2"/>
+        <strong>Click a truck row</strong> to assign
+        <em><t t-esc="assigningJob and assigningJob.name"/></em>
+        <button class="btn btn-sm btn-link text-white ms-3"
+                t-on-click="() => { this.state.assigningJobId = null; }">Cancel</button>
+    </div>
+
+    <!-- ── Body: Left | Center | Right ─────────────────────────── -->
+    <div class="o_dispatch_board_body">
+
+        <!-- ══ LEFT: 3-Day Unassigned Panel ══════════════════════ -->
+        <div t-if="!state.leftMinimized"
+             t-attf-class="o_dispatch_unassigned #{state.dragOverUnassign ? 'drop-target' : ''}"
+             t-att-style="'width:' + state.sidebarWidth + 'px;min-width:' + state.sidebarWidth + 'px'"
+             t-on-dragover="onDragOverUnassign"
+             t-on-dragleave="onDragLeaveUnassign"
+             t-on-drop="onDropUnassign">
+
+            <!-- Panel header -->
+            <div class="o_panel_header">
+                <span class="fw-bold small">Unassigned</span>
+                <button class="o_panel_btn ms-auto" title="Minimize panel"
+                        t-on-click.stop="toggleLeft">
+                    <i class="fa fa-chevron-left"/>
+                </button>
+            </div>
+
+            <!-- Navigation row -->
+            <div class="o_dispatch_day_nav">
+                <input type="date" class="o_dispatch_date_jump" t-att-value="state.selectedDate"
+                       t-on-change="jumpToDate" title="Jump to a specific date"/>
+                <button class="btn btn-xs btn-outline-secondary o_dispatch_day_nav_arrow"
+                        t-on-click.stop="() => this.shiftWindow(-1)" title="Previous day">◀</button>
+
+                <div class="o_dispatch_day_headers">
+                    <t t-foreach="windowDays" t-as="day" t-key="day.dateStr">
+                        <div t-attf-class="o_dispatch_day_header #{day.isActive ? 'active' : ''} #{day.isToday ? 'today' : ''}"
+                             t-on-click.stop="() => this.selectDay(day.dateStr)"
+                             t-att-title="'Switch to ' + day.label">
+                            <span class="day-label"><t t-esc="day.label"/></span>
+                            <span class="day-count" t-if="jobsForDay(day.dateStr).length > 0">
+                                <t t-esc="jobsForDay(day.dateStr).length"/>
+                            </span>
+                            <!-- Calendar popup -->
+                            <div t-if="state.calendarPopup and state.calendarPopup.date === day.dateStr"
+                                 class="o_dispatch_calendar_popup"
+                                 t-on-click.stop="">
+                                <div class="popup-header">
+                                    <strong><t t-esc="state.calendarPopup.dateLabel"/></strong>
+                                    <button class="btn-close btn-close-white ms-auto"
+                                            t-on-click.stop="closeCalendar"/>
+                                </div>
+                                <div class="popup-section" t-if="state.calendarPopup.unassigned.length > 0">
+                                    <div class="popup-section-title">
+                                        <i class="fa fa-inbox me-1"/>Unassigned (<t t-esc="state.calendarPopup.unassigned.length"/>)
+                                    </div>
+                                    <t t-foreach="state.calendarPopup.unassigned.slice(0,5)" t-as="pj" t-key="pj.job_id">
+                                        <div class="popup-job-row">
+                                            <span class="popup-job-name" t-esc="pj.name"/>
+                                            <span class="popup-job-route text-muted">
+                                                <t t-esc="pj.pickup_city"/>
+                                                <t t-if="pj.delivery_cities"> → <t t-esc="pj.delivery_cities"/></t>
+                                            </span>
+                                        </div>
+                                    </t>
+                                    <div t-if="state.calendarPopup.unassigned.length > 5"
+                                         class="text-muted small text-center mt-1">
+                                        + <t t-esc="state.calendarPopup.unassigned.length - 5"/> more
+                                    </div>
+                                </div>
+                                <div class="popup-section" t-if="state.calendarPopup.trucks.length > 0">
+                                    <div class="popup-section-title"><i class="fa fa-truck me-1"/>Trucks</div>
+                                    <t t-foreach="state.calendarPopup.trucks.slice(0,5)" t-as="pt" t-key="pt.name">
+                                        <div class="popup-truck-row">
+                                            <span t-attf-class="truck-status-dot status-#{pt.status}"/>
+                                            <span t-esc="pt.name"/>
+                                            <span class="text-muted ms-1">
+                                                <t t-if="pt.jobs > 0">· <t t-esc="pt.jobs"/> job(s)</t>
+                                                <t t-else=""> · free</t>
+                                            </span>
+                                        </div>
+                                    </t>
+                                </div>
+                                <div class="popup-footer">
+                                    <button class="btn btn-xs btn-primary w-100"
+                                            t-on-click.stop="() => this.selectDay(day.dateStr)">
+                                        View <t t-esc="day.label"/> schedule
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </t>
+                </div>
+
+                <button class="btn btn-xs btn-outline-secondary o_dispatch_day_nav_arrow"
+                        t-on-click.stop="() => this.shiftWindow(1)" title="Next day">▶</button>
+            </div>
+
+            <!-- 3-column job grid -->
+            <div class="o_dispatch_day_columns">
+                <t t-if="state.loading">
+                    <div class="o_dispatch_loading" style="grid-column:1/-1">
+                        <i class="fa fa-spinner fa-spin me-2"/>Loading…
+                    </div>
+                </t>
+                <t t-else="">
+                    <t t-foreach="windowDays" t-as="day" t-key="day.dateStr">
+                        <div t-attf-class="o_dispatch_day_col #{day.isActive ? 'active-col' : ''}">
+                            <t t-if="jobsForDay(day.dateStr).length === 0">
+                                <div class="day-col-empty">
+                                    <i class="fa fa-check-circle text-success d-block mb-1" style="font-size:18px"/>
+                                    <span class="text-muted" style="font-size:10px">All assigned</span>
+                                </div>
+                            </t>
+                            <t t-foreach="jobsForDay(day.dateStr)" t-as="job" t-key="job.job_id">
+                                <div t-attf-class="o_dispatch_job_card #{riskClass(job)} #{state.assigningJobId === job.job_id ? 'is-assigning' : ''}"
+                                     draggable="true"
+                                     t-on-dragstart="(ev) => this.onDragStart(ev, job)"
+                                     t-on-dragend="onDragEnd">
+                                    <div class="d-flex align-items-start gap-1">
+                                        <span class="drag-handle text-muted" title="Drag to assign">⠿</span>
+                                        <div class="flex-grow-1">
+                                            <div class="job-name"><t t-esc="job.name"/></div>
+                                            <div class="job-partner text-muted" style="font-size:10px"><t t-esc="job.partner"/></div>
+                                        </div>
+                                    </div>
+                                    <div class="job-route mt-1">
+                                        <i class="fa fa-map-marker me-1 text-muted o_tooltip_delayed"
+                                           data-tooltip="Pickup city for this booking"/>
+                                        <t t-esc="job.pickup_city"/>
+                                        <t t-if="job.delivery_cities"> → <t t-esc="job.delivery_cities"/></t>
+                                    </div>
+                                    <div t-if="job.corridor_tag and job.corridor_tag !== 'LOCAL'" class="mt-1" style="font-size:9px">
+                                        <span t-attf-class="badge o_corridor_badge corridor-#{job.corridor_tag}">
+                                            <t t-esc="job.corridor_tag"/>
+                                        </span>
+                                    </div>
+                                    <div class="job-badges mt-1">
+                                        <span t-if="job.requires_reefer"   class="o_dispatch_badge bg-primary text-white">❄ Reefer</span>
+                                        <span t-if="job.requires_liftgate" class="o_dispatch_badge bg-secondary text-white">🏗 Lift</span>
+                                        <span t-if="job.hard_deadline"     class="o_dispatch_badge bg-danger text-white">DEADLINE</span>
+                                        <span t-if="job.priority === 'urgent'"    class="o_dispatch_badge bg-warning text-dark">URGENT</span>
+                                        <span t-if="job.priority === 'emergency'" class="o_dispatch_badge bg-danger text-white">EMERG</span>
+                                        <span t-if="job.pallets"           class="o_dispatch_badge bg-light text-dark"><t t-esc="job.pallets"/>p</span>
+                                    </div>
+                                    <div class="job-actions mt-2 d-flex gap-1">
+                                        <button class="btn btn-xs flex-grow-1"
+                                                t-att-class="state.assigningJobId === job.job_id ? 'btn-warning' : 'btn-primary'"
+                                                t-on-click.stop="() => this.startAssign(job)">
+                                            <i class="fa fa-truck me-1"/>
+                                            <t t-if="state.assigningJobId === job.job_id">Cancel</t>
+                                            <t t-else="">Assign</t>
+                                        </button>
+                                        <button class="btn btn-xs btn-outline-secondary"
+                                                t-on-click.stop="() => this.openJob(job.job_id)">
+                                            <i class="fa fa-external-link"/>
+                                        </button>
+                                    </div>
+                                </div>
+                            </t>
+                        </div>
+                    </t>
+                    <t t-if="jobsWithoutDate().length > 0">
+                        <div class="o_dispatch_no_date_row">
+                            <span class="text-muted small">No pickup date:</span>
+                            <t t-foreach="jobsWithoutDate()" t-as="job" t-key="job.job_id">
+                                <span t-attf-class="o_dispatch_badge bg-light text-dark border #{riskClass(job)}"
+                                      style="cursor:pointer"
+                                      t-on-click.stop="() => this.openJob(job.job_id)"
+                                      t-att-title="job.partner + ' · ' + job.pickup_city">
+                                    <t t-esc="job.name"/>
+                                </span>
+                            </t>
+                        </div>
+                    </t>
+                </t>
+            </div>
+        </div>
+
+        <!-- Collapsed left tab -->
+        <div t-if="state.leftMinimized" class="o_dispatch_panel_tab o_panel_tab_left"
+             t-on-click="toggleLeft" title="Expand Unassigned panel">
+            <i class="fa fa-chevron-right"/>
+            <span>Unassigned</span>
+            <span t-if="totalUnassigned > 0" class="badge bg-warning text-dark ms-1">
+                <t t-esc="totalUnassigned"/>
+            </span>
+        </div>
+
+        <!-- Drag handle: left sidebar -->
+        <div t-if="!state.leftMinimized"
+             class="o_dispatch_resize_handle o_resize_vert"
+             t-on-mousedown="startResizeLeft"/>
+
+        <!-- ══ CENTER: Truck Schedule Grid ════════════════════════ -->
+        <div class="o_dispatch_schedule">
+            <div class="o_dispatch_active_day_label">
+                <i class="fa fa-calendar me-1"/>
+                Trucks for <strong><t t-esc="_fmtShort(state.selectedDate)"/></strong>
+                <span class="ms-2 text-muted small">· click a day column to change</span>
+                <span t-if="state.weather" class="o_weather_badge ms-2">
+                    <img t-if="state.weather.icon_url" t-att-src="state.weather.icon_url" class="o_weather_icon"/>
+                    <t t-esc="Math.round(state.weather.temp_c)"/>°C · <t t-esc="state.weather.description"/>
+                </span>
+                <!-- Map toggle button -->
+                <div class="ms-auto d-flex gap-1">
+                    <button class="btn btn-xs btn-outline-secondary"
+                            t-on-click.stop="toggleMap"
+                            t-att-title="state.mapMinimized ? 'Show map' : 'Hide map'">
+                        <i t-attf-class="fa #{state.mapMinimized ? 'fa-map-o' : 'fa-map'} me-1"/>
+                        Map
+                    </button>
+                    <button t-if="!state.mapMinimized"
+                            class="btn btn-xs btn-outline-secondary"
+                            t-on-click.stop="toggleMapFullscreen"
+                            title="Fullscreen map">
+                        <i class="fa fa-expand"/>
+                    </button>
+                </div>
+            </div>
+
+            <t t-if="state.loading and state.trucks.length === 0">
+                <div class="o_dispatch_loading"><i class="fa fa-spinner fa-spin me-2"/>Loading schedule…</div>
+            </t>
+            <t t-else="">
+                <!-- Time ruler -->
+                <div class="o_dispatch_time_ruler" style="padding-left:220px">
+                    <t t-foreach="timeSlots" t-as="slot" t-key="slot.label">
+                        <div class="o_dispatch_time_slot" style="width:80px" t-esc="slot.label"/>
+                    </t>
+                </div>
+
+                <t t-if="state.trucks.length === 0">
+                    <div class="o_dispatch_empty_state">
+                        <i class="fa fa-truck fa-3x text-muted d-block mb-3"/>No active trucks found.
+                    </div>
+                </t>
+                <t t-else="">
+                    <t t-foreach="state.trucks" t-as="truck" t-key="truck.truck_id">
+                        <div t-attf-class="o_dispatch_truck_row
+                                           #{isDropTarget(truck) ? 'drop-target' : ''}
+                                           #{isMapTruck(truck) ? 'map-selected' : ''}"
+                             t-on-dragover="(ev) => this.onDragOver(ev, truck)"
+                             t-on-dragleave="onDragLeave"
+                             t-on-drop="(ev) => this.onDrop(ev, truck)"
+                             t-on-click="() => this.onTruckRowClick(truck)">
+
+                            <div t-attf-class="o_dispatch_truck_label #{statusClass(truck)}">
+                                <div class="truck-name"><t t-esc="truck.name"/></div>
+                                <div class="driver-name text-muted small">
+                                    <i class="fa fa-user me-1 o_tooltip_delayed"
+                                       data-tooltip="Driver currently assigned to this truck"/>
+                                    <t t-esc="truck.driver_name or '—'"/>
+                                </div>
+                                <div class="truck-capacity small text-muted mt-1">
+                                    <t t-if="truck.pallet_capacity">
+                                        <t t-esc="truck.available_capacity"/>/<t t-esc="truck.pallet_capacity"/> skids
+                                    </t>
+                                    <span t-if="truck.has_reefer"   class="o_dispatch_badge bg-primary text-white ms-1 o_tooltip_delayed"
+                                          data-tooltip="This truck has a refrigerated (reefer) unit">❄</span>
+                                    <span t-if="truck.has_liftgate" class="o_dispatch_badge bg-secondary text-white ms-1 o_tooltip_delayed"
+                                          data-tooltip="This truck has a liftgate for dock-less loading/unloading">🏗</span>
+                                </div>
+                                <div t-if="truck.gps_age_minutes !== null"
+                                     t-attf-class="small mt-1 o_tooltip_delayed #{truck.gps_age_minutes > 60 ? 'text-warning' : 'text-success'}"
+                                     data-tooltip="How long ago this truck's GPS location was last received">
+                                    <i class="fa fa-map-marker me-1"/>
+                                    <t t-if="truck.gps_age_minutes &lt; 5">Live GPS</t>
+                                    <t t-elif="truck.gps_age_minutes &lt; 60"><t t-esc="truck.gps_age_minutes"/>m ago</t>
+                                    <t t-else="">GPS stale</t>
+                                </div>
+                                <div class="truck-actions mt-2 d-flex gap-1 flex-wrap" t-on-click.stop="">
+                                    <button class="btn btn-xs btn-outline-info o_tooltip_delayed"
+                                            t-on-click="() => this.estimateTruckRoute(truck)"
+                                            data-tooltip="Call Google Maps to estimate arrival times for every stop on this truck today">
+                                        <i class="fa fa-clock-o me-1"/>ETAs
+                                    </button>
+                                    <button class="btn btn-xs btn-outline-secondary o_tooltip_delayed"
+                                            t-on-click="() => this.optimizeTruckRoute(truck)"
+                                            data-tooltip="Re-order this truck's pending stops to minimize drive time">
+                                        <i class="fa fa-random me-1"/>Optimize
+                                    </button>
+                                    <button class="btn btn-xs btn-outline-success o_tooltip_delayed"
+                                            t-on-click="() => this.generateSheet(truck)"
+                                            data-tooltip="Generate this truck's driver worksheet for the selected day">
+                                        <i class="fa fa-file-text-o me-1"/>Sheet
+                                    </button>
+                                    <button class="btn btn-xs btn-outline-dark o_tooltip_delayed"
+                                            t-on-click="() => this.openPalletLayout(truck)"
+                                            data-tooltip="Open Pallet Layout — assign physical pallets to truck positions">
+                                        <i class="fa fa-th-large me-1"/>Pallet Layout
+                                    </button>
+                                    <button t-if="primaryJobs(truck).length > 1"
+                                            class="btn btn-xs btn-outline-warning o_tooltip_delayed"
+                                            t-on-click="() => this.consolidateTruckRoute(truck)"
+                                            data-tooltip="Suggest one combined stop order across this truck's multiple jobs today — you review and accept before anything changes">
+                                        <i class="fa fa-compress me-1"/>Consolidate
+                                    </button>
+                                    <button t-if="!state.mapMinimized"
+                                            class="btn btn-xs btn-outline-primary o_tooltip_delayed"
+                                            t-on-click="() => this.selectTruckOnMap(truck)"
+                                            data-tooltip="Show this truck's route on the map">
+                                        <i class="fa fa-map-marker"/>
+                                    </button>
+                                </div>
+                            </div>
+
+                            <div class="o_dispatch_truck_timeline" t-att-style="'width:' + gridWidth + 'px'">
+                                <div class="time-grid-bg">
+                                    <t t-foreach="timeSlots" t-as="slot" t-key="slot.label">
+                                        <div class="slot" style="width:80px"/>
+                                    </t>
+                                </div>
+                                <div t-if="isDropTarget(truck)" class="drop-hint">Drop here to assign</div>
+                                <div t-if="truck.jobs.length === 0"
+                                     class="text-muted small d-flex align-items-center ps-3"
+                                     style="height:100%">
+                                    <span t-if="isAssignTarget()" class="text-primary fw-bold">← Click to assign here</span>
+                                    <span t-else="">Available all day</span>
+                                </div>
+                                <!-- Stop-timeline view: small per-stop markers at their
+                                     estimated time, colored by job, instead of one block
+                                     stretched across the whole visit span. -->
+                                <t t-if="state.timelineViewMode === 'stops'">
+                                    <t t-foreach="truckStopMarkers(truck)" t-as="stop" t-key="stop.id + '-' + stop.leg_kind">
+                                        <div t-attf-class="o_stop_marker status-#{stop.status} leg-#{stop.leg_kind}"
+                                             t-att-style="getStopMarkerStyle(stop, stop_index)"
+                                             t-att-title="stopMarkerTooltip(stop) + (stop.leg_kind !== 'primary' ? '\n(' + (stop.leg_kind === 'future' ? 'staged — not yet in your custody' : 'already handed off') + ')' : '') + '\n(drag to Unassigned to unassign the job)'"
+                                             draggable="true"
+                                             t-on-dragstart="(ev) => this.onDragStart(ev, {job_id: stop.job_id})"
+                                             t-on-dragend="onDragEnd"
+                                             t-on-click.stop="() => this.openJob(stop.job_id)">
+                                            <div class="o_stop_marker_time" t-esc="stopMarkerTimeLabel(stop)"/>
+                                            <div class="o_stop_marker_row">
+                                                <span t-attf-class="o_stop_marker_type #{stop.type}"
+                                                      t-esc="stopTypeCode(stop)"/>
+                                                <span t-if="transferRoleLabel(stop)" class="o_stop_marker_role"
+                                                      t-esc="transferRoleLabel(stop)"/>
+                                                <span class="o_stop_marker_city" t-esc="stop.company_name || stop.business_name || (stop.address || '').split(',')[0]"/>
+                                            </div>
+                                            <div class="o_stop_marker_job" t-esc="stop.job_name"/>
+                                            <div class="o_stop_marker_pallets">
+                                                <t t-if="stop.pallets_in">+<t t-esc="stop.pallets_in"/></t>
+                                                <t t-if="stop.pallets_out">-<t t-esc="stop.pallets_out"/></t>
+                                            </div>
+                                        </div>
+                                    </t>
+                                </t>
+                                <t t-else="">
+                                    <t t-foreach="truck.jobs" t-as="job" t-key="job.job_id">
+                                        <div t-attf-class="o_dispatch_job_block leg-#{job.leg_kind or 'primary'}"
+                                             draggable="true"
+                                             t-on-dragstart="(ev) => this.onDragStart(ev, job)"
+                                             t-on-dragend="onDragEnd"
+                                             t-att-style="getJobBlockStyle(job)"
+                                             t-att-title="jobActionTooltip(job) + '\n' + job.route + '\n' + job.stop_count + ' stops' + '\n(drag to Unassigned to unassign)'"
+                                             t-on-click.stop="() => this.openJob(job.job_id)">
+                                            <div class="block-header d-flex align-items-center justify-content-between">
+                                                <span class="block-name" t-esc="job.job_name"/>
+                                                <button class="block-unassign-btn"
+                                                        t-on-click.stop="() => this.unassignJob(job.job_id)">×</button>
+                                            </div>
+                                            <div class="block-action" t-esc="jobActionLabel(job)"/>
+                                            <div class="block-action-detail" t-esc="jobActionDetail(job)"/>
+                                            <div class="block-route" t-esc="job.route"/>
+                                            <div class="block-time" t-esc="getJobTimeLabel(job)"/>
+                                        </div>
+                                    </t>
+                                </t>
+                            </div>
+                        </div>
+                    </t>
+                </t>
+            </t>
+        </div>
+
+        <!-- Drag handle: right calendar -->
+        <div t-if="!state.calendarMinimized"
+             class="o_dispatch_resize_handle o_resize_vert"
+             t-on-mousedown="startResizeCal"/>
+
+        <!-- ══ RIGHT: Weekly Calendar Panel ══════════════════════ -->
+        <div t-if="!state.calendarMinimized"
+             class="o_dispatch_calendar_panel"
+             t-att-style="'width:' + state.calendarWidth + 'px;min-width:' + state.calendarWidth + 'px'">
+
+            <div class="o_panel_header">
+                <span class="fw-bold small">Week</span>
+                <button class="o_panel_btn ms-auto" title="Minimize panel"
+                        t-on-click.stop="toggleCalendarPanel">
+                    <i class="fa fa-chevron-right"/>
+                </button>
+            </div>
+
+            <div class="o_week_calendar">
+                <t t-foreach="weekDays" t-as="wd" t-key="wd.dateStr">
+                    <div t-attf-class="o_week_day #{wd.is_selected ? 'selected' : ''} #{wd.is_today ? 'today' : ''}"
+                         t-on-click="() => this.selectWeekDay(wd.dateStr)">
+
+                        <div class="week-day-label"><t t-esc="wd.label"/></div>
+
+                        <!-- Truck dots -->
+                        <div class="week-truck-dots">
+                            <t t-foreach="wd.truck_summaries.slice(0, 5)" t-as="ts" t-key="ts.name">
+                                <span t-attf-class="week-truck-dot status-#{ts.status}"
+                                      t-att-title="ts.name + (ts.jobs ? ' · ' + ts.jobs + ' job(s)' : ' · free')"/>
+                            </t>
+                        </div>
+
+                        <!-- Unassigned count -->
+                        <div t-if="wd.unassigned > 0" class="week-unassigned-count">
+                            <span class="badge bg-warning text-dark" style="font-size:9px">
+                                <t t-esc="wd.unassigned"/> unassigned
+                            </span>
+                        </div>
+                    </div>
+                </t>
+            </div>
+        </div>
+
+        <!-- Collapsed right calendar tab -->
+        <div t-if="state.calendarMinimized" class="o_dispatch_panel_tab o_panel_tab_right"
+             t-on-click="toggleCalendarPanel" title="Expand weekly calendar">
+            <i class="fa fa-calendar"/>
+            <span>Week</span>
+        </div>
+
+    </div><!-- /body -->
+
+    <!-- ══ BOTTOM: Map Panel ══════════════════════════════════════ -->
+    <div t-if="!state.mapMinimized and !state.mapFullscreen"
+         class="o_dispatch_map_panel"
+         t-att-style="'height:' + state.mapHeight + '%'">
+
+        <!-- Map resize handle (drag up/down) -->
+        <div class="o_dispatch_resize_handle o_resize_horiz"
+             t-on-mousedown="startResizeMap"/>
+
+        <!-- Toolbar: truck label + route summary + routing options -->
+        <div class="o_map_panel_header" t-on-click.stop="">
+            <span class="fw-bold small me-2">
+                <i class="fa fa-map me-1"/>
+                <t t-if="state.mapTruckId">
+                    <t t-esc="state.trucks.find(t => t.truck_id === state.mapTruckId) and state.trucks.find(t => t.truck_id === state.mapTruckId).name"/>
+                </t>
+                <t t-else="">Click a truck row to show its route</t>
+            </span>
+            <span t-if="state.geocoding" class="text-muted small me-2">
+                <i class="fa fa-spinner fa-spin me-1"/>Locating stops…
+            </span>
+            <span t-if="state.routeSummary" class="o_route_summary_badge me-2">
+                <i class="fa fa-road me-1"/>
+                <t t-esc="fmtDuration(state.routeSummary.driveMin)"/> drive
+                + <t t-esc="fmtDuration(state.routeSummary.serviceMin)"/> service
+                = <strong><t t-esc="fmtDuration(state.routeSummary.totalMin)"/></strong>
+                <span class="text-muted">(<t t-esc="state.routeSummary.km.toFixed(1)"/> km)</span>
+            </span>
+            <span t-if="state.highlightSummary" class="o_route_highlight_badge me-2">
+                🔴 To Stop <t t-esc="state.highlightSummary.label"/>:
+                <t t-esc="state.highlightSummary.distance"/>, <t t-esc="state.highlightSummary.duration"/>
+                <button class="btn-close ms-1" style="font-size:9px" t-on-click.stop="clearHighlight"/>
+            </span>
+            <!-- Routing option checkboxes -->
+            <div class="o_route_opts ms-auto d-flex gap-2 align-items-center flex-wrap">
+                <label class="o_route_opt_label">
+                    <input type="checkbox" t-att-checked="state.routeAvoidTolls"
+                           t-on-change="() => { this.state.routeAvoidTolls = !this.state.routeAvoidTolls; this._redrawTruckRoute(); }"/>
+                    No Tolls
+                </label>
+                <label class="o_route_opt_label">
+                    <input type="checkbox" t-att-checked="state.routeAvoidHighways"
+                           t-on-change="() => { this.state.routeAvoidHighways = !this.state.routeAvoidHighways; this._redrawTruckRoute(); }"/>
+                    No Highways
+                </label>
+                <label class="o_route_opt_label">
+                    <input type="checkbox" t-att-checked="state.routeAvoidFerries"
+                           t-on-change="() => { this.state.routeAvoidFerries = !this.state.routeAvoidFerries; this._redrawTruckRoute(); }"/>
+                    No Ferries
+                </label>
+                <label class="o_route_opt_label o_route_opt_note" title="Avoid low bridges, no-truck zones: requires specialized routing API — Google Maps avoids tolls and ferries only">
+                    🚛 Truck Route
+                </label>
+            </div>
+        </div>
+
+        <!-- Map + stops side panel -->
+        <div class="o_map_body d-flex h-100">
+            <div class="o_board_map_container flex-grow-1" t-ref="boardMapPanel"/>
+
+            <!-- Drag handle: stops panel -->
+            <div t-if="state.mapTruckId and mapTruckStops.length > 0"
+                 class="o_dispatch_resize_handle o_resize_vert"
+                 t-on-mousedown="startResizeStops"/>
+
+            <!-- Stops list panel (only when a truck is selected) -->
+            <div t-if="state.mapTruckId and mapTruckStops.length > 0"
+                 class="o_board_stops_panel"
+                 t-att-style="'width:' + state.stopsPanelWidth + 'px;min-width:' + state.stopsPanelWidth + 'px'">
+                <div class="o_bsp_header">
+                    <i class="fa fa-list-ol me-1"/>Stops
+                    <span class="text-muted ms-1 small">(drag to reorder · click to preview route)</span>
+                </div>
+                <div class="o_bsp_list" t-ref="bspList">
+                    <t t-foreach="mapTruckStops" t-as="stop" t-key="stop.id">
+                        <div t-attf-class="o_bsp_item #{state.highlightStopId === stop.id ? 'highlighted' : ''}"
+                             t-att-data-stop-id="stop.id"
+                             t-att-data-seq="stop.sequence"
+                             draggable="true"
+                             t-on-dragstart="(ev) => this.bspDragStart(ev, stop)"
+                             t-on-dragover="(ev) => this.bspDragOver(ev)"
+                             t-on-drop="(ev) => this.bspDrop(ev, stop)"
+                             t-on-dragend="bspDragEnd"
+                             t-on-click="() => this.highlightRouteToStop(stop)">
+                            <span class="o_bsp_handle" t-on-click.stop="">⠿</span>
+                            <span t-attf-class="o_bsp_letter #{stopLetterClass(stop)} #{stop.status}">
+                                <t t-esc="stopLabel(stop)"/>
+                            </span>
+                            <div class="flex-grow-1 min-width-0">
+                                <div class="o_bsp_name" t-esc="stop.company_name || stop.business_name || stop.partner || stop.address.split(',')[0]"/>
+                                <div class="o_bsp_addr text-muted" t-esc="stop.type_label || stopTypeLabel(stop)"/>
+                                <div class="o_bsp_addr text-muted" t-esc="stop.address"/>
+                                <div t-if="stop.address_warning" class="o_bsp_addr_warn" t-att-title="stop.address_warning">
+                                    <i class="fa fa-exclamation-triangle"/> <t t-esc="stop.address_warning"/>
+                                </div>
+                                <div class="o_bsp_svc" t-on-click.stop="">
+                                    <i class="fa fa-clock-o" title="Service time at this stop"/>
+                                    <button class="o_bsp_svc_btn" t-on-click="() => this.bumpServiceTime(stop, -5)">−</button>
+                                    <span class="o_bsp_svc_val"><t t-esc="stop.service_time_min || 15"/>m</span>
+                                    <button class="o_bsp_svc_btn" t-on-click="() => this.bumpServiceTime(stop, 5)">+</button>
+                                </div>
+                                <div t-if="mapTruckCapacity" class="o_bsp_capacity"
+                                     t-att-title="stop.onboard_after + ' / ' + mapTruckCapacity + ' pallets onboard after this stop'">
+                                    <span t-attf-class="o_bsp_cap_num #{isOverloaded(stop) ? 'overloaded' : ''}">
+                                        <t t-esc="stop.onboard_after"/>/<t t-esc="mapTruckCapacity"/>
+                                        <t t-if="stop.pallets_in">+<t t-esc="stop.pallets_in"/></t>
+                                        <t t-if="stop.pallets_out">-<t t-esc="stop.pallets_out"/></t>
+                                    </span>
+                                    <div class="o_bsp_cap_bar">
+                                        <div t-attf-class="o_bsp_cap_fill #{isOverloaded(stop) ? 'overloaded' : ''}"
+                                             t-attf-style="width:#{capacityPct(stop)}%"/>
+                                    </div>
+                                </div>
+                            </div>
+                            <span t-attf-class="o_bsp_status status-#{stop.status}">
+                                <t t-esc="stop.status.replace('_',' ')"/>
+                            </span>
+                            <button t-if="stop.status === 'pending'" class="o_bsp_del_btn"
+                                    title="Delete this stop"
+                                    t-on-click.stop="() => this.deleteStop(stop)">
+                                <i class="fa fa-trash-o"/>
+                            </button>
+                        </div>
+                    </t>
+                </div>
+                <div t-if="selectedMapStop" class="o_bsp_detail">
+                    <div class="o_bsp_detail_title">Stop Details</div>
+                    <div class="o_bsp_detail_type" t-esc="selectedMapStop.type_label || stopTypeLabel(selectedMapStop)"/>
+                    <div class="o_bsp_detail_name" t-esc="stopCompanyName(selectedMapStop)"/>
+                    <div class="o_bsp_detail_addr" t-esc="selectedMapStop.address"/>
+                    <div class="o_bsp_detail_meta">
+                        <strong>Job:</strong> <t t-esc="selectedMapStop.job_name or ''"/>
+                    </div>
+                    <div class="o_bsp_detail_meta">
+                        <strong>Pallets:</strong>
+                        <t t-if="selectedMapStop.pallets_in"> +<t t-esc="selectedMapStop.pallets_in"/></t>
+                        <t t-if="selectedMapStop.pallets_out"> -<t t-esc="selectedMapStop.pallets_out"/></t>
+                        <t t-if="!selectedMapStop.pallets_in &amp;&amp; !selectedMapStop.pallets_out"> 0</t>
+                        <span class="text-muted ms-1">· onboard after <t t-esc="selectedMapStop.onboard_after"/></span>
+                    </div>
+                    <div t-if="selectedMapStop.freight_item_summary" class="o_bsp_detail_meta">
+                        <strong>Freight:</strong> <t t-esc="selectedMapStop.freight_item_summary"/>
+                    </div>
+                    <div t-if="canAssignReceivingTruck(selectedMapStop)" class="o_bsp_assign_box" t-on-click.stop="">
+                        <div class="o_bsp_assign_title">Receiving Truck</div>
+                        <div class="o_bsp_assign_hint">
+                            <t t-if="selectedMapStop.type === 'cross_dock_drop'">
+                                Choose the truck that should pick up the staged freight and take over the remaining route.
+                            </t>
+                            <t t-else="">
+                                Choose the truck that should take over the remaining route from this transfer stop.
+                            </t>
+                        </div>
+                        <select class="form-select form-select-sm"
+                                t-att-value="selectedMapStop.transfer_to_vehicle_id || ''"
+                                t-on-change="(ev) => this.onReceivingTruckChange(selectedMapStop, ev)">
+                            <option value="">
+                                <t t-if="selectedMapStop.type === 'cross_dock_drop'">Keep remaining route on the current truck</t>
+                                <t t-else="">Leave blank to stage / unassign at handoff</t>
+                            </option>
+                            <t t-foreach="plannerTruckChoices()" t-as="truckOpt" t-key="truckOpt.truck_id">
+                                <option t-att-value="truckOpt.truck_id"
+                                        t-att-selected="selectedMapStop.transfer_to_vehicle_id === truckOpt.truck_id"
+                                        t-esc="plannerTruckLabel(truckOpt)"/>
+                            </t>
+                        </select>
+                        <div class="o_bsp_assign_actions">
+                            <button class="btn btn-sm btn-primary"
+                                    t-on-click="() => this.assignReceivingTruck(selectedMapStop)">
+                                <t t-if="selectedMapStop.status === 'completed'">Transfer Remaining Route</t>
+                                <t t-else="">Save Receiving Truck</t>
+                            </button>
+                            <button class="btn btn-sm btn-outline-secondary"
+                                    t-on-click="() => this.clearReceivingTruckTarget(selectedMapStop)">
+                                Clear Target
+                            </button>
+                        </div>
+                        <button t-if="selectedMapStop.status === 'completed'"
+                                class="btn btn-sm btn-outline-warning mt-2"
+                                t-on-click="() => this.assignReceivingTruck(selectedMapStop, true)">
+                            Stage / Unassign Remaining Route
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ══ FULLSCREEN Map Overlay ════════════════════════════════ -->
+    <div t-if="state.mapFullscreen" class="o_dispatch_map_fullscreen">
+        <div class="o_dispatch_map_fs_sidebar">
+            <div class="o_panel_header">
+                <span class="fw-bold small"><i class="fa fa-truck me-1"/>Fleet</span>
+                <button class="o_panel_btn ms-auto" t-on-click.stop="toggleMapFullscreen" title="Exit fullscreen">
+                    <i class="fa fa-compress"/>
+                </button>
+            </div>
+            <div class="overflow-auto flex-grow-1">
+                <t t-foreach="state.trucks" t-as="truck" t-key="truck.truck_id">
+                    <div t-attf-class="o_fs_truck_row #{state.mapTruckId === truck.truck_id ? 'selected' : ''}"
+                         t-on-click="() => this.selectTruckOnMap(truck)">
+                        <span t-attf-class="truck-status-dot status-#{truck.status}"/>
+                        <div class="flex-grow-1">
+                            <div class="fw-semibold" style="font-size:12px"><t t-esc="truck.name"/></div>
+                            <div class="text-muted" style="font-size:10px">
+                                <t t-esc="truck.driver_name or '—'"/>
+                                <t t-if="primaryJobs(truck).length > 0"> · <t t-esc="primaryJobs(truck).length"/> job(s)</t>
+                            </div>
+                        </div>
+                        <span t-attf-class="#{truck.gps_age_minutes !== null and truck.gps_age_minutes &lt; 5 ? 'text-success' : 'text-muted'}"
+                              style="font-size:10px">
+                            <i class="fa fa-map-marker"/>
+                        </span>
+                    </div>
+                </t>
+            </div>
+        </div>
+        <div class="flex-grow-1 position-relative">
+            <div class="w-100 h-100" t-ref="boardMapFullscreen"/>
+        </div>
+    </div>
+
+    <PalletLayoutPanel t-if="state.palletLayoutOpen"
+                        vehicleId="state.palletLayoutVehicleId"
+                        vehicleName="state.palletLayoutVehicleName"
+                        driverId="state.palletLayoutDriverId"
+                        operatingDate="state.selectedDate"
+                        onClose.bind="closePalletLayout"/>
+
+</div>
+</t>
+
+</templates>

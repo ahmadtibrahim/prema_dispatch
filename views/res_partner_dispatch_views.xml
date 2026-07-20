@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<odoo>
+
+    <!-- Extend contact form with Driver fields -->
+    <record id="res_partner_dispatch_form" model="ir.ui.view">
+        <field name="name">res.partner.dispatch.form</field>
+        <field name="model">res.partner</field>
+        <field name="inherit_id" ref="base.view_partner_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//notebook" position="inside">
+                <page string="Dispatch / Driver" name="dispatch_driver_page">
+
+                    <!-- Fleet Driver toggle -->
+                    <group string="Driver Profile">
+                        <field name="x_is_driver" string="Fleet Driver"
+                               widget="boolean_toggle"/>
+                        <field name="x_voip_extension" string="VoIP Extension"
+                               invisible="not x_is_driver"/>
+                        <field name="x_driver_status" string="Status"
+                               invisible="not x_is_driver"/>
+                        <field name="x_driver_license_number" string="Driver License #"
+                               invisible="not x_is_driver"/>
+                        <field name="x_driver_hire_date" string="Hire Date"
+                               invisible="not x_is_driver"/>
+                    </group>
+
+                    <!-- GeoTab ELD Mapping -->
+                    <group string="GeoTab ELD Mapping" invisible="not x_is_driver">
+                        <field name="geotab_driver_link_id"
+                               string="GeoTab Driver"
+                               options="{'no_create': True, 'no_quick_create': True}"
+                               placeholder="Select GeoTab driver from ELD…"
+                               help="Pick the matching GeoTab ELD driver profile. This links ELD logs, GPS and HOS data to this driver."/>
+                        <field name="x_geotab_driver_id"
+                               string="GeoTab Driver ID (raw)"
+                               readonly="1"
+                               invisible="not x_geotab_driver_id"
+                               help="Auto-filled from the selected GeoTab driver. Used by the ELD sync."/>
+                        <field name="x_geotab_driver_key" string="GeoTab Driver Key"
+                               readonly="1"
+                               invisible="not x_geotab_driver_key"/>
+                    </group>
+
+                    <!-- Driver App Login -->
+                    <group string="Driver App Login" invisible="not x_is_driver">
+                        <!-- Account exists -->
+                        <div colspan="2" invisible="not driver_has_account">
+                            <div class="alert alert-success mb-2" style="padding:10px 14px;border-radius:8px">
+                                <strong>✓ Driver account active</strong><br/>
+                                Login: <field name="driver_user_id" readonly="1" nolabel="1"
+                                             string=" " options="{'no_open': True}"/>
+                                (<field name="email" readonly="1" nolabel="1" string=" "/>)
+                            </div>
+                            <button name="action_reset_driver_password"
+                                    string="Send Password Reset Email"
+                                    type="object"
+                                    class="btn btn-sm btn-outline-secondary"
+                                    icon="fa-envelope"/>
+                        </div>
+
+                        <!-- No account yet -->
+                        <div colspan="2" invisible="driver_has_account">
+                            <div class="alert alert-warning mb-2" style="padding:10px 14px;border-radius:8px">
+                                <strong>⚠ No driver account yet.</strong><br/>
+                                Click the button below to create an Odoo login for this driver.
+                                They will receive a password setup email and can then access
+                                the Driver App at <em>/dispatch/driver</em>.
+                            </div>
+                            <button name="action_create_driver_account"
+                                    string="Create Driver Account &amp; Send Login"
+                                    type="object"
+                                    class="btn btn-primary"
+                                    icon="fa-user-plus"
+                                    invisible="not email"/>
+                            <div invisible="email"
+                                 class="text-muted small">
+                                Add an email address to this contact first.
+                            </div>
+                        </div>
+
+                        <field name="driver_user_id" invisible="1"/>
+                        <field name="driver_has_account" invisible="1"/>
+                    </group>
+
+                </page>
+            </xpath>
+        </field>
+    </record>
+
+    <!-- Filter for fleet drivers in contacts list -->
+    <record id="res_partner_dispatch_filter" model="ir.ui.view">
+        <field name="name">res.partner.dispatch.filter</field>
+        <field name="model">res.partner</field>
+        <field name="inherit_id" ref="base.view_res_partner_filter"/>
+        <field name="arch" type="xml">
+            <xpath expr="//filter[@name='inactive']" position="before">
+                <filter name="fleet_drivers" string="Fleet Drivers"
+                        domain="[('x_is_driver', '=', True)]"/>
+                <separator/>
+            </xpath>
+        </field>
+    </record>
+
+</odoo>

@@ -1,0 +1,108 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<odoo>
+
+    <record id="view_dispatch_adhoc_wizard_form" model="ir.ui.view">
+        <field name="name">prema.dispatch.adhoc.wizard.form</field>
+        <field name="model">prema.dispatch.adhoc.wizard</field>
+        <field name="arch" type="xml">
+            <form string="Find Available Truck — Mid-Day Load">
+                <sheet>
+                    <div class="o_form_view_container">
+                        <div class="oe_title">
+                            <h2>Find Available Truck</h2>
+                            <p class="text-muted">
+                                Got a call for a new pickup? Enter the details and the system will
+                                find which truck is best positioned right now.
+                            </p>
+                        </div>
+
+                        <group>
+                            <group string="Load Details">
+                                <field name="pickup_address" widget="google_places"
+                                       placeholder="Business name or address…"/>
+                                <field name="delivery_address" widget="google_places"
+                                       placeholder="Business name or address…"/>
+                                <field name="pallets"/>
+                                <field name="commodity" placeholder="e.g. Produce, Dry Goods"/>
+                                <field name="pickup_by" placeholder="e.g. by 2 PM today, ASAP"/>
+                            </group>
+                            <group string="Requirements">
+                                <field name="requires_reefer" widget="boolean_toggle"/>
+                                <field name="requires_liftgate" widget="boolean_toggle"/>
+                            </group>
+                        </group>
+
+                        <!-- Recommendation banner -->
+                        <div class="alert alert-success mt-3 mb-3"
+                             role="alert"
+                             invisible="not result_checked or not recommendation">
+                            <strong>Recommendation: </strong>
+                            <field name="recommendation" nolabel="1" readonly="1" widget="text"/>
+                        </div>
+
+                        <!-- Available now -->
+                        <group string="Available Now" invisible="not result_checked">
+                            <field name="suitable_truck_ids"
+                                   domain="[('is_available_later','=',False)]"
+                                   nolabel="1"
+                                   readonly="1">
+                                <list string="Available Trucks" decoration-success="on_route == True">
+                                    <field name="rank" string="#"/>
+                                    <field name="truck_id" string="Truck"/>
+                                    <field name="driver_name" string="Driver"/>
+                                    <field name="on_route" widget="boolean" string="On Route?"/>
+                                    <field name="dist_to_pickup_km" string="Dist. to Pickup"/>
+                                    <field name="eta_to_pickup_min" string="ETA (min)"/>
+                                    <field name="detour_km" string="Detour km"
+                                           optional="show"/>
+                                    <field name="available_capacity" string="Free Pallets"/>
+                                    <field name="equipment" string="Equipment"/>
+                                    <field name="gps_status" string="GPS"/>
+                                    <field name="fit_description" string="Assessment"/>
+                                </list>
+                            </field>
+                        </group>
+
+                        <!-- Available later -->
+                        <group string="Currently Busy — Available Later"
+                               invisible="not result_checked">
+                            <field name="later_truck_ids"
+                                   domain="[('is_available_later','=',True)]"
+                                   nolabel="1"
+                                   readonly="1">
+                                <list string="Available Later">
+                                    <field name="truck_id" string="Truck"/>
+                                    <field name="driver_name" string="Driver"/>
+                                    <field name="available_from" string="Free At"/>
+                                    <field name="equipment" string="Equipment"/>
+                                    <field name="fit_description" string="Reason"/>
+                                </list>
+                            </field>
+                        </group>
+                    </div>
+                </sheet>
+                <footer>
+                    <button name="action_find_trucks"
+                            string="Find Available Truck"
+                            type="object"
+                            class="btn-primary"/>
+                    <button name="action_assign_to_job"
+                            string="Create Job with Best Truck"
+                            type="object"
+                            class="btn-success"
+                            invisible="not result_checked"/>
+                    <button special="cancel" string="Close" class="btn-secondary"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+
+    <!-- Standalone action so it can be opened from menus and "+" buttons -->
+    <record id="action_adhoc_load_finder" model="ir.actions.act_window">
+        <field name="name">Find Available Truck</field>
+        <field name="res_model">prema.dispatch.adhoc.wizard</field>
+        <field name="view_mode">form</field>
+        <field name="target">new</field>
+    </record>
+
+</odoo>

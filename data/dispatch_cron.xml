@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<odoo>
+    <record id="ir_cron_dispatch_generate_bookings" model="ir.cron">
+        <field name="name">Prema Dispatch: Generate Recurring Bookings</field>
+        <field name="model_id" ref="model_prema_dispatch_booking_template"/>
+        <field name="state">code</field>
+        <field name="code">model._generate_due_bookings()</field>
+        <field name="interval_number">1</field>
+        <field name="interval_type">days</field>
+        <field name="active" eval="True"/>
+        <field name="priority">10</field>
+    </record>
+
+    <record id="ir_cron_dispatch_close_worksheets" model="ir.cron">
+        <field name="name">Prema Dispatch: Close Completed Driver Worksheets</field>
+        <field name="model_id" ref="model_prema_dispatch_driver_worksheet"/>
+        <field name="state">code</field>
+        <field name="code">model._cron_close_completed()</field>
+        <field name="interval_number">1</field>
+        <field name="interval_type">hours</field>
+        <field name="active" eval="True"/>
+        <field name="priority">10</field>
+    </record>
+</odoo>

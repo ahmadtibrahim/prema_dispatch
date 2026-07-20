@@ -1,0 +1,580 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<odoo noupdate="1">
+    <!-- 26ft straight truck templates — UNVERIFIED placeholders. Real
+         interior dimensions/clearances have not been measured yet; do not
+         present these as guaranteed capacity (is_verified=False). Position
+         geometry is a reasonable evenly-spaced placeholder, not a survey. -->
+
+    <record id="layout_tpl_straight_26ft" model="prema.dispatch.vehicle.layout.template">
+        <field name="name">26ft Straight Truck — Straight (12)</field>
+        <field name="layout_type">straight</field>
+        <field name="is_verified">0</field>
+        <field name="standard_pallet_length_in">48</field>
+        <field name="standard_pallet_width_in">40</field>
+    </record>
+
+    <record id="layout_tpl_pinwheel_26ft" model="prema.dispatch.vehicle.layout.template">
+        <field name="name">26ft Straight Truck — Pin-Wheel (13)</field>
+        <field name="layout_type">pin_wheel</field>
+        <field name="is_verified">0</field>
+        <field name="standard_pallet_length_in">48</field>
+        <field name="standard_pallet_width_in">40</field>
+    </record>
+
+    <record id="layout_tpl_turned_26ft" model="prema.dispatch.vehicle.layout.template">
+        <field name="name">26ft Straight Truck — Turned (14)</field>
+        <field name="layout_type">turned</field>
+        <field name="is_verified">0</field>
+        <field name="standard_pallet_length_in">48</field>
+        <field name="standard_pallet_width_in">40</field>
+    </record>
+
+    <record id="layout_tpl_straight_26ft_L1" model="prema.dispatch.vehicle.layout.position">
+        <field name="layout_template_id" ref="layout_tpl_straight_26ft"/>
+        <field name="position_code">L1</field>
+        <field name="display_name">L1</field>
+        <field name="side">driver</field>
+        <field name="sequence">1</field>
+        <field name="distance_from_rear_in">0</field>
+        <field name="x_coordinate">0</field>
+        <field name="y_coordinate">0</field>
+        <field name="display_width">40</field>
+        <field name="display_height">48</field>
+        <field name="orientation">lengthwise</field>
+        <field name="four_way_required">0</field>
+    </record>
+    <record id="layout_tpl_straight_26ft_L2" model="prema.dispatch.vehicle.layout.position">
+        <field name="layout_template_id" ref="layout_tpl_straight_26ft"/>
+        <field name="position_code">L2</field>
+        <field name="display_name">L2</field>
+        <field name="side">driver</field>
+        <field name="sequence">2</field>
+        <field name="distance_from_rear_in">48</field>
+        <field name="x_coordinate">0</field>
+        <field name="y_coordinate">48</field>
+        <field name="display_width">40</field>
+        <field name="display_height">48</field>
+        <field name="orientation">lengthwise</field>
+        <field name="four_way_required">0</field>
+    </record>
+    <record id="layout_tpl_straight_26ft_L3" model="prema.dispatch.vehicle.layout.position">
+        <field name="layout_template_id" ref="layout_tpl_straight_26ft"/>
+        <field name="position_code">L3</field>
+        <field name="display_name">L3</field>
+        <field name="side">driver</field>
+        <field name="sequence">3</field>
+        <field name="distance_from_rear_in">96</field>
+        <field name="x_coordinate">0</field>
+        <field name="y_coordinate">96</field>
+        <field name="display_width">40</field>
+        <field name="display_height">48</field>
+        <field name="orientation">lengthwise</field>
+        <field name="four_way_required">0</field>
+    </record>
+    <record id="layout_tpl_straight_26ft_L4" model="prema.dispatch.vehicle.layout.position">
+        <field name="layout_template_id" ref="layout_tpl_straight_26ft"/>
+        <field name="position_code">L4</field>
+        <field name="display_name">L4</field>
+        <field name="side">driver</field>
+        <field name="sequence">4</field>
+        <field name="distance_from_rear_in">144</field>
+        <field name="x_coordinate">0</field>
+        <field name="y_coordinate">144</field>
+        <field name="display_width">40</field>
+        <field name="display_height">48</field>
+        <field name="orientation">lengthwise</field>
+        <field name="four_way_required">0</field>
+    </record>
+    <record id="layout_tpl_straight_26ft_L5" model="prema.dispatch.vehicle.layout.position">
+        <field name="layout_template_id" ref="layout_tpl_straight_26ft"/>
+        <field name="position_code">L5</field>
+        <field name="display_name">L5</field>
+        <field name="side">driver</field>
+        <field name="sequence">5</field>
+        <field name="distance_from_rear_in">192</field>
+        <field name="x_coordinate">0</field>
+        <field name="y_coordinate">192</field>
+        <field name="display_width">40</field>
+        <field name="display_height">48</field>
+        <field name="orientation">lengthwise</field>
+        <field name="four_way_required">0</field>
+    </record>
+    <record id="layout_tpl_straight_26ft_L6" model="prema.dispatch.vehicle.layout.position">
+        <field name="layout_template_id" ref="layout_tpl_straight_26ft"/>
+        <field name="position_code">L6</field>
+        <field name="display_name">L6</field>
+        <field name="side">driver</field>
+        <field name="sequence">6</field>
+        <field name="distance_from_rear_in">240</field>
+        <field name="x_coordinate">0</field>
+        <field name="y_coordinate">240</field>
+        <field name="display_width">40</field>
+        <field name="display_height">48</field>
+        <field name="orientation">lengthwise</field>
+        <field name="four_way_required">0</field>
+    </record>
+    <record id="layout_tpl_straight_26ft_R1" model="prema.dispatch.vehicle.layout.position">
+        <field name="layout_template_id" ref="layout_tpl_straight_26ft"/>
+        <field name="position_code">R1</field>
+        <field name="display_name">R1</field>
+        <field name="side">passenger</field>
+        <field name="sequence">1</field>
+        <field name="distance_from_rear_in">0</field>
+        <field name="x_coordinate">100</field>
+        <field name="y_coordinate">0</field>
+        <field name="display_width">40</field>
+        <field name="display_height">48</field>
+        <field name="orientation">lengthwise</field>
+        <field name="four_way_required">0</field>
+    </record>
+    <record id="layout_tpl_straight_26ft_R2" model="prema.dispatch.vehicle.layout.position">
+        <field name="layout_template_id" ref="layout_tpl_straight_26ft"/>
+        <field name="position_code">R2</field>
+        <field name="display_name">R2</field>
+        <field name="side">passenger</field>
+        <field name="sequence">2</field>
+        <field name="distance_from_rear_in">48</field>
+        <field name="x_coordinate">100</field>
+        <field name="y_coordinate">48</field>
+        <field name="display_width">40</field>
+        <field name="display_height">48</field>
+        <field name="orientation">lengthwise</field>
+        <field name="four_way_required">0</field>
+    </record>
+    <record id="layout_tpl_straight_26ft_R3" model="prema.dispatch.vehicle.layout.position">
+        <field name="layout_template_id" ref="layout_tpl_straight_26ft"/>
+        <field name="position_code">R3</field>
+        <field name="display_name">R3</field>
+        <field name="side">passenger</field>
+        <field name="sequence">3</field>
+        <field name="distance_from_rear_in">96</field>
+        <field name="x_coordinate">100</field>
+        <field name="y_coordinate">96</field>
+        <field name="display_width">40</field>
+        <field name="display_height">48</field>
+        <field name="orientation">lengthwise</field>
+        <field name="four_way_required">0</field>
+    </record>
+    <record id="layout_tpl_straight_26ft_R4" model="prema.dispatch.vehicle.layout.position">
+        <field name="layout_template_id" ref="layout_tpl_straight_26ft"/>
+        <field name="position_code">R4</field>
+        <field name="display_name">R4</field>
+        <field name="side">passenger</field>
+        <field name="sequence">4</field>
+        <field name="distance_from_rear_in">144</field>
+        <field name="x_coordinate">100</field>
+        <field name="y_coordinate">144</field>
+        <field name="display_width">40</field>
+        <field name="display_height">48</field>
+        <field name="orientation">lengthwise</field>
+        <field name="four_way_required">0</field>
+    </record>
+    <record id="layout_tpl_straight_26ft_R5" model="prema.dispatch.vehicle.layout.position">
+        <field name="layout_template_id" ref="layout_tpl_straight_26ft"/>
+        <field name="position_code">R5</field>
+        <field name="display_name">R5</field>
+        <field name="side">passenger</field>
+        <field name="sequence">5</field>
+        <field name="distance_from_rear_in">192</field>
+        <field name="x_coordinate">100</field>
+        <field name="y_coordinate">192</field>
+        <field name="display_width">40</field>
+        <field name="display_height">48</field>
+        <field name="orientation">lengthwise</field>
+        <field name="four_way_required">0</field>
+    </record>
+    <record id="layout_tpl_straight_26ft_R6" model="prema.dispatch.vehicle.layout.position">
+        <field name="layout_template_id" ref="layout_tpl_straight_26ft"/>
+        <field name="position_code">R6</field>
+        <field name="display_name">R6</field>
+        <field name="side">passenger</field>
+        <field name="sequence">6</field>
+        <field name="distance_from_rear_in">240</field>
+        <field name="x_coordinate">100</field>
+        <field name="y_coordinate">240</field>
+        <field name="display_width">40</field>
+        <field name="display_height">48</field>
+        <field name="orientation">lengthwise</field>
+        <field name="four_way_required">0</field>
+    </record>
+
+    <record id="layout_tpl_pinwheel_26ft_L1" model="prema.dispatch.vehicle.layout.position">
+        <field name="layout_template_id" ref="layout_tpl_pinwheel_26ft"/>
+        <field name="position_code">L1</field>
+        <field name="display_name">L1</field>
+        <field name="side">driver</field>
+        <field name="sequence">1</field>
+        <field name="distance_from_rear_in">0</field>
+        <field name="x_coordinate">0</field>
+        <field name="y_coordinate">0</field>
+        <field name="display_width">40</field>
+        <field name="display_height">48</field>
+        <field name="orientation">lengthwise</field>
+        <field name="four_way_required">0</field>
+    </record>
+    <record id="layout_tpl_pinwheel_26ft_L2" model="prema.dispatch.vehicle.layout.position">
+        <field name="layout_template_id" ref="layout_tpl_pinwheel_26ft"/>
+        <field name="position_code">L2</field>
+        <field name="display_name">L2</field>
+        <field name="side">driver</field>
+        <field name="sequence">2</field>
+        <field name="distance_from_rear_in">48</field>
+        <field name="x_coordinate">0</field>
+        <field name="y_coordinate">48</field>
+        <field name="display_width">40</field>
+        <field name="display_height">48</field>
+        <field name="orientation">lengthwise</field>
+        <field name="four_way_required">0</field>
+    </record>
+    <record id="layout_tpl_pinwheel_26ft_L3" model="prema.dispatch.vehicle.layout.position">
+        <field name="layout_template_id" ref="layout_tpl_pinwheel_26ft"/>
+        <field name="position_code">L3</field>
+        <field name="display_name">L3</field>
+        <field name="side">driver</field>
+        <field name="sequence">3</field>
+        <field name="distance_from_rear_in">96</field>
+        <field name="x_coordinate">0</field>
+        <field name="y_coordinate">96</field>
+        <field name="display_width">40</field>
+        <field name="display_height">48</field>
+        <field name="orientation">lengthwise</field>
+        <field name="four_way_required">0</field>
+    </record>
+    <record id="layout_tpl_pinwheel_26ft_L4" model="prema.dispatch.vehicle.layout.position">
+        <field name="layout_template_id" ref="layout_tpl_pinwheel_26ft"/>
+        <field name="position_code">L4</field>
+        <field name="display_name">L4</field>
+        <field name="side">driver</field>
+        <field name="sequence">4</field>
+        <field name="distance_from_rear_in">144</field>
+        <field name="x_coordinate">0</field>
+        <field name="y_coordinate">144</field>
+        <field name="display_width">40</field>
+        <field name="display_height">48</field>
+        <field name="orientation">lengthwise</field>
+        <field name="four_way_required">0</field>
+    </record>
+    <record id="layout_tpl_pinwheel_26ft_L5" model="prema.dispatch.vehicle.layout.position">
+        <field name="layout_template_id" ref="layout_tpl_pinwheel_26ft"/>
+        <field name="position_code">L5</field>
+        <field name="display_name">L5</field>
+        <field name="side">driver</field>
+        <field name="sequence">5</field>
+        <field name="distance_from_rear_in">192</field>
+        <field name="x_coordinate">0</field>
+        <field name="y_coordinate">192</field>
+        <field name="display_width">40</field>
+        <field name="display_height">48</field>
+        <field name="orientation">lengthwise</field>
+        <field name="four_way_required">0</field>
+    </record>
+    <record id="layout_tpl_pinwheel_26ft_L6" model="prema.dispatch.vehicle.layout.position">
+        <field name="layout_template_id" ref="layout_tpl_pinwheel_26ft"/>
+        <field name="position_code">L6</field>
+        <field name="display_name">L6</field>
+        <field name="side">driver</field>
+        <field name="sequence">6</field>
+        <field name="distance_from_rear_in">240</field>
+        <field name="x_coordinate">0</field>
+        <field name="y_coordinate">240</field>
+        <field name="display_width">40</field>
+        <field name="display_height">48</field>
+        <field name="orientation">lengthwise</field>
+        <field name="four_way_required">0</field>
+    </record>
+    <record id="layout_tpl_pinwheel_26ft_R1" model="prema.dispatch.vehicle.layout.position">
+        <field name="layout_template_id" ref="layout_tpl_pinwheel_26ft"/>
+        <field name="position_code">R1</field>
+        <field name="display_name">R1</field>
+        <field name="side">passenger</field>
+        <field name="sequence">1</field>
+        <field name="distance_from_rear_in">0</field>
+        <field name="x_coordinate">100</field>
+        <field name="y_coordinate">0</field>
+        <field name="display_width">40</field>
+        <field name="display_height">48</field>
+        <field name="orientation">lengthwise</field>
+        <field name="four_way_required">0</field>
+    </record>
+    <record id="layout_tpl_pinwheel_26ft_R2" model="prema.dispatch.vehicle.layout.position">
+        <field name="layout_template_id" ref="layout_tpl_pinwheel_26ft"/>
+        <field name="position_code">R2</field>
+        <field name="display_name">R2</field>
+        <field name="side">passenger</field>
+        <field name="sequence">2</field>
+        <field name="distance_from_rear_in">48</field>
+        <field name="x_coordinate">100</field>
+        <field name="y_coordinate">48</field>
+        <field name="display_width">40</field>
+        <field name="display_height">48</field>
+        <field name="orientation">lengthwise</field>
+        <field name="four_way_required">0</field>
+    </record>
+    <record id="layout_tpl_pinwheel_26ft_R3" model="prema.dispatch.vehicle.layout.position">
+        <field name="layout_template_id" ref="layout_tpl_pinwheel_26ft"/>
+        <field name="position_code">R3</field>
+        <field name="display_name">R3</field>
+        <field name="side">passenger</field>
+        <field name="sequence">3</field>
+        <field name="distance_from_rear_in">96</field>
+        <field name="x_coordinate">100</field>
+        <field name="y_coordinate">96</field>
+        <field name="display_width">40</field>
+        <field name="display_height">48</field>
+        <field name="orientation">lengthwise</field>
+        <field name="four_way_required">0</field>
+    </record>
+    <record id="layout_tpl_pinwheel_26ft_R4" model="prema.dispatch.vehicle.layout.position">
+        <field name="layout_template_id" ref="layout_tpl_pinwheel_26ft"/>
+        <field name="position_code">R4</field>
+        <field name="display_name">R4</field>
+        <field name="side">passenger</field>
+        <field name="sequence">4</field>
+        <field name="distance_from_rear_in">144</field>
+        <field name="x_coordinate">100</field>
+        <field name="y_coordinate">144</field>
+        <field name="display_width">40</field>
+        <field name="display_height">48</field>
+        <field name="orientation">lengthwise</field>
+        <field name="four_way_required">0</field>
+    </record>
+    <record id="layout_tpl_pinwheel_26ft_R5" model="prema.dispatch.vehicle.layout.position">
+        <field name="layout_template_id" ref="layout_tpl_pinwheel_26ft"/>
+        <field name="position_code">R5</field>
+        <field name="display_name">R5</field>
+        <field name="side">passenger</field>
+        <field name="sequence">5</field>
+        <field name="distance_from_rear_in">192</field>
+        <field name="x_coordinate">100</field>
+        <field name="y_coordinate">192</field>
+        <field name="display_width">40</field>
+        <field name="display_height">48</field>
+        <field name="orientation">lengthwise</field>
+        <field name="four_way_required">0</field>
+    </record>
+    <record id="layout_tpl_pinwheel_26ft_R6" model="prema.dispatch.vehicle.layout.position">
+        <field name="layout_template_id" ref="layout_tpl_pinwheel_26ft"/>
+        <field name="position_code">R6</field>
+        <field name="display_name">R6</field>
+        <field name="side">passenger</field>
+        <field name="sequence">6</field>
+        <field name="distance_from_rear_in">240</field>
+        <field name="x_coordinate">100</field>
+        <field name="y_coordinate">240</field>
+        <field name="display_width">40</field>
+        <field name="display_height">48</field>
+        <field name="orientation">lengthwise</field>
+        <field name="four_way_required">0</field>
+    </record>
+    <record id="layout_tpl_pinwheel_26ft_PW1" model="prema.dispatch.vehicle.layout.position">
+        <field name="layout_template_id" ref="layout_tpl_pinwheel_26ft"/>
+        <field name="position_code">PW1</field>
+        <field name="display_name">Pin-Wheel Front</field>
+        <field name="side">center</field>
+        <field name="sequence">13</field>
+        <field name="distance_from_rear_in">288</field>
+        <field name="x_coordinate">50</field>
+        <field name="y_coordinate">288</field>
+        <field name="display_width">44</field>
+        <field name="display_height">44</field>
+        <field name="orientation">angled</field>
+        <field name="four_way_required">1</field>
+    </record>
+
+    <record id="layout_tpl_turned_26ft_L1" model="prema.dispatch.vehicle.layout.position">
+        <field name="layout_template_id" ref="layout_tpl_turned_26ft"/>
+        <field name="position_code">L1</field>
+        <field name="display_name">L1</field>
+        <field name="side">driver</field>
+        <field name="sequence">1</field>
+        <field name="distance_from_rear_in">0</field>
+        <field name="x_coordinate">0</field>
+        <field name="y_coordinate">0</field>
+        <field name="display_width">40</field>
+        <field name="display_height">40</field>
+        <field name="orientation">angled</field>
+        <field name="four_way_required">1</field>
+    </record>
+    <record id="layout_tpl_turned_26ft_L2" model="prema.dispatch.vehicle.layout.position">
+        <field name="layout_template_id" ref="layout_tpl_turned_26ft"/>
+        <field name="position_code">L2</field>
+        <field name="display_name">L2</field>
+        <field name="side">driver</field>
+        <field name="sequence">2</field>
+        <field name="distance_from_rear_in">42</field>
+        <field name="x_coordinate">0</field>
+        <field name="y_coordinate">42</field>
+        <field name="display_width">40</field>
+        <field name="display_height">40</field>
+        <field name="orientation">angled</field>
+        <field name="four_way_required">1</field>
+    </record>
+    <record id="layout_tpl_turned_26ft_L3" model="prema.dispatch.vehicle.layout.position">
+        <field name="layout_template_id" ref="layout_tpl_turned_26ft"/>
+        <field name="position_code">L3</field>
+        <field name="display_name">L3</field>
+        <field name="side">driver</field>
+        <field name="sequence">3</field>
+        <field name="distance_from_rear_in">84</field>
+        <field name="x_coordinate">0</field>
+        <field name="y_coordinate">84</field>
+        <field name="display_width">40</field>
+        <field name="display_height">40</field>
+        <field name="orientation">angled</field>
+        <field name="four_way_required">1</field>
+    </record>
+    <record id="layout_tpl_turned_26ft_L4" model="prema.dispatch.vehicle.layout.position">
+        <field name="layout_template_id" ref="layout_tpl_turned_26ft"/>
+        <field name="position_code">L4</field>
+        <field name="display_name">L4</field>
+        <field name="side">driver</field>
+        <field name="sequence">4</field>
+        <field name="distance_from_rear_in">126</field>
+        <field name="x_coordinate">0</field>
+        <field name="y_coordinate">126</field>
+        <field name="display_width">40</field>
+        <field name="display_height">40</field>
+        <field name="orientation">angled</field>
+        <field name="four_way_required">1</field>
+    </record>
+    <record id="layout_tpl_turned_26ft_L5" model="prema.dispatch.vehicle.layout.position">
+        <field name="layout_template_id" ref="layout_tpl_turned_26ft"/>
+        <field name="position_code">L5</field>
+        <field name="display_name">L5</field>
+        <field name="side">driver</field>
+        <field name="sequence">5</field>
+        <field name="distance_from_rear_in">168</field>
+        <field name="x_coordinate">0</field>
+        <field name="y_coordinate">168</field>
+        <field name="display_width">40</field>
+        <field name="display_height">40</field>
+        <field name="orientation">angled</field>
+        <field name="four_way_required">1</field>
+    </record>
+    <record id="layout_tpl_turned_26ft_L6" model="prema.dispatch.vehicle.layout.position">
+        <field name="layout_template_id" ref="layout_tpl_turned_26ft"/>
+        <field name="position_code">L6</field>
+        <field name="display_name">L6</field>
+        <field name="side">driver</field>
+        <field name="sequence">6</field>
+        <field name="distance_from_rear_in">210</field>
+        <field name="x_coordinate">0</field>
+        <field name="y_coordinate">210</field>
+        <field name="display_width">40</field>
+        <field name="display_height">40</field>
+        <field name="orientation">angled</field>
+        <field name="four_way_required">1</field>
+    </record>
+    <record id="layout_tpl_turned_26ft_L7" model="prema.dispatch.vehicle.layout.position">
+        <field name="layout_template_id" ref="layout_tpl_turned_26ft"/>
+        <field name="position_code">L7</field>
+        <field name="display_name">L7</field>
+        <field name="side">driver</field>
+        <field name="sequence">7</field>
+        <field name="distance_from_rear_in">252</field>
+        <field name="x_coordinate">0</field>
+        <field name="y_coordinate">252</field>
+        <field name="display_width">40</field>
+        <field name="display_height">40</field>
+        <field name="orientation">angled</field>
+        <field name="four_way_required">1</field>
+    </record>
+    <record id="layout_tpl_turned_26ft_R1" model="prema.dispatch.vehicle.layout.position">
+        <field name="layout_template_id" ref="layout_tpl_turned_26ft"/>
+        <field name="position_code">R1</field>
+        <field name="display_name">R1</field>
+        <field name="side">passenger</field>
+        <field name="sequence">1</field>
+        <field name="distance_from_rear_in">0</field>
+        <field name="x_coordinate">100</field>
+        <field name="y_coordinate">0</field>
+        <field name="display_width">40</field>
+        <field name="display_height">40</field>
+        <field name="orientation">angled</field>
+        <field name="four_way_required">1</field>
+    </record>
+    <record id="layout_tpl_turned_26ft_R2" model="prema.dispatch.vehicle.layout.position">
+        <field name="layout_template_id" ref="layout_tpl_turned_26ft"/>
+        <field name="position_code">R2</field>
+        <field name="display_name">R2</field>
+        <field name="side">passenger</field>
+        <field name="sequence">2</field>
+        <field name="distance_from_rear_in">42</field>
+        <field name="x_coordinate">100</field>
+        <field name="y_coordinate">42</field>
+        <field name="display_width">40</field>
+        <field name="display_height">40</field>
+        <field name="orientation">angled</field>
+        <field name="four_way_required">1</field>
+    </record>
+    <record id="layout_tpl_turned_26ft_R3" model="prema.dispatch.vehicle.layout.position">
+        <field name="layout_template_id" ref="layout_tpl_turned_26ft"/>
+        <field name="position_code">R3</field>
+        <field name="display_name">R3</field>
+        <field name="side">passenger</field>
+        <field name="sequence">3</field>
+        <field name="distance_from_rear_in">84</field>
+        <field name="x_coordinate">100</field>
+        <field name="y_coordinate">84</field>
+        <field name="display_width">40</field>
+        <field name="display_height">40</field>
+        <field name="orientation">angled</field>
+        <field name="four_way_required">1</field>
+    </record>
+    <record id="layout_tpl_turned_26ft_R4" model="prema.dispatch.vehicle.layout.position">
+        <field name="layout_template_id" ref="layout_tpl_turned_26ft"/>
+        <field name="position_code">R4</field>
+        <field name="display_name">R4</field>
+        <field name="side">passenger</field>
+        <field name="sequence">4</field>
+        <field name="distance_from_rear_in">126</field>
+        <field name="x_coordinate">100</field>
+        <field name="y_coordinate">126</field>
+        <field name="display_width">40</field>
+        <field name="display_height">40</field>
+        <field name="orientation">angled</field>
+        <field name="four_way_required">1</field>
+    </record>
+    <record id="layout_tpl_turned_26ft_R5" model="prema.dispatch.vehicle.layout.position">
+        <field name="layout_template_id" ref="layout_tpl_turned_26ft"/>
+        <field name="position_code">R5</field>
+        <field name="display_name">R5</field>
+        <field name="side">passenger</field>
+        <field name="sequence">5</field>
+        <field name="distance_from_rear_in">168</field>
+        <field name="x_coordinate">100</field>
+        <field name="y_coordinate">168</field>
+        <field name="display_width">40</field>
+        <field name="display_height">40</field>
+        <field name="orientation">angled</field>
+        <field name="four_way_required">1</field>
+    </record>
+    <record id="layout_tpl_turned_26ft_R6" model="prema.dispatch.vehicle.layout.position">
+        <field name="layout_template_id" ref="layout_tpl_turned_26ft"/>
+        <field name="position_code">R6</field>
+        <field name="display_name">R6</field>
+        <field name="side">passenger</field>
+        <field name="sequence">6</field>
+        <field name="distance_from_rear_in">210</field>
+        <field name="x_coordinate">100</field>
+        <field name="y_coordinate">210</field>
+        <field name="display_width">40</field>
+        <field name="display_height">40</field>
+        <field name="orientation">angled</field>
+        <field name="four_way_required">1</field>
+    </record>
+    <record id="layout_tpl_turned_26ft_R7" model="prema.dispatch.vehicle.layout.position">
+        <field name="layout_template_id" ref="layout_tpl_turned_26ft"/>
+        <field name="position_code">R7</field>
+        <field name="display_name">R7</field>
+        <field name="side">passenger</field>
+        <field name="sequence">7</field>
+        <field name="distance_from_rear_in">252</field>
+        <field name="x_coordinate">100</field>
+        <field name="y_coordinate">252</field>
+        <field name="display_width">40</field>
+        <field name="display_height">40</field>
+        <field name="orientation">angled</field>
+        <field name="four_way_required">1</field>
+    </record>
+</odoo>

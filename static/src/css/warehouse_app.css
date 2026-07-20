@@ -1,0 +1,28 @@
+body.wh-body{margin:0;background:#f1f3f5;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+.wh-app{max-width:480px;margin:0 auto;min-height:100vh;background:#fff;display:flex;flex-direction:column}
+.wh-header{background:#1a1a2e;color:#fff;padding:14px 16px;font-weight:800;font-size:16px}
+.wh-picker{display:flex;gap:8px;padding:12px;flex-wrap:wrap;border-bottom:1px solid #e0e4ea}
+.wh-select{flex:1;min-width:120px;padding:10px;border:1px solid #ccc;border-radius:8px;font-size:14px}
+.wh-btn{padding:10px 16px;border-radius:8px;border:1px solid #ccc;background:#fff;font-size:14px;font-weight:700;cursor:pointer}
+.wh-btn-primary{background:#1565C0;color:#fff;border-color:#1565C0}
+.wh-btn-warn{background:#f9a825;color:#fff;border-color:#f9a825}
+.wh-body{flex:1;padding:16px;overflow:auto}
+.wh-empty{color:#888;text-align:center;padding:40px 20px}
+.wh-summary{font-size:13px;color:#555;margin-bottom:10px}
+.wh-lock{color:#8b0000;font-weight:800}
+.wh-unverified{background:#fff4e0;border:1px solid #b8860b;border-radius:8px;padding:8px;margin-bottom:10px;font-size:12px;color:#6b4a00}
+.wh-label{font-size:11px;font-weight:800;letter-spacing:.06em;color:#888;text-align:center;margin:10px 0}
+.wh-grid{display:flex;flex-direction:column;gap:8px}
+.wh-row{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.wh-pos{border-radius:10px;border:2px solid #999;min-height:64px;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:6px;text-align:center;font-size:12px;cursor:pointer}
+.wh-pos-code{font-weight:800;font-size:14px}
+.wh-pos-vacant{background:#e6f4ea;border-color:#34a853;color:#1a7f37}
+.wh-pos-occupied{background:#fce8e6;border-color:#ea4335}
+.wh-pos-loaded{background:#cfe8d5;border-color:#0b6b2c}
+.wh-pos-shared{background:#ede4f7;border-color:#7b1fa2}
+.wh-pos-blocked{background:#eceff1;border-color:#90a4ae;opacity:.6;cursor:not-allowed}
+.wh-pos-selected{border-color:#1565C0;box-shadow:0 0 0 3px rgba(21,101,192,.3)}
+.wh-pos-item{font-weight:700;font-size:11px}
+.wh-pos-stops{font-size:10px;color:#555}
+.wh-detail{margin-top:14px;padding:12px;border:1px solid #1565C0;border-radius:10px}
+.wh-detail-actions{display:flex;gap:8px;margin-top:10px}

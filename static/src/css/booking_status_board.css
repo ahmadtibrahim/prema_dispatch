@@ -1,0 +1,116 @@
+/* ── Booking Board — structured columns, single unified list ─────────── */
+
+.o_booking_status_board {
+    height: calc(100vh - 90px);
+    overflow-y: auto;
+    background: #1e2433;
+    color: #eef1f7;
+    font-family: "Consolas", "Courier New", monospace;
+    padding: 16px 20px;
+}
+
+.o_bsb_header {
+    display: flex;
+    align-items: baseline;
+    margin-bottom: 14px;
+    color: #fff;
+}
+.o_bsb_header h4 { font-weight: 700; letter-spacing: .03em; }
+
+.o_bsb_loading { text-align: center; padding: 40px; color: #8899b0; }
+.o_bsb_empty { text-align: center; padding: 24px; color: #8899b0; }
+
+/* ── Main table ───────────────────────────────────────────────────── */
+
+.o_bsb_table { display: flex; flex-direction: column; border: 1px solid #3a4258; border-radius: 6px; overflow: hidden; background: #242b3d; }
+
+.o_bsb_row {
+    display: grid;
+    grid-template-columns: 130px 1fr 110px 90px 90px 1.4fr 60px 90px 90px 110px 110px 130px 100px 1.2fr 34px;
+    gap: 10px;
+    padding: 8px 14px;
+    border-bottom: 1px solid #333c52;
+    align-items: center;
+    cursor: pointer;
+    transition: background .1s;
+    font-size: 12px;
+}
+.o_bsb_row:hover { background: #2e3650; }
+.o_bsb_row_head {
+    background: #2e3650;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    color: #aab4cc;
+    font-weight: 700;
+    cursor: default;
+}
+.o_bsb_row_head:hover { background: #2e3650; }
+
+.o_bsb_col_ref { font-weight: 700; color: #fff; letter-spacing: .03em; }
+.o_bsb_col_customer { color: #eef1f7; }
+.o_bsb_col_route { color: #d5dbec; }
+.o_bsb_col_skids, .o_bsb_col_equipment { color: #b7bfd6; }
+.o_bsb_col_truck, .o_bsb_col_driver { color: #d5dbec; }
+.o_bsb_col_notes { color: #b7bfd6 !important; }
+.o_bsb_col_actions { display: flex; justify-content: center; }
+
+.o_bsb_handoff_badge {
+    display: inline-block;
+    padding: 2px 7px;
+    border-radius: 4px;
+    background: #3a2f57;
+    color: #c9b6ff;
+    font-size: 10.5px;
+    font-weight: 600;
+}
+
+.o_bsb_unassign_btn {
+    background: transparent;
+    border: 1px solid #5a627e;
+    color: #c7cee2;
+    border-radius: 4px;
+    width: 22px;
+    height: 22px;
+    line-height: 1;
+    font-size: 14px;
+    cursor: pointer;
+}
+.o_bsb_unassign_btn:hover { background: rgba(231,76,60,.8); border-color: #e74c3c; color: #fff; }
+
+.o_bsb_badge {
+    display: inline-block;
+    padding: 4px 12px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 800;
+    letter-spacing: .05em;
+    text-transform: uppercase;
+}
+.o_bsb_badge.status-unassigned  { background: #f0b429; color: #1a1a1a; }
+.o_bsb_badge.status-planned     { background: #2c3e50; color: #ecf0f1; }
+.o_bsb_badge.status-picked_up   { background: #16a085; color: #fff; }
+.o_bsb_badge.status-transfer    { background: #6f42c1; color: #fff; }
+.o_bsb_badge.status-in_progress { background: #f39c12; color: #1a1a1a; animation: bsb-pulse 1.6s infinite; }
+.o_bsb_badge.status-late        { background: #e74c3c; color: #fff; animation: bsb-pulse 1.2s infinite; }
+.o_bsb_badge.status-cancelled   { background: #444; color: #999; }
+.o_bsb_badge.status-delivered   { background: #27ae60; color: #fff; }
+
+.o_bsb_badge.feas-feasible     { background: #1f8b4c; color: #fff; }
+.o_bsb_badge.feas-risky        { background: #d68910; color: #1a1a1a; }
+.o_bsb_badge.feas-not_feasible { background: #c0392b; color: #fff; }
+.o_bsb_badge.feas-unknown      { background: #4a5169; color: #c7cee2; }
+
+.o_bsb_priority {
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    padding: 2px 6px;
+    border-radius: 3px;
+    background: #3a4258;
+    color: #c7cee2;
+}
+.o_bsb_priority.prio-urgent    { background: #d68910; color: #1a1a1a; }
+.o_bsb_priority.prio-emergency { background: #c0392b; color: #fff; }
+
+@keyframes bsb-pulse { 0%,100%{opacity:1} 50%{opacity:.6} }

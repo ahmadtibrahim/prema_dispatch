@@ -1,0 +1,701 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<style>
+  body { font-family: Arial, sans-serif; color: #333; margin: 0; padding: 0; }
+
+  /* ── Hero ── */
+  .pd-hero {
+    background: linear-gradient(135deg, #0d47a1 0%, #1565c0 60%, #1976d2 100%);
+    color: #fff;
+    padding: 48px 40px 40px;
+    text-align: center;
+  }
+  .pd-hero h1 { font-size: 2.4rem; font-weight: 700; margin: 0 0 10px; letter-spacing: -0.5px; }
+  .pd-hero p  { font-size: 1.05rem; opacity: .88; max-width: 680px; margin: 0 auto; line-height: 1.6; }
+  .pd-badge {
+    display: inline-block; background: rgba(255,255,255,.15);
+    border: 1px solid rgba(255,255,255,.3);
+    border-radius: 20px; padding: 4px 14px;
+    font-size: .78rem; margin-top: 16px; letter-spacing: .5px;
+  }
+
+  /* ── Sections ── */
+  .pd-section       { padding: 36px 40px; }
+  .pd-section-alt   { padding: 36px 40px; background: #f8faff; }
+  .pd-section h2    { font-size: 1.5rem; font-weight: 700; color: #0d47a1; margin: 0 0 6px; }
+  .pd-section-alt h2{ font-size: 1.5rem; font-weight: 700; color: #0d47a1; margin: 0 0 6px; }
+  .pd-subtitle      { color: #666; font-size: .9rem; margin: 0 0 24px; }
+
+  /* ── Feature grid ── */
+  .pd-grid { display: flex; flex-wrap: wrap; gap: 16px; }
+  .pd-card {
+    flex: 1 1 260px; background: #fff;
+    border: 1px solid #e3e8f0; border-radius: 10px;
+    padding: 20px; box-shadow: 0 1px 4px rgba(13,71,161,.06);
+  }
+  .pd-card-icon {
+    font-size: 1.6rem; margin-bottom: 10px; display: block;
+  }
+  .pd-card h3 { font-size: 1rem; font-weight: 700; margin: 0 0 8px; color: #1565c0; }
+  .pd-card p  { font-size: .86rem; color: #555; margin: 0; line-height: 1.55; }
+
+  /* ── Steps ── */
+  .pd-steps { counter-reset: step; }
+  .pd-step  {
+    display: flex; gap: 16px; margin-bottom: 20px;
+    background: #fff; border: 1px solid #e3e8f0;
+    border-radius: 10px; padding: 16px 20px;
+    box-shadow: 0 1px 3px rgba(0,0,0,.04);
+  }
+  .pd-step-num {
+    flex-shrink: 0; width: 32px; height: 32px;
+    background: #0d47a1; color: #fff;
+    border-radius: 50%; display: flex;
+    align-items: center; justify-content: center;
+    font-weight: 700; font-size: .9rem;
+  }
+  .pd-step-body h4 { margin: 0 0 4px; font-size: .95rem; color: #1565c0; }
+  .pd-step-body p  { margin: 0; font-size: .85rem; color: #555; line-height: 1.5; }
+  .pd-step-body code {
+    background: #e8f0fe; color: #1565c0;
+    padding: 1px 6px; border-radius: 4px; font-size: .82rem;
+  }
+
+  /* ── Two-col ── */
+  .pd-two { display: flex; gap: 24px; flex-wrap: wrap; }
+  .pd-two > div { flex: 1 1 300px; }
+
+  /* ── Pills ── */
+  .pd-pill {
+    display: inline-block; background: #e8f0fe; color: #1565c0;
+    border-radius: 20px; padding: 3px 12px; font-size: .8rem;
+    font-weight: 600; margin: 3px 3px 0 0;
+  }
+  .pd-pill-green  { background: #e6f4ea; color: #1e7e34; }
+  .pd-pill-orange { background: #fff3e0; color: #e65100; }
+  .pd-pill-grey   { background: #f5f5f5; color: #555; }
+
+  /* ── Table ── */
+  .pd-table { width: 100%; border-collapse: collapse; font-size: .86rem; }
+  .pd-table th {
+    background: #0d47a1; color: #fff;
+    padding: 8px 14px; text-align: left; font-weight: 600;
+  }
+  .pd-table td { padding: 8px 14px; border-bottom: 1px solid #e3e8f0; color: #444; }
+  .pd-table tr:nth-child(even) td { background: #f8faff; }
+
+  /* ── Alert boxes ── */
+  .pd-tip  {
+    background: #e8f5e9; border-left: 4px solid #43a047;
+    padding: 12px 16px; border-radius: 0 8px 8px 0;
+    font-size: .85rem; color: #2e7d32; margin: 16px 0;
+  }
+  .pd-warn {
+    background: #fff8e1; border-left: 4px solid #ffa000;
+    padding: 12px 16px; border-radius: 0 8px 8px 0;
+    font-size: .85rem; color: #e65100; margin: 16px 0;
+  }
+
+  /* ── Footer ── */
+  .pd-footer {
+    background: #0d47a1; color: rgba(255,255,255,.8);
+    text-align: center; padding: 20px 40px;
+    font-size: .82rem;
+  }
+  .pd-footer strong { color: #fff; }
+</style>
+</head>
+<body>
+
+<!-- ══════════════════════════════════════════════════════════════════
+     HERO
+════════════════════════════════════════════════════════════════════ -->
+<div class="pd-hero">
+  <h1>Dispatch App</h1>
+  <p>
+    End-to-end freight dispatch management for PremaFirm Logistics —
+    booking, planning, truck assignment, live GPS tracking, stop-by-stop
+    execution, POD capture, and automatic invoice completion.
+  </p>
+  <div class="pd-badge">Odoo 18 · PremaFirm Internal · module: prema_dispatch</div>
+</div>
+
+
+<!-- ══════════════════════════════════════════════════════════════════
+     FEATURE OVERVIEW
+════════════════════════════════════════════════════════════════════ -->
+<div class="pd-section">
+  <h2>Feature Overview</h2>
+  <p class="pd-subtitle">Everything the Dispatch App includes out of the box.</p>
+
+  <div class="pd-grid">
+
+    <div class="pd-card">
+      <span class="pd-card-icon">📋</span>
+      <h3>Booking Board</h3>
+      <p>Kanban view of all jobs in the booking phase. Create bookings from an Invoice, Sales Order, or directly. Full booking details: customer, commodity, skids, reefer/liftgate, flexibility, requested delivery date.</p>
+    </div>
+
+    <div class="pd-card">
+      <span class="pd-card-icon">🔁</span>
+      <h3>Recurring Booking Templates</h3>
+      <p>Define weekly, biweekly, or monthly recurring lanes per customer. A daily cron auto-generates the booking a configurable number of days in advance and notifies the responsible dispatcher.</p>
+    </div>
+
+    <div class="pd-card">
+      <span class="pd-card-icon">🚛</span>
+      <h3>Dispatch Board</h3>
+      <p>Kanban board of all in-progress jobs grouped by stage. Drag-and-drop stage transitions. Real-time route display (pickup city → delivery cities), service type badge, reefer indicator.</p>
+    </div>
+
+    <div class="pd-card">
+      <span class="pd-card-icon">🔍</span>
+      <h3>Find Best Truck (AI)</h3>
+      <p>One-click AI truck selection. Calls the PremaFirm Rate Estimator to rank available trucks by proximity, availability, and load compatibility. Auto-fills truck and driver on the job.</p>
+    </div>
+
+    <div class="pd-card">
+      <span class="pd-card-icon">🛡️</span>
+      <h3>Truck Compatibility Validation</h3>
+      <p>Hard blocks if a truck lacks reefer or liftgate when the job requires them. Soft warnings for pallet/weight overloads. Managers can override with a written reason — fully audited.</p>
+    </div>
+
+    <div class="pd-card">
+      <span class="pd-card-icon">🗺️</span>
+      <h3>Live Map (Google Maps)</h3>
+      <p>All fleet vehicles shown on a Google Map using live GeoTab GPS coordinates. Click any truck to zoom to its location. Active jobs show their planned route with colour-coded stops: blue = pending, grey = done.</p>
+    </div>
+
+    <div class="pd-card">
+      <span class="pd-card-icon">📍</span>
+      <h3>Stop Management</h3>
+      <p>Multi-stop jobs: Pickup, Drop-Off, Return. Per-stop: mark En Route → Arrived → Completed. Upload POD, delivery photos, and documents per stop. Cancel a stop without deleting it.</p>
+    </div>
+
+    <div class="pd-card">
+      <span class="pd-card-icon">📜</span>
+      <h3>Transportation Timeline</h3>
+      <p>A full structured event history per job: Booking Created → Truck Assigned → Dispatch Confirmed → Picked Up → Delivered → POD Uploaded → Invoice Confirmed. Every event is timestamped and attributed to a user.</p>
+    </div>
+
+    <div class="pd-card">
+      <span class="pd-card-icon">🔗</span>
+      <h3>Customer Tracking Portal</h3>
+      <p>Each booking gets a public tracking URL (<code>/dispatch/track/TRK-…</code>). Customers see real-time status, stop table, and the full timeline — no login required.</p>
+    </div>
+
+    <div class="pd-card">
+      <span class="pd-card-icon">📦</span>
+      <h3>LTL Consolidation Engine</h3>
+      <p>Automatically surfaces LTL jobs that share a pickup city and similar delivery dates. Dispatchers review suggestions, accept to consolidate lanes, or dismiss. Tracks suggested/consolidating/completed states.</p>
+    </div>
+
+    <div class="pd-card">
+      <span class="pd-card-icon">🧾</span>
+      <h3>Invoice Auto-Confirmation</h3>
+      <p>When all stops are completed and POD received for every job on an invoice, the invoice is automatically confirmed and all POD/photo attachments are copied to it — no manual step required.</p>
+    </div>
+
+    <div class="pd-card">
+      <span class="pd-card-icon">🏭</span>
+      <h3>Cross-Dock Architecture</h3>
+      <p>Data model for cross-dock hub locations and per-item chain-of-custody events (loaded, scanned, transferred, delivered). UI coming in a future phase.</p>
+    </div>
+
+  </div>
+</div>
+
+
+<!-- ══════════════════════════════════════════════════════════════════
+     WORKFLOW: BOOKING TO INVOICE
+════════════════════════════════════════════════════════════════════ -->
+<div class="pd-section-alt">
+  <h2>Standard Workflow: Booking → Invoice</h2>
+  <p class="pd-subtitle">The full lifecycle of a dispatch job from creation to payment.</p>
+
+  <div class="pd-steps">
+
+    <div class="pd-step">
+      <div class="pd-step-num">1</div>
+      <div class="pd-step-body">
+        <h4>Create the Booking</h4>
+        <p>
+          Open an <strong>Invoice</strong> or <strong>Sales Order</strong> and click <code>Book Load</code>.
+          The system creates a dispatch job linked to that document and prefills the customer.
+          Alternatively, open <strong>Booking Board</strong> and create a job directly, or let a
+          <strong>Recurring Template</strong> auto-create it overnight.
+        </p>
+      </div>
+    </div>
+
+    <div class="pd-step">
+      <div class="pd-step-num">2</div>
+      <div class="pd-step-body">
+        <h4>Fill Booking Details</h4>
+        <p>
+          On the job form, set: <strong>Service Type</strong> (LTL / FTL / Local / Dedicated),
+          <strong>Equipment Type</strong> (Dry Van / Reefer / Flatbed),
+          <strong>Delivery Flexibility</strong>, <strong>Requested Delivery Date</strong>,
+          <strong>Approx. Skids</strong>, <strong>Commodity</strong>,
+          and check <strong>Reefer Required</strong> / <strong>Liftgate Required</strong> if needed.
+          The job moves from <em>New Booking</em> to <em>Planning</em> stage.
+        </p>
+      </div>
+    </div>
+
+    <div class="pd-step">
+      <div class="pd-step-num">3</div>
+      <div class="pd-step-body">
+        <h4>Add Stops</h4>
+        <p>
+          Open the <strong>Stops</strong> tab. Add at least one <em>Pickup</em> stop and one
+          <em>Drop-Off</em> stop. Enter the full address for each stop — this populates the
+          <strong>pickup_city</strong> and <strong>delivery_cities</strong> fields used for
+          route display and LTL consolidation matching. If the stop has GPS coordinates
+          (latitude/longitude), they will appear on the Live Map route line.
+        </p>
+      </div>
+    </div>
+
+    <div class="pd-step">
+      <div class="pd-step-num">4</div>
+      <div class="pd-step-body">
+        <h4>Assign a Truck</h4>
+        <p>
+          Click <code>Find Best Truck</code> to let the AI rank available trucks by proximity
+          and load compatibility. The best candidate is auto-filled. Or manually set the
+          <strong>Truck</strong> field — the system will block incompatible assignments
+          (missing reefer/liftgate) and warn on capacity overloads.
+          Managers can override any block by filling in the <strong>Override Reason</strong> field first.
+          The driver is auto-filled from the truck's current driver.
+        </p>
+      </div>
+    </div>
+
+    <div class="pd-step">
+      <div class="pd-step-num">5</div>
+      <div class="pd-step-body">
+        <h4>Confirm Dispatch</h4>
+        <p>
+          Set the <strong>Scheduled Pickup</strong> date/time. Click <code>Send to Driver</code>
+          — the job moves to a dispatched stage and the timeline records <em>Dispatch Confirmed</em>.
+          The customer's tracking link is now live at
+          <code>/dispatch/track/TRK-YYYY-XXXXXX</code>.
+        </p>
+      </div>
+    </div>
+
+    <div class="pd-step">
+      <div class="pd-step-num">6</div>
+      <div class="pd-step-body">
+        <h4>Execute Stops (En Route)</h4>
+        <p>
+          For each stop, update status as the driver progresses:
+          <code>Mark En Route</code> → <code>Mark Arrived</code> → <code>Mark Completed</code>.
+          At delivery stops, upload <strong>POD documents</strong> and <strong>photos</strong>.
+          Each action auto-creates a timeline event and is visible on the customer's tracking page.
+        </p>
+      </div>
+    </div>
+
+    <div class="pd-step">
+      <div class="pd-step-num">7</div>
+      <div class="pd-step-body">
+        <h4>Auto-Complete &amp; Invoice</h4>
+        <p>
+          Once all stops are <em>Completed</em> and all required POD files are uploaded,
+          the job auto-moves to <em>Completed</em> stage.
+          All POD and photo attachments are copied to the linked invoice.
+          If this was the last dispatch job on the invoice,
+          the invoice is <strong>automatically confirmed</strong>.
+        </p>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+
+<!-- ══════════════════════════════════════════════════════════════════
+     BOOKING TEMPLATES
+════════════════════════════════════════════════════════════════════ -->
+<div class="pd-section">
+  <h2>Recurring Booking Templates</h2>
+  <p class="pd-subtitle">Automate bookings for regular lanes so dispatchers never miss a weekly run.</p>
+
+  <div class="pd-two">
+    <div>
+      <div class="pd-steps">
+        <div class="pd-step">
+          <div class="pd-step-num">1</div>
+          <div class="pd-step-body">
+            <h4>Create a Template</h4>
+            <p>Go to <strong>Settings → Booking Templates</strong>. Click <em>New</em>.
+            Set customer, service type, equipment, recurrence (weekly / biweekly / monthly),
+            day of week, and how many days in advance to create the booking.</p>
+          </div>
+        </div>
+        <div class="pd-step">
+          <div class="pd-step-num">2</div>
+          <div class="pd-step-body">
+            <h4>Let the Cron Run</h4>
+            <p>A daily cron job checks every active template. When today equals
+            <em>(next delivery day − advance_days)</em>, it auto-creates the booking and notifies
+            the assigned <strong>Notify User</strong> via chatter.</p>
+          </div>
+        </div>
+        <div class="pd-step">
+          <div class="pd-step-num">3</div>
+          <div class="pd-step-body">
+            <h4>Generate Now (Manual)</h4>
+            <p>On any template form, click <code>Generate Booking Now</code> to immediately
+            create the next booking without waiting for the cron. Useful for testing or
+            one-off early creation.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div>
+      <div class="pd-card" style="margin-bottom:16px;">
+        <span class="pd-card-icon">⚙️</span>
+        <h3>Template Settings</h3>
+        <table class="pd-table" style="margin-top:8px;">
+          <tr><th>Field</th><th>Purpose</th></tr>
+          <tr><td>Recurrence</td><td>Weekly / Biweekly / Monthly (4-week)</td></tr>
+          <tr><td>Day of Week</td><td>Scheduled delivery day</td></tr>
+          <tr><td>Advance Days</td><td>Create booking X days before delivery (default: 3)</td></tr>
+          <tr><td>Notify User</td><td>Gets a chatter ping when booking is auto-created</td></tr>
+          <tr><td>Last Generated</td><td>Prevents duplicate creation on same date</td></tr>
+        </table>
+      </div>
+      <div class="pd-tip">
+        <strong>💡 Tip:</strong> Link a Sales Order to the template and every auto-generated
+        booking will inherit the SO reference for billing traceability.
+      </div>
+    </div>
+  </div>
+</div>
+
+
+<!-- ══════════════════════════════════════════════════════════════════
+     LIVE MAP
+════════════════════════════════════════════════════════════════════ -->
+<div class="pd-section-alt">
+  <h2>Live Map</h2>
+  <p class="pd-subtitle">Google Maps view of your entire fleet with real-time GeoTab GPS and planned routes.</p>
+
+  <div class="pd-two">
+    <div>
+      <div class="pd-steps">
+        <div class="pd-step">
+          <div class="pd-step-num">1</div>
+          <div class="pd-step-body">
+            <h4>Open Live Map</h4>
+            <p>Click <strong>Live Map</strong> in the top navigation. All fleet vehicles appear in the left panel, sorted by GPS freshness.</p>
+          </div>
+        </div>
+        <div class="pd-step">
+          <div class="pd-step-num">2</div>
+          <div class="pd-step-body">
+            <h4>Find a Truck</h4>
+            <p>The left panel lists every active fleet vehicle. Click any row to zoom the map to that truck's last known GPS location and open its info popup.</p>
+          </div>
+        </div>
+        <div class="pd-step">
+          <div class="pd-step-num">3</div>
+          <div class="pd-step-body">
+            <h4>Read the Map</h4>
+            <p>Arrow markers (▶) are trucks. Circles are stops.
+            <strong>Blue</strong> = pending, <strong>grey</strong> = completed, <strong>green</strong> = pickup.
+            Dashed lines show the planned route — blue when active, grey when fully done.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div>
+      <div class="pd-card">
+        <span class="pd-card-icon">📡</span>
+        <h3>GPS Freshness Indicators</h3>
+        <table class="pd-table" style="margin-top:8px;">
+          <tr><th>Colour</th><th>Meaning</th></tr>
+          <tr><td><span class="pd-pill-green pd-pill">● Green</span></td><td>GPS updated &lt; 15 minutes ago</td></tr>
+          <tr><td><span class="pd-pill-orange pd-pill">● Yellow</span></td><td>GPS updated 15–60 min ago</td></tr>
+          <tr><td><span class="pd-pill pd-pill-grey" style="background:#fde8e8;color:#c62828;">● Red</span></td><td>GPS older than 60 min or missing</td></tr>
+        </table>
+        <div class="pd-tip" style="margin-top:12px;">
+          <strong>Auto-refresh:</strong> The map reloads truck positions every 30 seconds.
+          Click the refresh button (↻) in the sidebar header for an immediate update.
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+<!-- ══════════════════════════════════════════════════════════════════
+     LTL CONSOLIDATION
+════════════════════════════════════════════════════════════════════ -->
+<div class="pd-section">
+  <h2>LTL Consolidation</h2>
+  <p class="pd-subtitle">Reduce empty space and fuel cost by identifying LTL loads that can share a truck.</p>
+
+  <div class="pd-steps">
+    <div class="pd-step">
+      <div class="pd-step-num">1</div>
+      <div class="pd-step-body">
+        <h4>Suggest Consolidations</h4>
+        <p>Navigate to <strong>Reports → LTL Consolidations</strong>.
+        The system scans all unassigned LTL jobs in the booking phase, groups them by
+        pickup city, and clusters jobs whose requested delivery dates are within 3 days of each other.
+        Each cluster becomes a <em>Suggested</em> consolidation record.</p>
+      </div>
+    </div>
+    <div class="pd-step">
+      <div class="pd-step-num">2</div>
+      <div class="pd-step-body">
+        <h4>Review &amp; Accept</h4>
+        <p>Open a suggestion to see the list of jobs, total skids, and total weight.
+        Click <code>Accept</code> to mark it as <em>Consolidating</em> — a signal for dispatchers
+        to plan these jobs together on one truck. Click <code>Dismiss</code> if the suggestion
+        is not viable.</p>
+      </div>
+    </div>
+    <div class="pd-step">
+      <div class="pd-step-num">3</div>
+      <div class="pd-step-body">
+        <h4>Dispatch Together</h4>
+        <p>From the consolidation record, click <code>View Jobs</code> to open all linked jobs.
+        Assign the same truck and driver to each. Once all jobs are delivered, mark the
+        consolidation as <em>Completed</em>.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+<!-- ══════════════════════════════════════════════════════════════════
+     TRANSPORTATION TIMELINE
+════════════════════════════════════════════════════════════════════ -->
+<div class="pd-section-alt">
+  <h2>Transportation Timeline</h2>
+  <p class="pd-subtitle">A complete, structured event history automatically built as the job progresses.</p>
+
+  <div class="pd-two">
+    <div>
+      <p style="font-size:.88rem;color:#444;line-height:1.6;margin-top:0;">
+        Every dispatch job carries a full audit trail in the <strong>Timeline tab</strong>.
+        Events are created automatically by the system — no manual entry required.
+        The same timeline is visible to customers on the public tracking portal.
+      </p>
+
+      <table class="pd-table">
+        <tr><th>Event</th><th>Auto-triggered when…</th></tr>
+        <tr><td>Booking Created</td><td>Job is first created</td></tr>
+        <tr><td>Imported from Source</td><td>Created from Invoice / SO / Template</td></tr>
+        <tr><td>Stage Changed</td><td>Stage field is updated</td></tr>
+        <tr><td>Truck Assigned</td><td>Vehicle is first assigned to job</td></tr>
+        <tr><td>Dispatch Confirmed</td><td>"Send to Driver" is clicked</td></tr>
+        <tr><td>Arrived at Stop</td><td>Stop is marked Arrived</td></tr>
+        <tr><td>Picked Up</td><td>Pickup stop is marked Completed</td></tr>
+        <tr><td>Delivered</td><td>Drop-Off stop is marked Completed</td></tr>
+        <tr><td>All Stops Done</td><td>Job is marked Completed</td></tr>
+        <tr><td>Invoice Confirmed</td><td>Linked invoice is auto-posted</td></tr>
+      </table>
+    </div>
+    <div>
+      <div class="pd-card">
+        <span class="pd-card-icon">🌐</span>
+        <h3>Customer Tracking Portal</h3>
+        <p style="margin-bottom:10px;">
+          A unique tracking number (<code>TRK-YYYY-XXXXXX</code>) is generated automatically
+          when a booking leaves the Draft stage.
+        </p>
+        <p style="margin-bottom:10px;">
+          Share the URL <code>/dispatch/track/{tracking_number}</code> with the customer.
+          No login required. The page shows:
+        </p>
+        <ul style="font-size:.84rem;color:#555;padding-left:18px;margin:0;">
+          <li>Current stage and status</li>
+          <li>Pickup → delivery route summary</li>
+          <li>Per-stop table with addresses and status</li>
+          <li>Full timeline of all events</li>
+        </ul>
+        <div class="pd-tip" style="margin-top:12px;">
+          The tracking URL is shown in the <strong>Timeline tab</strong> of every job with a
+          one-click copy button.
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+<!-- ══════════════════════════════════════════════════════════════════
+     SECURITY &amp; ACCESS
+════════════════════════════════════════════════════════════════════ -->
+<div class="pd-section">
+  <h2>Security &amp; Access Levels</h2>
+  <p class="pd-subtitle">Three built-in roles control what each user can see and do.</p>
+
+  <table class="pd-table">
+    <tr>
+      <th>Role</th>
+      <th>Who it's for</th>
+      <th>Capabilities</th>
+    </tr>
+    <tr>
+      <td><strong>Dispatch Manager</strong></td>
+      <td>Operations manager, owner</td>
+      <td>Full access — create/edit/delete jobs, stages, templates, consolidations.
+      Can override truck compatibility blocks. Sees override reason fields.</td>
+    </tr>
+    <tr>
+      <td><strong>Dispatcher</strong></td>
+      <td>Daily dispatch staff</td>
+      <td>Create and manage jobs, assign trucks/drivers, complete stops, upload POD.
+      Cannot override compatibility blocks or delete records.</td>
+    </tr>
+    <tr>
+      <td><strong>Read-Only (Accounting)</strong></td>
+      <td>Finance / invoicing team</td>
+      <td>View dispatch jobs linked to invoices. Cannot edit any dispatch records.</td>
+    </tr>
+  </table>
+
+  <div class="pd-warn" style="margin-top:20px;">
+    <strong>⚠️ Override warning:</strong> When a Dispatch Manager overrides a truck compatibility
+    block, the reason, approver name, and timestamp are permanently recorded on the job.
+    This cannot be removed and is visible in audit reports.
+  </div>
+</div>
+
+
+<!-- ══════════════════════════════════════════════════════════════════
+     NAVIGATION GUIDE
+════════════════════════════════════════════════════════════════════ -->
+<div class="pd-section-alt">
+  <h2>Navigation Guide</h2>
+  <p class="pd-subtitle">Every menu item in the Dispatch App and what it's for.</p>
+
+  <table class="pd-table">
+    <tr><th>Menu</th><th>What you see</th><th>Primary use</th></tr>
+    <tr>
+      <td>🗺️ <strong>Live Map</strong></td>
+      <td>Google Maps with all fleet trucks and their active job routes</td>
+      <td>Monitor truck locations in real time, check GPS freshness</td>
+    </tr>
+    <tr>
+      <td>📋 <strong>Booking Board</strong></td>
+      <td>Kanban of jobs in booking phase (New Booking, Planning)</td>
+      <td>Review new bookings, fill details, plan truck assignment</td>
+    </tr>
+    <tr>
+      <td>🚛 <strong>Dispatch Board</strong></td>
+      <td>Kanban of jobs that have been dispatched or are in transit</td>
+      <td>Monitor active runs, track stop progress, handle exceptions</td>
+    </tr>
+    <tr>
+      <td>📊 <strong>Reports → All Jobs</strong></td>
+      <td>Full list of all dispatch jobs (list + form)</td>
+      <td>Search, filter, export historical data</td>
+    </tr>
+    <tr>
+      <td>✅ <strong>Reports → Completed</strong></td>
+      <td>Jobs in a completed stage</td>
+      <td>Confirm delivery, verify POD, check invoice status</td>
+    </tr>
+    <tr>
+      <td>📍 <strong>Reports → Stops</strong></td>
+      <td>All stops across all jobs</td>
+      <td>Drill into individual stop status and POD documents</td>
+    </tr>
+    <tr>
+      <td>📦 <strong>Reports → Freight Items</strong></td>
+      <td>All freight items / skids</td>
+      <td>Track item status across the delivery chain</td>
+    </tr>
+    <tr>
+      <td>🔗 <strong>Reports → LTL Consolidations</strong></td>
+      <td>Suggested and active LTL consolidation groups</td>
+      <td>Review, accept, or dismiss consolidation opportunities</td>
+    </tr>
+    <tr>
+      <td>⚙️ <strong>Settings → Stages</strong></td>
+      <td>All pipeline stages with type flags</td>
+      <td>Add custom stages, reorder, set stage types</td>
+    </tr>
+    <tr>
+      <td>⚙️ <strong>Settings → Booking Templates</strong></td>
+      <td>Recurring booking rules per customer/lane</td>
+      <td>Set up weekly/biweekly/monthly auto-booking for regular customers</td>
+    </tr>
+  </table>
+</div>
+
+
+<!-- ══════════════════════════════════════════════════════════════════
+     QUICK REFERENCE
+════════════════════════════════════════════════════════════════════ -->
+<div class="pd-section">
+  <h2>Quick Reference</h2>
+  <p class="pd-subtitle">Common questions and answers for daily use.</p>
+
+  <div class="pd-two">
+    <div>
+      <div class="pd-card" style="margin-bottom:16px;">
+        <h3>How do I book a load from an invoice?</h3>
+        <p>Open the invoice → click the <code>Book Load</code> button in the header.
+        A dispatch job is created and linked. If a job already exists, it opens instead of creating a duplicate.</p>
+      </div>
+      <div class="pd-card" style="margin-bottom:16px;">
+        <h3>The system blocked my truck assignment. What do I do?</h3>
+        <p>The job requires reefer or liftgate and the truck doesn't have it.
+        If you're a Dispatch Manager, scroll down to the <strong>Assignment Override</strong> section,
+        type a reason, then assign the truck. The override is recorded permanently.</p>
+      </div>
+      <div class="pd-card">
+        <h3>How do I share the tracking link with a customer?</h3>
+        <p>Open the job → go to the <strong>Timeline</strong> tab.
+        The tracking URL is shown in the Tracking section at the top of that tab.
+        Copy and send it. The customer sees live status with no login.</p>
+      </div>
+    </div>
+    <div>
+      <div class="pd-card" style="margin-bottom:16px;">
+        <h3>Why didn't the recurring template generate a booking today?</h3>
+        <p>Check that: (1) the template is <em>Active</em>, (2) today equals
+        <em>next delivery day minus advance_days</em>, (3) the last generated date
+        is not already set to the upcoming delivery date (prevents duplicates).
+        Use <code>Generate Booking Now</code> to force creation immediately.</p>
+      </div>
+      <div class="pd-card" style="margin-bottom:16px;">
+        <h3>Why isn't my truck showing on the Live Map?</h3>
+        <p>The truck appears in the sidebar regardless of GPS.
+        If no map pin shows, the GeoTab sync hasn't updated the GPS fields on that vehicle.
+        Check <strong>Fleet → Vehicle → GeoTab</strong> tab or trigger a manual GPS refresh
+        from an active dispatch job using the <code>Refresh GPS</code> button.</p>
+      </div>
+      <div class="pd-card">
+        <h3>How does the invoice auto-confirm work?</h3>
+        <p>When every dispatch job on an invoice is: (a) in a Completed stage AND
+        (b) all required POD files are uploaded — the system automatically confirms the invoice
+        and attaches all POD + photos to it. No dispatcher action needed.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+<!-- ══════════════════════════════════════════════════════════════════
+     FOOTER
+════════════════════════════════════════════════════════════════════ -->
+<div class="pd-footer">
+  <strong>Dispatch App</strong> · Built for PremaFirm Logistics ·
+  Odoo 18 · Module: <code style="color:rgba(255,255,255,.7);">prema_dispatch</code> ·
+  All phases complete as of June 2026
+</div>
+
+</body>
+</html>

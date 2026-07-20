@@ -1,0 +1,188 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<odoo>
+    <record id="view_dispatch_stop_form" model="ir.ui.view">
+        <field name="name">prema.dispatch.stop.form</field>
+        <field name="model">prema.dispatch.stop</field>
+        <field name="arch" type="xml">
+            <form string="Stop">
+                <header>
+                    <button name="action_mark_en_route" string="En Route"
+                            type="object" class="btn-primary"
+                            invisible="status != 'pending'"/>
+                    <button name="action_mark_arrived" string="Mark Arrived"
+                            type="object" class="btn-primary"
+                            invisible="status not in ('pending','en_route')"/>
+                    <button name="action_mark_completed" string="Complete Stop"
+                            type="object" class="btn-success"
+                            invisible="status in ('completed','skipped')"/>
+                    <button name="action_restore_stop" string="Restore Stop"
+                            type="object" class="btn-secondary"
+                            confirm="Restore this stop to Pending?"
+                            invisible="status == 'pending'"/>
+                    <field name="status" widget="statusbar"
+                           statusbar_visible="pending,en_route,arrived,completed"/>
+                </header>
+                <sheet>
+                    <div class="alert alert-warning" role="alert" invisible="not address_validation_warning">
+                        <i class="fa fa-exclamation-triangle me-1"/>
+                        <field name="address_validation_warning" nolabel="1" readonly="1" class="d-inline"/>
+                        <span invisible="not address_formatted">
+                            — Google suggests: <field name="address_formatted" nolabel="1" readonly="1" class="d-inline fw-bold"/>
+                        </span>
+                    </div>
+                    <group>
+                        <group string="Location">
+                            <field name="stop_type"/>
+                            <field name="saved_location_id" string="Company"
+                                   placeholder="Pick a saved location…"/>
+                            <field name="transfer_to_vehicle_id"
+                                   invisible="stop_type not in ('transfer', 'cross_dock_drop')"/>
+                            <field name="transfer_to_driver_id"
+                                   invisible="stop_type not in ('transfer', 'cross_dock_drop')"/>
+                            <field name="partner_id" readonly="1"
+                                   help="Derived from the Saved Location above — not directly editable here."/>
+                            <field name="allow_cross_dock" readonly="1" widget="boolean_toggle"/>
+                            <field name="cross_dock_origin_stop_id"
+                                   invisible="stop_type not in ('cross_dock_drop', 'cross_dock_pickup')"
+                                   placeholder="Select the original pickup stop for this freight..."/>
+                            <field name="contact_name"/>
+                            <field name="contact_phone" widget="phone"/>
+                            <field name="address" widget="google_places" placeholder="Start typing an address…"/>
+                            <field name="dock_door"
+                                   placeholder="e.g. Door 7, Bay 3, Unit 12"
+                                   help="Warehouse dock door or bay number. Critical for overnight and early-morning arrivals."/>
+                            <field name="latitude" groups="base.group_no_one"/>
+                            <field name="longitude" groups="base.group_no_one"/>
+                        </group>
+                        <group string="Schedule">
+                            <field name="scheduled_time"/>
+                            <field name="actual_arrival_time"/>
+                            <field name="actual_departure_time"/>
+                        </group>
+                    </group>
+                    <group>
+                        <group string="Time Window">
+                            <field name="time_window_type"/>
+                            <field name="earliest_time"
+                                   invisible="time_window_type not in ('window',)"/>
+                            <field name="latest_time"
+                                   invisible="time_window_type not in ('window',)"/>
+                            <field name="exact_time"
+                                   invisible="time_window_type != 'exact'"/>
+                            <field name="deadline_time"
+                                   invisible="time_window_type not in ('deadline','window')"/>
+                            <field name="hard_deadline" widget="boolean_toggle"
+                                   invisible="time_window_type == 'flexible'"/>
+                            <field name="appointment_confirmed" widget="boolean_toggle"/>
+                        </group>
+                        <group string="Route Estimate">
+                            <field name="service_time_minutes"
+                                   help="Time spent loading/unloading. Default: 20 min pickup, 15 min drop-off."/>
+                            <field name="drive_time_from_prev_minutes" readonly="1"/>
+                            <field name="estimated_arrival" readonly="1"/>
+                            <field name="estimated_departure" readonly="1"/>
+                            <field name="linked_load_group"
+                                   help="Groups this stop with its matching pickup/drop-offs in a multi-round route. 0=ungrouped."/>
+                            <field name="route_locked" widget="boolean_toggle"/>
+                        </group>
+                    </group>
+                    <group>
+                        <group string="Load">
+                            <field name="pallets_in" string="Pallets In (Pickup)"
+                                   help="Pallets loaded onto truck at this pickup stop."/>
+                            <div class="text-muted" style="font-size:11px;margin-top:-8px"
+                                 invisible="not pallets_in_estimated">
+                                <i class="fa fa-magic me-1"/>Estimated from downstream deliveries — edit to override.
+                            </div>
+                            <field name="pallets_out" string="Pallets Out (Drop-Off)"
+                                   help="Pallets unloaded from truck at this drop-off stop."/>
+                            <field name="freight_item_ids" widget="many2many_tags"
+                                   options="{'no_create': True}"
+                                   placeholder="Select the exact pallets / freight items for this stop…"/>
+                            <field name="freight_item_summary" readonly="1"/>
+                            <field name="onboard_load_after_stop" readonly="1"
+                                   string="Onboard After This Stop"
+                                   help="Running pallet count on truck after this stop completes."/>
+                            <field name="weight_in_lbs"/>
+                            <field name="weight_out_lbs"/>
+                        </group>
+                        <group string="POD Requirements">
+                            <field name="pod_required"/>
+                            <field name="pod_uploaded" readonly="1"/>
+                            <field name="invoice_id"
+                                   help="Only needed when this job has multiple delivery stops billed on separate invoices. Leave blank to use the job's main invoice."/>
+                        </group>
+                    </group>
+                    <notebook>
+                        <page string="POD Documents" name="pod">
+                            <field name="pod_attachment_ids" widget="many2many_binary"/>
+                        </page>
+                        <page string="Photos" name="photos">
+                            <field name="photo_attachment_ids" widget="many2many_binary"/>
+                        </page>
+                        <page string="Other Documents" name="docs">
+                            <field name="document_attachment_ids" widget="many2many_binary"/>
+                        </page>
+                        <page string="Notes" name="notes">
+                            <group>
+                                <field name="dispatcher_notes" nolabel="1"
+                                       placeholder="Dispatcher instructions…" widget="text"/>
+                            </group>
+                            <group>
+                                <field name="driver_notes" nolabel="1"
+                                       placeholder="Driver notes (filled on completion)…" widget="text"/>
+                            </group>
+                            <group invisible="not issue_reason">
+                                <field name="issue_reason" nolabel="1" readonly="1"/>
+                            </group>
+                        </page>
+                        <page string="GPS" name="gps" groups="base.group_no_one">
+                            <group>
+                                <field name="gps_stamp_lat"/>
+                                <field name="gps_stamp_lng"/>
+                                <field name="gps_stamp_time"/>
+                            </group>
+                        </page>
+                    </notebook>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <record id="view_dispatch_stop_list" model="ir.ui.view">
+        <field name="name">prema.dispatch.stop.list</field>
+        <field name="model">prema.dispatch.stop</field>
+        <field name="arch" type="xml">
+            <list string="Stops" editable="bottom">
+                <field name="sequence" widget="handle"/>
+                <field name="stop_type"/>
+                <field name="status" widget="badge"
+                       decoration-info="status == 'en_route'"
+                       decoration-warning="status == 'arrived'"
+                       decoration-success="status == 'completed'"
+                       decoration-danger="status == 'issue'"
+                       decoration-muted="status == 'skipped'"/>
+                <field name="saved_location_id" string="Company" optional="show"/>
+                <field name="transfer_to_vehicle_id" optional="show"/>
+                <field name="transfer_to_driver_id" optional="show"/>
+                <field name="cross_dock_origin_stop_id" optional="hide"/>
+                <field name="freight_item_summary" string="Freight" optional="show"/>
+                <field name="address"/>
+                <field name="dock_door" string="Door #" optional="show"/>
+                <field name="scheduled_time"/>
+                <field name="actual_arrival_time"/>
+                <field name="pallets_in" string="In"/>
+                <field name="pallets_out" string="Out"/>
+                <field name="onboard_load_after_stop" readonly="1" string="Onboard"/>
+                <field name="pod_required"/>
+                <field name="pod_uploaded" readonly="1"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="action_dispatch_stops" model="ir.actions.act_window">
+        <field name="name">All Stops</field>
+        <field name="res_model">prema.dispatch.stop</field>
+        <field name="view_mode">list,form</field>
+    </record>
+</odoo>

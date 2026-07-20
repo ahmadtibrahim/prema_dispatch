@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_dispatch_chat_invite_wizard_form" model="ir.ui.view">
+        <field name="name">prema.dispatch.chat.invite.wizard.form</field>
+        <field name="model">prema.dispatch.chat.invite.wizard</field>
+        <field name="arch" type="xml">
+            <form string="Manage Driver Chat">
+                <field name="job_id" invisible="1"/>
+                <group>
+                    <field name="channel_name" readonly="1" string="Channel"/>
+                    <field name="current_member_ids" widget="many2many_tags" readonly="1"/>
+                </group>
+                <group string="Invite someone into this chat">
+                    <field name="invite_partner_ids" widget="many2many_tags" nolabel="1"/>
+                    <button name="action_invite" type="object" string="Invite" class="btn-primary"/>
+                </group>
+                <group string="Remove someone from this chat">
+                    <field name="remove_partner_ids" widget="many2many_tags" nolabel="1"/>
+                    <button name="action_remove" type="object" string="Remove" class="btn-secondary"/>
+                </group>
+                <footer>
+                    <button string="Close" class="btn-secondary" special="cancel"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+</odoo>

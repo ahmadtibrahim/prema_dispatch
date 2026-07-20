@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<odoo>
+<template id="warehouse_app_page" name="Warehouse Loader App">
+<t t-call="web.layout">
+<t t-set="head">
+    <title>Prema Warehouse</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/>
+    <link href="/prema_dispatch/static/src/css/warehouse_app.css" rel="stylesheet"/>
+</t>
+<t t-set="body_classname">wh-body</t>
+
+<div id="whApp" class="wh-app">
+    <div class="wh-header">
+        <div>📦 Warehouse — <t t-esc="user_name"/></div>
+    </div>
+    <div class="wh-picker">
+        <select id="whVehicle" class="wh-select">
+            <t t-foreach="vehicles" t-as="v" t-key="v['id']">
+                <option t-att-value="v['id']" t-esc="v['name']"/>
+            </t>
+        </select>
+        <input id="whDate" type="date" class="wh-select"/>
+        <button class="wh-btn wh-btn-primary" onclick="whOpenPlan()">Open Load Plan</button>
+    </div>
+    <div id="whBody" class="wh-body">
+        <div class="wh-empty">Select a truck and date, then tap "Open Load Plan."</div>
+    </div>
+</div>
+
+<script src="/prema_dispatch/static/src/js/warehouse_app.js"/>
+</t>
+</template>
+</odoo>

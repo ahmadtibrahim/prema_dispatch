@@ -1,0 +1,116 @@
+/* Dispatch Live Map */
+
+.o_dispatch_live_map {
+    height: calc(100vh - 46px);
+}
+
+/* Google Maps container must have explicit size */
+.o_dispatch_live_map .flex-grow-1 > div[t-ref],
+.o_dispatch_live_map .flex-grow-1 > div {
+    width: 100%;
+    height: 100%;
+}
+
+/* Truck row — clearly separated cards, not a dense compact list */
+.o_truck_row {
+    cursor: pointer;
+    transition: background 0.12s;
+    padding: 10px 12px !important;
+    margin: 8px 6px !important;
+    border: 1px solid #e9ecef !important;
+    border-radius: 8px;
+    box-shadow: 0 1px 2px rgba(0,0,0,.04);
+}
+.o_truck_row:hover {
+    background: #f0f4ff !important;
+}
+.o_truck_selected {
+    background: #e8f0fe !important;
+    border-left: 3px solid #1a73e8 !important;
+}
+
+/* Accordion stop list */
+.o_truck_stops_expand {
+    margin-top: 8px; padding-top: 8px; border-top: 1px dashed #dde2ea;
+    display: flex; flex-direction: column; gap: 4px; max-height: 180px; overflow-y: auto;
+}
+.o_truck_stop_row { display: flex; align-items: center; gap: 6px; font-size: 11px; color: #444; }
+.o_truck_stop_dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; background: #1a73e8; }
+.o_truck_stop_dot.pickup { background: #34a853; }
+.o_truck_stop_row.status-completed .o_truck_stop_dot,
+.o_truck_stop_row.status-skipped .o_truck_stop_dot { background: #9e9e9e; }
+
+/* Working / parked status badge */
+.o_truck_status_badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    font-size: 10px;
+    font-weight: 600;
+    padding: 1px 6px;
+    border-radius: 10px;
+    margin-top: 3px;
+}
+.o_truck_working {
+    background: #d4edda;
+    color: #155724;
+}
+.o_truck_parked {
+    background: #e9ecef;
+    color: #6c757d;
+}
+
+/* Zoom controls */
+.o_map_zoom_controls {
+    position: absolute;
+    right: 12px;
+    bottom: 80px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    z-index: 1000;
+}
+.o_map_zoom_btn {
+    width: 32px;
+    height: 32px;
+    background: #fff;
+    border: 1px solid #dde2ea;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    font-size: 16px;
+    font-weight: 700;
+    color: #444;
+    box-shadow: 0 1px 4px rgba(0,0,0,.15);
+    transition: background .12s;
+}
+.o_map_zoom_btn:hover { background: #f0f4ff; }
+
+.o_map_follow_btn {
+    position: absolute;
+    left: 12px;
+    bottom: 20px;
+    z-index: 1000;
+    background: #fff;
+    border: 1px solid #dde2ea;
+    border-radius: 16px;
+    padding: 6px 12px;
+    font-size: 12px;
+    font-weight: 600;
+    color: #444;
+    cursor: pointer;
+    box-shadow: 0 1px 4px rgba(0,0,0,.15);
+}
+.o_map_follow_btn.active {
+    background: #1a73e8;
+    color: #fff;
+    border-color: #1a73e8;
+}
+
+/* Google Maps info window font */
+.gm-style .gm-style-iw-c {
+    border-radius: 8px !important;
+    padding: 12px 14px !important;
+}

@@ -1,0 +1,100 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<odoo>
+
+    <template id="portal_tracking_page" name="Shipment Tracking">
+        <t t-call="web.layout">
+            <t t-set="head_website">
+                <style>
+                    body { font-family: Arial, sans-serif; background: #f8f9fa; }
+                    .track-card { background: #fff; border-radius: 8px; padding: 24px; margin: 24px auto; max-width: 720px; box-shadow: 0 2px 8px rgba(0,0,0,.08); }
+                    .track-header { border-bottom: 2px solid #0d6efd; padding-bottom: 12px; margin-bottom: 20px; }
+                    .track-title { font-size: 1.4rem; font-weight: bold; color: #0d6efd; }
+                    .track-num { font-size: 0.9rem; color: #6c757d; }
+                    .timeline { list-style: none; padding: 0; position: relative; }
+                    .timeline::before { content: ''; position: absolute; left: 16px; top: 0; bottom: 0; width: 2px; background: #dee2e6; }
+                    .timeline li { padding: 8px 8px 8px 44px; position: relative; }
+                    .timeline li::before { content: ''; position: absolute; left: 10px; top: 14px; width: 12px; height: 12px; border-radius: 50%; background: #6c757d; border: 2px solid #fff; box-shadow: 0 0 0 2px #dee2e6; }
+                    .timeline li.done::before { background: #198754; box-shadow: 0 0 0 2px #198754; }
+                    .timeline li.active-stop::before { background: #0d6efd; box-shadow: 0 0 0 2px #0d6efd; }
+                    .ev-time { font-size: 0.78rem; color: #6c757d; }
+                    .ev-label { font-weight: 600; }
+                    .ev-detail { font-size: 0.85rem; color: #495057; }
+                    .stop-badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 0.78rem; background: #e9ecef; }
+                </style>
+            </t>
+            <div class="track-card">
+                <div class="track-header">
+                    <div class="track-title">Shipment Tracking</div>
+                    <div class="track-num">Tracking #: <strong><t t-esc="job.tracking_number"/></strong></div>
+                    <div class="track-num">Customer: <t t-esc="job.partner_id.name"/></div>
+                    <div class="track-num">Status: <strong><t t-esc="job.stage_id.name"/></strong></div>
+                    <t t-if="job.scheduled_pickup">
+                        <div class="track-num">Pickup: <t t-esc="job.scheduled_pickup"/></div>
+                    </t>
+                </div>
+
+                <!-- Route summary -->
+                <t t-if="job.pickup_city or job.delivery_cities">
+                    <div style="margin-bottom:16px;">
+                        <span style="font-weight:600;">Route: </span>
+                        <t t-esc="job.pickup_city or '?'"/>
+                        <t t-if="job.delivery_cities"> → <t t-esc="job.delivery_cities"/></t>
+                    </div>
+                </t>
+
+                <!-- Stops -->
+                <t t-if="stops">
+                    <div style="margin-bottom:16px;">
+                        <div style="font-weight:600;margin-bottom:8px;">Stops</div>
+                        <table style="width:100%;border-collapse:collapse;font-size:0.88rem;">
+                            <tr style="background:#f1f3f5;">
+                                <th style="padding:6px 8px;text-align:left;">#</th>
+                                <th style="padding:6px 8px;text-align:left;">Type</th>
+                                <th style="padding:6px 8px;text-align:left;">Address</th>
+                                <th style="padding:6px 8px;text-align:left;">Status</th>
+                            </tr>
+                            <t t-foreach="stops" t-as="stop">
+                                <tr style="border-top:1px solid #dee2e6;">
+                                    <td style="padding:6px 8px;"><t t-esc="stop.sequence // 10"/></td>
+                                    <td style="padding:6px 8px;"><t t-esc="stop.stop_type.replace('_',' ').title()"/></td>
+                                    <td style="padding:6px 8px;"><t t-esc="stop.address or '—'"/></td>
+                                    <td style="padding:6px 8px;"><t t-esc="stop.status.replace('_',' ').title()"/></td>
+                                </tr>
+                            </t>
+                        </table>
+                    </div>
+                </t>
+
+                <!-- Timeline -->
+                <div style="font-weight:600;margin-bottom:8px;">Timeline</div>
+                <ul class="timeline">
+                    <t t-foreach="events" t-as="ev">
+                        <li t-attf-class="done #{ev.event_type in ('delivered','all_stops_done','invoice_completed') and 'active-stop' or ''}">
+                            <div class="ev-time"><t t-esc="ev.occurred_at"/></div>
+                            <div class="ev-label"><t t-esc="ev.event_type_label"/></div>
+                            <t t-if="ev.notes">
+                                <div class="ev-detail"><t t-esc="ev.notes"/></div>
+                            </t>
+                        </li>
+                    </t>
+                    <t t-if="not events">
+                        <li><div class="ev-detail" style="color:#6c757d;">No timeline events yet.</div></li>
+                    </t>
+                </ul>
+            </div>
+        </t>
+    </template>
+
+    <template id="portal_tracking_not_found" name="Tracking Not Found">
+        <t t-call="web.layout">
+            <div style="text-align:center;padding:60px 20px;font-family:Arial,sans-serif;">
+                <h2>Tracking number not found</h2>
+                <p style="color:#6c757d;">
+                    The tracking number <strong><t t-esc="tracking_number"/></strong>
+                    was not found. Please verify the number and try again.
+                </p>
+            </div>
+        </t>
+    </template>
+
+</odoo>

@@ -1,0 +1,110 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<odoo>
+    <data>
+        <record id="module_category_prema_dispatch" model="ir.module.category">
+            <field name="name">Prema Dispatch</field>
+            <field name="sequence">25</field>
+        </record>
+
+        <record id="group_dispatch_manager" model="res.groups">
+            <field name="name">Dispatch Manager</field>
+            <field name="category_id" ref="module_category_prema_dispatch"/>
+            <field name="comment">Full access to all dispatch records, stages, and configuration.</field>
+        </record>
+
+        <record id="group_dispatcher" model="res.groups">
+            <field name="name">Dispatcher</field>
+            <field name="category_id" ref="module_category_prema_dispatch"/>
+            <field name="comment">Create and manage dispatch jobs, assign trucks/drivers.</field>
+        </record>
+
+        <record id="group_dispatch_readonly" model="res.groups">
+            <field name="name">Dispatch Read-Only (Accounting)</field>
+            <field name="category_id" ref="module_category_prema_dispatch"/>
+            <field name="comment">Read-only access to dispatch jobs linked to invoices.</field>
+        </record>
+
+        <record id="group_dispatch_driver" model="res.groups">
+            <field name="name">Driver</field>
+            <field name="category_id" ref="module_category_prema_dispatch"/>
+            <field name="comment">Driver access — can view and update only their own assigned jobs and stops via the Driver App.</field>
+        </record>
+
+        <!-- Call History visibility (audit item 25): Odoo's own voip.call
+             model already restricts a plain internal user to their own
+             calls (see base module rule "voip.call: users can access their
+             own entries"). Dispatchers coordinate calls for the whole team,
+             so give Dispatcher + Dispatch Manager unrestricted visibility —
+             there's no clean per-call "is this dispatch-related" flag to
+             filter on, and in practice nearly every inbound/outbound call at
+             a small carrier IS dispatch-related. -->
+        <record id="rule_voip_call_dispatcher_all" model="ir.rule">
+            <field name="name">voip.call: dispatchers see all calls</field>
+            <field name="model_id" ref="voip.model_voip_call"/>
+            <field name="domain_force">[(1, '=', 1)]</field>
+            <field name="groups" eval="[(4, ref('group_dispatcher')), (4, ref('group_dispatch_manager'))]"/>
+        </record>
+
+        <!-- Defense-in-depth record rules, scoped only to the Driver group.
+             Confirmed by direct code audit: driver_* methods on
+             prema.dispatch.job (driver_add_evidence, driver_update_stop,
+             driver_delete_stop, driver_reorder_stops, etc.) previously had
+             NO ownership check at all — a driver who guessed/edited a stop
+             or job id could read or mutate another driver's records. The
+             services/dispatch_auth.py checks added at the top of every
+             driver_* method are the primary fix (record rules alone don't
+             protect RPC methods, only ORM-level browse/search/write calls
+             made without sudo()). These rules are the second layer, so a
+             driver-group user is scoped even from a raw ORM search() that
+             bypasses a driver_* wrapper.
+
+             IMPORTANT: these rules only affect users who belong to
+             group_dispatch_driver. Dispatcher/Manager/Administrator have no
+             rule here and remain completely unrestricted, per their
+             existing permissions. If an account is ever created that
+             belongs to BOTH group_dispatch_driver and a dispatch-staff
+             group, Odoo ORs all rules the user's groups match for a given
+             model — since dispatcher/manager currently have no counter-rule
+             for these two models, such a dual-role account WOULD be
+             incorrectly restricted to only their own jobs/stops. The
+             existing driver-onboarding flow (action_create_driver_account)
+             only ever grants group_dispatch_driver alone, so this does not
+             occur today — flagging it so it isn't rediscovered the hard way
+             if a dual-role account is created later. -->
+        <record id="rule_dispatch_job_driver_own" model="ir.rule">
+            <field name="name">prema.dispatch.job: driver sees only their own assigned jobs</field>
+            <field name="model_id" ref="model_prema_dispatch_job"/>
+            <field name="domain_force">[('driver_id', '=', user.partner_id.id)]</field>
+            <field name="groups" eval="[(4, ref('group_dispatch_driver'))]"/>
+        </record>
+
+        <record id="rule_dispatch_stop_driver_own" model="ir.rule">
+            <field name="name">prema.dispatch.stop: driver sees only stops on their own jobs</field>
+            <field name="model_id" ref="model_prema_dispatch_stop"/>
+            <field name="domain_force">[('job_id.driver_id', '=', user.partner_id.id)]</field>
+            <field name="groups" eval="[(4, ref('group_dispatch_driver'))]"/>
+        </record>
+
+        <!-- Phase 2/5: Warehouse Loader — authenticated, minimal scope. Never
+             the Driver group (different job: loads trucks, not routes them),
+             never given accounting/invoice/truck-reassignment access. -->
+        <record id="group_dispatch_warehouse" model="res.groups">
+            <field name="name">Warehouse Loader</field>
+            <field name="category_id" ref="module_category_prema_dispatch"/>
+            <field name="comment">Warehouse staff — can view active Load Plans, mark pallets loaded, upload loading/pallet photos, report damage. No rates, invoices, truck/driver reassignment, or unlock access.</field>
+        </record>
+
+        <!-- Driver scoping for the new Load Plan model: a driver may only
+             see load plans where they're the assigned driver. Warehouse
+             staff are scoped operationally in code (check_load_plan_access,
+             services/dispatch_auth.py) by state, not by identity, since
+             many warehouse workers load many trucks — no identity-based
+             rule is added for that group here. -->
+        <record id="rule_load_plan_driver_own" model="ir.rule">
+            <field name="name">prema.dispatch.load.plan: driver sees only their own load plans</field>
+            <field name="model_id" ref="model_prema_dispatch_load_plan"/>
+            <field name="domain_force">[('driver_id', '=', user.partner_id.id)]</field>
+            <field name="groups" eval="[(4, ref('group_dispatch_driver'))]"/>
+        </record>
+    </data>
+</odoo>

@@ -1,0 +1,218 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<odoo>
+    <!-- Sequence: noupdate=1 so the running counter is never reset on upgrade -->
+    <data noupdate="1">
+        <record id="seq_dispatch_job" model="ir.sequence">
+            <field name="name">Prema Dispatch Job</field>
+            <field name="code">prema.dispatch.job</field>
+            <field name="prefix">DISP/%(year)s/</field>
+            <field name="padding">5</field>
+            <field name="company_id" eval="False"/>
+        </record>
+    </data>
+
+    <!-- Stages: noupdate=0 so stage_type / is_booking_phase / is_dispatched are
+         applied on upgrade. Stage names and sequences stay the same values,
+         so any user-renamed stages will be reset — warn before upgrading. -->
+    <data noupdate="0">
+
+        <!-- ── BOOKING PHASE ─────────────────────────────────────────── -->
+
+        <record id="stage_draft" model="prema.dispatch.stage">
+            <field name="name">Draft</field>
+            <field name="code">draft</field>
+            <field name="stage_type">draft</field>
+            <field name="is_booking_phase">True</field>
+            <field name="is_dispatched">False</field>
+            <field name="sequence">10</field>
+            <field name="fold">False</field>
+            <field name="is_completed">False</field>
+            <field name="is_cancelled">False</field>
+        </record>
+
+        <record id="stage_new_booking" model="prema.dispatch.stage">
+            <field name="name">New Booking</field>
+            <field name="code">new_booking</field>
+            <field name="stage_type">booking</field>
+            <field name="is_booking_phase">True</field>
+            <field name="is_dispatched">False</field>
+            <field name="sequence">15</field>
+            <field name="fold">False</field>
+            <field name="is_completed">False</field>
+            <field name="is_cancelled">False</field>
+        </record>
+
+        <record id="stage_ready" model="prema.dispatch.stage">
+            <field name="name">Planning</field>
+            <field name="code">ready</field>
+            <field name="stage_type">booking</field>
+            <field name="is_booking_phase">True</field>
+            <field name="is_dispatched">False</field>
+            <field name="sequence">20</field>
+            <field name="fold">False</field>
+            <field name="is_completed">False</field>
+            <field name="is_cancelled">False</field>
+        </record>
+
+        <record id="stage_assigned" model="prema.dispatch.stage">
+            <field name="name">Assigned</field>
+            <field name="code">assigned</field>
+            <field name="stage_type">booking</field>
+            <field name="is_booking_phase">True</field>
+            <field name="is_dispatched">False</field>
+            <field name="sequence">30</field>
+            <field name="fold">False</field>
+            <field name="is_completed">False</field>
+            <field name="is_cancelled">False</field>
+        </record>
+
+        <record id="stage_ready_to_dispatch" model="prema.dispatch.stage">
+            <field name="name">Ready to Dispatch</field>
+            <field name="code">ready_to_dispatch</field>
+            <field name="stage_type">booking</field>
+            <field name="is_booking_phase">True</field>
+            <field name="is_dispatched">False</field>
+            <field name="sequence">35</field>
+            <field name="fold">False</field>
+            <field name="is_completed">False</field>
+            <field name="is_cancelled">False</field>
+        </record>
+
+        <!-- ── DISPATCHED PHASE ──────────────────────────────────────── -->
+
+        <record id="stage_sent_to_driver" model="prema.dispatch.stage">
+            <field name="name">Sent to Driver</field>
+            <field name="code">sent_to_driver</field>
+            <field name="stage_type">dispatched</field>
+            <field name="is_booking_phase">False</field>
+            <field name="is_dispatched">True</field>
+            <field name="sequence">40</field>
+            <field name="fold">False</field>
+            <field name="is_completed">False</field>
+            <field name="is_cancelled">False</field>
+        </record>
+
+        <record id="stage_en_route_pickup" model="prema.dispatch.stage">
+            <field name="name">En Route Pickup</field>
+            <field name="code">en_route_pickup</field>
+            <field name="stage_type">dispatched</field>
+            <field name="is_booking_phase">False</field>
+            <field name="is_dispatched">True</field>
+            <field name="sequence">50</field>
+            <field name="fold">False</field>
+            <field name="is_completed">False</field>
+            <field name="is_cancelled">False</field>
+        </record>
+
+        <record id="stage_at_pickup" model="prema.dispatch.stage">
+            <field name="name">At Pickup</field>
+            <field name="code">at_pickup</field>
+            <field name="stage_type">dispatched</field>
+            <field name="is_booking_phase">False</field>
+            <field name="is_dispatched">True</field>
+            <field name="sequence">60</field>
+            <field name="fold">False</field>
+            <field name="is_completed">False</field>
+            <field name="is_cancelled">False</field>
+        </record>
+
+        <record id="stage_picked_up" model="prema.dispatch.stage">
+            <field name="name">Picked Up</field>
+            <field name="code">picked_up</field>
+            <field name="stage_type">dispatched</field>
+            <field name="is_booking_phase">False</field>
+            <field name="is_dispatched">True</field>
+            <field name="sequence">70</field>
+            <field name="fold">False</field>
+            <field name="is_completed">False</field>
+            <field name="is_cancelled">False</field>
+        </record>
+
+        <record id="stage_in_transit" model="prema.dispatch.stage">
+            <field name="name">In Transit</field>
+            <field name="code">in_transit</field>
+            <field name="stage_type">dispatched</field>
+            <field name="is_booking_phase">False</field>
+            <field name="is_dispatched">True</field>
+            <field name="sequence">80</field>
+            <field name="fold">False</field>
+            <field name="is_completed">False</field>
+            <field name="is_cancelled">False</field>
+        </record>
+
+        <record id="stage_at_delivery" model="prema.dispatch.stage">
+            <field name="name">At Delivery</field>
+            <field name="code">at_delivery</field>
+            <field name="stage_type">dispatched</field>
+            <field name="is_booking_phase">False</field>
+            <field name="is_dispatched">True</field>
+            <field name="sequence">90</field>
+            <field name="fold">False</field>
+            <field name="is_completed">False</field>
+            <field name="is_cancelled">False</field>
+        </record>
+
+        <record id="stage_delivered" model="prema.dispatch.stage">
+            <field name="name">Delivered</field>
+            <field name="code">delivered</field>
+            <field name="stage_type">dispatched</field>
+            <field name="is_booking_phase">False</field>
+            <field name="is_dispatched">True</field>
+            <field name="sequence">100</field>
+            <field name="fold">False</field>
+            <field name="is_completed">False</field>
+            <field name="is_cancelled">False</field>
+        </record>
+
+        <record id="stage_pod_received" model="prema.dispatch.stage">
+            <field name="name">POD Received</field>
+            <field name="code">pod_received</field>
+            <field name="stage_type">dispatched</field>
+            <field name="is_booking_phase">False</field>
+            <field name="is_dispatched">True</field>
+            <field name="sequence">110</field>
+            <field name="fold">False</field>
+            <field name="is_completed">False</field>
+            <field name="is_cancelled">False</field>
+        </record>
+
+        <!-- ── TERMINAL STAGES ───────────────────────────────────────── -->
+
+        <record id="stage_completed" model="prema.dispatch.stage">
+            <field name="name">Completed</field>
+            <field name="code">completed</field>
+            <field name="stage_type">completed</field>
+            <field name="is_booking_phase">False</field>
+            <field name="is_dispatched">False</field>
+            <field name="sequence">120</field>
+            <field name="fold">True</field>
+            <field name="is_completed">True</field>
+            <field name="is_cancelled">False</field>
+        </record>
+
+        <record id="stage_exception" model="prema.dispatch.stage">
+            <field name="name">Exception</field>
+            <field name="code">exception</field>
+            <field name="stage_type">exception</field>
+            <field name="is_booking_phase">False</field>
+            <field name="is_dispatched">False</field>
+            <field name="sequence">125</field>
+            <field name="fold">True</field>
+            <field name="is_completed">False</field>
+            <field name="is_cancelled">False</field>
+        </record>
+
+        <record id="stage_cancelled" model="prema.dispatch.stage">
+            <field name="name">Cancelled</field>
+            <field name="code">cancelled</field>
+            <field name="stage_type">cancelled</field>
+            <field name="is_booking_phase">False</field>
+            <field name="is_dispatched">False</field>
+            <field name="sequence">130</field>
+            <field name="fold">True</field>
+            <field name="is_completed">False</field>
+            <field name="is_cancelled">True</field>
+        </record>
+
+    </data>
+</odoo>

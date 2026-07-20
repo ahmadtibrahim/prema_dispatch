@@ -1,0 +1,149 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+<t t-name="prema_dispatch.PalletLayoutPanel">
+    <div class="o_pallet_layout_overlay">
+        <div t-if="state.loading" class="pl-loading">Loading load plan…</div>
+        <t t-elif="state.data">
+            <div class="pl-header">
+                <div class="pl-header-main">
+                    <strong t-esc="props.vehicleName"/>
+                    <span t-if="state.data.driver"> · <t t-esc="state.data.driver.name"/></span>
+                    <span> · <t t-esc="props.operatingDate"/></span>
+                    <span class="pl-badge" t-esc="state.data.layout_template.layout_type"/>
+                    <span t-if="state.data.is_stale" class="pl-badge pl-badge-warn">Stale: <t t-esc="state.data.stale_reason"/></span>
+                    <span t-if="state.data.is_locked" class="pl-badge pl-badge-lock">🔒 Locked</span>
+                </div>
+                <button class="btn btn-sm btn-outline-secondary" t-on-click="close">✕ Close</button>
+            </div>
+            <div t-if="!state.data.layout_template.is_verified" class="pl-unverified-banner">
+                <div><b>⚠ UNVERIFIED VEHICLE LAYOUT</b></div>
+                <div>Dimensions and capacity have not yet been physically verified. This diagram is a planning aid, not a guarantee these pallets will fit. Legal payload/axle-weight limits are separate and not verified here.</div>
+                <div t-if="state.data.unverified_layout_acknowledged" class="pl-ack-confirmed">✓ Acknowledged</div>
+                <button t-else="" class="btn btn-sm btn-warning" t-on-click="acknowledgeUnverified">I Acknowledge — Proceed</button>
+            </div>
+            <div class="pl-counts">
+                <span>Expected: <b t-esc="state.data.counts.expected"/></span>
+                <span>Confirmed: <b t-esc="state.data.counts.confirmed"/></span>
+                <span>Assigned: <b t-esc="state.data.counts.assigned"/></span>
+                <span>Loaded: <b t-esc="state.data.counts.loaded"/></span>
+                <span>Vacant: <b t-esc="state.data.counts.vacant"/></span>
+                <span>Utilization: <b t-esc="state.data.counts.utilization_percentage"/>%</span>
+                <span>Payload: <b t-esc="state.data.payload.used"/> / <t t-esc="state.data.payload.capacity"/> lbs</span>
+            </div>
+
+            <div class="pl-body">
+                <div class="pl-diagram-col">
+                    <div class="pl-diagram-label">FRONT / CAB</div>
+                    <div class="pl-diagram">
+                        <div class="pl-side pl-side-driver">
+                            <t t-foreach="state.data.positions.filter(p => p.side === 'driver')" t-as="pos" t-key="pos.position_code">
+                                <div t-att-class="positionClass(pos)" t-on-click="() => this.onPositionClick(pos)">
+                                    <div class="pl-pos-code" t-esc="pos.position_code"/>
+                                    <t t-if="pos.item">
+                                        <div class="pl-pos-item" t-esc="pos.item.name"/>
+                                        <div t-if="pos.item.stops.length" class="pl-pos-stops">
+                                            Stop<t t-if="pos.item.stops.length > 1">s</t>:
+                                            <t t-esc="pos.item.stops.map(s => s.sequence).join('/')"/>
+                                        </div>
+                                        <div t-if="pos.item.shared_skid" class="pl-pos-shared-label">SHARED</div>
+                                    </t>
+                                    <t t-else="">
+                                        <div class="pl-pos-vacant-label">VACANT</div>
+                                    </t>
+                                </div>
+                            </t>
+                        </div>
+                        <div class="pl-side pl-side-passenger">
+                            <t t-foreach="state.data.positions.filter(p => p.side === 'passenger')" t-as="pos" t-key="pos.position_code">
+                                <div t-att-class="positionClass(pos)" t-on-click="() => this.onPositionClick(pos)">
+                                    <div class="pl-pos-code" t-esc="pos.position_code"/>
+                                    <t t-if="pos.item">
+                                        <div class="pl-pos-item" t-esc="pos.item.name"/>
+                                        <div t-if="pos.item.stops.length" class="pl-pos-stops">
+                                            Stop<t t-if="pos.item.stops.length > 1">s</t>:
+                                            <t t-esc="pos.item.stops.map(s => s.sequence).join('/')"/>
+                                        </div>
+                                        <div t-if="pos.item.shared_skid" class="pl-pos-shared-label">SHARED</div>
+                                    </t>
+                                    <t t-else="">
+                                        <div class="pl-pos-vacant-label">VACANT</div>
+                                    </t>
+                                </div>
+                            </t>
+                        </div>
+                        <div class="pl-side pl-side-center" t-if="state.data.positions.some(p => p.side === 'center')">
+                            <t t-foreach="state.data.positions.filter(p => p.side === 'center')" t-as="pos" t-key="pos.position_code">
+                                <div t-att-class="positionClass(pos)" t-on-click="() => this.onPositionClick(pos)">
+                                    <div class="pl-pos-code" t-esc="pos.display_name"/>
+                                    <t t-if="pos.item"><div class="pl-pos-item" t-esc="pos.item.name"/></t>
+                                    <t t-else=""><div class="pl-pos-vacant-label">VACANT</div></t>
+                                </div>
+                            </t>
+                        </div>
+                    </div>
+                    <div class="pl-diagram-label">REAR DOOR / LIFTGATE</div>
+                </div>
+
+                <div class="pl-side-panel">
+                    <div t-if="selectedPosition" class="pl-detail-card">
+                        <strong>Position <t t-esc="selectedPosition.position_code"/></strong>
+                        <t t-if="selectedPosition.item">
+                            <div><t t-esc="selectedPosition.item.name"/> — <t t-esc="selectedPosition.item.status"/></div>
+                            <div t-if="selectedPosition.item.stops.length">
+                                Stops: <t t-esc="selectedPosition.item.stops.map(s => s.sequence + ' (' + s.customer + ')').join(', ')"/>
+                            </div>
+                            <div class="pl-detail-actions">
+                                <button class="btn btn-xs btn-outline-success" t-on-click="() => this.markLoaded(selectedPosition.item.id)">Mark Loaded</button>
+                                <button class="btn btn-xs btn-outline-danger" t-on-click="() => this.unassign(selectedPosition.item.id)">Unassign</button>
+                            </div>
+                        </t>
+                        <t t-else="">
+                            <div class="pl-unassigned-list">
+                                <div t-if="!state.data.unassigned_items.length" class="text-muted">No unassigned pallets.</div>
+                                <div t-foreach="state.data.unassigned_items" t-as="item" t-key="item.id" class="pl-unassigned-item">
+                                    <span t-esc="item.name"/>
+                                    <button class="btn btn-xs btn-outline-primary" t-on-click="() => this.assignItemToSelected(item.id)">Assign here</button>
+                                </div>
+                            </div>
+                        </t>
+                    </div>
+
+                    <div class="pl-section">
+                        <strong>Unassigned Pallets (<t t-esc="state.data.unassigned_items.length"/>)</strong>
+                        <div t-foreach="state.data.unassigned_items" t-as="u" t-key="u.id" class="pl-unassigned-item">
+                            <span t-esc="u.name"/>
+                        </div>
+                    </div>
+
+                    <div class="pl-section">
+                        <strong>Included Jobs</strong>
+                        <div t-foreach="state.data.jobs" t-as="j" t-key="j.job_id">
+                            <t t-esc="j.job_name"/> — <t t-esc="j.customer"/>
+                        </div>
+                    </div>
+
+                    <div class="pl-section" t-if="state.data.warnings.length">
+                        <strong>Warnings</strong>
+                        <div t-foreach="state.data.warnings" t-as="w" t-key="w_index" class="pl-warning">⚠ <t t-esc="w"/></div>
+                    </div>
+
+                    <div t-if="state.recommendation" class="pl-section pl-recommend-card">
+                        <strong>Recommended Layout</strong>
+                        <div t-foreach="state.recommendation.warnings" t-as="rw" t-key="rw_index" class="pl-warning">⚠ <t t-esc="rw"/></div>
+                        <button class="btn btn-xs btn-primary" t-on-click="acceptRecommendation">Accept</button>
+                        <button class="btn btn-xs btn-outline-secondary" t-on-click="rejectRecommendation">Reject</button>
+                    </div>
+
+                    <div class="pl-actions">
+                        <button class="btn btn-sm btn-outline-secondary" t-on-click="validate">Validate</button>
+                        <button class="btn btn-sm btn-outline-secondary" t-on-click="recommend">Recommend Layout</button>
+                        <button t-if="!state.data.is_locked" class="btn btn-sm btn-outline-success" t-on-click="confirmLoading">Confirm Loading</button>
+                        <button t-if="!state.data.is_locked" class="btn btn-sm btn-dark" t-on-click="lock">Lock</button>
+                        <button t-if="state.data.is_locked" class="btn btn-sm btn-warning" t-on-click="unlock">Manager Unlock</button>
+                    </div>
+                </div>
+            </div>
+        </t>
+    </div>
+</t>
+</templates>

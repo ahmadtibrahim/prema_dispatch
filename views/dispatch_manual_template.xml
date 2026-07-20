@@ -1,0 +1,275 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<odoo>
+
+<!-- Opens the standalone manual page in a new tab -->
+<record id="action_dispatch_manual" model="ir.actions.act_url">
+    <field name="name">User Manual</field>
+    <field name="url">/dispatch/manual</field>
+    <field name="target">new</field>
+</record>
+
+<template id="dispatch_manual_page" name="Prema Dispatch User Manual">
+<t t-call="web.layout">
+<t t-set="head">
+    <title>Prema Dispatch — User Manual</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1"/>
+    <style>
+        body.dm-body {
+            background: #f4f5f7;
+            color: #1b1b1b;
+            font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            line-height: 1.55;
+        }
+        .dm-wrap { max-width: 920px; margin: 0 auto; padding: 24px 20px 80px; }
+        .dm-title { font-size: 28px; font-weight: 700; margin: 0 0 4px; }
+        .dm-subtitle { color: #666; margin: 0 0 24px; }
+        .dm-toc {
+            background: #fff; border: 1px solid #e0e0e0; border-radius: 8px;
+            padding: 16px 20px; margin-bottom: 28px;
+        }
+        .dm-toc h2 { font-size: 15px; text-transform: uppercase; letter-spacing: .03em; color: #555; margin: 0 0 10px; }
+        .dm-toc ol { margin: 0; padding-left: 20px; columns: 2; }
+        .dm-toc a { color: #1565C0; text-decoration: none; }
+        .dm-toc a:hover { text-decoration: underline; }
+        .dm-section {
+            background: #fff; border: 1px solid #e0e0e0; border-radius: 8px;
+            padding: 22px 26px; margin-bottom: 20px; scroll-margin-top: 12px;
+        }
+        .dm-section h2 {
+            font-size: 20px; margin: 0 0 4px; color: #0d3d75;
+            border-bottom: 2px solid #1565C0; padding-bottom: 8px;
+        }
+        .dm-section h3 { font-size: 15px; margin: 18px 0 6px; color: #1b1b1b; }
+        .dm-section p { margin: 6px 0; }
+        .dm-section ul, .dm-section ol { margin: 6px 0 6px 0; padding-left: 22px; }
+        .dm-section li { margin: 3px 0; }
+        code, .dm-kbd {
+            background: #eef1f5; border: 1px solid #dbe0e6; border-radius: 4px;
+            padding: 1px 6px; font-size: 0.92em; font-family: ui-monospace, Consolas, monospace;
+        }
+        .dm-btn {
+            display: inline-block; background: #eef1f5; border: 1px solid #cfd6de;
+            border-radius: 5px; padding: 1px 8px; font-weight: 600; font-size: 0.9em;
+        }
+        table.dm-table { width: 100%; border-collapse: collapse; margin: 10px 0; }
+        table.dm-table th, table.dm-table td {
+            border: 1px solid #e0e0e0; padding: 6px 10px; text-align: left; font-size: 0.95em;
+        }
+        table.dm-table th { background: #f4f5f7; }
+        .dm-note {
+            background: #fff8e1; border-left: 4px solid #f0ad4e; padding: 8px 14px;
+            margin: 10px 0; font-size: 0.95em;
+        }
+        .dm-print-btn {
+            position: fixed; top: 18px; right: 18px; background: #1565C0; color: #fff;
+            border: none; border-radius: 6px; padding: 8px 16px; font-weight: 600;
+            cursor: pointer; box-shadow: 0 2px 6px rgba(0,0,0,.2);
+        }
+        @media print {
+            .dm-print-btn, .dm-toc { display: none; }
+            .dm-section { break-inside: avoid; border: none; box-shadow: none; }
+        }
+    </style>
+</t>
+<t t-set="body_classname">dm-body</t>
+
+<button class="dm-print-btn" onclick="window.print()">🖨 Print / Save PDF</button>
+
+<div class="dm-wrap">
+    <h1 class="dm-title">Prema Dispatch — User Manual</h1>
+    <p class="dm-subtitle">Reference guide for dispatchers, managers and drivers. Covers booking, planning, live tracking, the driver app, calling, AI document extraction and reporting.</p>
+
+    <div class="dm-toc">
+        <h2>Contents</h2>
+        <ol>
+            <li><a href="#booking">Booking a Load</a></li>
+            <li><a href="#planner">Dispatch Planner</a></li>
+            <li><a href="#livemap">Live Map</a></li>
+            <li><a href="#board">Booking Board</a></li>
+            <li><a href="#driverapp">Driver App</a></li>
+            <li><a href="#voip">VoIP &amp; Dispatch Calling</a></li>
+            <li><a href="#ai">AI Document Extraction</a></li>
+            <li><a href="#reports">Reporting Suite</a></li>
+            <li><a href="#loadplan">Load Plan &amp; Pallet Positioning</a></li>
+        </ol>
+    </div>
+
+    <!-- 1. BOOKING -->
+    <div class="dm-section" id="booking">
+        <h2>1. Booking a Load</h2>
+        <p>There are three ways to create a Dispatch Booking (a <code>prema.dispatch.job</code> record, numbered <code>DISP/YYYY/#####</code>):</p>
+        <h3>From a Sales Order or Invoice</h3>
+        <p>Click <span class="dm-btn">Book Load</span> on the Sales Order or Invoice. If a booking already exists for that document, you'll be asked whether to open the existing one or create a separate one — this avoids duplicate bookings if the button is clicked twice.</p>
+        <h3>Generate from Text (AI)</h3>
+        <p>On a Sales Order's <b>Generate from Text</b> tab, paste a customer WhatsApp message, SMS or email into the text box and click <span class="dm-btn">Generate Dispatch Booking</span>. AI extracts the pickup/delivery stops, pallet counts per stop, route, date, and reefer/liftgate requirements, then creates the booking with stops already filled in — you just review and confirm.</p>
+        <h3>Manually</h3>
+        <p>Create a Dispatch Booking directly from the Dispatch Planner or backend list, filling in customer, reference/BOL/PO, stops, equipment and skid counts by hand.</p>
+        <h3>Booking Stages</h3>
+        <p>Every booking moves through stages: <code>Draft → New Booking → Planning → Assigned → Ready to Dispatch</code> (booking phase), then <code>Sent to Driver → En Route Pickup → At Pickup → Picked Up → In Transit → At Delivery → Delivered → POD Received</code> (dispatched phase), ending at <code>Completed</code>, <code>Exception</code> or <code>Cancelled</code>.</p>
+        <h3>Templates &amp; Consolidation</h3>
+        <ul>
+            <li><b>Booking Templates</b> (Settings menu) — save a recurring lane's stop pattern to reuse for repeat customers.</li>
+            <li><b>Find Available Truck</b> — mid-day load finder for slotting an ad-hoc booking onto a truck that already has room on its route.</li>
+            <li><b>LTL Consolidations</b> (Reports menu) — combine multiple LTL bookings that share a lane onto one truck.</li>
+        </ul>
+    </div>
+
+    <!-- 2. PLANNER -->
+    <div class="dm-section" id="planner">
+        <h2>2. Dispatch Planner</h2>
+        <p>The Planner is the main scheduling board: unassigned jobs on one side, trucks with their assigned stops on the other.</p>
+        <h3>Assigning a Job to a Truck</h3>
+        <ul>
+            <li><b>Drag and drop</b> — drag a job card from the Unassigned panel onto a truck row.</li>
+            <li><b>Click to assign</b> — click <span class="dm-btn">Assign</span> on a job card, then click the target truck row.</li>
+            <li>If the system flags the assignment as <b>infeasible</b> (e.g. truck can't make the time window), a manager can confirm an override to force the assignment anyway.</li>
+        </ul>
+        <h3>Per-Truck Actions</h3>
+        <table class="dm-table">
+            <tr><th>Button</th><th>What it does</th></tr>
+            <tr><td><span class="dm-btn">ETAs</span></td><td>Requests Google-estimated arrival times for every stop on that truck's route.</td></tr>
+            <tr><td><span class="dm-btn">Optimize</span></td><td>Re-orders the truck's pending stops for the shortest total drive time.</td></tr>
+            <tr><td><span class="dm-btn">Sheet</span></td><td>Generates/refreshes that truck's Driver Worksheet for the day (stop count, total drive time, total detention time).</td></tr>
+        </table>
+        <h3>View &amp; Layout Controls</h3>
+        <ul>
+            <li><b>Stop View / Block View</b> — toggle the timeline between individual stop markers and stretched job blocks.</li>
+            <li><b>Layout modes: Normal / Wide / Multi</b> — Wide collapses the side panels for more room; Multi (and the <span class="dm-btn">New Window</span> button) opens a synced second Planner window for a two-monitor dispatch desk. Your choice is remembered between sessions.</li>
+            <li><b>Auto Plan</b> — automatically assigns unassigned loads to the best-fit truck.</li>
+            <li><b>Feasibility</b> — opens the feasibility checker for a job before assigning it.</li>
+        </ul>
+        <h3>Map &amp; Stops Panel</h3>
+        <p>The bottom map shows truck GPS and route with satellite/hybrid toggle and <b>No Tolls / No Highways / No Ferries</b> routing checkboxes. The Stops panel lets you drag-reorder stops on a truck, adjust service time with the +/- stepper, delete a stop, and see a pallet-capacity bar for the truck.</p>
+        <div class="dm-note">Hover over driver names, reefer/liftgate badges, the GPS-age indicator, or the ETAs/Optimize/Sheet buttons for a short delay to see a detail tooltip.</div>
+    </div>
+
+    <!-- 3. LIVE MAP -->
+    <div class="dm-section" id="livemap">
+        <h2>3. Live Map</h2>
+        <p>The <b>Live Map</b> menu shows every active truck's real-time GPS position alongside its remaining stops, refreshed automatically as drivers update their status in the Driver App. Use it to see at a glance where every truck is right now without opening individual bookings.</p>
+        <p>Customers get a scaled-down, privacy-filtered version of this: the public tracking page at <code>/dispatch/track/&lt;tracking number&gt;</code> shows their own stop's live ETA and status, with other stops on the truck shown only by city, and polls for updates every 30 seconds.</p>
+    </div>
+
+    <!-- 4. BOOKING BOARD -->
+    <div class="dm-section" id="board">
+        <h2>4. Booking Board</h2>
+        <p>The <b>Booking Board</b> (managers only) is an airport-terminal-style status overview of every booking — a live table, not a kanban — refreshing every 20 seconds.</p>
+        <h3>Columns</h3>
+        <p>Booking #, Customer, Status, Pickup, Deadline, Route, Skids, Equipment, Priority, Truck, Driver, Feasibility, Notes.</p>
+        <h3>Statuses</h3>
+        <p>Planned, Picked Up, In-Progress, Late, Delivered, Cancelled.</p>
+        <h3>Unassigned Panel</h3>
+        <p>A strip above the table lists every booking with no truck yet — reference, feasibility badge, customer, route, pickup, skids, equipment, priority and notes — so nothing falls through the cracks before end of day.</p>
+        <h3>Unassign</h3>
+        <p>Click the <b>×</b> button on any row to pull that booking back off its truck and return it to the Unassigned panel — the same action available from the Planner.</p>
+    </div>
+
+    <!-- 5. DRIVER APP -->
+    <div class="dm-section" id="driverapp">
+        <h2>5. Driver App</h2>
+        <p>Drivers use the mobile web app at <code>/dispatch/driver</code> (add it to your phone's home screen for a full-screen app feel). Sign in with your driver account.</p>
+        <h3>Schedule</h3>
+        <p>The Home screen shows a weekly calendar and today's summary; the <b>Stops</b> tab lists every stop in a flat list. Tap the map icon (⛶) for a fullscreen route map, or the gear (⚙) to set route options (avoid tolls / highways / ferries).</p>
+        <h3>Working a Stop</h3>
+        <ul>
+            <li>Tap a stop to open its detail screen with a map and address.</li>
+            <li>Tap <span class="dm-btn">✓ I'm Here</span> in navigation once arrived — a geofence banner also prompts "You've arrived!" automatically within 150m of the stop.</li>
+            <li>Drag the pin in the pin editor and tap <span class="dm-btn">Save Pin</span> to mark the exact parking/entrance spot, use <span class="dm-btn">📡 My GPS</span> for your current location, or <span class="dm-btn">📍 Use Address</span> to reset to the geocoded address.</li>
+            <li>Reorder stops, or adjust service time, from the stop list.</li>
+            <li>Tap <span class="dm-btn">⚠ Report Issue</span> to flag Road Closure, Business Closed, Recipient Unavailable, Address Not Found, or another problem — dispatch is notified immediately.</li>
+        </ul>
+        <h3>Evidence &amp; Photos</h3>
+        <p>Attach entrance photos and delivery/POD photos per stop directly from the app; use the built-in <b>document scanner</b> (frame the page, capture, retake or enhance, then <span class="dm-btn">✓ Use This</span>) to photograph BOLs and paperwork with auto-cropping. A custody/POD photo is required before a transfer stop can be marked complete.</p>
+        <h3>Navigation</h3>
+        <p>In-app turn-by-turn navigation with North-up/Heading-up toggle, voice guidance, fullscreen mode, a live distance badge, and a one-tap <span class="dm-btn">🗺️ Open in Maps app</span> handoff to Google/Apple Maps for full voice-guided driving directions.</p>
+        <h3>Chat &amp; Calling</h3>
+        <p>Tap the 💬 icon to open an in-app chat thread with dispatch (unread messages show a badge on the icon); tap 📞 to call dispatch directly from any screen.</p>
+    </div>
+
+    <!-- 6. VOIP -->
+    <div class="dm-section" id="voip">
+        <h2>6. VoIP &amp; Dispatch Calling</h2>
+        <p>Dispatchers place and receive calls through Odoo's standard VoIP widget (top bar) — Prema Dispatch does not replace this, it adds two things on top of it:</p>
+        <ul>
+            <li><b>Team-wide call visibility</b> — Dispatchers and Dispatch Managers can see every call in the call log, not just their own, so anyone can follow up on a customer or driver call.</li>
+            <li><b>Recording playback</b> — calls that were recorded by the phone system show a <b>Recording</b> column with a ▶ play button in the call list; it streams the matched Asterisk recording for that call.</li>
+        </ul>
+    </div>
+
+    <!-- 7. AI EXTRACTION -->
+    <div class="dm-section" id="ai">
+        <h2>7. AI Document Extraction</h2>
+        <p>Instead of retyping a rate confirmation or route sheet by hand, upload it (or paste its text) and let AI read it:</p>
+        <ol>
+            <li>Open the AI Job Planner wizard (from an invoice's <b>Add Dispatch Job</b> action) and attach the rate confirmation / BOL / route sheet file(s), or paste the text directly.</li>
+            <li>Click <span class="dm-btn">Analyze with AI</span>. The engine classifies the document (rate confirmation vs. stop sheet) and extracts stop addresses, company names, time windows, PO numbers, pallet counts and weights.</li>
+            <li>Review the <b>Rate Confirmation Fields</b> tab — extracted rate amount, BOL #, PO # and load reference — and the editable stops list, correcting anything the AI got wrong.</li>
+            <li>Click <span class="dm-btn">Create Job &amp; Schedule</span>, then use <span class="dm-btn">Book Load</span> on the invoice to turn it into an active Dispatch Booking.</li>
+        </ol>
+        <p>The same underlying AI is used for the Sales Order <b>Generate from Text</b> flow described in <a href="#booking">Booking a Load</a> — every extraction also feeds a learning loop that improves future parsing accuracy.</p>
+    </div>
+
+    <!-- 8. REPORTS -->
+    <div class="dm-section" id="reports">
+        <h2>8. Reporting Suite</h2>
+        <p>All reports live under the <b>Reports</b> menu.</p>
+        <table class="dm-table">
+            <tr><th>Report</th><th>Answers</th></tr>
+            <tr><td>All Jobs</td><td>Every booking, any stage, for browsing/searching.</td></tr>
+            <tr><td>Completed</td><td>Bookings that have finished, for closing out and billing checks.</td></tr>
+            <tr><td>Stops</td><td>Stop-by-stop detail for a driver/truck/date range, with total drive and detention time.</td></tr>
+            <tr><td>Driver Sheets</td><td>Historical Driver Worksheets (the live version also appears as its own top-level "Driver Worksheets" menu).</td></tr>
+            <tr><td>Freight Items</td><td>Line-item freight detail across bookings.</td></tr>
+            <tr><td>LTL Consolidations</td><td>Which bookings were combined onto shared LTL loads.</td></tr>
+            <tr><td>On-Time %</td><td>What percentage of completed stops arrived within their scheduled window, and average lateness.</td></tr>
+            <tr><td>Stop Time by Location</td><td>Which pickup/delivery locations have the longest average and worst-case dwell time.</td></tr>
+            <tr><td>Driver / Truck Performance</td><td>Jobs, stops, on-time %, and drive/detention time, grouped by driver or by truck.</td></tr>
+            <tr><td>Lane Profitability</td><td>Revenue, estimated cost and margin by origin → destination lane (managers only).</td></tr>
+            <tr><td>Fuel Efficiency</td><td>Which trucks are getting the worst km/L, from GeoTab-synced fuel telemetry.</td></tr>
+            <tr><td>Missed / Late Stops</td><td>Every late-arriving stop in a date range, worst lateness first.</td></tr>
+            <tr><td>POD Aging</td><td>Completed stops still missing proof-of-delivery evidence, oldest first.</td></tr>
+        </table>
+    </div>
+
+    <!-- 9. LOAD PLAN -->
+    <div class="dm-section" id="loadplan">
+        <h2>9. Load Plan &amp; Pallet Positioning</h2>
+        <h3>What a Load Plan is</h3>
+        <p>A Load Plan is the <b>physical</b> record of one truck's actual loading for one day — which pallets go where inside the truck. It is separate from the financial booking(s) riding on that truck: one Load Plan can carry pallets from <b>several different customers' bookings</b> at once, but each booking's invoice, sales order, and revenue stay completely independent. Sharing a truck never merges two customers' accounting.</p>
+        <h3>Physical pallet vs. stop allocation</h3>
+        <p>A physical pallet (<code>prema.dispatch.item</code> with <code>load_unit_type</code> pallet/shared pallet/container) occupies exactly one truck position. If that same pallet contains freight for more than one delivery stop (a <b>shared skid</b>), each stop it serves is a separate <b>allocation</b> record — the pallet count never multiplies by the number of stops. A pallet feeding 3 stops still counts as 1 pallet, 1 position, 3 allocations.</p>
+        <h3>Layout types</h3>
+        <ul>
+            <li><b>Straight</b> — the default for up to the template's straight capacity (12 for the seeded 26ft template). Lengthwise positions, driver side (L1-L6) and passenger side (R1-R6).</li>
+            <li><b>Pin-Wheel</b> — automatically proposed (never silently applied) when confirmed pallets exceed Straight's capacity, e.g. a 13th pallet. Existing assignments are preserved wherever the position code still exists in the new template; anything that no longer fits becomes Unassigned.</li>
+            <li><b>Turned</b> — higher-density angled positions requiring four-way-entry pallets and forklift access at both ends. Not a legal safety guarantee — a planning aid only.</li>
+        </ul>
+        <p><i>All seeded 26ft templates ship as "unverified" until real interior measurements are entered on the template (Settings &gt; Vehicle Layout Templates) — don't treat an unverified template's capacity as guaranteed. While unverified, the Planner shows an "UNVERIFIED VEHICLE LAYOUT" banner and a Dispatch Manager/Dispatcher must explicitly acknowledge it before <span class="dm-btn">Confirm Loading</span> is allowed — this acknowledgement is logged in the Load Plan's event timeline. Turned is never auto-proposed while unverified; only Straight/Pin-Wheel are considered by the automatic capacity check.</i></p>
+        <h3>Assigning positions</h3>
+        <p>Airline-seat-style tap interaction, both in the Dispatch Planner's <span class="dm-btn">Pallet Layout</span> panel and the Driver App's Load Plan screen: tap a vacant (green) position, then pick an unassigned pallet to assign it there. Tap an occupied position to see its detail and Move/Swap/Unassign/Mark Loaded/Report Exception. No drag-and-drop is required on mobile.</p>
+        <h3>Stale plan warning</h3>
+        <p>Any material change after planning starts — a stop added/removed, a pallet's weight/dimensions changed, a job added to the truck — marks the plan <b>stale</b>. Existing pallet positions are never silently moved; the plan shows a stale banner until a dispatcher reviews it (Validate) and clears the flag.</p>
+        <h3>Locking &amp; unlocking</h3>
+        <p>A Load Plan locks automatically once the truck's job reaches the <b>Picked Up</b> stage (assuming validation passes — if not, the lock is deferred and flagged for dispatcher follow-up rather than blocking the actual pickup). Once locked, no one can rearrange pallets. A <b>frozen snapshot</b> of the entire plan (positions, pallets, stops, counts) is saved at that moment for claims/disputes. A Dispatch Manager can unlock with a mandatory reason, which is logged.</p>
+        <h3>Transfer handoff</h3>
+        <p>When a pallet moves to a different truck mid-route (the existing Driver Transfer feature), its Load Plan history follows it: the giving truck's Load Plan keeps a record of the handoff, the receiving truck's Load Plan gets the pallet as <b>unassigned</b> (never a blind copy of the old position — the new truck may use a different layout). The pallet's identity and financial job never change.</p>
+        <h3>Driver App Load Plan</h3>
+        <p>A "LOAD PLAN" status card on the driver's Stops screen shows loaded/unassigned/warning counts at a glance and opens the full diagram. Drivers can assign, move, mark loaded, report an exception, and confirm loading — all through the same tap interaction as the dispatcher panel. Locked plans block further edits.</p>
+        <h3>Warehouse workflow &amp; QR</h3>
+        <p>Warehouse Loader accounts (a separate, more restricted role from Driver) sign in at <code>/dispatch/warehouse</code> to view active Load Plans, mark pallets loaded, move a pallet if permitted, and report damage — with no access to rates, invoices, or truck/driver reassignment. Every physical pallet also has a QR code; scanning it with a phone's normal camera opens a read-only summary (reference, truck, position, stop numbers, shared/exception status) with no financial data, and prompts for login before any write action.</p>
+        <h3>Recommendation engine</h3>
+        <p><span class="dm-btn">Recommend Layout</span> proposes positions using simple rules — earliest deliveries nearest the rear door, later deliveries farther forward, basic weight/side-balance and four-way-entry checks. It is always advisory: a dispatcher or driver must explicitly Accept or Reject before anything changes, and both the recommendation and the decision are logged.</p>
+        <h3>Security</h3>
+        <p>Every Load Plan action goes through the same driver-ownership and record-state checks as the rest of the Driver App (Phase 1A). Drivers see only their own truck's plan; Warehouse Loaders see any operationally active plan but never financial data; only Dispatch Manager can unlock a locked plan.</p>
+        <h3>Troubleshooting</h3>
+        <ul>
+            <li><b>"No layout template available for this vehicle"</b> — no layout template exists yet; add one under Settings &gt; Vehicle Layout Templates, or leave a template's Applicable Vehicles blank to apply it generically.</li>
+            <li><b>"This load plan was updated by someone else"</b> — another user (or the driver) saved a change first; refresh and retry your action.</li>
+            <li><b>Plan won't lock</b> — check Validate for the specific blocking reason (usually an unassigned required pallet or capacity exceeded).</li>
+        </ul>
+    </div>
+
+</div>
+</t>
+</template>
+</odoo>

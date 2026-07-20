@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_voip_call_tree_prema_dispatch" model="ir.ui.view">
+        <field name="name">voip.call.list.prema.dispatch</field>
+        <field name="model">voip.call</field>
+        <field name="inherit_id" ref="voip.voip_call_tree_view"/>
+        <field name="arch" type="xml">
+            <field name="partner_id" position="after">
+                <field name="recording_filename" optional="show" string="Recording"/>
+                <button name="action_play_recording" type="object"
+                        icon="fa-play-circle" title="Play recording"
+                        invisible="not recording_filename"/>
+            </field>
+        </field>
+    </record>
+</odoo>

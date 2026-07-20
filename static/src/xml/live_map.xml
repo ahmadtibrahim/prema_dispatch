@@ -1,0 +1,212 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+
+<t t-name="prema_dispatch.LiveMap">
+    <div class="o_dispatch_live_map d-flex h-100">
+
+        <!-- ── Sidebar ──────────────────────────────────────────────── -->
+        <div class="o_dispatch_sidebar d-flex flex-column bg-white border-end shadow-sm"
+             style="width:272px;min-width:272px;overflow:hidden;z-index:5;">
+
+            <!-- Header -->
+            <div class="px-3 py-2 border-bottom bg-light d-flex align-items-center justify-content-between flex-shrink-0">
+                <div>
+                    <div class="fw-bold" style="font-size:13px;">Dispatch Fleet</div>
+                    <div style="font-size:11px;color:#6c757d;">
+                        <t t-if="state.loading">Loading…</t>
+                        <t t-else="">
+                            <t t-esc="state.trucks.length"/> trucks
+                            <t t-if="state.lastRefresh"> · <t t-esc="state.lastRefresh"/></t>
+                        </t>
+                    </div>
+                </div>
+                <button class="btn btn-sm btn-outline-secondary py-0"
+                        t-on-click="_refreshData"
+                        title="Refresh dispatch data now instead of waiting for the 30s auto-refresh">
+                    <i class="fa fa-refresh" style="font-size:11px;"/>
+                </button>
+            </div>
+
+            <!-- Date navigation: today ± 2 days -->
+            <div class="px-3 py-1 border-bottom bg-light d-flex align-items-center justify-content-between flex-shrink-0">
+                <button class="btn btn-sm btn-link py-0 px-1" t-on-click="() => this.shiftDay(-2)"
+                        title="Go back 2 days">«</button>
+                <button class="btn btn-sm btn-link py-0 px-1" t-on-click="() => this.shiftDay(-1)"
+                        title="Previous day">‹</button>
+                <span class="fw-semibold" style="font-size:12px;min-width:110px;text-align:center;">
+                    <t t-esc="dateLabel"/>
+                    <t t-if="!state.isToday">
+                        <a href="#" class="ms-1" style="font-size:10px;" t-on-click.prevent="goToday"
+                           title="Jump back to today">(today)</a>
+                    </t>
+                </span>
+                <button class="btn btn-sm btn-link py-0 px-1" t-on-click="() => this.shiftDay(1)"
+                        title="Next day">›</button>
+                <button class="btn btn-sm btn-link py-0 px-1" t-on-click="() => this.shiftDay(2)"
+                        title="Go forward 2 days">»</button>
+            </div>
+
+            <!-- Error banner -->
+            <t t-if="state.error">
+                <div class="px-3 py-2 bg-danger text-white" style="font-size:12px;">
+                    <i class="fa fa-exclamation-triangle me-1"/>
+                    <t t-esc="state.error"/>
+                </div>
+            </t>
+
+            <!-- Truck list -->
+            <div class="overflow-auto flex-grow-1">
+                <t t-if="state.loading">
+                    <div class="p-3 text-center text-muted" style="font-size:13px;">
+                        <i class="fa fa-spinner fa-spin me-1"/>Loading fleet…
+                    </div>
+                </t>
+                <t t-elif="!state.trucks.length">
+                    <div class="p-3 text-center text-muted" style="font-size:13px;">
+                        No vehicles found in Fleet.
+                    </div>
+                </t>
+                <t t-foreach="state.trucks" t-as="truck" t-key="truck.id">
+                    <div t-attf-class="o_truck_row px-3 py-2 border-bottom
+                                      #{state.selectedId === truck.id ? 'o_truck_selected' : ''}"
+                         t-on-click="() => this.selectTruck(truck.id)">
+
+                        <!-- Name + GPS badge -->
+                        <div class="d-flex align-items-center justify-content-between gap-1 mb-1">
+                            <div class="fw-semibold text-truncate" style="font-size:13px;max-width:170px;">
+                                🚛 <t t-esc="truck.name"/>
+                            </div>
+                            <span t-attf-class="badge #{gpsClass(truck)} o_tooltip_delayed"
+                                  style="font-size:10px;white-space:nowrap;"
+                                  data-tooltip="How long ago this truck's GPS location was received. Green = under 15 min, yellow = 15–60 min, red = over an hour or never.">
+                                <t t-esc="gpsLabel(truck)"/>
+                            </span>
+                        </div>
+
+                        <!-- Plate + driver -->
+                        <div class="d-flex gap-2 flex-wrap" style="font-size:11px;color:#6c757d;">
+                            <t t-if="truck.license_plate">
+                                <span><i class="fa fa-id-card-o me-1 o_tooltip_delayed" data-tooltip="Vehicle license plate"/><t t-esc="truck.license_plate"/></span>
+                            </t>
+                            <t t-if="truck.driver">
+                                <span><i class="fa fa-user me-1 o_tooltip_delayed" data-tooltip="Driver currently assigned to this truck"/><t t-esc="truck.driver"/></span>
+                            </t>
+                        </div>
+                        <!-- Working / Parked status -->
+                        <div t-attf-class="o_truck_status_badge #{isWorking(truck) ? 'o_truck_working' : 'o_truck_parked'}">
+                            <i t-attf-class="fa #{isWorking(truck) ? 'fa-circle' : 'fa-circle-o'}"/>
+                            <t t-esc="truckStatusLabel(truck)"/>
+                        </div>
+
+                        <!-- Active job -->
+                        <t t-if="truck.job_name">
+                            <div class="text-truncate mt-1" style="font-size:11px;color:#1a73e8;">
+                                <i class="fa fa-file-text-o me-1 o_tooltip_delayed" data-tooltip="Job currently in progress on this truck"/>
+                                <t t-esc="truck.job_name"/>
+                                <t t-if="truck.customer">
+                                    — <t t-esc="truck.customer"/>
+                                </t>
+                            </div>
+                        </t>
+                        <t t-else="">
+                            <div class="mt-1" style="font-size:11px;color:#adb5bd;">
+                                No active job
+                            </div>
+                        </t>
+
+                        <!-- Stop progress -->
+                        <t t-if="totalActiveStops(truck) > 0">
+                            <t t-set="done"  t-value="doneStops(truck)"/>
+                            <t t-set="total" t-value="totalActiveStops(truck)"/>
+                            <t t-set="pct"   t-value="Math.round(done / total * 100)"/>
+                            <div class="d-flex align-items-center gap-2 mt-1">
+                                <div class="flex-grow-1 rounded"
+                                     style="height:4px;background:#e9ecef;overflow:hidden;">
+                                    <div t-attf-style="width:#{pct}%;height:100%;background:#1a73e8;border-radius:2px;"/>
+                                </div>
+                                <span style="font-size:10px;color:#6c757d;white-space:nowrap;">
+                                    <t t-esc="done"/>/<t t-esc="total"/>
+                                </span>
+                            </div>
+                        </t>
+
+                        <!-- Accordion: expanded stop list -->
+                        <t t-if="state.selectedId === truck.id and (truck.stops || []).length">
+                            <div class="o_truck_stops_expand" t-on-click.stop="">
+                                <t t-foreach="truck.stops" t-as="stop" t-key="stop.id">
+                                    <div t-attf-class="o_truck_stop_row status-#{stop.status}">
+                                        <span t-attf-class="o_truck_stop_dot #{stop.type} o_tooltip_delayed"
+                                              t-att-data-tooltip="(stop.type === 'pickup' ? 'Pickup' : 'Drop-off') + ' — ' + stop.status.replaceAll('_',' ')"/>
+                                        <span class="text-truncate flex-grow-1"><t t-esc="stop.address or 'No address'"/></span>
+                                        <span class="text-muted" style="font-size:9px"><t t-esc="stop.status.replaceAll('_',' ')"/></span>
+                                    </div>
+                                </t>
+                            </div>
+                        </t>
+                    </div>
+                </t>
+            </div>
+
+            <!-- Legend -->
+            <div class="px-3 py-2 border-top bg-light flex-shrink-0"
+                 style="font-size:10px;color:#6c757d;">
+                <div class="d-flex flex-wrap gap-2">
+                    <span>
+                        <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#9e9e9e;margin-right:3px;vertical-align:middle;"/>
+                        Done ✓
+                    </span>
+                    <span>
+                        <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#34a853;margin-right:3px;vertical-align:middle;"/>
+                        Pickup
+                    </span>
+                    <span>
+                        <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#f39c12;margin-right:3px;vertical-align:middle;"/>
+                        Skipped
+                    </span>
+                    <span>
+                        <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#ea4335;margin-right:3px;vertical-align:middle;"/>
+                        Issue
+                    </span>
+                    <span>
+                        <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#1a73e8;border:2px solid #ffeb3b;margin-right:3px;vertical-align:middle;"/>
+                        Current stop
+                    </span>
+                    <span>
+                        <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#34a853;margin-right:3px;vertical-align:middle;"/>
+                        GPS live (&lt;15m)
+                    </span>
+                    <span>
+                        <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#fbbc04;margin-right:3px;vertical-align:middle;"/>
+                        GPS stale (15-60m)
+                    </span>
+                    <span>
+                        <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#ea4335;margin-right:3px;vertical-align:middle;"/>
+                        GPS offline
+                    </span>
+                </div>
+            </div>
+        </div>
+
+        <!-- ── Map ─────────────────────────────────────────────────── -->
+        <div class="flex-grow-1 position-relative">
+            <div class="w-100 h-100" t-ref="mapContainer"/>
+            <!-- Zoom controls -->
+            <div class="o_map_zoom_controls">
+                <button class="o_map_zoom_btn" t-on-click="zoomIn" title="Zoom in">+</button>
+                <button class="o_map_zoom_btn" t-on-click="zoomOut" title="Zoom out">−</button>
+            </div>
+            <!-- Follow Selected Truck -->
+            <t t-if="state.selectedId">
+                <button t-attf-class="o_map_follow_btn #{state.following ? 'active' : ''}"
+                        t-on-click="toggleFollow"
+                        title="Keep the map centered on the selected truck as it moves">
+                    <i class="fa fa-crosshairs me-1"/>
+                    <t t-esc="state.following ? 'Following' : 'Follow Truck'"/>
+                </button>
+            </t>
+        </div>
+
+    </div>
+</t>
+
+</templates>

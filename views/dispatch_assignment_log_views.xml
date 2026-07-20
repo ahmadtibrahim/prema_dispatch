@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<odoo>
+    <record id="view_dispatch_assignment_log_list" model="ir.ui.view">
+        <field name="name">prema.dispatch.assignment.log.list</field>
+        <field name="model">prema.dispatch.assignment.log</field>
+        <field name="arch" type="xml">
+            <list string="Assignment History" create="false" edit="false">
+                <field name="changed_at"/>
+                <field name="job_id"/>
+                <field name="old_vehicle_id" string="Previous Truck"/>
+                <field name="new_vehicle_id" string="New Truck"/>
+                <field name="old_driver_id" string="Previous Driver"/>
+                <field name="new_driver_id" string="New Driver"/>
+                <field name="changed_by"/>
+                <field name="reason"/>
+            </list>
+        </field>
+    </record>
+</odoo>

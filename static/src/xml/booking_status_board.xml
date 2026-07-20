@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+
+<t t-name="prema_dispatch.BookingStatusBoard">
+<div class="o_booking_status_board">
+    <div class="o_bsb_header">
+        <h4 class="mb-0">Booking Board</h4>
+        <span class="text-muted small ms-2" t-if="state.lastRefresh">Updated <t t-esc="state.lastRefresh"/></span>
+    </div>
+    <t t-if="state.loading">
+        <div class="o_bsb_loading"><i class="fa fa-spinner fa-spin me-2"/>Loading…</div>
+    </t>
+    <t t-else="">
+        <!-- Single unified list — unassigned jobs are regular rows (Truck/
+             Driver show "—", Status shows "Unassigned"), sorted to the top
+             by the backend so dispatchers still see them first. -->
+        <div class="o_bsb_table">
+            <div class="o_bsb_row o_bsb_row_head">
+                <div class="o_bsb_col_ref">Booking #</div>
+                <div class="o_bsb_col_customer">Customer</div>
+                <div class="o_bsb_col_status">Status</div>
+                <div class="o_bsb_col_pickup">Pickup</div>
+                <div class="o_bsb_col_deadline">Deadline</div>
+                <div class="o_bsb_col_route">Route</div>
+                <div class="o_bsb_col_skids">Skids</div>
+                <div class="o_bsb_col_equipment">Equipment</div>
+                <div class="o_bsb_col_priority">Priority</div>
+                <div class="o_bsb_col_truck">Truck</div>
+                <div class="o_bsb_col_driver">Driver</div>
+                <div class="o_bsb_col_handoff">Handoff</div>
+                <div class="o_bsb_col_feasibility">Feasibility</div>
+                <div class="o_bsb_col_notes">Notes</div>
+                <div class="o_bsb_col_actions"/>
+            </div>
+            <t t-if="!state.rows.length">
+                <div class="o_bsb_empty">No open bookings.</div>
+            </t>
+            <t t-foreach="state.rows" t-as="row" t-key="row.job_id">
+                <div class="o_bsb_row" t-on-click="() => this.openJob(row.job_id)">
+                    <div class="o_bsb_col_ref"><t t-esc="row.reference"/></div>
+                    <div class="o_bsb_col_customer text-truncate"><t t-esc="row.customer"/></div>
+                    <div class="o_bsb_col_status">
+                        <span t-attf-class="o_bsb_badge status-#{row.status_key}"><t t-esc="statusLabel(row.status_key)"/></span>
+                    </div>
+                    <div class="o_bsb_col_pickup">
+                        <div><t t-esc="row.pickup_label"/></div>
+                        <div class="text-muted small"><t t-esc="row.pickup_date"/></div>
+                    </div>
+                    <div class="o_bsb_col_deadline">
+                        <div><t t-esc="row.deadline_label"/></div>
+                        <div class="text-muted small"><t t-esc="row.deadline_date"/></div>
+                    </div>
+                    <div class="o_bsb_col_route text-truncate" t-att-title="row.route"><t t-esc="row.route"/></div>
+                    <div class="o_bsb_col_skids"><t t-esc="row.skids"/></div>
+                    <div class="o_bsb_col_equipment"><t t-esc="equipmentLabel(row.equipment_type)"/></div>
+                    <div class="o_bsb_col_priority">
+                        <span t-attf-class="o_bsb_priority prio-#{row.priority}"><t t-esc="priorityLabel(row.priority)"/></span>
+                    </div>
+                    <div class="o_bsb_col_truck text-truncate"><t t-esc="row.truck"/></div>
+                    <div class="o_bsb_col_driver text-truncate"><t t-esc="row.driver"/></div>
+                    <div class="o_bsb_col_handoff text-truncate" t-att-title="row.handoff_label">
+                        <span t-if="row.handoff_label" class="o_bsb_handoff_badge"><t t-esc="row.handoff_label"/></span>
+                        <span t-else="">—</span>
+                    </div>
+                    <div class="o_bsb_col_feasibility">
+                        <span t-attf-class="o_bsb_badge feas-#{row.feasibility}"
+                              t-att-title="row.feasibility_reason"
+                              t-esc="feasibilityLabel(row.feasibility)"/>
+                    </div>
+                    <div class="o_bsb_col_notes text-truncate" t-att-title="row.notes"><t t-esc="row.notes"/></div>
+                    <div class="o_bsb_col_actions">
+                        <button t-if="row.status_key !== 'unassigned'" class="o_bsb_unassign_btn" title="Unassign truck"
+                                t-on-click="(ev) => this.unassignJob(ev, row.job_id)">×</button>
+                    </div>
+                </div>
+            </t>
+        </div>
+    </t>
+</div>
+</t>
+
+</templates>

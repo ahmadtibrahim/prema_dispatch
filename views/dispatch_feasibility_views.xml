@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<odoo>
+    <record id="view_dispatch_feasibility_wizard_form" model="ir.ui.view">
+        <field name="name">prema.dispatch.feasibility.wizard.form</field>
+        <field name="model">prema.dispatch.feasibility.wizard</field>
+        <field name="arch" type="xml">
+            <form string="Can We Do This? — Feasibility Check">
+                <sheet>
+                    <div class="oe_title">
+                        <h2>🚛 Can We Do This Today?</h2>
+                        <p class="text-muted">Enter pickup/delivery details to check real-time availability across all trucks.</p>
+                    </div>
+
+                    <!-- Result banner (shown after check) -->
+                    <div class="alert alert-success mb-3" role="alert"
+                         invisible="not result_checked or result_verdict != 'feasible'">
+                        <strong>✅ Feasible</strong> — Best truck: <field name="result_best_truck" readonly="1" nolabel="1" class="d-inline fw-bold"/>
+                        | Pickup ETA: <field name="result_pickup_eta" readonly="1" nolabel="1" class="d-inline"/>
+                        | Delivery ETA: <field name="result_delivery_eta" readonly="1" nolabel="1" class="d-inline"/>
+                        | Buffer: <field name="result_buffer_minutes" readonly="1" nolabel="1" class="d-inline"/> min
+                    </div>
+                    <div class="alert alert-warning mb-3" role="alert"
+                         invisible="not result_checked or result_verdict != 'risky'">
+                        <strong>⚠️ Risky</strong> — <field name="result_reason" readonly="1" nolabel="1" class="d-inline"/>
+                        | Best truck: <field name="result_best_truck" readonly="1" nolabel="1" class="d-inline fw-bold"/>
+                        | Pickup ETA: <field name="result_pickup_eta" readonly="1" nolabel="1" class="d-inline"/>
+                        | Delivery ETA: <field name="result_delivery_eta" readonly="1" nolabel="1" class="d-inline"/>
+                    </div>
+                    <div class="alert alert-danger mb-3" role="alert"
+                         invisible="not result_checked or result_verdict != 'not_feasible'">
+                        <strong>🚫 Not Feasible</strong> — <field name="result_reason" readonly="1" nolabel="1" class="d-inline"/>
+                    </div>
+
+                    <group>
+                        <group string="Addresses">
+                            <field name="pickup_address" placeholder="Full pickup address…"/>
+                            <field name="dropoff_address" placeholder="Full delivery address…"/>
+                            <field name="check_date"/>
+                        </group>
+                        <group string="Requirements">
+                            <field name="pallets"/>
+                            <field name="weight_lbs"/>
+                            <field name="requires_reefer" widget="boolean_toggle"/>
+                            <field name="requires_liftgate" widget="boolean_toggle"/>
+                        </group>
+                    </group>
+
+                    <group string="Time Windows">
+                        <group>
+                            <field name="pickup_earliest" string="Pickup Earliest (optional)"/>
+                            <field name="pickup_latest" string="Pickup Latest / Deadline"/>
+                        </group>
+                        <group>
+                            <field name="delivery_deadline" string="Delivery Deadline"/>
+                            <field name="service_time_pickup_min" string="Pickup Service Time (min)"/>
+                            <field name="service_time_delivery_min" string="Delivery Service Time (min)"/>
+                        </group>
+                    </group>
+
+                    <!-- Full summary table -->
+                    <group string="All Truck Options" invisible="not result_checked">
+                        <field name="result_summary" widget="text" readonly="1" nolabel="1"
+                               style="font-family:monospace; font-size:12px; white-space:pre;"/>
+                    </group>
+
+                </sheet>
+                <footer>
+                    <button name="action_run_check" type="object"
+                            string="Check Now" class="btn-primary" icon="fa-search"/>
+                    <button name="action_assign_best_truck" type="object"
+                            string="Assign Best Truck to Job" class="btn-success"
+                            invisible="not result_checked or result_verdict == 'not_feasible' or not job_id"/>
+                    <button string="Close" class="btn-secondary" special="cancel"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+
+    <!-- Driver Daily Worksheet action -->
+    <record id="action_driver_worksheet" model="ir.actions.act_window">
+        <field name="name">Driver Daily Worksheet</field>
+        <field name="res_model">prema.dispatch.job</field>
+        <field name="view_mode">list,form</field>
+        <field name="domain">[('vehicle_id','!=',False),('stage_id.is_completed','=',False),('stage_id.is_cancelled','=',False)]</field>
+        <field name="context">{'group_by': 'vehicle_id', 'search_default_today': 1}</field>
+        <field name="help" type="html">
+            <p>No active dispatches today. Assign trucks to jobs to see them here.</p>
+        </field>
+    </record>
+
+    <!-- Dispatch Planner Board action (client action) -->
+    <record id="action_dispatch_planner_board" model="ir.actions.client">
+        <field name="name">Dispatch Planner</field>
+        <field name="tag">dispatch_live_board</field>
+    </record>
+
+</odoo>

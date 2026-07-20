@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<odoo>
+
+    <record id="view_consolidation_list" model="ir.ui.view">
+        <field name="name">prema.dispatch.consolidation.list</field>
+        <field name="model">prema.dispatch.consolidation</field>
+        <field name="arch" type="xml">
+            <list string="LTL Consolidation Suggestions"
+                  decoration-success="status == 'completed'"
+                  decoration-muted="status == 'dismissed'"
+                  decoration-warning="status == 'accepted'">
+                <field name="name"/>
+                <field name="status" widget="badge"
+                       decoration-info="status == 'suggested'"
+                       decoration-warning="status == 'accepted'"
+                       decoration-success="status == 'completed'"
+                       decoration-muted="status == 'dismissed'"/>
+                <field name="pickup_city"/>
+                <field name="delivery_cities"/>
+                <field name="job_count" string="Jobs"/>
+                <field name="total_skids" string="Total Skids"/>
+                <field name="total_weight_lbs" string="Total Weight (lbs)" optional="show"/>
+                <field name="suggested_by"/>
+                <field name="create_date" string="Suggested On"/>
+                <button name="action_accept" string="Accept"
+                        type="object" class="btn-sm btn-warning"
+                        invisible="status != 'suggested'"/>
+                <button name="action_dismiss" string="Dismiss"
+                        type="object" class="btn-sm btn-secondary"
+                        invisible="status not in ('suggested',)"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="view_consolidation_form" model="ir.ui.view">
+        <field name="name">prema.dispatch.consolidation.form</field>
+        <field name="model">prema.dispatch.consolidation</field>
+        <field name="arch" type="xml">
+            <form string="LTL Consolidation">
+                <header>
+                    <button name="action_accept" string="Accept" type="object"
+                            class="oe_highlight"
+                            invisible="status != 'suggested'"/>
+                    <button name="action_complete" string="Mark Completed" type="object"
+                            class="btn-success"
+                            invisible="status != 'accepted'"/>
+                    <button name="action_dismiss" string="Dismiss" type="object"
+                            invisible="status in ('dismissed','completed')"/>
+                    <field name="status" widget="statusbar"
+                           statusbar_visible="suggested,accepted,completed"/>
+                </header>
+                <sheet>
+                    <div class="oe_button_box" name="button_box">
+                        <button name="action_open_jobs" type="object"
+                                class="oe_stat_button" icon="fa-truck">
+                            <field name="job_count" widget="statinfo" string="Jobs"/>
+                        </button>
+                    </div>
+                    <div class="oe_title">
+                        <h1><field name="name" readonly="1"/></h1>
+                    </div>
+                    <group>
+                        <group string="Route">
+                            <field name="pickup_city" readonly="1"/>
+                            <field name="delivery_cities" readonly="1"/>
+                        </group>
+                        <group string="Load Summary">
+                            <field name="total_skids" readonly="1"/>
+                            <field name="total_weight_lbs" readonly="1"/>
+                            <field name="suggested_by" readonly="1"/>
+                        </group>
+                    </group>
+                    <field name="notes" placeholder="Dispatcher notes about this consolidation…"/>
+                    <field name="job_ids">
+                        <list create="false">
+                            <field name="name"/>
+                            <field name="partner_id"/>
+                            <field name="stage_id"/>
+                            <field name="requested_delivery_date"/>
+                            <field name="approximate_skids"/>
+                            <field name="pickup_city"/>
+                            <field name="delivery_cities"/>
+                        </list>
+                    </field>
+                </sheet>
+                <chatter/>
+            </form>
+        </field>
+    </record>
+
+    <record id="action_consolidations" model="ir.actions.act_window">
+        <field name="name">LTL Consolidations</field>
+        <field name="res_model">prema.dispatch.consolidation</field>
+        <field name="view_mode">list,form</field>
+        <field name="domain">[("status", "not in", ["dismissed"])]</field>
+        <field name="context">{"search_default_suggested": 1}</field>
+    </record>
+
+    <record id="action_consolidations_all" model="ir.actions.act_window">
+        <field name="name">All LTL Consolidations</field>
+        <field name="res_model">prema.dispatch.consolidation</field>
+        <field name="view_mode">list,form</field>
+    </record>
+
+</odoo>

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<odoo>
+
+    <!-- Custom OWL client action for the Live Map -->
+    <record id="action_dispatch_live_map" model="ir.actions.client">
+        <field name="name">Live Map</field>
+        <field name="tag">dispatch_live_map</field>
+    </record>
+
+</odoo>

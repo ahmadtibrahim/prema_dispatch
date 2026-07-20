@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<odoo>
+    <record id="view_sale_order_prema_dispatch" model="ir.ui.view">
+        <field name="name">sale.order.prema.dispatch</field>
+        <field name="model">sale.order</field>
+        <field name="inherit_id" ref="sale.view_order_form"/>
+        <field name="arch" type="xml">
+
+            <!-- Book Load button in SO header -->
+            <xpath expr="//button[@name='action_confirm']" position="before">
+                <button name="action_book_load"
+                        string="Book Load"
+                        type="object"
+                        class="btn-primary"
+                        icon="fa-truck"
+                        help="Create a Prema Dispatch booking from this Sales Order. Customer and order details are pulled automatically."/>
+            </xpath>
+
+            <!-- Smart button — dispatch booking count -->
+            <xpath expr="//div[@name='button_box']" position="inside">
+                <button name="action_open_dispatch_jobs_prema"
+                        type="object"
+                        class="oe_stat_button"
+                        icon="fa-truck"
+                        invisible="dispatch_job_count == 0">
+                    <div class="o_field_widget o_stat_info">
+                        <span class="o_stat_value">
+                            <field name="dispatch_job_count"/>
+                        </span>
+                        <span class="o_stat_text">Bookings</span>
+                    </div>
+                </button>
+            </xpath>
+
+            <!-- Hidden computed fields -->
+            <xpath expr="//field[@name='user_id']" position="after">
+                <field name="dispatch_job_count" invisible="1"/>
+            </xpath>
+
+            <!-- Generate from Text tab -->
+            <xpath expr="//page[@name='order_lines']" position="before">
+                <page string="Generate from Text" name="so_text_input_tab">
+                    <group>
+                        <field name="x_so_text_input"
+                               widget="text"
+                               nolabel="1"
+                               placeholder="Paste a WhatsApp message, SMS, or email from the customer…&#10;&#10;Example:&#10;Hi Ahmad, need pickup from Ajax warehouse (689 Salem Rd N) to:&#10;- Oshawa (501 Ritson Rd S) 12 pallets&#10;- Whitby (728 Anderson St) 3 pallets&#10;- Peterborough (754 Lansdowne St W) 2 pallets&#10;Date: Monday July 7. PO: 8834-B."
+                               style="min-height:180px; font-size:13px;"/>
+                    </group>
+                    <div class="mt-2 d-flex align-items-center gap-3">
+                        <button name="action_generate_dispatch_from_text"
+                                type="object"
+                                string="Generate Dispatch Booking"
+                                class="btn btn-primary"
+                                icon="fa-magic"/>
+                        <small class="text-muted">
+                            AI extracts pickup/delivery addresses, pallet counts per stop,
+                            route, date, and reefer/liftgate requirements
+                            and creates a dispatch booking automatically.
+                        </small>
+                    </div>
+                    <div class="mt-3 text-muted small" invisible="dispatch_job_count == 0">
+                        <i class="fa fa-check-circle text-success me-1"/>
+                        <field name="dispatch_job_count" readonly="1" nolabel="1" class="d-inline"/>
+                        dispatch booking(s) already created for this order.
+                    </div>
+                </page>
+            </xpath>
+
+        </field>
+    </record>
+</odoo>

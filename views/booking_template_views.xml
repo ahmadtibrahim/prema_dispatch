@@ -1,0 +1,118 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<odoo>
+
+    <!-- List view -->
+    <record id="view_booking_template_list" model="ir.ui.view">
+        <field name="name">prema.dispatch.booking.template.list</field>
+        <field name="model">prema.dispatch.booking.template</field>
+        <field name="arch" type="xml">
+            <list string="Booking Templates">
+                <field name="name"/>
+                <field name="partner_id"/>
+                <field name="service_type"/>
+                <field name="equipment_type"/>
+                <field name="recurrence_type"/>
+                <field name="day_of_week"/>
+                <field name="advance_days"/>
+                <field name="booking_count" string="Bookings"/>
+                <field name="last_generated_date"/>
+                <field name="active" column_invisible="1"/>
+            </list>
+        </field>
+    </record>
+
+    <!-- Form view -->
+    <record id="view_booking_template_form" model="ir.ui.view">
+        <field name="name">prema.dispatch.booking.template.form</field>
+        <field name="model">prema.dispatch.booking.template</field>
+        <field name="arch" type="xml">
+            <form string="Booking Template">
+                <header>
+                    <button name="action_generate_now"
+                            string="Generate Booking Now"
+                            type="object"
+                            class="oe_highlight"
+                            groups="prema_dispatch.group_dispatch_manager"/>
+                </header>
+                <sheet>
+                    <div class="oe_button_box" name="button_box">
+                        <button name="action_view_bookings"
+                                type="object"
+                                class="oe_stat_button"
+                                icon="fa-truck"
+                                invisible="booking_count == 0">
+                            <field name="booking_count" widget="statinfo" string="Bookings"/>
+                        </button>
+                    </div>
+                    <widget name="web_ribbon" title="Archived" bg_color="text-bg-danger"
+                            invisible="active"/>
+                    <div class="oe_title">
+                        <label for="name" string="Template Name"/>
+                        <h1><field name="name" placeholder="e.g. Weekly FTL to Montreal"/></h1>
+                    </div>
+                    <group>
+                        <group string="Customer">
+                            <field name="partner_id"/>
+                            <field name="sale_order_id"
+                                   domain="[('partner_id', '=', partner_id)]"/>
+                        </group>
+                        <group string="Schedule">
+                            <field name="recurrence_type"/>
+                            <field name="day_of_week"/>
+                            <field name="advance_days"/>
+                            <field name="default_pickup_hour"
+                                   help="Default pickup time for bookings from this template. 8.0 = 8:00 AM, 13.5 = 1:30 PM."/>
+                            <field name="last_generated_date"/>
+                        </group>
+                    </group>
+                    <group>
+                        <group string="Service">
+                            <field name="service_type"/>
+                            <field name="equipment_type"/>
+                            <field name="approximate_skids"/>
+                            <field name="commodity"/>
+                        </group>
+                        <group string="Requirements">
+                            <field name="requires_reefer"/>
+                            <field name="requires_liftgate"/>
+                            <field name="notify_user_id"/>
+                        </group>
+                    </group>
+                    <notebook>
+                        <page string="Notes">
+                            <field name="notes" placeholder="Internal notes about this recurring lane..."/>
+                        </page>
+                        <page string="Generated Bookings">
+                            <field name="booking_ids" readonly="1">
+                                <list>
+                                    <field name="name"/>
+                                    <field name="stage_id"/>
+                                    <field name="requested_delivery_date"/>
+                                    <field name="vehicle_id"/>
+                                    <field name="driver_id"/>
+                                </list>
+                            </field>
+                        </page>
+                    </notebook>
+                </sheet>
+                <chatter/>
+            </form>
+        </field>
+    </record>
+
+    <!-- Action -->
+    <record id="action_booking_templates" model="ir.actions.act_window">
+        <field name="name">Booking Templates</field>
+        <field name="res_model">prema.dispatch.booking.template</field>
+        <field name="view_mode">list,form</field>
+        <field name="context">{"active_test": False}</field>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">
+                No booking templates yet.
+            </p>
+            <p>Create a recurring template to automatically generate dispatch bookings
+               on a weekly, biweekly, or monthly schedule.</p>
+        </field>
+    </record>
+
+</odoo>
