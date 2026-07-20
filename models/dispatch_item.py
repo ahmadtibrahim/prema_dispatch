@@ -30,6 +30,12 @@ class PremaDispatchItem(models.Model):
         string="Delivery Stop",
         domain="[('job_id', '=', job_id), ('stop_type', '=', 'dropoff')]",
     )
+    available_after_stop_id = fields.Many2one(
+        "prema.dispatch.stop",
+        string="Available After Stop",
+        domain="[('job_id', '=', job_id), ('stop_type', 'in', ('pickup', 'cross_dock_pickup'))]",
+        help="Freight is physically available only after this pickup/operation stop.",
+    )
 
     # Dimensions
     pallet_count = fields.Integer(string="Pallets / Skids", default=1)

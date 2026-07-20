@@ -1,7 +1,7 @@
 import json
 import logging
 
-from odoo import http
+from odoo import fields, http
 from odoo.http import request
 
 _logger = logging.getLogger(__name__)
@@ -198,3 +198,47 @@ class DriverAppController(http.Controller):
             ("Content-Type", "image/jpeg"),
             ("Cache-Control", "max-age=86400"),
         ])
+
+    @http.route("/dispatch/driver/job/summaries", type="json", auth="user", methods=["POST"])
+    def driver_job_summaries(self, date_str=None, **kw):
+        data = request.env["prema.dispatch.job"].get_driver_today_jobs(date_str)
+        return {"success": True, "jobs": data.get("jobs", [])}
+
+    @http.route("/dispatch/driver/job/route-sheet-received", type="json", auth="user", methods=["POST"])
+    def driver_route_sheet_received(self, job_id, **kw):
+        from odoo.addons.prema_dispatch.services.dispatch_auth import check_driver_can_add_stop
+        try:
+            job = request.env["prema.dispatch.job"].browse(int(job_id))
+            check_driver_can_add_stop(request.env, job)
+            job.write({"route_sheet_received_at": fields.Datetime.now(), "route_sheet_received_by": request.env.user.id})
+            return {"success": True, "job": job._driver_job_summary()}
+        except Exception as exc:
+            return {"success": False, "code": str(exc), "error": str(exc)}
+
+    @http.route("/dispatch/driver/location/search", type="json", auth="user", methods=["POST"])
+    def driver_location_search(self, query="", limit=20, offset=0, **kw):
+        return request.env["prema.dispatch.location"].sudo().driver_search_locations(query, limit, offset)
+
+    @http.route("/dispatch/driver/location/get", type="json", auth="user", methods=["POST"])
+    def driver_location_get(self, location_id, **kw):
+        loc = request.env["prema.dispatch.location"].sudo().browse(int(location_id))
+        if not loc.exists():
+            return {"success": False, "code": "location_not_found", "error": "Location not found"}
+        return {"success": True, "location": loc._driver_payload()}
+
+    @http.route("/dispatch/driver/stop/create", type="json", auth="user", methods=["POST"])
+    def driver_stop_create(self, job_id, values=None, **kw):
+        from odoo.addons.prema_dispatch.services.dispatch_auth import check_driver_can_add_stop
+        try:
+            job = request.env["prema.dispatch.job"].browse(int(job_id))
+            check_driver_can_add_stop(request.env, job)
+            values = values or {}
+            allowed = {"saved_location_id", "stop_type", "sequence", "address", "contact_name", "contact_phone", "dock_door", "pallets_in", "pallets_out", "pod_required", "scheduled_time"}
+            vals = {k: values[k] for k in allowed if k in values}
+            vals["job_id"] = job.id
+            stop = request.env["prema.dispatch.stop"].sudo().create(vals)
+            if job.stops_confirmation_state == "pending":
+                job.sudo().write({"stops_confirmation_state": "partial"})
+            return {"success": True, "stop": request.env["prema.dispatch.job"]._driver_stop_dict(stop)}
+        except Exception as exc:
+            return {"success": False, "code": str(exc), "error": str(exc)}

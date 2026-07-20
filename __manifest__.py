@@ -145,6 +145,8 @@ A full in-app user manual is available from the Prema Dispatch app menu.
         "views/warehouse_app_template.xml",
         "views/dispatch_manual_template.xml",
         "views/menus.xml",
+        "views/dispatch_book_load_wizard_views.xml",
+        "views/dispatch_route_visit_views.xml",
         "views/dispatch_load_plan_views.xml",
     ],
     "assets": {

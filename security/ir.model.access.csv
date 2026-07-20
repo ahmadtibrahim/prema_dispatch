@@ -92,3 +92,11 @@ access_dispatch_document_manager,dispatch.document.manager,model_prema_dispatch_
 access_dispatch_document_dispatcher,dispatch.document.dispatcher,model_prema_dispatch_document,group_dispatcher,1,1,1,0
 access_dispatch_document_driver,dispatch.document.driver,model_prema_dispatch_document,group_dispatch_driver,1,1,1,0
 access_dispatch_document_warehouse,dispatch.document.warehouse,model_prema_dispatch_document,group_dispatch_warehouse,1,1,1,0
+access_book_load_wizard_user,book.load.wizard.user,model_prema_dispatch_book_load_wizard,base.group_user,1,1,1,1
+access_dispatch_location_photo_user,dispatch.location.photo.user,model_prema_dispatch_location_photo,base.group_user,1,0,0,0
+access_dispatch_location_photo_dispatcher,dispatch.location.photo.dispatcher,model_prema_dispatch_location_photo,group_dispatcher,1,1,1,0
+access_dispatch_location_extraction_user,dispatch.location.extraction.user,model_prema_dispatch_location_extraction,base.group_user,1,0,0,0
+access_dispatch_location_extraction_dispatcher,dispatch.location.extraction.dispatcher,model_prema_dispatch_location_extraction,group_dispatcher,1,1,1,0
+access_dispatch_route_visit_user,dispatch.route.visit.user,model_prema_dispatch_route_visit,base.group_user,1,0,0,0
+access_dispatch_route_visit_stop_user,dispatch.route.visit.stop.user,model_prema_dispatch_route_visit_stop,base.group_user,1,0,0,0
+access_dispatch_load_plan_operation_user,dispatch.load.plan.operation.user,model_prema_dispatch_load_plan_operation,base.group_user,1,0,0,0
