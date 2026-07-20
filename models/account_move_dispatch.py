@@ -106,7 +106,14 @@ class AccountMove(models.Model):
                 "target": "new",
             }
 
-        return self._do_action_book_load()
+        return {
+            "type": "ir.actions.act_window",
+            "name": "Book Load",
+            "res_model": "prema.dispatch.book.load.wizard",
+            "view_mode": "form",
+            "target": "new",
+            "context": {"active_id": self.id, "default_move_id": self.id},
+        }
 
     @staticmethod
     def _estimator_core_address_set(estimator):

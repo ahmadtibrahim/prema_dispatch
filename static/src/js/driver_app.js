@@ -1193,7 +1193,7 @@ window.delEv=delEv;
 // jscanify is vendored locally in static/src/lib (MIT, tiny) so the scanner
 // doesn't depend on a third-party CDN at runtime.
 let _scannerLoading=null, _scannerReady=false, _jscanify=null;
-let _scanStream=null, _scanStopId=null, _scanEvType=null, _scanCapturedCanvas=null, _scanEnhanced=false;
+let _scanStream=null, _scanContext=null, _scanStopId=null, _scanEvType=null, _scanCapturedCanvas=null, _scanEnhanced=false;
 
 function loadScannerLibs(){
     if(_scannerReady) return Promise.resolve();
@@ -1223,8 +1223,9 @@ function loadJscanify(resolve,reject){
     document.head.appendChild(s);
 }
 
-async function openScanner(stopId,evType){
-    _scanStopId=stopId; _scanEvType=evType; _scanEnhanced=false;
+async function openScanner(contextOrStopId,evType){
+    const ctx = (typeof contextOrStopId === "object" && contextOrStopId) ? contextOrStopId : {mode:"stop_evidence", stopId:contextOrStopId, evidenceType:evType};
+    _scanContext=ctx; _scanStopId=ctx.stopId||0; _scanEvType=ctx.evidenceType||ctx.documentType||evType; _scanEnhanced=false;
     show("oScanner");
     renderScanStatus("idle"); setScanButtonsDisabled(false);
     setScannerStage("camera");
@@ -1325,9 +1326,13 @@ async function useScan(){
     setScanButtonsDisabled(true);
     renderScanStatus("uploading");
     try{
-        const r=await rpc("/dispatch/driver/evidence/add",{
-            stop_id:_scanStopId, ev_type:_scanEvType, data_b64:b64, filename:`scan_${Date.now()}.jpg`,
-        });
+        let route="/dispatch/driver/evidence/add";
+        let payload={stop_id:_scanStopId, ev_type:_scanEvType, data_b64:b64, filename:`scan_${Date.now()}.jpg`};
+        if(_scanContext?.mode==="load_plan_document"){
+            route="/dispatch/driver/loadplan/document/upload";
+            payload={load_plan_id:_scanContext.loadPlanId, document_type:_scanContext.documentType||"loading_photo", item_id:_scanContext.itemId||null, data_b64:b64, filename:`loadplan_${Date.now()}.jpg`};
+        }
+        const r=await rpc(route,payload);
         if(r?.success){
             renderScanStatus("success", r.duplicate?(r.message||"Already uploaded"):"Scan saved");
             const stop=S.stops.find(s=>s.id===_scanStopId);
@@ -1484,7 +1489,7 @@ function renderLoadPlan(){
     }
 
     h+=`<div class="da-lp-actions">
-        <button class="da-btn da-btn-secondary" onclick="openScanner(0,'pod')" title="Upload a loading/pallet photo">📷 Upload Loading Photo</button>
+        <button class="da-btn da-btn-secondary" onclick="openScanner({mode:'load_plan_document',loadPlanId:S.loadPlan.id,documentType:'loading_photo',itemId:null})" title="Upload a loading/pallet photo">📷 Upload Loading Photo</button>
         ${!lp.is_locked?`<button class="da-btn da-btn-primary" onclick="lpConfirmLoading()">✓ Confirm Loading</button>`:""}
     </div>`;
 
