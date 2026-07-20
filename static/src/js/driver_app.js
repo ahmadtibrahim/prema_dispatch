@@ -527,6 +527,10 @@ function bindPickupDelegates(){
                 ev.preventDefault();
                 pickupSetLocationMode(btn.dataset.mode || "search");
                 break;
+            case "pickup-open-stop-editor":
+                ev.preventDefault();
+                pickupOpenStopEditor(btn.dataset.mode || "search");
+                break;
             case "pickup-search-locations":
                 ev.preventDefault();
                 await pickupSearchLocations();
@@ -599,6 +603,7 @@ function bindPickupDelegates(){
         }
         if(field==="pickup-search-query"){
             pickupSetSearchQuery(el.value);
+            pickupScheduleLocationSearch();
             return;
         }
         if(field && field.startsWith("manual-")){
@@ -1435,8 +1440,10 @@ function pickupFlowState(stop, step=1){
         varianceNotes: job.pickup_variance_notes || "",
         routeSheetReceived: !!state.route_sheet_received,
         locationMode:"search",
+        editorOpen:true,
         searchQuery:"",
         searchResults:[],
+        searching:false,
         manual: pickupManualDefaults(),
         draftStops: pickupStopsForJob(stop.job_id).map(s=>({
             id:s.id,
@@ -1499,23 +1506,89 @@ function pickupSetStep(step){
 }
 window.pickupSetStep=pickupSetStep;
 
+let pickupLocationSearchTimer=null;
+
+function pickupDraftStopFromData(stopData){
+    if(!stopData) return null;
+    return {
+        id:stopData.id,
+        sequence:stopData.sequence,
+        name:stopCompany(stopData) || stopData.customer_name || stopData.name || "Stop",
+        address:stopData.address,
+        pallets_out:stopData.pallets_out||1,
+        pod_required:stopData.pod_required!==false,
+    };
+}
+
+function pickupRefreshDraftStops(flow){
+    if(!flow) return;
+    flow.draftStops=pickupStopsForJob(flow.jobId).map(s=>pickupDraftStopFromData(s)).filter(Boolean);
+}
+
+function pickupAppendDraftStop(stopData){
+    const flow=currentPickupFlow();
+    const draft=pickupDraftStopFromData(stopData);
+    if(!flow || !draft) return;
+    const existing=(flow.draftStops||[]).filter(s=>s.id!==draft.id);
+    flow.draftStops=[...existing, draft].sort((a,b)=>(a.sequence||0)-(b.sequence||0));
+}
+
+function pickupOpenStopEditor(mode="search"){
+    const flow=currentPickupFlow();
+    if(!flow) return;
+    flow.locationMode=mode;
+    flow.editorOpen=true;
+    if(mode==="search" && (flow.searchQuery||"").trim()){
+        pickupScheduleLocationSearch();
+    } else if(S.pickupStops){
+        renderPickupStopsScreen();
+    } else {
+        renderPickupIntake();
+    }
+}
+
+function pickupScheduleLocationSearch(){
+    const flow=currentPickupFlow();
+    if(!flow) return;
+    clearTimeout(pickupLocationSearchTimer);
+    const query=(flow.searchQuery||"").trim();
+    if(query.length < 2){
+        flow.searchResults=[];
+        flow.searching=false;
+        if(S.pickupStops) renderPickupStopsScreen(); else renderPickupIntake();
+        return;
+    }
+    flow.searching=true;
+    if(S.pickupStops) renderPickupStopsScreen(); else renderPickupIntake();
+    pickupLocationSearchTimer=window.setTimeout(()=>pickupSearchLocations(), 250);
+}
+
 function pickupStopEditorHtml(flow){
+    if(!flow.editorOpen){
+        return `<div class="da-pickup-section">
+            <div class="da-pickup-note">Saved stop entry is closed. Tap Add Stop to add another delivery stop.</div>
+            <div class="da-pickup-row" style="margin-top:8px">
+                <button class="da-btn da-btn-primary" type="button" data-action="pickup-open-stop-editor" data-mode="search">Add Stop</button>
+            </div>
+        </div>`;
+    }
     if(flow.locationMode==="search"){
+        const hasQuery=(flow.searchQuery||"").trim().length >= 2;
+        const resultsHtml=(flow.searchResults||[]).map(loc=>`
+            <div class="da-stop-mini">
+                <div class="da-stop-mini-title">${esc(loc.display_label||loc.business_name||loc.address)}</div>
+                <div class="da-stop-mini-sub">${esc(loc.address||"")}</div>
+                <div class="da-pickup-row" style="margin-top:8px">
+                    <button class="da-btn da-btn-primary da-btn-sm" type="button" data-action="pickup-add-saved-stop" data-location-id="${loc.id}">Add Stop</button>
+                </div>
+            </div>
+        `).join("");
         return `<div class="da-pickup-section">
             <input class="da-pickup-input" placeholder="Search company, chain, store #, city, postal code" value="${esc(flow.searchQuery||"")}" data-field="pickup-search-query"/>
-            <div class="da-pickup-row" style="margin-top:8px">
-                <button class="da-btn da-btn-secondary" type="button" data-action="pickup-search-locations">Search</button>
-                <button class="da-btn da-btn-primary" type="button" data-action="pickup-search-locations">Refresh</button>
-            </div>
-            <div class="da-stop-list-mini" style="margin-top:10px">${(flow.searchResults||[]).map(loc=>`
-                <div class="da-stop-mini">
-                    <div class="da-stop-mini-title">${esc(loc.display_label||loc.business_name||loc.address)}</div>
-                    <div class="da-stop-mini-sub">${esc(loc.address||"")}</div>
-                    <div class="da-pickup-row" style="margin-top:8px">
-                        <button class="da-btn da-btn-primary da-btn-sm" type="button" data-action="pickup-add-saved-stop" data-location-id="${loc.id}">Use This Stop</button>
-                    </div>
-                </div>
-            `).join("") || '<div class="da-pickup-note">Search results will appear here.</div>'}</div>
+            <div class="da-pickup-note" style="margin-top:8px">Suggestions appear as you type. Select one to add the stop immediately.</div>
+            <div class="da-stop-list-mini" style="margin-top:10px">${flow.searching
+                ? '<div class="da-pickup-note">Searching saved locations…</div>'
+                : resultsHtml || `<div class="da-pickup-note">${hasQuery ? "No saved locations matched your search." : "Start typing to see saved-location suggestions."}</div>`}</div>
         </div>`;
     }
     const m=flow.manual||pickupManualDefaults();
@@ -1714,6 +1787,7 @@ function pickupSetLocationMode(mode){
     const flow=currentPickupFlow();
     if(!flow) return;
     flow.locationMode=mode;
+    flow.editorOpen=true;
     if(S.pickupStops) renderPickupStopsScreen(); else renderPickupIntake();
 }
 window.pickupSetLocationMode=pickupSetLocationMode;
@@ -1802,11 +1876,24 @@ window.savePickupActuals=savePickupActuals;
 async function pickupSearchLocations(){
     const flow=currentPickupFlow(), stop=currentPickupStop();
     if(!flow||!stop) return;
-    try{
-        const res=await rpc("/dispatch/driver/location/search",{query:flow.searchQuery||"",limit:10,offset:0});
-        flow.searchResults=res?.results||[];
+    const query=(flow.searchQuery||"").trim();
+    if(query.length < 2){
+        flow.searchResults=[];
+        flow.searching=false;
         if(S.pickupStops) renderPickupStopsScreen(); else renderPickupIntake();
-    }catch(e){ toast("Location search failed"); }
+        return;
+    }
+    try{
+        const res=await rpc("/dispatch/driver/location/search",{query,limit:10,offset:0});
+        if((currentPickupFlow()?.searchQuery||"").trim()!==query) return;
+        flow.searchResults=res?.results||[];
+        flow.searching=false;
+        if(S.pickupStops) renderPickupStopsScreen(); else renderPickupIntake();
+    }catch(e){
+        flow.searching=false;
+        if(S.pickupStops) renderPickupStopsScreen(); else renderPickupIntake();
+        toast("Location search failed");
+    }
 }
 window.pickupSearchLocations=pickupSearchLocations;
 
@@ -1818,7 +1905,6 @@ function nextStopSequenceForJob(jobId){
 async function pickupAddSavedStop(locationId){
     const flow=currentPickupFlow(), stop=currentPickupStop();
     if(!flow||!stop) return;
-    const pallets=Math.max(1, parseInt(prompt("Pallets for this stop?", "1")||"1",10)||1);
     try{
         const res=await rpc("/dispatch/driver/stop/create",{
             job_id: flow.jobId,
@@ -1826,14 +1912,20 @@ async function pickupAddSavedStop(locationId){
                 saved_location_id: locationId,
                 stop_type: "dropoff",
                 sequence: nextStopSequenceForJob(flow.jobId),
-                pallets_out: pallets,
+                pallets_out: 1,
                 pod_required: true,
             },
         });
         if(!res?.success){ toast(res?.error||"Could not add stop"); return; }
+        pickupAppendDraftStop(res.stop);
+        flow.searchQuery="";
+        flow.searchResults=[];
+        flow.searching=false;
+        flow.editorOpen=false;
+        if(S.pickupStops) renderPickupStopsScreen(); else renderPickupIntake();
         await reloadDay();
         S.stop=findStopById(stop.id)||S.stop;
-        flow.draftStops=pickupStopsForJob(flow.jobId).map(s=>({id:s.id,sequence:s.sequence,name:stopCompany(s),address:s.address,pallets_out:s.pallets_out||1,pod_required:s.pod_required!==false}));
+        pickupRefreshDraftStops(flow);
         await ensurePickupLoadPlan();
         if(S.pickupStops) renderPickupStopsScreen(); else renderPickupIntake();
         renderStopList();
