@@ -43,6 +43,9 @@ class PremaDispatchLoadPlan(models.Model):
     assigned_pallet_count = fields.Integer(compute="_compute_counts", store=True)
     loaded_pallet_count = fields.Integer(compute="_compute_counts", store=True)
     vacant_position_count = fields.Integer(compute="_compute_counts", store=True)
+    reserved_pallet_count = fields.Integer(compute="_compute_counts", store=True)
+    committed_pallet_count = fields.Integer(compute="_compute_counts", store=True)
+    available_position_count = fields.Integer(compute="_compute_counts", store=True)
     payload_used = fields.Float(compute="_compute_counts", store=True)
     payload_capacity = fields.Float(compute="_compute_counts", store=True)
     utilization_percentage = fields.Float(compute="_compute_counts", store=True)
@@ -59,7 +62,7 @@ class PremaDispatchLoadPlan(models.Model):
             plan.name = f"LP-{plan.vehicle_id.name or '?'}-{plan.operating_date or ''}"
 
     @api.depends(
-        "load_plan_job_ids.job_id.approximate_skids",
+        "load_plan_job_ids.job_id.approximate_skids", "load_plan_job_ids.reserved_floor_positions", "load_plan_job_ids.reserve_capacity",
         "pallet_ids", "pallet_ids.consumes_floor_position", "pallet_ids.position_id",
         "pallet_ids.status", "pallet_ids.weight_lbs",
         "layout_template_id.max_positions", "vehicle_id.x_max_payload_lbs",
@@ -69,10 +72,17 @@ class PremaDispatchLoadPlan(models.Model):
             floor_items = plan.pallet_ids.filtered(lambda i: i.status != "cancelled" and i.consumes_floor_position)
             plan.expected_pallet_count = sum(plan.load_plan_job_ids.mapped("job_id.approximate_skids"))
             plan.confirmed_pallet_count = len(floor_items.filtered(lambda i: i.status != "cancelled"))
+            plan.reserved_pallet_count = sum(plan.load_plan_job_ids.filtered("active").mapped("reserved_floor_positions"))
+            commitment = 0
+            for link in plan.load_plan_job_ids.filtered("active"):
+                job_items = floor_items.filtered(lambda i, job=link.job_id: i.job_id.id == job.id)
+                commitment += max(link.reserved_floor_positions or 0, len(job_items))
+            plan.committed_pallet_count = commitment
             plan.assigned_pallet_count = len(floor_items.filtered("position_id"))
             plan.loaded_pallet_count = len(floor_items.filtered(lambda i: i.status in ("loaded", "in_transit", "delivered")))
             max_pos = plan.layout_template_id.max_positions
             plan.vacant_position_count = max(0, max_pos - plan.assigned_pallet_count)
+            plan.available_position_count = max(0, max_pos - plan.committed_pallet_count)
             plan.payload_used = sum(plan.pallet_ids.filtered(lambda i: i.status != "cancelled").mapped("weight_lbs"))
             plan.payload_capacity = plan.vehicle_id.x_max_payload_lbs or 0.0
             plan.utilization_percentage = (plan.assigned_pallet_count / max_pos * 100.0) if max_pos else 0.0
@@ -211,7 +221,8 @@ class PremaDispatchLoadPlan(models.Model):
             "counts": {
                 "expected": self.expected_pallet_count, "confirmed": self.confirmed_pallet_count,
                 "assigned": self.assigned_pallet_count, "loaded": self.loaded_pallet_count,
-                "vacant": self.vacant_position_count, "max_positions": tpl.max_positions,
+                "reserved": self.reserved_pallet_count, "committed": self.committed_pallet_count,
+                "vacant": self.vacant_position_count, "available": self.available_position_count, "max_positions": tpl.max_positions,
                 "utilization_percentage": round(self.utilization_percentage, 1),
             },
             "payload": {"used": self.payload_used, "capacity": self.payload_capacity},
@@ -784,6 +795,10 @@ class PremaDispatchLoadPlanJob(models.Model):
         ("included", "Included"), ("staged", "Staged"), ("active", "Active"),
         ("completed", "Completed"), ("removed", "Removed"),
     ], default="included")
+    reserved_floor_positions = fields.Integer()
+    reserve_capacity = fields.Boolean()
+    reservation_source = fields.Selection([("booking_estimate", "Booking Estimate"), ("dispatcher_override", "Dispatcher Override"), ("confirmed_items", "Confirmed Items")])
+    reservation_notes = fields.Text()
     active = fields.Boolean(default=True)
 
     _sql_constraints = [

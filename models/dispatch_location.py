@@ -1,4 +1,6 @@
+import hashlib
 import logging
+import re
 
 from odoo import api, fields, models
 from odoo.osv import expression
@@ -26,6 +28,39 @@ class PremaDispatchLocation(models.Model):
              "at a glance instead of just an address.",
     )
     address = fields.Char(string="Address", required=True)
+
+    chain_name = fields.Char(string="Chain / Brand", index=True)
+    location_number = fields.Char(string="Store / Location #", index=True)
+    location_number_normalized = fields.Char(compute="_compute_location_search_fields", store=True, index=True)
+    location_search_key = fields.Char(compute="_compute_location_search_fields", store=True, index=True)
+    location_display_label = fields.Char(compute="_compute_location_search_fields")
+    street = fields.Char()
+    street2 = fields.Char()
+    unit = fields.Char()
+    city = fields.Char(index=True)
+    province_code = fields.Char(string="Province", size=8)
+    postal_code = fields.Char(index=True)
+    country_id = fields.Many2one("res.country", string="Country")
+    normalized_address = fields.Char(compute="_compute_location_search_fields", store=True, index=True)
+    normalized_address_hash = fields.Char(compute="_compute_location_search_fields", store=True, index=True)
+    verification_state = fields.Selection([
+        ("driver_submitted", "Driver Submitted"), ("pending_review", "Pending Review"),
+        ("verified", "Verified"), ("rejected", "Rejected"), ("legacy", "Legacy / Imported"),
+    ], default="driver_submitted", index=True)
+    source_type = fields.Selection([
+        ("dispatcher_manual", "Dispatcher Manual"), ("driver_manual", "Driver Manual"),
+        ("photo_extraction", "Photo Extraction"), ("google_places", "Google Places"), ("imported", "Imported"),
+    ])
+    created_by_driver_id = fields.Many2one("res.partner")
+    last_verified_by = fields.Many2one("res.users")
+    last_verified_at = fields.Datetime()
+    pin_source = fields.Selection([
+        ("geocoded_address", "Geocoded Address"), ("google_place", "Google Place"),
+        ("driver_gps", "Driver GPS"), ("driver_map", "Driver Map"),
+        ("dispatcher_map", "Dispatcher Map"), ("imported", "Imported"),
+    ])
+    pin_accuracy_m = fields.Float()
+
     google_place_id = fields.Char(
         string="Google Place ID",
         help="Google Places identifier for precise address matching.",
@@ -154,6 +189,86 @@ class PremaDispatchLocation(models.Model):
     )
     stop_count = fields.Integer(compute="_compute_stop_count", string="# Stops")
 
+
+    @api.model
+    def _normalize_location_number(self, value):
+        value = (value or "").strip()
+        value = re.sub(r"^#", "", value)
+        value = re.sub(r"^(STORE|LOCATION|BRANCH|WAREHOUSE)\s*#?\s*", "", value, flags=re.I)
+        return value.strip().upper()
+
+    @api.model
+    def _normalize_text_key(self, value):
+        return re.sub(r"\s+", " ", (value or "").strip().upper())
+
+    @api.depends("chain_name", "location_number", "business_name", "name", "city", "postal_code", "address", "street", "street2", "unit", "province_code", "country_id")
+    def _compute_location_search_fields(self):
+        for loc in self:
+            loc.location_number_normalized = self._normalize_location_number(loc.location_number)
+            country = loc.country_id.code or loc.country_id.name or ""
+            address_parts = [loc.street, loc.street2, loc.unit, loc.city, loc.province_code, loc.postal_code, country]
+            normalized_address = self._normalize_text_key(", ".join(p for p in address_parts if p) or loc.address)
+            loc.normalized_address = normalized_address
+            loc.normalized_address_hash = hashlib.sha256(normalized_address.encode()).hexdigest() if normalized_address else False
+            key_parts = [loc.chain_name, loc.location_number_normalized, loc.business_name, loc.name, loc.city, loc.postal_code, loc.address, normalized_address]
+            loc.location_search_key = self._normalize_text_key(" ".join(p for p in key_parts if p))
+            label_name = loc.chain_name or loc.business_name or loc.name or "Location"
+            if loc.location_number_normalized and loc.chain_name:
+                label_name = "%s #%s" % (loc.chain_name, loc.location_number_normalized)
+            loc.location_display_label = "%s%s" % (label_name, (" — " + loc.city) if loc.city else "")
+
+    @api.constrains("chain_name", "location_number", "country_id", "active")
+    def _check_duplicate_chain_location_number(self):
+        from odoo.exceptions import ValidationError
+        for loc in self:
+            number = loc.location_number_normalized
+            chain = self._normalize_text_key(loc.chain_name)
+            if not loc.active or not chain or not number:
+                continue
+            domain = [("id", "!=", loc.id), ("active", "=", True), ("location_number_normalized", "=", number), ("chain_name", "=ilike", loc.chain_name.strip())]
+            if loc.country_id:
+                domain.append(("country_id", "=", loc.country_id.id))
+            if self.search_count(domain):
+                raise ValidationError("An active saved location already exists for this chain and store/location number.")
+
+    def _driver_payload(self):
+        self.ensure_one()
+        return {
+            "id": self.id, "display_label": self.location_display_label or self.display_name,
+            "chain_name": self.chain_name or "", "location_number": self.location_number or "",
+            "business_name": self.business_name or "", "address": self.address or "",
+            "city": self.city or "", "postal_code": self.postal_code or "", "location_type": self.location_type or "",
+            "dock_door": self.dock_door or "", "pin_lat": self.pin_lat, "pin_lng": self.pin_lng,
+            "pin_source": self.pin_source or "", "exact_pin_available": bool(self.pin_set),
+            "verification_state": self.verification_state or "",
+            "primary_entrance_photo_url": f"/web/image/prema.dispatch.location/{self.id}/entrance_photo" if self.entrance_photo else "",
+            "parking_notes": self.parking_notes or "", "driver_instructions": self.driver_instructions or "",
+        }
+
+    @api.model
+    def driver_search_locations(self, query, limit=20, offset=0):
+        query = (query or "").strip()
+        limit = min(int(limit or 20), 50)
+        offset = max(int(offset or 0), 0)
+        if len(query) < 2:
+            return {"success": True, "results": [], "limit": limit, "offset": offset}
+        norm = self._normalize_text_key(query)
+        number = self._normalize_location_number(query.split()[-1])
+        words = [w for w in re.split(r"\s+", norm.replace("#", " ")) if w]
+        results = self.browse()
+        if len(words) >= 2:
+            chain_guess = " ".join(words[:-1])
+            results |= self.search([("chain_name", "=ilike", chain_guess), ("location_number_normalized", "=", words[-1])], limit=limit)
+        if number:
+            results |= self.search([("location_number_normalized", "=", number)], limit=limit)
+        for field in ("google_place_id", "normalized_address", "business_name", "name", "city", "postal_code", "address", "location_search_key"):
+            if len(results) >= limit + offset:
+                break
+            op = "=" if field in ("google_place_id", "normalized_address") else "ilike"
+            results |= self.search([(field, op, norm if field in ("normalized_address", "location_search_key") else query)], limit=limit)
+        sliced = results[offset:offset + limit]
+        return {"success": True, "results": [r._driver_payload() for r in sliced], "limit": limit, "offset": offset}
+
     @api.depends("stop_ids")
     def _compute_stop_count(self):
         for loc in self:
@@ -180,6 +295,9 @@ class PremaDispatchLocation(models.Model):
                     [("business_name", operator, name)],
                     [("name", operator, name)],
                     [("address", operator, name)],
+                    [("chain_name", operator, name)],
+                    [("location_number_normalized", operator, self._normalize_location_number(name))],
+                    [("location_search_key", operator, self._normalize_text_key(name))],
                 ]),
             ])
         return self.search(args, limit=limit).name_get()

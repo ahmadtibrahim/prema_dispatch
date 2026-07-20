@@ -150,6 +150,37 @@ class PremaDispatchJob(models.Model):
     bol_number = fields.Char(string="BOL #", tracking=True)
     po_number = fields.Char(string="PO #", tracking=True)
 
+
+    # ── Stops Pending / Planned Route Intent ─────────────────────────
+
+    route_definition_mode = fields.Selection([
+        ("exact_stops", "Exact Stops Known"),
+        ("stops_pending", "Stops Pending"),
+    ], default="exact_stops", required=True, tracking=True)
+    planned_route_name = fields.Char(string="Planned Route Name", tracking=True)
+    planned_route_corridor = fields.Selection([
+        ("EAST", "East"), ("WEST", "West"), ("NORTH", "North"),
+        ("SOUTH", "South"), ("LOCAL", "Local / GTA"), ("CUSTOM", "Custom"),
+    ], string="Planned Corridor", tracking=True)
+    planned_delivery_area = fields.Char(string="Planned Delivery Area")
+    stops_confirmation_state = fields.Selection([
+        ("pending", "Stops Pending"), ("partial", "Partially Entered"),
+        ("confirmed", "Stops Confirmed"),
+    ], default="confirmed", required=True, tracking=True)
+    pickup_saved_location_id = fields.Many2one("prema.dispatch.location", string="Pickup Saved Location")
+    reserve_capacity = fields.Boolean(default=False)
+    route_sheet_received_at = fields.Datetime(readonly=True, copy=False)
+    route_sheet_received_by = fields.Many2one("res.users", readonly=True, copy=False)
+    computed_route_corridor = fields.Selection([
+        ("EAST", "East"), ("WEST", "West"), ("NORTH", "North"),
+        ("SOUTH", "South"), ("LOCAL", "Local / GTA"), ("CUSTOM", "Custom"),
+    ], compute="_compute_route_corridors", store=True)
+    effective_route_corridor = fields.Selection([
+        ("EAST", "East"), ("WEST", "West"), ("NORTH", "North"),
+        ("SOUTH", "South"), ("LOCAL", "Local / GTA"), ("CUSTOM", "Custom"),
+    ], compute="_compute_route_corridors", store=True)
+    corridor_mismatch_warning = fields.Char(compute="_compute_route_corridors", store=True)
+
     # ── LTL / Map Display (computed, stored for fast queries) ─
 
     pickup_city = fields.Char(
@@ -427,6 +458,51 @@ class PremaDispatchJob(models.Model):
                 job.source_document_name = f"Template: {job.template_id.name}"
             else:
                 job.source_document_name = False
+
+
+    @api.depends("planned_route_corridor", "stops_confirmation_state", "delivery_cities")
+    def _compute_route_corridors(self):
+        for job in self:
+            cities = (job.delivery_cities or "").upper()
+            computed = False
+            if any(x in cities for x in ("OTTAWA", "BELLEVILLE", "KINGSTON", "COBOURG", "PETERBOROUGH", "PICTON", "MANOTICK", "MONTREAL")):
+                computed = "EAST"
+            elif any(x in cities for x in ("LONDON", "WINDSOR", "KITCHENER", "WATERLOO", "GUELPH")):
+                computed = "WEST"
+            elif any(x in cities for x in ("BARRIE", "ORILLIA", "SUDBURY", "NEWMARKET")):
+                computed = "NORTH"
+            elif any(x in cities for x in ("NIAGARA", "HAMILTON", "ST CATHARINES")):
+                computed = "SOUTH"
+            elif cities:
+                computed = "CUSTOM"
+            job.computed_route_corridor = computed
+            if job.stops_confirmation_state in ("pending", "partial"):
+                job.effective_route_corridor = job.planned_route_corridor or computed
+            else:
+                job.effective_route_corridor = computed or job.planned_route_corridor
+            if job.planned_route_corridor and computed and job.planned_route_corridor != computed:
+                job.corridor_mismatch_warning = "Planned corridor %s differs from confirmed route corridor %s." % (job.planned_route_corridor, computed)
+            else:
+                job.corridor_mismatch_warning = False
+
+    def _driver_job_summary(self):
+        self.ensure_one()
+        link = self.env["prema.dispatch.load.plan.job"].search([("job_id", "=", self.id), ("active", "=", True)], limit=1)
+        pickup = self.stop_ids.filtered(lambda s: s.stop_type == "pickup")[:1]
+        return {
+            "job_id": self.id, "job_name": self.name, "customer": self.partner_id.name if self.partner_id else "",
+            "planned_route_name": self.planned_route_name or "", "planned_route_corridor": self.planned_route_corridor or "",
+            "computed_route_corridor": self.computed_route_corridor or "", "effective_route_corridor": self.effective_route_corridor or "",
+            "route_definition_mode": self.route_definition_mode, "stops_confirmation_state": self.stops_confirmation_state,
+            "expected_skids": self.approximate_skids or 0,
+            "reserved_positions": link.reserved_floor_positions if link else (self.approximate_skids if self.reserve_capacity else 0),
+            "confirmed_skids": len(self.item_ids.filtered(lambda i: i.status != "cancelled" and i.consumes_floor_position)) if hasattr(self, "item_ids") else 0,
+            "pickup_location": {"id": pickup.saved_location_id.id if pickup and pickup.saved_location_id else False, "address": pickup.address if pickup else ""},
+            "route_sheet_received_at": self._dt_iso_utc(self.route_sheet_received_at),
+            "vehicle": {"id": self.vehicle_id.id, "name": self.vehicle_id.name} if self.vehicle_id else False,
+            "driver": {"id": self.driver_id.id, "name": self.driver_id.name} if self.driver_id else False,
+            "stage": self.stage_id.name if self.stage_id else "", "load_plan_id": link.load_plan_id.id if link else False,
+        }
 
     @api.depends("stop_ids.stop_type", "stop_ids.address", "stop_ids.sequence")
     def _compute_cities(self):
@@ -2767,6 +2843,14 @@ class PremaDispatchJob(models.Model):
             "lat":               lat,
             "lng":               lng,
             "pin_set":           s.pin_set,
+            "chain_name":        (loc.chain_name if loc else "") or "",
+            "location_number":   (loc.location_number if loc else "") or "",
+            "effective_lat":      lat,
+            "effective_lng":      lng,
+            "pin_source":         (loc.pin_source if loc else "") or ("stop_exact" if s.pin_set else "geocoded_address"),
+            "pin_accuracy_m":     (loc.pin_accuracy_m if loc else 0.0) or 0.0,
+            "exact_pin_available": bool((loc and loc.pin_set) or s.pin_set),
+            "exact_pin_verified": bool(loc and loc.verification_state == "verified" and loc.pin_set),
             "tz_name":           s.tz_name or tz_from_longitude_band(lat, lng),
             "parking_notes":     (loc.parking_notes if loc else "") or "",
             "entrance_photo_url": entrance_photo_url,
@@ -3298,6 +3382,7 @@ class PremaDispatchJob(models.Model):
                 "route":   f"{job.pickup_city} → {job.delivery_cities}" if job.pickup_city else job.name,
                 "pallets": job.max_onboard_pallets or job.approximate_skids or 0,
                 "stops":   stops_out,
+                **job._driver_job_summary(),
             })
         self._apply_truck_onboard_counts(all_stops)
 
