@@ -104,6 +104,16 @@
     <div id="stopDetailBody" class="da-detail-body"></div>
   </div>
 
+  <!-- ── SCREEN: Pickup Delivery Stops ───────────────────── -->
+  <div id="sPickupStops" class="da-screen" style="display:none">
+    <div class="da-header">
+      <button class="da-back-btn" onclick="APP.goBack()">‹</button>
+      <div id="pickupStopsTitle" class="da-screen-title">Delivery Stops</div>
+      <button class="da-icon-btn" onclick="openLoadPlan()">📦</button>
+    </div>
+    <div id="pickupStopsBody" class="da-detail-body"></div>
+  </div>
+
   <!-- ── SCREEN: In-App Navigation (Amazon Flex style) ────── -->
   <div id="sNav" class="da-screen da-nav-screen" style="display:none">
     <div id="navMapWrap" class="da-nav-map">
@@ -222,6 +232,17 @@
         <button class="da-chat-close-btn da-finish-close" onclick="APP.closePickupIntake()">✕</button>
       </div>
       <div id="pickupIntakeBody" class="da-finish-body"></div>
+    </div>
+  </div>
+
+  <!-- ── OVERLAY: Pickup Confirmation ───────────────────── -->
+  <div id="oPickupConfirm" class="da-overlay da-issue-overlay" style="display:none">
+    <div class="da-finish-card da-pickup-card">
+      <div class="da-finish-header">
+        <div class="da-issue-title">Confirm Pickup Load</div>
+        <button class="da-chat-close-btn da-finish-close" onclick="APP.closePickupConfirm()">✕</button>
+      </div>
+      <div id="pickupConfirmBody" class="da-finish-body"></div>
     </div>
   </div>
 

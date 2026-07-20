@@ -223,12 +223,25 @@ class TestDriverDateAndPickupWorkflow(TestStopsPendingBase):
         self.assertEqual(len(dates["days"]), 3)
         self.assertTrue(any(day["is_today"] for day in dates["days"]))
 
+    def test_unconfirmed_pickup_defaults_actual_to_expected_not_zero(self):
+        state = self.job._pickup_completion_step_state()
+        self.assertFalse(state["actual_confirmed"])
+        self.assertEqual(state["actual"], 10)
+        self.assertEqual(state["actual_saved"], 0)
+        summary = self.job._driver_job_summary()
+        self.assertFalse(summary["pickup_actuals_confirmed"])
+        self.assertEqual(summary["actual_received_pallet_count"], 0)
+
     def test_confirm_actual_pickup_is_idempotent(self):
         result = self.Job.with_user(self.driver_user).driver_confirm_pickup_actuals(self.pickup_stop.id, {
             "actual_received_pallet_count": 10,
             "route_sheet_received": True,
         })
         self.assertTrue(result["success"])
+        self.job.invalidate_recordset()
+        self.assertTrue(self.job.pickup_actuals_confirmed_at)
+        self.assertEqual(result["actual_received_pallet_count"], 10)
+        self.assertEqual(result["layout_type"], "straight")
         self.assertEqual(len(self.job.item_ids.filtered(lambda item: item.status != "cancelled" and not item.pending_future_pickup)), 10)
         self.Job.with_user(self.driver_user).driver_confirm_pickup_actuals(self.pickup_stop.id, {
             "actual_received_pallet_count": 10,
@@ -289,6 +302,19 @@ class TestDriverDateAndPickupWorkflow(TestStopsPendingBase):
             ("related_pickup_stop_id", "=", terra_pickup.id),
         ])
         self.assertEqual(len(reservations), 2)
+
+    def test_finalize_pickup_without_actual_count_keeps_unconfirmed_state(self):
+        self.Stop.create({
+            "job_id": self.job.id, "sequence": 20, "stop_type": "dropoff",
+            "address": "740 Division St, Cobourg, ON",
+        })
+        result = self.Job.with_user(self.driver_user).driver_finalize_pickup_intake(self.pickup_stop.id, {
+            "stops_confirmation_state": "partial",
+        })
+        self.assertTrue(result["success"])
+        self.job.invalidate_recordset()
+        self.assertFalse(self.job.pickup_actuals_confirmed_at)
+        self.assertEqual(self.job.actual_received_pallet_count, 0)
 
     def test_combined_route_excludes_planning_only_and_keeps_terra_pickup_before_deliveries(self):
         terra_customer = self.env["res.partner"].create({"name": "Terra Route Customer"})

@@ -187,6 +187,8 @@ class PremaDispatchJob(models.Model):
     expected_pallet_count = fields.Integer(compute="_compute_operational_pallet_counts", store=True)
     reserved_pallet_count = fields.Integer(compute="_compute_operational_pallet_counts", store=True)
     actual_received_pallet_count = fields.Integer(default=0, tracking=True)
+    pickup_actuals_confirmed_at = fields.Datetime(readonly=True, copy=False, tracking=True)
+    pickup_actuals_confirmed_by = fields.Many2one("res.users", readonly=True, copy=False)
     confirmed_pallet_count = fields.Integer(compute="_compute_operational_pallet_counts", store=True)
     assigned_pallet_count = fields.Integer(compute="_compute_operational_pallet_counts", store=True)
     loaded_pallet_count = fields.Integer(compute="_compute_operational_pallet_counts", store=True)
@@ -561,6 +563,7 @@ class PremaDispatchJob(models.Model):
         self.ensure_one()
         link = self.env["prema.dispatch.load.plan.job"].search([("job_id", "=", self.id), ("active", "=", True)], limit=1)
         pickup = self.stop_ids.filtered(lambda s: s.stop_type == "pickup")[:1]
+        layout_type = link.load_plan_id.layout_template_id.layout_type if link and link.load_plan_id and link.load_plan_id.layout_template_id else (self.vehicle_id.default_pallet_layout or "straight") if self.vehicle_id else "straight"
         return {
             "job_id": self.id, "job_name": self.name, "customer": self.partner_id.name if self.partner_id else "",
             "planned_route_name": self.planned_route_name or "", "planned_route_corridor": self.planned_route_corridor or "",
@@ -575,6 +578,9 @@ class PremaDispatchJob(models.Model):
             "expected_pallet_count": self.expected_pallet_count,
             "reserved_pallet_count": self.reserved_pallet_count,
             "actual_received_pallet_count": self.actual_received_pallet_count,
+            "pickup_actuals_confirmed": bool(self.pickup_actuals_confirmed_at),
+            "pickup_actuals_confirmed_at": self._dt_iso_utc(self.pickup_actuals_confirmed_at),
+            "pickup_actuals_confirmed_by": (self.pickup_actuals_confirmed_by.partner_id.name or self.pickup_actuals_confirmed_by.name) if self.pickup_actuals_confirmed_by else "",
             "confirmed_pallet_count": self.confirmed_pallet_count,
             "assigned_pallet_count": self.assigned_pallet_count,
             "loaded_pallet_count": self.loaded_pallet_count,
@@ -584,6 +590,18 @@ class PremaDispatchJob(models.Model):
             "vehicle": {"id": self.vehicle_id.id, "name": self.vehicle_id.name} if self.vehicle_id else False,
             "driver": {"id": self.driver_id.id, "name": self.driver_id.name} if self.driver_id else False,
             "stage": self.stage_id.name if self.stage_id else "", "load_plan_id": link.load_plan_id.id if link else False,
+            "vehicle_layout_type": layout_type,
+            "vehicle_layout_capacity": self.vehicle_id.get_layout_capacity(layout_type) if self.vehicle_id else 0,
+            "vehicle_layout_capacities": {
+                "straight": self.vehicle_id.straight_pallet_capacity or 0,
+                "pin_wheel": self.vehicle_id.pin_wheel_pallet_capacity or 0,
+                "turned": self.vehicle_id.turned_pallet_capacity or 0,
+            } if self.vehicle_id else {},
+            "vehicle_layout_max_capacity": max(
+                self.vehicle_id.straight_pallet_capacity or 0,
+                self.vehicle_id.pin_wheel_pallet_capacity or 0,
+                self.vehicle_id.turned_pallet_capacity or 0,
+            ) if self.vehicle_id else 0,
         }
 
     @api.depends("stop_ids.stop_type", "stop_ids.address", "stop_ids.sequence")
@@ -3041,11 +3059,17 @@ class PremaDispatchJob(models.Model):
         delivery_stops = self.stop_ids.filtered(lambda stop: stop.stop_type == "dropoff" and not stop.planning_only)
         floor_items = self.item_ids.filtered(lambda item: item.consumes_floor_position and item.status != "cancelled" and not item.pending_future_pickup)
         allocated = floor_items.filtered(lambda item: item.stop_allocation_ids.filtered("active"))
+        actual_confirmed = bool(self.pickup_actuals_confirmed_at)
+        actual_value = self.actual_received_pallet_count if actual_confirmed else self.expected_pallet_count
         return {
             "pickup_stop_id": pickup.id if pickup else False,
             "expected": self.expected_pallet_count,
-            "actual": self.actual_received_pallet_count or 0,
-            "variance": (self.actual_received_pallet_count or 0) - (self.expected_pallet_count or 0),
+            "actual": actual_value,
+            "actual_saved": self.actual_received_pallet_count or 0,
+            "actual_confirmed": actual_confirmed,
+            "actual_confirmed_at": self._dt_iso_utc(self.pickup_actuals_confirmed_at),
+            "actual_confirmed_by": (self.pickup_actuals_confirmed_by.partner_id.name or self.pickup_actuals_confirmed_by.name) if self.pickup_actuals_confirmed_by else "",
+            "variance": (actual_value or 0) - (self.expected_pallet_count or 0),
             "delivery_stop_count": len(delivery_stops),
             "confirmed_pallet_count": len(floor_items),
             "allocated_pallet_count": len(allocated),
@@ -3113,29 +3137,42 @@ class PremaDispatchJob(models.Model):
         check_stop_access(self.env, stop)
         job = stop.job_id
         values = values or {}
+        if values.get("job_id") and int(values.get("job_id")) != job.id:
+            return {"success": False, "error": "This stop no longer matches the selected job."}
         actual_count = int(values.get("actual_received_pallet_count") or 0)
         if actual_count < 0:
             raise exceptions.UserError("Actual pallet count cannot be negative.")
         layout_choice = stop.job_id.vehicle_id.get_recommended_pallet_layout(actual_count) if stop.job_id.vehicle_id else False
         if actual_count and not layout_choice:
             raise exceptions.UserError("This load exceeds every configured single-truck layout capacity.")
+        layout_capacity = stop.job_id.vehicle_id.get_layout_capacity(layout_choice or stop.job_id.vehicle_id.default_pallet_layout) if stop.job_id.vehicle_id else 0
+        plan = False
+        if values.get("load_plan_id"):
+            plan = self.env["prema.dispatch.load.plan"].browse(int(values.get("load_plan_id")))
+            if not plan.exists():
+                return {"success": False, "error": "Load Plan not found."}
+            plan._check_version(values.get("version"))
+        before_count = len(job.item_ids.filtered(lambda item: item.status != "cancelled" and item.consumes_floor_position and not item.pending_future_pickup))
         floor_items = job._sync_actual_pallet_items(actual_count, pickup_stop=stop)
         job.write({
             "actual_received_pallet_count": actual_count,
+            "pickup_actuals_confirmed_at": fields.Datetime.now(),
+            "pickup_actuals_confirmed_by": self.env.user.id,
             "pickup_variance_notes": values.get("variance_notes") or False,
             "route_sheet_received_at": fields.Datetime.now() if values.get("route_sheet_received") else job.route_sheet_received_at,
             "route_sheet_received_by": self.env.user.id if values.get("route_sheet_received") else job.route_sheet_received_by.id if job.route_sheet_received_by else False,
         })
-        if stop.vehicle_id:
-            stop.vehicle_id.message_post(body=(
+        if job.vehicle_id:
+            job.vehicle_id.sudo().message_post(body=(
                 f"Pickup actual pallets updated for {job.name}: expected {job.expected_pallet_count}, "
                 f"actual {actual_count}."
             ))
-        plan = self.env["prema.dispatch.load.plan"].search([
-            ("vehicle_id", "=", job.vehicle_id.id),
-            ("operating_date", "=", fields.Date.to_date(job.scheduled_pickup) if job.scheduled_pickup else fields.Date.today()),
-            ("active", "=", True),
-        ], limit=1)
+        if not plan:
+            plan = self.env["prema.dispatch.load.plan"].search([
+                ("vehicle_id", "=", job.vehicle_id.id),
+                ("operating_date", "=", fields.Date.to_date(job.scheduled_pickup) if job.scheduled_pickup else fields.Date.today()),
+                ("active", "=", True),
+            ], limit=1)
         recommendation = None
         if plan:
             if not floor_items.filtered("load_plan_id"):
@@ -3144,15 +3181,27 @@ class PremaDispatchJob(models.Model):
                 f"Pickup actual pallets changed for {job.name}: expected {job.expected_pallet_count}, actual {actual_count}."
             )
             recommendation = plan.evaluate_layout_for_capacity()
-        job.message_post(body=(
+            plan.invalidate_recordset()
+        job.sudo().message_post(body=(
             f"Pickup actual pallets confirmed by {self.env.user.name}: expected {job.expected_pallet_count}, actual {actual_count}."
         ))
+        after_count = len(job.item_ids.filtered(lambda item: item.status != "cancelled" and item.consumes_floor_position and not item.pending_future_pickup))
         return {
             "success": True,
             "job": job._driver_job_summary(),
             "pickup_step_state": job._pickup_completion_step_state(),
             "layout_proposal": recommendation,
             "vehicle_layout_type": layout_choice,
+            "layout_type": layout_choice or (plan.layout_template_id.layout_type if plan and plan.layout_template_id else False),
+            "layout_capacity": layout_capacity,
+            "expected_pallet_count": job.expected_pallet_count,
+            "actual_received_pallet_count": actual_count,
+            "variance": actual_count - (job.expected_pallet_count or 0),
+            "created_item_count": max(0, after_count - before_count),
+            "cancelled_item_count": max(0, before_count - after_count),
+            "load_plan_id": plan.id if plan else False,
+            "load_plan_version": plan.version if plan else False,
+            "requires_layout_change": bool(recommendation and recommendation.get("requires_confirmation")),
         }
 
     def _sync_future_pickup_reservations(self, plan):
@@ -3226,7 +3275,7 @@ class PremaDispatchJob(models.Model):
         recommendation = None
         if plan:
             plan._mark_stale(f"Route details updated for {job.name}.")
-            self._sync_future_pickup_reservations(plan)
+            job._sync_future_pickup_reservations(plan)
             try:
                 if job.vehicle_id and job.scheduled_pickup:
                     DispatchOptimizationService(self.env).apply_consolidated_route(
