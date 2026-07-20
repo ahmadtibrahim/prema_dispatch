@@ -212,9 +212,11 @@ class TestDriverStopAndLocationAuthorization(TestStopsPendingBase):
         self.job.write({"stops_confirmation_state": "confirmed"})
         result = self.Job.driver_delete_stop(drop.id)
         self.assertTrue(result["success"])
+        drop.invalidate_recordset()
         self.job.invalidate_recordset()
         self.assertEqual(self.job.stops_confirmation_state, "partial")
         self.assertTrue(pickup.exists())
+        self.assertEqual(drop.status, "cancelled")
 
 
 class TestDriverDateAndPickupWorkflow(TestStopsPendingBase):

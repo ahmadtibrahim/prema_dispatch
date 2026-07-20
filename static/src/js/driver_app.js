@@ -606,6 +606,10 @@ function bindPickupDelegates(){
             pickupScheduleLocationSearch();
             return;
         }
+        if(field==="pickup-new-stop-pallets"){
+            pickupSetNewStopPallets(el.value);
+            return;
+        }
         if(field && field.startsWith("manual-")){
             pickupSetManual(field.replace("manual-",""), el.value);
             return;
@@ -1444,6 +1448,7 @@ function pickupFlowState(stop, step=1){
         searchQuery:"",
         searchResults:[],
         searching:false,
+        newStopPallets:1,
         manual: pickupManualDefaults(),
         draftStops: pickupStopsForJob(stop.job_id).map(s=>({
             id:s.id,
@@ -1604,7 +1609,12 @@ function pickupStopEditorHtml(flow){
     if(flow.locationMode==="search"){
         return `<div class="da-pickup-section">
             <input class="da-pickup-input" placeholder="Search company, chain, store #, city, postal code" value="${esc(flow.searchQuery||"")}" data-field="pickup-search-query"/>
+            <div class="da-pickup-row" style="margin-top:8px;align-items:center">
+                <div class="da-pickup-qty-label" style="margin:0;min-width:140px">Pallets for next stop</div>
+                <input class="da-pickup-qty-input" style="max-width:110px" type="number" min="1" max="99" value="${Number(flow.newStopPallets||1)}" data-field="pickup-new-stop-pallets"/>
+            </div>
             <div class="da-pickup-note" style="margin-top:8px">Suggestions appear as you type. Select one to add the stop immediately.</div>
+            <div class="da-pickup-note">If this stop shares a pallet with others, set this stop's pallet count here and assign the shared pallet in Step 3.</div>
             <div id="pickupSearchResults" class="da-stop-list-mini" style="margin-top:10px">${pickupSearchResultsHtml(flow)}</div>
         </div>`;
     }
@@ -1621,6 +1631,9 @@ function pickupStopEditorHtml(flow){
             <input class="da-pickup-input" placeholder="Province" value="${esc(m.province_code||"ON")}" data-field="manual-province_code"/>
             <input class="da-pickup-input" placeholder="Postal Code" value="${esc(m.postal_code||"")}" data-field="manual-postal_code"/>
             ${m.address_formatted ? `<div class="da-pickup-note">Google verified address: <strong>${esc(m.address_formatted)}</strong></div>` : ""}
+            <div class="da-pickup-qty-label">Pallets for this stop</div>
+            <input class="da-pickup-qty-input" type="number" min="1" max="99" value="${Number(flow.newStopPallets||1)}" data-field="pickup-new-stop-pallets"/>
+            <div class="da-pickup-note">Shared pallets are assigned later in Step 3 by linking one pallet to multiple stops.</div>
             <input class="da-pickup-input" placeholder="Dock / Door" value="${esc(m.dock_door||"")}" data-field="manual-dock_door"/>
             <textarea class="da-pickup-textarea" placeholder="Parking instructions" data-field="manual-parking_notes">${esc(m.parking_notes||"")}</textarea>
             <textarea class="da-pickup-textarea" placeholder="Driver instructions" data-field="manual-driver_instructions">${esc(m.driver_instructions||"")}</textarea>
@@ -1810,6 +1823,13 @@ function pickupSetLocationMode(mode){
 window.pickupSetLocationMode=pickupSetLocationMode;
 function pickupSetSearchQuery(value){ const flow=currentPickupFlow(); if(flow){ flow.searchQuery=value||""; } }
 window.pickupSetSearchQuery=pickupSetSearchQuery;
+function pickupSetNewStopPallets(value){
+    const flow=currentPickupFlow();
+    if(flow){
+        flow.newStopPallets=Math.max(1, parseInt(value,10)||1);
+    }
+}
+window.pickupSetNewStopPallets=pickupSetNewStopPallets;
 function pickupSetManual(field,value){ const flow=currentPickupFlow(); if(flow){ flow.manual[field]=value; } }
 window.pickupSetManual=pickupSetManual;
 
@@ -1928,6 +1948,7 @@ function nextStopSequenceForJob(jobId){
 async function pickupAddSavedStop(locationId){
     const flow=currentPickupFlow(), stop=currentPickupStop();
     if(!flow||!stop) return;
+    const pallets=Math.max(1, parseInt(flow.newStopPallets,10)||1);
     try{
         const res=await rpc("/dispatch/driver/stop/create",{
             job_id: flow.jobId,
@@ -1935,7 +1956,7 @@ async function pickupAddSavedStop(locationId){
                 saved_location_id: locationId,
                 stop_type: "dropoff",
                 sequence: nextStopSequenceForJob(flow.jobId),
-                pallets_out: 1,
+                pallets_out: pallets,
                 pod_required: true,
             },
         });

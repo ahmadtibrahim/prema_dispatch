@@ -3837,18 +3837,27 @@ class PremaDispatchJob(models.Model):
 
     @api.model
     def driver_delete_stop(self, stop_id):
-        """Delete a pending stop. Refuses if stop is already started."""
+        """Remove a future delivery stop from the active pickup workflow.
+
+        Uses soft-cancel instead of hard unlink so linked route visits,
+        pallet allocations, and audit history stay consistent.
+        """
         from odoo.addons.prema_dispatch.services.dispatch_auth import check_stop_access
         stop = self.env["prema.dispatch.stop"].browse(stop_id)
         if not stop.exists():
             return {"success": False, "error": "Stop not found"}
         if not check_stop_access(self.env, stop, raise_on_fail=False):
             return {"success": False, "error": "Not authorized for this stop"}
-        if stop.status not in ("pending", "cancelled"):
-            return {"success": False, "error": "Only pending stops can be deleted"}
+        if stop.stop_type != "dropoff":
+            return {"success": False, "error": "Only delivery stops can be removed here"}
+        if stop.status in ("arrived", "completed"):
+            return {"success": False, "error": "Started or completed stops cannot be removed"}
         job = stop.job_id
         job_id = job.id
-        stop.unlink()
+        stop.freight_item_ids.write({"delivery_stop_id": False})
+        stop.job_id.item_ids.mapped("stop_allocation_ids").filtered(lambda a: a.stop_id.id == stop.id and a.active).write({"active": False})
+        if stop.status != "cancelled":
+            stop.action_cancel()
         if job.route_definition_mode == "stops_pending" and job.stops_confirmation_state == "confirmed":
             job.write({"stops_confirmation_state": "partial"})
         return {"success": True, "job_id": job_id}
