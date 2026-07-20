@@ -65,6 +65,7 @@ class PremaDispatchItem(models.Model):
     status = fields.Selection([
         ("pending",         "Pending"),
         ("loaded",          "Loaded"),
+        ("partially_unloaded", "Partially Unloaded"),
         ("in_transit",      "In Transit"),
         ("cross_docked",    "Cross-Docked / Stored"),
         ("staged",          "Staged / Stored"),

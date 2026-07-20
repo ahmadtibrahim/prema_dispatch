@@ -91,7 +91,7 @@ export class PalletLayoutPanel extends Component {
         const pos = this.selectedPosition;
         if (!pos) return;
         const r = await this._call("assign_pallet_to_position", [itemId, pos.id, this.state.data.version]);
-        if (r) { this.state.data = r; this.state.selectedPositionCode = null; }
+        if (r) { this.state.data = r; this.state.selectedPositionCode = pos.position_code; }
     }
 
     async moveItemToSelected(itemId) {
@@ -108,6 +108,26 @@ export class PalletLayoutPanel extends Component {
 
     async markLoaded(itemId) {
         const r = await this._call("mark_pallet_loaded", [itemId, this.state.data.version]);
+        if (r) this.state.data = r;
+    }
+
+    stopOptionsForItem(item) {
+        return (this.state.data?.available_stops || []).find((group) => group.job_id === item.job_id)?.stops || [];
+    }
+
+    async toggleStop(item, stopId) {
+        const next = new Set((item.stops || []).map((stop) => stop.stop_id));
+        if (next.has(stopId)) {
+            next.delete(stopId);
+        } else {
+            next.add(stopId);
+        }
+        if (next.size > 5) {
+            this.notification.add("A pallet can be assigned to at most five stops.", { type: "warning" });
+            return;
+        }
+        const payload = [...next].map((id, idx) => ({ stop_id: id, unload_sequence: (idx + 1) * 10 }));
+        const r = await this._call("assign_stops_to_pallet", [item.id, payload, this.state.data.version]);
         if (r) this.state.data = r;
     }
 

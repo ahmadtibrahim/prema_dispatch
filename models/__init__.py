@@ -3,6 +3,7 @@ from . import dispatch_stop
 from . import dispatch_item
 from . import dispatch_assignment_log
 from . import dispatch_job
+from . import fleet_vehicle
 from . import dispatch_feasibility
 from . import dispatch_adhoc_wizard
 from . import dispatch_duplicate_job_wizard

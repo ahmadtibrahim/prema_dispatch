@@ -1,4 +1,5 @@
 from odoo import api, fields, models
+from odoo.exceptions import ValidationError
 
 
 class PremaDispatchPalletStopAllocation(models.Model):
@@ -22,6 +23,19 @@ class PremaDispatchPalletStopAllocation(models.Model):
         ("item_stop_unique", "unique(dispatch_item_id, stop_id)",
          "This pallet already has an allocation for this stop."),
     ]
+
+    @api.constrains("dispatch_item_id", "stop_id", "active")
+    def _check_allocation_rules(self):
+        for alloc in self.filtered("active"):
+            item = alloc.dispatch_item_id
+            stop = alloc.stop_id
+            if stop.status == "cancelled":
+                raise ValidationError("Cancelled stops cannot be allocated to a pallet.")
+            if item.job_id.id != stop.job_id.id:
+                raise ValidationError("A pallet can only be allocated to stops on its own job.")
+            active_allocs = item.stop_allocation_ids.filtered("active")
+            if len(active_allocs) > 5:
+                raise ValidationError("A pallet can be allocated to at most five active stops.")
 
     def action_mark_delivered(self):
         from odoo.addons.prema_dispatch.services.dispatch_auth import check_stop_access

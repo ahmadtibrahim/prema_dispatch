@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<odoo>
+    <record id="fleet_vehicle_form_prema_dispatch_layout_inherit" model="ir.ui.view">
+        <field name="name">fleet.vehicle.form.prema.dispatch.layout.inherit</field>
+        <field name="model">fleet.vehicle</field>
+        <field name="inherit_id" ref="premafirm_ai_engine.fleet_vehicle_form_geotab_inherit"/>
+        <field name="arch" type="xml">
+            <xpath expr="//page[@name='truck_config']//field[@name='x_gvwr_lbs']" position="after">
+                <separator string="Pallet Layout Capacity"/>
+                <field name="default_pallet_layout"/>
+                <field name="straight_pallet_capacity"/>
+                <field name="pin_wheel_pallet_capacity"/>
+                <field name="turned_pallet_capacity"/>
+                <field name="layout_configuration_verified" readonly="1"/>
+                <field name="layout_verified_by" readonly="1"/>
+                <field name="layout_verified_at" readonly="1"/>
+                <field name="layout_verification_notes"/>
+                <button name="action_verify_pallet_layout_configuration"
+                        string="Verify Pallet Layout Configuration"
+                        type="object"
+                        class="btn-primary"
+                        groups="prema_dispatch.group_dispatch_manager"/>
+            </xpath>
+        </field>
+    </record>
+</odoo>

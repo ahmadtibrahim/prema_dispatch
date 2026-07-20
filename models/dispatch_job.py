@@ -1,4 +1,5 @@
 import logging
+import math
 import re
 
 from odoo import api, exceptions, fields, models
@@ -163,6 +164,18 @@ class PremaDispatchJob(models.Model):
         ("SOUTH", "South"), ("LOCAL", "Local / GTA"), ("CUSTOM", "Custom"),
     ], string="Planned Corridor", tracking=True)
     planned_delivery_area = fields.Char(string="Planned Delivery Area")
+    planning_anchor_name = fields.Char(tracking=True)
+    planning_anchor_address = fields.Char(tracking=True)
+    planning_anchor_lat = fields.Float(digits=(10, 6), tracking=True)
+    planning_anchor_lng = fields.Float(digits=(10, 6), tracking=True)
+    planning_anchor_type = fields.Selection([
+        ("city", "City"),
+        ("region", "Region"),
+        ("postal_area", "Postal Area"),
+        ("customer_area", "Customer Area"),
+        ("custom", "Custom"),
+    ], default="city", tracking=True)
+    planning_anchor_active = fields.Boolean(default=False, tracking=True)
     stops_confirmation_state = fields.Selection([
         ("pending", "Stops Pending"), ("partial", "Partially Entered"),
         ("confirmed", "Stops Confirmed"),
@@ -171,6 +184,14 @@ class PremaDispatchJob(models.Model):
     reserve_capacity = fields.Boolean(default=False)
     route_sheet_received_at = fields.Datetime(readonly=True, copy=False)
     route_sheet_received_by = fields.Many2one("res.users", readonly=True, copy=False)
+    expected_pallet_count = fields.Integer(compute="_compute_operational_pallet_counts", store=True)
+    reserved_pallet_count = fields.Integer(compute="_compute_operational_pallet_counts", store=True)
+    actual_received_pallet_count = fields.Integer(default=0, tracking=True)
+    confirmed_pallet_count = fields.Integer(compute="_compute_operational_pallet_counts", store=True)
+    assigned_pallet_count = fields.Integer(compute="_compute_operational_pallet_counts", store=True)
+    loaded_pallet_count = fields.Integer(compute="_compute_operational_pallet_counts", store=True)
+    onboard_pallet_count = fields.Integer(compute="_compute_operational_pallet_counts", store=True)
+    pickup_variance_notes = fields.Text()
     computed_route_corridor = fields.Selection([
         ("EAST", "East"), ("WEST", "West"), ("NORTH", "North"),
         ("SOUTH", "South"), ("LOCAL", "Local / GTA"), ("CUSTOM", "Custom"),
@@ -465,7 +486,9 @@ class PremaDispatchJob(models.Model):
         for job in self:
             cities = (job.delivery_cities or "").upper()
             computed = False
-            if any(x in cities for x in ("OTTAWA", "BELLEVILLE", "KINGSTON", "COBOURG", "PETERBOROUGH", "PICTON", "MANOTICK", "MONTREAL")):
+            if job.planning_anchor_active and job.planning_anchor_lat and job.planning_anchor_lng:
+                computed = job._planned_anchor_corridor()
+            elif any(x in cities for x in ("OTTAWA", "BELLEVILLE", "KINGSTON", "COBOURG", "PETERBOROUGH", "PICTON", "MANOTICK", "MONTREAL")):
                 computed = "EAST"
             elif any(x in cities for x in ("LONDON", "WINDSOR", "KITCHENER", "WATERLOO", "GUELPH")):
                 computed = "WEST"
@@ -485,6 +508,55 @@ class PremaDispatchJob(models.Model):
             else:
                 job.corridor_mismatch_warning = False
 
+    @api.depends(
+        "approximate_skids",
+        "actual_received_pallet_count",
+        "item_ids.status",
+        "item_ids.position_id",
+        "item_ids.pending_future_pickup",
+        "item_ids.consumes_floor_position",
+        "item_ids.current_custody_type",
+        "vehicle_id",
+        "scheduled_pickup",
+    )
+    def _compute_operational_pallet_counts(self):
+        Link = self.env["prema.dispatch.load.plan.job"]
+        for job in self:
+            floor_items = job.item_ids.filtered(
+                lambda item: item.consumes_floor_position and item.status != "cancelled"
+            )
+            active_items = floor_items.filtered(lambda item: not item.pending_future_pickup)
+            job.expected_pallet_count = job.approximate_skids or 0
+            reserved = 0
+            if job.vehicle_id and job.scheduled_pickup:
+                link = Link.search([
+                    ("job_id", "=", job.id),
+                    ("active", "=", True),
+                    ("load_plan_id.vehicle_id", "=", job.vehicle_id.id),
+                    ("load_plan_id.operating_date", "=", fields.Date.to_date(job.scheduled_pickup)),
+                ], limit=1)
+                reserved = link.reserved_floor_positions or 0
+            job.reserved_pallet_count = reserved
+            job.confirmed_pallet_count = len(active_items)
+            job.assigned_pallet_count = len(active_items.filtered("position_id"))
+            job.loaded_pallet_count = len(active_items.filtered(lambda item: item.status in ("loaded", "in_transit", "partially_unloaded", "delivered")))
+            job.onboard_pallet_count = len(active_items.filtered(lambda item: item.status in ("loaded", "in_transit", "partially_unloaded")))
+
+    def _planned_anchor_corridor(self):
+        self.ensure_one()
+        pickup = self.stop_ids.filtered(lambda stop: stop.stop_type == "pickup" and not stop.planning_only)[:1]
+        base_lat = self.vehicle_id.x_home_base_lat or 43.648621
+        base_lng = self.vehicle_id.x_home_base_lng or -79.659983
+        start_lat = pickup.latitude or base_lat
+        start_lng = pickup.longitude or base_lng
+        d_lng = (self.planning_anchor_lng or 0.0) - start_lng
+        d_lat = (self.planning_anchor_lat or 0.0) - start_lat
+        if abs(d_lng) < 0.4 and abs(d_lat) < 0.4:
+            return "LOCAL"
+        if abs(d_lng) >= abs(d_lat):
+            return "EAST" if d_lng > 0 else "WEST"
+        return "NORTH" if d_lat > 0 else "SOUTH"
+
     def _driver_job_summary(self):
         self.ensure_one()
         link = self.env["prema.dispatch.load.plan.job"].search([("job_id", "=", self.id), ("active", "=", True)], limit=1)
@@ -493,10 +565,20 @@ class PremaDispatchJob(models.Model):
             "job_id": self.id, "job_name": self.name, "customer": self.partner_id.name if self.partner_id else "",
             "planned_route_name": self.planned_route_name or "", "planned_route_corridor": self.planned_route_corridor or "",
             "computed_route_corridor": self.computed_route_corridor or "", "effective_route_corridor": self.effective_route_corridor or "",
+            "planning_anchor_name": self.planning_anchor_name or "",
+            "planning_anchor_address": self.planning_anchor_address or "",
+            "planning_anchor_active": bool(self.planning_anchor_active),
             "route_definition_mode": self.route_definition_mode, "stops_confirmation_state": self.stops_confirmation_state,
             "expected_skids": self.approximate_skids or 0,
             "reserved_positions": link.reserved_floor_positions if link else (self.approximate_skids if self.reserve_capacity else 0),
             "confirmed_skids": len(self.item_ids.filtered(lambda i: i.status != "cancelled" and i.consumes_floor_position)) if hasattr(self, "item_ids") else 0,
+            "expected_pallet_count": self.expected_pallet_count,
+            "reserved_pallet_count": self.reserved_pallet_count,
+            "actual_received_pallet_count": self.actual_received_pallet_count,
+            "confirmed_pallet_count": self.confirmed_pallet_count,
+            "assigned_pallet_count": self.assigned_pallet_count,
+            "loaded_pallet_count": self.loaded_pallet_count,
+            "onboard_pallet_count": self.onboard_pallet_count,
             "pickup_location": {"id": pickup.saved_location_id.id if pickup and pickup.saved_location_id else False, "address": pickup.address if pickup else ""},
             "route_sheet_received_at": self._dt_iso_utc(self.route_sheet_received_at),
             "vehicle": {"id": self.vehicle_id.id, "name": self.vehicle_id.name} if self.vehicle_id else False,
@@ -1103,7 +1185,20 @@ class PremaDispatchJob(models.Model):
             check_pallets = self.approximate_skids
             pallet_label = f"Estimated skids ({check_pallets})"
 
-        if vehicle.x_max_pallets and check_pallets:
+        cap = 0
+        if hasattr(vehicle, "get_layout_capacity"):
+            if self.scheduled_pickup:
+                plan = self.env["prema.dispatch.load.plan"].search([
+                    ("vehicle_id", "=", vehicle.id),
+                    ("operating_date", "=", fields.Date.to_date(self.scheduled_pickup)),
+                    ("active", "=", True),
+                ], limit=1)
+                if plan:
+                    cap = plan._vehicle_layout_capacity()
+            cap = cap or vehicle.get_layout_capacity()
+        cap = cap or vehicle.x_max_pallets or 0
+
+        if cap and check_pallets:
             # Check combined load with other jobs already on this truck for the same day.
             # We compute the peak from all same-day jobs using a sequential timeline model:
             # if jobs don't time-overlap we take the max; if they do we sum them.
@@ -1130,18 +1225,18 @@ class PremaDispatchJob(models.Model):
                 )
 
             combined = check_pallets + other_jobs_pallets
-            if combined > vehicle.x_max_pallets:
-                if other_jobs_pallets and check_pallets <= vehicle.x_max_pallets:
+            if combined > cap:
+                if other_jobs_pallets and check_pallets <= cap:
                     # This job alone fits, but combined with existing truck jobs it may not.
                     soft_warnings.append(
                         f"{pallet_label} ({check_pallets}p) combined with other truck jobs "
                         f"({other_jobs_pallets}p) gives {combined}p estimated peak — "
-                        f"truck capacity is {vehicle.x_max_pallets}p. "
+                        f"truck capacity is {cap}p. "
                         f"If deliveries happen before next pickup, actual peak may be lower."
                     )
                 else:
                     soft_warnings.append(
-                        f"{pallet_label} exceed truck capacity ({vehicle.x_max_pallets} pallets)."
+                        f"{pallet_label} exceed truck capacity ({cap} pallets)."
                     )
 
         if (self.total_weight_lbs
@@ -2863,6 +2958,7 @@ class PremaDispatchJob(models.Model):
             "pod_required":      s.pod_required,
             "service_time_min":  s.service_time_minutes or 15,
             "address_warning":   s.address_validation_warning or "",
+            "planning_only":     bool(s.planning_only),
             "transfer_to_driver_id": s.transfer_to_driver_id.id if s.transfer_to_driver_id else False,
             "transfer_to_driver": s.transfer_to_driver_id.name if s.transfer_to_driver_id else "",
             "transfer_to_vehicle_id": s.transfer_to_vehicle_id.id if s.transfer_to_vehicle_id else False,
@@ -2885,11 +2981,13 @@ class PremaDispatchJob(models.Model):
             "estimated_departure": self._dt_iso_utc(s.estimated_departure),
             "actual_arrival_time": self._dt_iso_utc(s.actual_arrival_time),
             "actual_departure_time": self._dt_iso_utc(s.actual_departure_time),
+            "job_summary": s.job_id._driver_job_summary(),
         }
 
     @api.model
     def _serialized_stop_sort_key(self, stop_dict):
         return (
+            stop_dict.get("_combined_order", 999999),
             stop_dict.get("scheduled_time")
             or stop_dict.get("estimated_arrival")
             or stop_dict.get("actual_arrival_time")
@@ -2919,6 +3017,264 @@ class PremaDispatchJob(models.Model):
         return stop_dicts
 
     @api.model
+    def _driver_three_day_window(self, user_tz):
+        from datetime import timedelta
+        today = self._user_today(user_tz)
+        return today - timedelta(days=1), today, today + timedelta(days=1)
+
+    @api.model
+    def _sanitize_driver_date(self, date_str, user_tz):
+        from datetime import date
+        window = self._driver_three_day_window(user_tz)
+        today = window[1]
+        if not date_str:
+            return today
+        try:
+            parsed = date.fromisoformat(date_str)
+        except Exception:
+            return today
+        return parsed if parsed in window else today
+
+    def _pickup_completion_step_state(self):
+        self.ensure_one()
+        pickup = self.stop_ids.filtered(lambda stop: stop.stop_type == "pickup" and not stop.planning_only)[:1]
+        delivery_stops = self.stop_ids.filtered(lambda stop: stop.stop_type == "dropoff" and not stop.planning_only)
+        floor_items = self.item_ids.filtered(lambda item: item.consumes_floor_position and item.status != "cancelled" and not item.pending_future_pickup)
+        allocated = floor_items.filtered(lambda item: item.stop_allocation_ids.filtered("active"))
+        return {
+            "pickup_stop_id": pickup.id if pickup else False,
+            "expected": self.expected_pallet_count,
+            "actual": self.actual_received_pallet_count or 0,
+            "variance": (self.actual_received_pallet_count or 0) - (self.expected_pallet_count or 0),
+            "delivery_stop_count": len(delivery_stops),
+            "confirmed_pallet_count": len(floor_items),
+            "allocated_pallet_count": len(allocated),
+            "route_sheet_received": bool(self.route_sheet_received_at),
+            "needs_stop_entry": self.route_definition_mode == "stops_pending" and self.stops_confirmation_state in ("pending", "partial"),
+        }
+
+    def _actual_pallet_prefix(self):
+        self.ensure_one()
+        source = (
+            (self.pickup_saved_location_id.chain_name or self.pickup_saved_location_id.business_name or self.pickup_saved_location_id.name)
+            if self.pickup_saved_location_id else
+            (self.partner_id.name or self.name)
+        ) or self.name or "Pallet"
+        key = source.upper()
+        if "UNITED DAIRY" in key:
+            return "U"
+        if "TERRA FRESKA" in key:
+            return "TF"
+        letters = "".join(part[:1] for part in re.findall(r"[A-Za-z0-9]+", source)[:2]).upper()
+        return letters or "P"
+
+    def _sync_actual_pallet_items(self, actual_count, pickup_stop=None):
+        self.ensure_one()
+        actual_count = int(actual_count or 0)
+        prefix = self._actual_pallet_prefix()
+        pickup_stop = pickup_stop or self.stop_ids.filtered(lambda stop: stop.stop_type == "pickup" and not stop.planning_only)[:1]
+        floor_items = self.item_ids.filtered(
+            lambda item: item.consumes_floor_position and item.status != "cancelled" and not item.pending_future_pickup
+        ).sorted(key=lambda item: (item.sequence, item.id))
+        current_count = len(floor_items)
+        if actual_count == current_count:
+            return floor_items
+        if actual_count > current_count:
+            vals_list = []
+            for idx in range(current_count + 1, actual_count + 1):
+                vals_list.append({
+                    "job_id": self.id,
+                    "name": f"{prefix}-{idx:02d}",
+                    "sequence": idx * 10,
+                    "pickup_stop_id": pickup_stop.id if pickup_stop else False,
+                    "available_after_stop_id": pickup_stop.id if pickup_stop else False,
+                    "load_plan_id": False,
+                    "load_unit_type": "pallet",
+                    "current_custody_type": "pending",
+                    "status": "pending",
+                })
+            created = self.env["prema.dispatch.item"].create(vals_list)
+            return floor_items | created
+        removable = floor_items[actual_count:]
+        blocked = removable.filtered(lambda item: item.position_id or item.status in ("loaded", "in_transit", "partially_unloaded", "delivered"))
+        if blocked:
+            raise exceptions.UserError(
+                "Cannot reduce actual pallets while some pallets are already positioned, loaded, or partially delivered."
+            )
+        removable.write({"status": "cancelled"})
+        removable.mapped("stop_allocation_ids").write({"active": False})
+        return floor_items[:actual_count]
+
+    def driver_confirm_pickup_actuals(self, stop_id, values=None):
+        from odoo.addons.prema_dispatch.services.dispatch_auth import check_stop_access
+        stop = self.env["prema.dispatch.stop"].browse(stop_id)
+        if not stop.exists():
+            return {"success": False, "error": "Stop not found"}
+        check_stop_access(self.env, stop)
+        job = stop.job_id
+        values = values or {}
+        actual_count = int(values.get("actual_received_pallet_count") or 0)
+        if actual_count < 0:
+            raise exceptions.UserError("Actual pallet count cannot be negative.")
+        layout_choice = stop.job_id.vehicle_id.get_recommended_pallet_layout(actual_count) if stop.job_id.vehicle_id else False
+        if actual_count and not layout_choice:
+            raise exceptions.UserError("This load exceeds every configured single-truck layout capacity.")
+        floor_items = job._sync_actual_pallet_items(actual_count, pickup_stop=stop)
+        job.write({
+            "actual_received_pallet_count": actual_count,
+            "pickup_variance_notes": values.get("variance_notes") or False,
+            "route_sheet_received_at": fields.Datetime.now() if values.get("route_sheet_received") else job.route_sheet_received_at,
+            "route_sheet_received_by": self.env.user.id if values.get("route_sheet_received") else job.route_sheet_received_by.id if job.route_sheet_received_by else False,
+        })
+        if stop.vehicle_id:
+            stop.vehicle_id.message_post(body=(
+                f"Pickup actual pallets updated for {job.name}: expected {job.expected_pallet_count}, "
+                f"actual {actual_count}."
+            ))
+        plan = self.env["prema.dispatch.load.plan"].search([
+            ("vehicle_id", "=", job.vehicle_id.id),
+            ("operating_date", "=", fields.Date.to_date(job.scheduled_pickup) if job.scheduled_pickup else fields.Date.today()),
+            ("active", "=", True),
+        ], limit=1)
+        recommendation = None
+        if plan:
+            if not floor_items.filtered("load_plan_id"):
+                floor_items.write({"load_plan_id": plan.id})
+            plan._mark_stale(
+                f"Pickup actual pallets changed for {job.name}: expected {job.expected_pallet_count}, actual {actual_count}."
+            )
+            recommendation = plan.evaluate_layout_for_capacity()
+        job.message_post(body=(
+            f"Pickup actual pallets confirmed by {self.env.user.name}: expected {job.expected_pallet_count}, actual {actual_count}."
+        ))
+        return {
+            "success": True,
+            "job": job._driver_job_summary(),
+            "pickup_step_state": job._pickup_completion_step_state(),
+            "layout_proposal": recommendation,
+            "vehicle_layout_type": layout_choice,
+        }
+
+    def _sync_future_pickup_reservations(self, plan):
+        self.ensure_one()
+        if not plan:
+            return
+        ops = self.env["prema.dispatch.load.plan.operation"].search([
+            ("load_plan_id", "=", plan.id),
+            ("operation_type", "=", "reserve_position"),
+            ("state", "=", "pending"),
+            ("active", "=", True),
+        ])
+        if ops:
+            ops.write({"active": False, "state": "cancelled"})
+        for link in plan.load_plan_job_ids.filtered("active").sorted(key=lambda link: (link.job_id.scheduled_pickup or fields.Datetime.now(), link.id)):
+            job = link.job_id
+            if job.id == self.id:
+                continue
+            pickup = job.stop_ids.filtered(lambda stop: stop.stop_type == "pickup" and not stop.planning_only)[:1]
+            if not pickup or pickup.status in ("completed", "skipped", "cancelled"):
+                continue
+            outstanding = max(
+                link.reserved_floor_positions or 0,
+                job.expected_pallet_count or 0,
+                job.approximate_skids or 0,
+            ) - (job.confirmed_pallet_count or 0)
+            if outstanding > 0:
+                plan.reserve_future_positions(job.id, outstanding, plan.version)
+                plan.invalidate_recordset()
+
+    def driver_finalize_pickup_intake(self, stop_id, values=None):
+        from odoo.addons.prema_dispatch.services.dispatch_auth import check_stop_access
+        from odoo.addons.prema_dispatch.services.optimization_service import DispatchOptimizationService
+
+        stop = self.env["prema.dispatch.stop"].browse(stop_id)
+        if not stop.exists():
+            return {"success": False, "error": "Stop not found"}
+        check_stop_access(self.env, stop)
+        job = stop.job_id
+        values = values or {}
+
+        if "actual_received_pallet_count" in values:
+            self.driver_confirm_pickup_actuals(stop.id, values)
+
+        delivery_stops = job.stop_ids.filtered(lambda s: s.stop_type == "dropoff" and not s.planning_only and s.status != "cancelled").sorted("sequence")
+        new_state = values.get("stops_confirmation_state")
+        if not new_state:
+            if delivery_stops:
+                new_state = "confirmed"
+            elif job.route_definition_mode == "stops_pending":
+                new_state = "partial" if job.route_sheet_received_at else "pending"
+            else:
+                new_state = job.stops_confirmation_state
+        write_vals = {
+            "stops_confirmation_state": new_state,
+        }
+        if values.get("route_sheet_received") and not job.route_sheet_received_at:
+            write_vals.update({
+                "route_sheet_received_at": fields.Datetime.now(),
+                "route_sheet_received_by": self.env.user.id,
+            })
+        if values.get("pickup_variance_notes") is not None:
+            write_vals["pickup_variance_notes"] = values.get("pickup_variance_notes") or False
+        job.write(write_vals)
+
+        plan = self.env["prema.dispatch.load.plan"].search([
+            ("vehicle_id", "=", job.vehicle_id.id),
+            ("operating_date", "=", fields.Date.to_date(job.scheduled_pickup) if job.scheduled_pickup else fields.Date.today()),
+            ("active", "=", True),
+        ], limit=1)
+        recommendation = None
+        if plan:
+            plan._mark_stale(f"Route details updated for {job.name}.")
+            self._sync_future_pickup_reservations(plan)
+            try:
+                if job.vehicle_id and job.scheduled_pickup:
+                    DispatchOptimizationService(self.env).apply_consolidated_route(
+                        job.vehicle_id.id,
+                        fields.Date.to_date(job.scheduled_pickup).isoformat(),
+                    )
+            except Exception:
+                _logger.exception("Combined route rebuild failed for %s", job.name)
+            plan.invalidate_recordset()
+            for candidate in plan.find_shared_visit_candidates():
+                try:
+                    plan.combine_physical_visit(candidate["stop_ids"])
+                except Exception:
+                    _logger.exception("Physical route-visit combine failed for stops %s", candidate["stop_ids"])
+            recommendation = plan.recommend_layout()
+        return {
+            "success": True,
+            "job": job._driver_job_summary(),
+            "pickup_step_state": job._pickup_completion_step_state(),
+            "stops": [self._driver_stop_dict(s) for s in delivery_stops],
+            "suggested_layout_ready": bool(recommendation),
+            "layout_recommendation": recommendation,
+        }
+
+    @api.model
+    def combined_vehicle_day_stops(self, jobs, check_date):
+        ordered = []
+        for job in jobs:
+            ordered.extend(job.stop_ids.filtered(lambda stop: not stop.planning_only))
+
+        def stop_bucket(stop):
+            if stop.status in ("completed", "skipped", "cancelled"):
+                return (0, stop.sequence or 0)
+            if stop.status in ("arrived", "en_route"):
+                return (1, stop.sequence or 0)
+            if stop.stop_type in ("pickup", "cross_dock_pickup"):
+                return (2, stop.sequence or 0)
+            return (3, stop.sequence or 0)
+
+        ordered = sorted(ordered, key=lambda stop: (
+            stop_bucket(stop),
+            stop.job_id.scheduled_pickup or fields.Datetime.now(),
+            stop.sequence or 0,
+            stop.id,
+        ))
+        return ordered
+
+    @api.model
     def get_driver_stops_for_date(self, date_str=None):
         """Return a flat, time-sorted list of ALL stops across the driver's jobs
         for a given date.  This is the primary data feed for the Driver App stop view.
@@ -2935,7 +3291,7 @@ class PremaDispatchJob(models.Model):
         user    = self.env.user
         partner = user.partner_id
         user_tz = pytz.timezone(user.tz or "America/Toronto")
-        check_d = date.fromisoformat(date_str) if date_str else self._user_today(user_tz)
+        check_d = self._sanitize_driver_date(date_str, user_tz)
 
         def to_utc(d, t):
             return user_tz.localize(datetime.combine(d, t)).astimezone(pytz.utc).replace(tzinfo=None)
@@ -2966,28 +3322,30 @@ class PremaDispatchJob(models.Model):
             return None
 
         stops_out = []
-        for job in jobs:
-            for s in job.stop_ids.sorted("sequence"):
-                sd = stop_date_local(s, job)
-                if sd != check_d:
-                    continue
+        for order_idx, s in enumerate(self.combined_vehicle_day_stops(jobs, check_d), start=1):
+            job = s.job_id
+            sd = stop_date_local(s, job)
+            if sd != check_d:
+                continue
 
-                def att_list(atts):
-                    return [{"id": a.id, "name": a.name,
-                             "url": f"/web/content/{a.id}"} for a in atts]
+            def att_list(atts):
+                return [{"id": a.id, "name": a.name,
+                         "url": f"/web/content/{a.id}"} for a in atts]
 
-                stop_dict = self._driver_stop_dict(s)
-                stop_dict.update({
-                    "city":            (s.address or "").split(",")[0].strip(),
-                    "job_id":          job.id,
-                    "job_name":        job.name,
-                    "job_partner":     job.partner_id.name if job.partner_id else "",
-                    "job_all_stops_completed": job.all_stops_completed,
-                    "job_completed":   bool(job.stage_id.is_completed),
-                    "pop_attachments": att_list(s.pop_attachment_ids),
-                    "pod_attachments": att_list(s.pod_attachment_ids),
-                })
-                stops_out.append(stop_dict)
+            stop_dict = self._driver_stop_dict(s)
+            stop_dict.update({
+                "_combined_order": order_idx,
+                "city":            (s.address or "").split(",")[0].strip(),
+                "job_id":          job.id,
+                "job_name":        job.name,
+                "job_partner":     job.partner_id.name if job.partner_id else "",
+                "job_all_stops_completed": job.all_stops_completed,
+                "job_completed":   bool(job.stage_id.is_completed),
+                "pop_attachments": att_list(s.pop_attachment_ids),
+                "pod_attachments": att_list(s.pod_attachment_ids),
+                "pickup_step_state": job._pickup_completion_step_state(),
+            })
+            stops_out.append(stop_dict)
 
         # Sort by scheduled_time then sequence
         stops_out.sort(key=self._serialized_stop_sort_key)
@@ -3247,31 +3605,18 @@ class PremaDispatchJob(models.Model):
 
     @api.model
     def get_driver_available_dates(self, week_offset=0):
-        """Return all 7 days of the requested week + job counts per day.
-
-        week_offset = 0 → current week (Mon-Sun)
-        week_offset = -1 → last week
-        week_offset = +1 → next week
-
-        Always returns exactly 7 entries (Mon-Sun) so the calendar is
-        always a full week regardless of whether jobs exist.
-        """
+        """Return exactly yesterday / today / tomorrow in the driver's timezone."""
         from datetime import date, datetime, timedelta
         import pytz
 
         user    = self.env.user
         partner = user.partner_id
         user_tz = pytz.timezone(user.tz or "America/Toronto")
-        today   = self._user_today(user_tz)
+        yesterday, today, tomorrow = self._driver_three_day_window(user_tz)
 
-        # Find Monday of the target week
-        mon = today - timedelta(days=today.weekday()) + timedelta(weeks=week_offset)
-        sun = mon + timedelta(days=6)
-
-        # Fetch all non-cancelled driver jobs in this week window
         def to_utc(d, t): return user_tz.localize(datetime.combine(d, t)).astimezone(pytz.utc).replace(tzinfo=None)
-        utc_start = to_utc(mon, datetime.min.time())
-        utc_end   = to_utc(sun, datetime.max.time())
+        utc_start = to_utc(yesterday, datetime.min.time())
+        utc_end   = to_utc(tomorrow, datetime.max.time())
 
         all_jobs = self.env["prema.dispatch.job"].search([
             ("driver_id", "=", partner.id),
@@ -3295,8 +3640,7 @@ class PremaDispatchJob(models.Model):
                 dates_map[ld]["active"] += 1
 
         result = []
-        for i in range(7):
-            d = mon + timedelta(days=i)
+        for d in (yesterday, today, tomorrow):
             d_str = d.isoformat()
             info  = dates_map.get(d_str, {"total": 0, "active": 0})
             result.append({
@@ -3313,9 +3657,9 @@ class PremaDispatchJob(models.Model):
 
         return {
             "days":         result,
-            "week_start":   mon.isoformat(),
-            "week_label":   f"{mon.strftime('%b %d')} – {sun.strftime('%b %d, %Y')}",
-            "week_offset":  week_offset,
+            "week_start":   yesterday.isoformat(),
+            "week_label":   today.strftime("%b %d, %Y"),
+            "week_offset":  0,
             "today":        today.isoformat(),
         }
 
@@ -3332,10 +3676,7 @@ class PremaDispatchJob(models.Model):
         partner = user.partner_id
         user_tz = pytz.timezone(user.tz or "America/Toronto")
 
-        if date_str:
-            check_date = date.fromisoformat(date_str)
-        else:
-            check_date = self._user_today(user_tz)
+        check_date = self._sanitize_driver_date(date_str, user_tz)
 
         local_start = user_tz.localize(datetime.combine(check_date, datetime.min.time()))
         local_end   = user_tz.localize(datetime.combine(check_date, datetime.max.time()))
@@ -3371,7 +3712,7 @@ class PremaDispatchJob(models.Model):
 
         all_stops = []
         for job in jobs:
-            stops_out = [self._driver_stop_dict(s) for s in job.stop_ids.sorted("sequence")]
+            stops_out = [self._driver_stop_dict(s) for s in job.stop_ids.filtered(lambda stop: not stop.planning_only).sorted("sequence")]
             for stop_dict in stops_out:
                 stop_dict["job_id"] = job.id
                 all_stops.append(stop_dict)

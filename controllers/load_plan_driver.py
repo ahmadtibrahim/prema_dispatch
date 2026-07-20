@@ -68,3 +68,13 @@ class LoadPlanDriverController(http.Controller):
     def get_documents(self, load_plan_id, **kw):
         plan = request.env["prema.dispatch.load.plan"].browse(load_plan_id)
         return _safe(lambda: plan.get_documents())
+
+    @http.route("/dispatch/driver/loadplan/assign_stops", type="json", auth="user", methods=["POST"])
+    def assign_stops(self, load_plan_id, item_id, stop_allocations=None, version=None, **kw):
+        plan = request.env["prema.dispatch.load.plan"].browse(load_plan_id)
+        return _safe(lambda: plan.assign_stops_to_pallet(item_id, stop_allocations or [], version))
+
+    @http.route("/dispatch/driver/loadplan/remove_stop", type="json", auth="user", methods=["POST"])
+    def remove_stop(self, load_plan_id, item_id, stop_id, version=None, **kw):
+        plan = request.env["prema.dispatch.load.plan"].browse(load_plan_id)
+        return _safe(lambda: plan.remove_stop_from_pallet(item_id, stop_id, version))

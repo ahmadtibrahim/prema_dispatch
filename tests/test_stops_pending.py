@@ -8,6 +8,7 @@ plan, and the Load Plan loading-photo upload regression guard).
 """
 import os
 
+from odoo import fields
 from odoo.exceptions import AccessError, UserError, ValidationError
 from odoo.tests.common import TransactionCase
 
@@ -181,6 +182,145 @@ class TestDriverStopAndLocationAuthorization(TestStopsPendingBase):
         })
         self.job.write({"stops_confirmation_state": "partial"})
         self.assertEqual(stop.address, self.pickup_location.address, "Creating a stop with saved_location_id must apply the location's address immediately")
+
+
+class TestDriverDateAndPickupWorkflow(TestStopsPendingBase):
+    def setUp(self):
+        super().setUp()
+        self.driver_user = self.env["res.users"].create({
+            "name": "SP Driver User", "login": "sp_driver_user@example.com",
+            "partner_id": self.driver_partner.id,
+            "groups_id": [(6, 0, [self.env.ref("prema_dispatch.group_dispatch_driver").id])],
+            "tz": "America/Toronto",
+        })
+        self.job = self.Job.create({
+            "partner_id": self.customer.id,
+            "stage_id": self.stage_draft.id,
+            "driver_id": self.driver_partner.id,
+            "vehicle_id": self.vehicle.id,
+            "scheduled_pickup": "2026-07-20 08:00:00",
+            "route_definition_mode": "stops_pending",
+            "stops_confirmation_state": "pending",
+            "approximate_skids": 10,
+            "pickup_saved_location_id": self.pickup_location.id,
+            "planned_route_name": "Ottawa Route",
+            "planned_route_corridor": "EAST",
+        })
+        self.pickup_stop = self.Stop.create({
+            "job_id": self.job.id,
+            "sequence": 10,
+            "stop_type": "pickup",
+            "saved_location_id": self.pickup_location.id,
+            "address": self.pickup_location.address,
+            "pallets_in": 10,
+            "status": "arrived",
+        })
+        self.plan = self.LP.browse(self.LP.create_load_plan(self.vehicle.id, "2026-07-20", driver_id=self.driver_partner.id)["id"])
+        self.plan.add_job(self.job.id)
+
+    def test_driver_dates_returns_three_day_window(self):
+        dates = self.Job.with_user(self.driver_user).get_driver_available_dates()
+        self.assertEqual(len(dates["days"]), 3)
+        self.assertTrue(any(day["is_today"] for day in dates["days"]))
+
+    def test_confirm_actual_pickup_is_idempotent(self):
+        result = self.Job.with_user(self.driver_user).driver_confirm_pickup_actuals(self.pickup_stop.id, {
+            "actual_received_pallet_count": 10,
+            "route_sheet_received": True,
+        })
+        self.assertTrue(result["success"])
+        self.assertEqual(len(self.job.item_ids.filtered(lambda item: item.status != "cancelled" and not item.pending_future_pickup)), 10)
+        self.Job.with_user(self.driver_user).driver_confirm_pickup_actuals(self.pickup_stop.id, {
+            "actual_received_pallet_count": 10,
+        })
+        self.assertEqual(len(self.job.item_ids.filtered(lambda item: item.status != "cancelled" and not item.pending_future_pickup)), 10)
+
+    def test_confirm_actual_pickup_blocks_impossible_layout(self):
+        with self.assertRaises(UserError):
+            self.Job.with_user(self.driver_user).driver_confirm_pickup_actuals(self.pickup_stop.id, {
+                "actual_received_pallet_count": 15,
+            })
+
+    def test_finalize_pickup_marks_confirmed_and_reserves_future_pickup(self):
+        terra_customer = self.env["res.partner"].create({"name": "Terra Financial"})
+        terra_job = self.Job.create({
+            "partner_id": terra_customer.id,
+            "stage_id": self.stage_draft.id,
+            "driver_id": self.driver_partner.id,
+            "vehicle_id": self.vehicle.id,
+            "scheduled_pickup": "2026-07-20 09:00:00",
+            "route_definition_mode": "exact_stops",
+            "stops_confirmation_state": "confirmed",
+            "approximate_skids": 2,
+        })
+        terra_pickup = self.Stop.create({
+            "job_id": terra_job.id, "sequence": 10, "stop_type": "pickup",
+            "address": "1 Royal Gate Blvd Unit F, Woodbridge, ON L4L 8Z7",
+        })
+        self.Stop.create({
+            "job_id": terra_job.id, "sequence": 20, "stop_type": "dropoff",
+            "address": "290 N Front St, Belleville, ON",
+        })
+        self.plan.add_job(terra_job.id)
+        self.env["prema.dispatch.load.plan.job"].search([
+            ("load_plan_id", "=", self.plan.id), ("job_id", "=", terra_job.id),
+        ]).write({"reserved_floor_positions": 2})
+        self.Stop.create({
+            "job_id": self.job.id, "sequence": 20, "stop_type": "dropoff",
+            "address": "740 Division St, Cobourg, ON",
+        })
+        self.Stop.create({
+            "job_id": self.job.id, "sequence": 30, "stop_type": "dropoff",
+            "address": "871 Chemong Rd, Peterborough, ON",
+        })
+        self.Job.with_user(self.driver_user).driver_confirm_pickup_actuals(self.pickup_stop.id, {
+            "actual_received_pallet_count": 10,
+            "route_sheet_received": True,
+        })
+        result = self.Job.with_user(self.driver_user).driver_finalize_pickup_intake(self.pickup_stop.id, {})
+        self.assertTrue(result["success"])
+        self.job.invalidate_recordset()
+        self.assertEqual(self.job.stops_confirmation_state, "confirmed")
+        reservations = self.env["prema.dispatch.load.plan.operation"].search([
+            ("load_plan_id", "=", self.plan.id),
+            ("operation_type", "=", "reserve_position"),
+            ("state", "=", "pending"),
+            ("active", "=", True),
+            ("related_pickup_stop_id", "=", terra_pickup.id),
+        ])
+        self.assertEqual(len(reservations), 2)
+
+    def test_combined_route_excludes_planning_only_and_keeps_terra_pickup_before_deliveries(self):
+        terra_customer = self.env["res.partner"].create({"name": "Terra Route Customer"})
+        terra_job = self.Job.create({
+            "partner_id": terra_customer.id,
+            "stage_id": self.stage_draft.id,
+            "driver_id": self.driver_partner.id,
+            "vehicle_id": self.vehicle.id,
+            "scheduled_pickup": "2026-07-20 09:00:00",
+            "route_definition_mode": "exact_stops",
+            "stops_confirmation_state": "confirmed",
+        })
+        terra_pickup = self.Stop.create({
+            "job_id": terra_job.id, "sequence": 10, "stop_type": "pickup",
+            "address": "Terra pickup",
+        })
+        self.Stop.create({
+            "job_id": terra_job.id, "sequence": 20, "stop_type": "dropoff",
+            "address": "Belleville",
+        })
+        self.Stop.create({
+            "job_id": self.job.id, "sequence": 20, "stop_type": "dropoff",
+            "address": "Ottawa, Ontario", "planning_only": True,
+        })
+        united_delivery = self.Stop.create({
+            "job_id": self.job.id, "sequence": 30, "stop_type": "dropoff",
+            "address": "Cobourg",
+        })
+        ordered = self.Job.combined_vehicle_day_stops(self.job | terra_job, fields.Date.to_date("2026-07-20"))
+        self.assertNotIn("Ottawa, Ontario", ordered.mapped("address"))
+        ordered_ids = ordered.ids
+        self.assertLess(ordered_ids.index(terra_pickup.id), ordered_ids.index(united_delivery.id))
 
 
 class TestRouteVisitCombine(TestStopsPendingBase):

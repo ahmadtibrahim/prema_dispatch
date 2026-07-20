@@ -170,6 +170,11 @@ class PremaDispatchStop(models.Model):
         string="Route Locked",
         help="Prevent auto-optimization from changing this stop's position.",
     )
+    planning_only = fields.Boolean(
+        string="Planning Anchor Placeholder",
+        default=False,
+        help="True when this record only preserves planning intent and must not behave as an operational stop.",
+    )
 
     # Time Windows
     time_window_type = fields.Selection([
@@ -509,7 +514,36 @@ class PremaDispatchStop(models.Model):
                 notes=self.name or self.address,
                 stop=self,
             )
+        if self.stop_type in ("dropoff", "return"):
+            self._mark_pallet_allocations_delivered()
         self.job_id._check_all_stops_done()
+
+    def _mark_pallet_allocations_delivered(self):
+        self.ensure_one()
+        allocations = self.env["prema.dispatch.pallet.stop.allocation"].search([
+            ("stop_id", "=", self.id),
+            ("active", "=", True),
+            ("delivered", "=", False),
+        ])
+        now = fields.Datetime.now()
+        for alloc in allocations:
+            alloc.write({
+                "delivered": True,
+                "delivered_at": now,
+                "delivered_by": self.env.user.id,
+            })
+            item = alloc.dispatch_item_id
+            remaining = item.stop_allocation_ids.filtered(lambda a: a.active and not a.delivered)
+            item_vals = {
+                "unloaded_at": now if not remaining else False,
+                "unloaded_by": self.env.user.id if not remaining else False,
+            }
+            if remaining:
+                item_vals["status"] = "partially_unloaded"
+            else:
+                item_vals["status"] = "delivered"
+                item_vals["current_custody_type"] = "delivered"
+            item.write(item_vals)
 
     def _check_completion_requirements(self):
         """Validate only the parts that must block completion.

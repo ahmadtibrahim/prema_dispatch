@@ -23,10 +23,14 @@
             </div>
             <div class="pl-counts">
                 <span>Expected: <b t-esc="state.data.counts.expected"/></span>
+                <span>Reserved: <b t-esc="state.data.counts.reserved"/></span>
+                <span>Actual Received: <b t-esc="state.data.counts.actual_received"/></span>
                 <span>Confirmed: <b t-esc="state.data.counts.confirmed"/></span>
                 <span>Assigned: <b t-esc="state.data.counts.assigned"/></span>
                 <span>Loaded: <b t-esc="state.data.counts.loaded"/></span>
-                <span>Vacant: <b t-esc="state.data.counts.vacant"/></span>
+                <span>Onboard: <b t-esc="state.data.counts.onboard"/></span>
+                <span>Future Pickup: <b t-esc="state.data.counts.future_pickup"/></span>
+                <span>Available: <b t-esc="state.data.counts.available"/></span>
                 <span>Utilization: <b t-esc="state.data.counts.utilization_percentage"/>%</span>
                 <span>Payload: <b t-esc="state.data.payload.used"/> / <t t-esc="state.data.payload.capacity"/> lbs</span>
             </div>
@@ -91,6 +95,13 @@
                             <div><t t-esc="selectedPosition.item.name"/> — <t t-esc="selectedPosition.item.status"/></div>
                             <div t-if="selectedPosition.item.stops.length">
                                 Stops: <t t-esc="selectedPosition.item.stops.map(s => s.sequence + ' (' + s.customer + ')').join(', ')"/>
+                            </div>
+                            <div t-if="stopOptionsForItem(selectedPosition.item).length" class="pl-stop-chip-wrap">
+                                <button t-foreach="stopOptionsForItem(selectedPosition.item)" t-as="stopOpt" t-key="stopOpt.stop_id"
+                                        t-att-class="'pl-stop-chip ' + (selectedPosition.item.stops.some(s => s.stop_id === stopOpt.stop_id) ? 'selected' : '')"
+                                        t-on-click="() => this.toggleStop(selectedPosition.item, stopOpt.stop_id)">
+                                    <t t-esc="stopOpt.sequence"/> <t t-esc="stopOpt.customer"/>
+                                </button>
                             </div>
                             <div class="pl-detail-actions">
                                 <button class="btn btn-xs btn-outline-success" t-on-click="() => this.markLoaded(selectedPosition.item.id)">Mark Loaded</button>

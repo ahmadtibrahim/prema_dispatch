@@ -361,11 +361,13 @@ class DispatchOptimizationService:
         ]).filtered(lambda j: j.scheduled_pickup and j.scheduled_pickup.date() == check_date)
 
         chains = []
+        locked_prefix = []
         for job in jobs:
-            stops = list(job.stop_ids.filtered(
-                lambda s: s.status not in ("completed", "cancelled", "skipped")
-                and s.stop_type not in ("cross_dock_drop", "cross_dock_pickup")
-            ).sorted("sequence"))
+            ordered_stops = job.stop_ids.filtered(
+                lambda s: not s.planning_only and s.stop_type not in ("cross_dock_drop", "cross_dock_pickup")
+            ).sorted("sequence")
+            locked_prefix.extend([s for s in ordered_stops if s.status in ("completed", "arrived", "en_route")])
+            stops = [s for s in ordered_stops if s.status not in ("completed", "cancelled", "skipped", "arrived", "en_route")]
             if stops:
                 chains.append({"job": job, "stops": stops, "idx": 0})
 
@@ -376,7 +378,29 @@ class DispatchOptimizationService:
         vehicle = self.env["fleet.vehicle"].browse(vehicle_id)
         current_loc = (vehicle.x_last_location_lat, vehicle.x_last_location_lng) \
             if vehicle.x_last_location_lat else None
-        clock = min(j.scheduled_pickup for j in jobs if j.scheduled_pickup) or datetime.utcnow()
+        clock = min((j.scheduled_pickup for j in jobs if j.scheduled_pickup), default=datetime.utcnow())
+
+        if locked_prefix:
+            locked_prefix = sorted(
+                locked_prefix,
+                key=lambda s: (
+                    s.actual_departure_time or s.actual_arrival_time or s.scheduled_time or s.job_id.scheduled_pickup or datetime.utcnow(),
+                    s.sequence or 0,
+                    s.id,
+                ),
+            )
+            last_locked = locked_prefix[-1]
+            if last_locked.latitude and last_locked.longitude:
+                current_loc = (last_locked.latitude, last_locked.longitude)
+            elif last_locked.address:
+                current_loc = last_locked.address
+            clock = (
+                last_locked.actual_departure_time
+                or last_locked.actual_arrival_time
+                or last_locked.estimated_departure
+                or last_locked.scheduled_time
+                or clock
+            )
 
         hub = self._find_cross_dock_hub(chains)
         raw_order = self._build_cross_dock_merge(chains, hub) if hub else None

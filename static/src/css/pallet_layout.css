@@ -39,6 +39,9 @@
 .pl-unassigned-item { display: flex; justify-content: space-between; align-items: center; padding: 4px 0; }
 .pl-detail-card { border: 1px solid #1565C0; border-radius: 8px; padding: 10px; font-size: 12px; }
 .pl-detail-actions { display: flex; gap: 6px; margin-top: 8px; }
+.pl-stop-chip-wrap { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.pl-stop-chip { border: 1px solid #cbd5e1; background: #fff; color: #0f172a; border-radius: 999px; padding: 4px 8px; font-size: 11px; font-weight: 700; }
+.pl-stop-chip.selected { background: #1565C0; color: #fff; border-color: #1565C0; }
 .pl-warning { color: #b8860b; font-size: 11px; margin: 2px 0; }
 .pl-recommend-card { border: 1px solid #34a853; border-radius: 8px; padding: 10px; }
 .pl-actions { display: flex; flex-direction: column; gap: 6px; margin-top: auto; }

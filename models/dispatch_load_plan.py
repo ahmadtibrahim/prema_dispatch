@@ -39,13 +39,16 @@ class PremaDispatchLoadPlan(models.Model):
     unverified_layout_acknowledged_by = fields.Many2one("res.users")
     unverified_layout_acknowledged_at = fields.Datetime()
     expected_pallet_count = fields.Integer(compute="_compute_counts", store=True)
+    actual_received_pallet_count = fields.Integer(compute="_compute_counts", store=True)
     confirmed_pallet_count = fields.Integer(compute="_compute_counts", store=True)
     assigned_pallet_count = fields.Integer(compute="_compute_counts", store=True)
     loaded_pallet_count = fields.Integer(compute="_compute_counts", store=True)
+    onboard_pallet_count = fields.Integer(compute="_compute_counts", store=True)
     vacant_position_count = fields.Integer(compute="_compute_counts", store=True)
     reserved_pallet_count = fields.Integer(compute="_compute_counts", store=True)
     committed_pallet_count = fields.Integer(compute="_compute_counts", store=True)
     available_position_count = fields.Integer(compute="_compute_counts", store=True)
+    future_pickup_pallet_count = fields.Integer(compute="_compute_counts", store=True)
     payload_used = fields.Float(compute="_compute_counts", store=True)
     payload_capacity = fields.Float(compute="_compute_counts", store=True)
     utilization_percentage = fields.Float(compute="_compute_counts", store=True)
@@ -62,7 +65,7 @@ class PremaDispatchLoadPlan(models.Model):
             plan.name = f"LP-{plan.vehicle_id.name or '?'}-{plan.operating_date or ''}"
 
     @api.depends(
-        "load_plan_job_ids.job_id.approximate_skids", "load_plan_job_ids.reserved_floor_positions", "load_plan_job_ids.reserve_capacity",
+        "load_plan_job_ids.job_id.approximate_skids", "load_plan_job_ids.job_id.actual_received_pallet_count", "load_plan_job_ids.reserved_floor_positions", "load_plan_job_ids.reserve_capacity",
         "pallet_ids", "pallet_ids.consumes_floor_position", "pallet_ids.position_id",
         "pallet_ids.status", "pallet_ids.weight_lbs", "pallet_ids.pending_future_pickup",
         "layout_template_id.max_positions", "vehicle_id.x_max_payload_lbs",
@@ -72,7 +75,11 @@ class PremaDispatchLoadPlan(models.Model):
             floor_items = plan.pallet_ids.filtered(
                 lambda i: i.status != "cancelled" and i.consumes_floor_position and not i.pending_future_pickup
             )
+            all_floor_items = plan.pallet_ids.filtered(
+                lambda i: i.status != "cancelled" and i.consumes_floor_position
+            )
             plan.expected_pallet_count = sum(plan.load_plan_job_ids.mapped("job_id.approximate_skids"))
+            plan.actual_received_pallet_count = len(floor_items)
             plan.confirmed_pallet_count = len(floor_items.filtered(lambda i: i.status != "cancelled"))
             plan.reserved_pallet_count = sum(plan.load_plan_job_ids.filtered("active").mapped("reserved_floor_positions"))
             commitment = 0
@@ -81,7 +88,9 @@ class PremaDispatchLoadPlan(models.Model):
                 commitment += max(link.reserved_floor_positions or 0, len(job_items))
             plan.committed_pallet_count = commitment
             plan.assigned_pallet_count = len(floor_items.filtered("position_id"))
-            plan.loaded_pallet_count = len(floor_items.filtered(lambda i: i.status in ("loaded", "in_transit", "delivered")))
+            plan.loaded_pallet_count = len(floor_items.filtered(lambda i: i.status in ("loaded", "in_transit", "partially_unloaded", "delivered")))
+            plan.onboard_pallet_count = len(floor_items.filtered(lambda i: i.status in ("loaded", "in_transit", "partially_unloaded")))
+            plan.future_pickup_pallet_count = len(all_floor_items.filtered("pending_future_pickup"))
             max_pos = plan.layout_template_id.max_positions
             plan.vacant_position_count = max(0, max_pos - plan.assigned_pallet_count)
             plan.available_position_count = max(0, max_pos - plan.committed_pallet_count)
@@ -163,6 +172,17 @@ class PremaDispatchLoadPlan(models.Model):
         for plan in self:
             check_load_plan_access(self.env, plan, require_not_locked=require_not_locked)
 
+    def _vehicle_layout_capacity(self, layout_type=None):
+        self.ensure_one()
+        return self.vehicle_id.get_layout_capacity(layout_type or self.layout_template_id.layout_type)
+
+    def _layout_is_vehicle_verified(self):
+        self.ensure_one()
+        vehicle = self.vehicle_id
+        if not vehicle or not vehicle.layout_configuration_verified:
+            return False
+        return self.layout_template_id.max_positions == self._vehicle_layout_capacity()
+
     # ── Read ─────────────────────────────────────────────────────────
 
     @api.model
@@ -199,6 +219,8 @@ class PremaDispatchLoadPlan(models.Model):
             ])
             return {
                 "id": item.id, "name": item.name, "load_unit_type": item.load_unit_type,
+                "job_id": item.job_id.id,
+                "job_name": item.job_id.name,
                 "shared_skid": item.shared_skid, "status": item.status,
                 "weight_lbs": item.weight_lbs, "position_id": item.position_id.id,
                 "position_code": item.position_id.position_code if item.position_id else False,
@@ -216,21 +238,27 @@ class PremaDispatchLoadPlan(models.Model):
             "driver": {"id": self.driver_id.id, "name": self.driver_id.name} if self.driver_id else False,
             "operating_date": self.operating_date.isoformat() if self.operating_date else False,
             "layout_template": {"id": tpl.id, "name": tpl.name, "layout_type": tpl.layout_type,
-                                 "revision": tpl.revision, "is_verified": tpl.is_verified},
+                                 "revision": tpl.revision, "is_verified": tpl.is_verified,
+                                 "vehicle_verified": self._layout_is_vehicle_verified(),
+                                 "capacity": self._vehicle_layout_capacity(tpl.layout_type)},
             "is_locked": self.is_locked, "lock_reason": self.lock_reason,
             "is_stale": self.is_stale, "stale_reason": self.stale_reason,
             "unverified_layout_acknowledged": self.unverified_layout_acknowledged,
             "counts": {
-                "expected": self.expected_pallet_count, "confirmed": self.confirmed_pallet_count,
+                "expected": self.expected_pallet_count, "actual_received": self.actual_received_pallet_count,
+                "confirmed": self.confirmed_pallet_count,
                 "assigned": self.assigned_pallet_count, "loaded": self.loaded_pallet_count,
+                "onboard": self.onboard_pallet_count,
                 "reserved": self.reserved_pallet_count, "committed": self.committed_pallet_count,
                 "vacant": self.vacant_position_count, "available": self.available_position_count, "max_positions": tpl.max_positions,
+                "future_pickup": self.future_pickup_pallet_count,
                 "utilization_percentage": round(self.utilization_percentage, 1),
             },
             "payload": {"used": self.payload_used, "capacity": self.payload_capacity},
             "jobs": [{
                 "load_plan_job_id": j.id, "job_id": j.job_id.id, "job_name": j.job_id.name,
                 "customer": j.job_id.partner_id.name, "state": j.state,
+                "pickup_step_state": j.job_id._pickup_completion_step_state(),
             } for j in self.load_plan_job_ids.filtered("active")],
             "positions": [{
                 "id": p.id, "position_code": code, "display_name": p.display_name or code, "side": p.side,
@@ -240,6 +268,16 @@ class PremaDispatchLoadPlan(models.Model):
             } for code, p in positions_by_code.items()],
             "unassigned_items": [item_payload(i) for i in items if not i.position_id and i.consumes_floor_position],
             "non_floor_items": [item_payload(i) for i in items if not i.consumes_floor_position],
+            "available_stops": [{
+                "job_id": job.id,
+                "job_name": job.name,
+                "stops": [{
+                    "stop_id": stop.id,
+                    "sequence": stop.sequence,
+                    "customer": stop.saved_location_id.business_name or stop.address,
+                    "status": stop.status,
+                } for stop in job.stop_ids.filtered(lambda stop: stop.stop_type == "dropoff" and not stop.planning_only and stop.status != "cancelled").sorted("sequence")],
+            } for job in self.load_plan_job_ids.filtered("active").mapped("job_id")],
             "warnings": self.validate_load_plan()["warnings"],
         }
 
@@ -303,10 +341,11 @@ class PremaDispatchLoadPlan(models.Model):
             templates = self.get_layout_templates(vehicle_id)
             if not templates:
                 raise UserError("No layout template available for this vehicle. Create one first.")
-            # Straight is the documented default (0-12 pallets); don't fall
-            # back to whichever template happens to sort first alphabetically.
+            vehicle = self.env["fleet.vehicle"].browse(vehicle_id)
+            default_layout = vehicle.default_pallet_layout or "straight"
+            preferred = [t for t in templates if t["layout_type"] == default_layout]
             straight = [t for t in templates if t["layout_type"] == "straight"]
-            layout_template_id = (straight or templates)[0]["id"]
+            layout_template_id = (preferred or straight or templates)[0]["id"]
         tpl = self.env["prema.dispatch.vehicle.layout.template"].browse(layout_template_id)
         plan = self.create({
             "vehicle_id": vehicle_id, "operating_date": operating_date,
@@ -409,18 +448,39 @@ class PremaDispatchLoadPlan(models.Model):
         self._check_access(require_not_locked=True)
         self._check_version(version)
         item = self.env["prema.dispatch.item"].browse(item_id)
+        if not item.exists() or item.load_plan_id.id != self.id:
+            raise UserError("Item not found on this load plan.")
+        stop_allocations = stop_allocations or []
+        if len(stop_allocations) > 5:
+            raise UserError("A pallet can be allocated to at most five stops.")
         Alloc = self.env["prema.dispatch.pallet.stop.allocation"]
-        for a in stop_allocations:
-            existing = Alloc.search([("dispatch_item_id", "=", item.id), ("stop_id", "=", a["stop_id"])])
+        job_ids = set(self.load_plan_job_ids.filtered("active").mapped("job_id.id"))
+        seen_stop_ids = set()
+        active_stop_ids = set()
+        for idx, a in enumerate(stop_allocations, start=1):
+            stop = self.env["prema.dispatch.stop"].browse(a["stop_id"])
+            if not stop.exists() or stop.status == "cancelled" or stop.planning_only:
+                raise UserError("Only active operational stops can be allocated.")
+            if stop.id in seen_stop_ids:
+                raise UserError("The same stop cannot be allocated to one pallet twice.")
+            if stop.job_id.id != item.job_id.id or stop.job_id.id not in job_ids:
+                raise UserError("Pallet allocations must stay within the same physical run and job.")
+            seen_stop_ids.add(stop.id)
+            active_stop_ids.add(stop.id)
+            existing = Alloc.search([("dispatch_item_id", "=", item.id), ("stop_id", "=", stop.id)])
             vals = {
-                "dispatch_item_id": item.id, "stop_id": a["stop_id"],
-                "invoice_id": a.get("invoice_id"), "unload_sequence": a.get("unload_sequence", 10),
+                "dispatch_item_id": item.id, "stop_id": stop.id,
+                "invoice_id": a.get("invoice_id"), "unload_sequence": a.get("unload_sequence", idx * 10),
                 "notes": a.get("notes"),
+                "active": True,
             }
             if existing:
                 existing.write(vals)
             else:
                 Alloc.create(vals)
+        stale_allocs = item.stop_allocation_ids.filtered(lambda alloc: alloc.active and alloc.stop_id.id not in active_stop_ids)
+        if stale_allocs:
+            stale_allocs.write({"active": False})
         item.write({"shared_skid": len(item.stop_allocation_ids.filtered("active")) > 1})
         self._log_event("stop_allocation_changed", item=item, new_value={"stop_allocations": stop_allocations})
         self._bump_version()
@@ -490,24 +550,34 @@ class PremaDispatchLoadPlan(models.Model):
         explicit confirmation, exactly as for a manual layout change."""
         self.ensure_one()
         tpl = self.layout_template_id
-        if self.is_locked or self.confirmed_pallet_count <= tpl.max_positions:
+        if self.is_locked:
             return None
-        candidate = self.env["prema.dispatch.vehicle.layout.template"].search([
-            ("id", "!=", tpl.id), ("active", "=", True),
-            ("layout_type", "!=", "turned"),  # Turned requires manual selection + verified handling requirements — never auto-proposed
-            ("max_positions", ">=", self.confirmed_pallet_count),
-            "|", ("applicable_vehicle_ids", "in", [self.vehicle_id.id]), ("applicable_vehicle_ids", "=", False),
-        ], order="max_positions asc", limit=1)
-        if not candidate:
+        target_layout = self.vehicle_id.get_recommended_pallet_layout(self.confirmed_pallet_count)
+        if not target_layout:
             self._mark_stale(f"Confirmed pallet count ({self.confirmed_pallet_count}) exceeds every available layout's capacity")
             return {
                 "no_valid_layout": True,
-                "message": f"No layout supports {self.confirmed_pallet_count} pallets without using Turned, which requires manual selection and verified four-way/forklift handling. Consider another truck, splitting the route, removing the additional booking, a manual Turned selection, or an authorized manual plan.",
+                "message": f"No configured layout supports {self.confirmed_pallet_count} pallets on {self.vehicle_id.name}.",
+            }
+        target_capacity = self.vehicle_id.get_layout_capacity(target_layout)
+        if self.confirmed_pallet_count <= tpl.max_positions and tpl.layout_type == target_layout:
+            return None
+        candidate = self.env["prema.dispatch.vehicle.layout.template"].search([
+            ("id", "!=", tpl.id), ("active", "=", True),
+            ("layout_type", "=", target_layout),
+            ("max_positions", "=", target_capacity),
+            "|", ("applicable_vehicle_ids", "in", [self.vehicle_id.id]), ("applicable_vehicle_ids", "=", False),
+        ], order="max_positions asc", limit=1)
+        if not candidate:
+            self._mark_stale(f"Configured {target_layout} layout template is missing for {self.vehicle_id.name}")
+            return {
+                "no_valid_layout": True,
+                "message": f"No {target_layout.replace('_', ' ')} layout template with capacity {target_capacity} is configured for {self.vehicle_id.name}.",
             }
         proposal = self.change_layout(candidate.id, version=self.version, confirm_remap=False)
         proposal["notification"] = (
-            f"Layout changed from {tpl.layout_type} to {candidate.layout_type} because the "
-            f"confirmed physical skid count increased to {self.confirmed_pallet_count}."
+            f"Suggested layout: {candidate.layout_type} ({target_capacity} positions) for "
+            f"{self.confirmed_pallet_count} confirmed pallets."
         )
         return proposal
 
@@ -550,7 +620,7 @@ class PremaDispatchLoadPlan(models.Model):
                         )
         if self.is_stale:
             warnings.append(f"Load plan is stale: {self.stale_reason or 'inputs changed since planning'}.")
-        if not tpl.is_verified:
+        if not self._layout_is_vehicle_verified():
             warnings.append(
                 "UNVERIFIED VEHICLE LAYOUT — Dimensions and capacity have not yet been physically "
                 f"verified for '{tpl.name}'. Positions shown are a planning aid, not a guarantee that "
@@ -582,7 +652,7 @@ class PremaDispatchLoadPlan(models.Model):
         unverified — see validate_load_plan()'s warning text."""
         self.ensure_one()
         self._check_dispatch_staff_or_raise()
-        if self.layout_template_id.is_verified:
+        if self._layout_is_vehicle_verified():
             return self.get_load_plan()  # nothing to acknowledge
         self.write({
             "unverified_layout_acknowledged": True,
@@ -648,7 +718,7 @@ class PremaDispatchLoadPlan(models.Model):
         self.ensure_one()
         self._check_access(require_not_locked=True)
         self._check_version(version)
-        if not self.layout_template_id.is_verified and not self.unverified_layout_acknowledged:
+        if not self._layout_is_vehicle_verified() and not self.unverified_layout_acknowledged:
             raise UserError(
                 "UNVERIFIED VEHICLE LAYOUT — Dimensions and capacity have not yet been physically "
                 "verified. A dispatcher must acknowledge this before loading can be confirmed."

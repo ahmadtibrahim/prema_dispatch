@@ -21,6 +21,13 @@ class TestLoadPlanBase(TransactionCase):
         self.customer = self.env["res.partner"].create({"name": "LoadPlan Test Customer"})
         self.driver_a_partner = self.env["res.partner"].create({"name": "LP Driver A"})
         self.driver_b_partner = self.env["res.partner"].create({"name": "LP Driver B"})
+        self.vehicle.write({
+            "default_pallet_layout": "straight",
+            "straight_pallet_capacity": 12,
+            "pin_wheel_pallet_capacity": 13,
+            "turned_pallet_capacity": 14,
+            "layout_configuration_verified": False,
+        })
         self.job = self.Job.create({
             "partner_id": self.customer.id, "stage_id": self.stage_draft.id,
             "driver_id": self.driver_a_partner.id, "vehicle_id": self.vehicle.id,
@@ -105,6 +112,44 @@ class TestLoadPlanModel(TestLoadPlanBase):
         self.assertTrue(item.shared_skid)
         self.assertEqual(len(item.stop_allocation_ids.filtered("active")), 3)
         self.assertEqual(plan.confirmed_pallet_count, 1, "one physical pallet, not three")
+
+    def test_03b_five_stop_max_allowed_sixth_rejected(self):
+        data = self._make_plan()
+        plan = self.LP.browse(data["id"])
+        stop4 = self.Stop.create({"job_id": self.job.id, "sequence": 40, "stop_type": "dropoff", "address": "Stop 4"})
+        stop5 = self.Stop.create({"job_id": self.job.id, "sequence": 50, "stop_type": "dropoff", "address": "Stop 5"})
+        stop6 = self.Stop.create({"job_id": self.job.id, "sequence": 60, "stop_type": "dropoff", "address": "Stop 6"})
+        item = self.Item.create({"job_id": self.job.id, "name": "U-03", "load_plan_id": plan.id})
+        plan.assign_stops_to_pallet(item.id, [
+            {"stop_id": self.stop1.id}, {"stop_id": self.stop2.id}, {"stop_id": self.stop3.id},
+            {"stop_id": stop4.id}, {"stop_id": stop5.id},
+        ], plan.version)
+        plan.invalidate_recordset(); item.invalidate_recordset()
+        self.assertEqual(len(item.stop_allocation_ids.filtered("active")), 5)
+        with self.assertRaises(UserError):
+            plan.assign_stops_to_pallet(item.id, [
+                {"stop_id": self.stop1.id}, {"stop_id": self.stop2.id}, {"stop_id": self.stop3.id},
+                {"stop_id": stop4.id}, {"stop_id": stop5.id}, {"stop_id": stop6.id},
+            ], plan.version)
+
+    def test_03c_partial_unload_keeps_position_until_last_allocation(self):
+        data = self._make_plan()
+        plan = self.LP.browse(data["id"])
+        item = self.Item.create({"job_id": self.job.id, "name": "U-06", "load_plan_id": plan.id})
+        pos = plan.layout_template_id.position_ids[0]
+        plan.assign_pallet_to_position(item.id, pos.id, plan.version)
+        plan.invalidate_recordset()
+        plan.assign_stops_to_pallet(item.id, [
+            {"stop_id": self.stop1.id}, {"stop_id": self.stop2.id},
+        ], plan.version)
+        item.write({"status": "loaded"})
+        self.stop1.action_mark_completed()
+        item.invalidate_recordset()
+        self.assertEqual(item.status, "partially_unloaded")
+        self.assertEqual(item.position_id.id, pos.id)
+        self.stop2.action_mark_completed()
+        item.invalidate_recordset()
+        self.assertEqual(item.status, "delivered")
 
     def test_04_position_uniqueness_blocks_double_assignment(self):
         data = self._make_plan()
@@ -286,7 +331,7 @@ class TestLoadPlanModel(TestLoadPlanBase):
         with self.assertRaises(UserError):
             plan.confirm_loading(plan.version)
 
-    def test_20_turned_never_auto_proposed(self):
+    def test_20_turned_is_proposed_for_fourteen(self):
         data = self._make_plan()
         plan = self.LP.browse(data["id"])
         items = self.Item
@@ -295,16 +340,23 @@ class TestLoadPlanModel(TestLoadPlanBase):
         for item, pos in zip(items, plan.layout_template_id.position_ids):
             plan.assign_pallet_to_position(item.id, pos.id, plan.version)
             plan.invalidate_recordset()
-        for i in range(3):  # push confirmed count past Pin-Wheel's 13 too (14+)
+        for i in range(2):  # 14 total pallets should propose Turned
             self.Item.create({"job_id": self.job.id, "name": f"Extra{i}", "load_plan_id": plan.id})
         plan.invalidate_recordset()
         proposal = plan.evaluate_layout_for_capacity()
-        # 15 confirmed pallets exceeds even Pin-Wheel's 13 — with Turned
-        # correctly excluded from auto-proposal, no valid candidate remains.
-        self.assertTrue(proposal and proposal.get("no_valid_layout"),
-                         "with Turned excluded, 15 pallets must report no_valid_layout, not silently escalate to Turned")
+        self.assertTrue(proposal and proposal.get("requires_confirmation"))
+        self.assertIn("turned", (proposal.get("notification") or "").lower())
         plan.invalidate_recordset()
-        self.assertNotEqual(plan.layout_template_id.layout_type, "turned")
+        self.assertEqual(plan.layout_template_id.layout_type, "straight")
+
+    def test_20b_more_than_fourteen_blocks(self):
+        data = self._make_plan()
+        plan = self.LP.browse(data["id"])
+        for i in range(15):
+            self.Item.create({"job_id": self.job.id, "name": f"B{i}", "load_plan_id": plan.id})
+        plan.invalidate_recordset()
+        proposal = plan.evaluate_layout_for_capacity()
+        self.assertTrue(proposal and proposal.get("no_valid_layout"))
 
     def test_21_acknowledgment_logged_in_event_timeline(self):
         data = self._make_plan()
@@ -314,3 +366,9 @@ class TestLoadPlanModel(TestLoadPlanBase):
         self.assertTrue(events)
         self.assertEqual(events[0].reason, "test reason")
         self.assertEqual(events[0].changed_by.id, self.dispatcher_user.id)
+
+    def test_22_vehicle_layout_verification_sets_vehicle_flag(self):
+        self.vehicle.with_user(self.manager_user).action_verify_pallet_layout_configuration()
+        self.vehicle.invalidate_recordset()
+        self.assertTrue(self.vehicle.layout_configuration_verified)
+        self.assertEqual(self.vehicle.layout_verified_by.id, self.manager_user.id)

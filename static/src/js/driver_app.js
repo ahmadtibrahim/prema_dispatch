@@ -7,6 +7,7 @@ const S = {
     selDate:null, dayData:null, stops:[],
     stop:null,
     finishFlow:null,
+    pickupIntake:null,
     channelId:null, chatOpen:false, chatPoll:null,
     gpsId:null, lat:null, lng:null,
     geoArmed:false, geoTimer:null,
@@ -31,6 +32,17 @@ const today = () => {
     const p = n => String(n).padStart(2, "0");
     return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`;
 };
+const isoLocalDate = (d) => {
+    const p = n => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`;
+};
+function clampDriverDate(dateStr){
+    const now = new Date();
+    const yesterday = new Date(now); yesterday.setDate(now.getDate()-1);
+    const tomorrow = new Date(now); tomorrow.setDate(now.getDate()+1);
+    const allowed = new Set([isoLocalDate(yesterday), isoLocalDate(now), isoLocalDate(tomorrow)]);
+    return allowed.has(dateStr) ? dateStr : today();
+}
 const isMaps = () => !!window.google?.maps;
 const GMAPS_KEY = document.getElementById("app")?.dataset.gmapsKey || "";
 const DISPATCH_PHONE = document.getElementById("app")?.dataset.dispatchPhone || "";
@@ -357,16 +369,8 @@ function stopBusListener() {
 
 // ── Week Calendar ─────────────────────────────────────────────────
 const APP = window.APP = {
-    prevWeek: async () => {
-        S.weekOffset--;
-        S.weekData=await rpc("/dispatch/driver/dates",{week_offset:S.weekOffset});
-        renderWeek();
-    },
-    nextWeek: async () => {
-        S.weekOffset++;
-        S.weekData=await rpc("/dispatch/driver/dates",{week_offset:S.weekOffset});
-        renderWeek();
-    },
+    prevWeek: async () => {},
+    nextWeek: async () => {},
     toggleMap:    () => { S.mapCollapsed=!S.mapCollapsed; q("#routeMapWrap")?.classList.toggle("collapsed",S.mapCollapsed); q("#mapToggleBtn") && (q("#mapToggleBtn").textContent=S.mapCollapsed?"▼":"▲"); if(!S.mapCollapsed&&S.mapsReady)setTimeout(()=>trigResize("route"),280); },
     showHomeTab:  () => showViewTab("home"),
     showStopsTab: () => showViewTab("stops"),
@@ -407,6 +411,7 @@ const APP = window.APP = {
     toggleNavFullscreen:() => toggleNavFullscreen(),
     recenterNav:     () => { if(S.maps.nav && S.lat && S.lng) S.maps.nav.panTo({lat:S.lat,lng:S.lng}); },
     closeFinishProof:() => closeFinishProof(),
+    closePickupIntake:() => closePickupIntake(),
     confirmFinishStop:() => confirmFinishStop(),
     finishNextStop:  () => finishNextStop(),
     finishSchedule:  () => finishSchedule(),
@@ -415,10 +420,9 @@ const APP = window.APP = {
 
 function renderWeek() {
     const wk=S.weekData; if(!wk)return;
-    const lbl=q("#weekLabel"); if(lbl)lbl.textContent=wk.week_label;
     const grid=q("#weekDays"); if(!grid)return;
     grid.innerHTML="";
-    wk.days.forEach(d=>{
+    (wk.days||[]).slice(0,3).forEach(d=>{
         const cell=mk("div","da-day-cell"+(d.date===S.selDate?" selected":"")+(d.is_today?" today":"")+(d.is_past?" past":""));
         cell.innerHTML=`<div class="da-day-wd">${d.weekday}</div><div class="da-day-num">${d.day_num}</div><div class="da-day-dot ${d.all_done?"all-done":d.job_count?"has-jobs":""}"></div>`;
         cell.onclick=()=>selectDay(d.date);
@@ -427,6 +431,7 @@ function renderWeek() {
 }
 
 async function selectDay(dateStr) {
+    dateStr=clampDriverDate(dateStr);
     if(dateStr===S.selDate)return;
     S.selDate=dateStr; renderWeek(); toast("Loading…");
     try {
@@ -674,6 +679,7 @@ function renderStopDetail() {
         `<div class="da-detail-addr">${esc(stop.address)}</div>`+
         (stop.address_warning?`<div class="da-addr-warn">⚠ ${esc(stop.address_warning)}</div>`:"")+
         (renderStopTimeLine(stop))+
+        (isPickup ? renderPickupActualsCard(stop) : "")+
         (stop.type==="pickup"
             ?`<div class="da-detail-meta">📦 <strong>${stop.pallets_in||"?"} pallets</strong> to pick up${stop.pallets_in_estimated?' <span class="da-est-badge" title="Estimated from downstream deliveries">✨ est.</span>':""}</div>`
             :stop.type==="cross_dock_pickup"
@@ -702,6 +708,32 @@ function renderStopDetail() {
         renderTransitEvidence(stop)+
         renderEvidence(stop)+
         renderActions(stop,isDone,isActive);
+}
+
+function renderPickupActualsCard(stop){
+    const job=stop.job_summary||{};
+    const step=stop.pickup_step_state||{};
+    const expected=job.expected_pallet_count ?? step.expected ?? stop.pallets_in ?? 0;
+    const actual=job.actual_received_pallet_count ?? step.actual ?? 0;
+    const variance=step.variance ?? (actual-expected);
+    return `<div class="da-pickup-section">
+        <h4>Pickup Load</h4>
+        <div class="da-pickup-stat-grid">
+            <div class="da-pickup-stat">
+                <div class="da-pickup-stat-label">Expected Pallets</div>
+                <div class="da-pickup-stat-value">${expected}</div>
+            </div>
+            <div class="da-pickup-stat">
+                <div class="da-pickup-stat-label">Actual Received</div>
+                <div class="da-pickup-stat-value">${actual}</div>
+            </div>
+        </div>
+        <div class="da-pickup-note">Variance: ${variance>0?"+":""}${variance}. Delivery stops: ${step.delivery_stop_count||0}. Allocated pallets: ${step.allocated_pallet_count||0}/${step.confirmed_pallet_count||0}.</div>
+        <div class="da-pickup-row" style="margin-top:10px">
+            <button class="da-btn da-btn-secondary da-btn-sm" onclick="openPickupIntake(1)">Confirm Pickup</button>
+            <button class="da-btn da-btn-secondary da-btn-sm" onclick="openPickupIntake(2)">${step.needs_stop_entry ? "Add Delivery Stops" : "Edit Delivery Stops"}</button>
+        </div>
+    </div>`;
 }
 
 function renderFreightItems(stop){
@@ -872,11 +904,13 @@ function renderFinishProof(){
                 </div>
                 <div class="da-finish-actions">
                     <button class="da-btn da-btn-secondary" onclick="APP.finishSchedule()">Back to Schedule</button>
+                    <button class="da-btn da-btn-secondary" onclick="openLoadPlan()">Open Load Plan</button>
                     <button class="da-btn da-btn-green" onclick="APP.finishNextStop()">🗺️ Navigate to Next Stop</button>
                 </div>`
                 :`<div class="da-finish-note">🎉 No remaining open stops on this route.</div>
                 <div class="da-finish-actions">
                     <button class="da-btn da-btn-primary" onclick="APP.finishSchedule()">Back to Schedule</button>
+                    <button class="da-btn da-btn-secondary" onclick="openLoadPlan()">Open Load Plan</button>
                 </div>`);
         return;
     }
@@ -949,6 +983,403 @@ function finishSchedule(){
     showScreen("sSchedule");
     renderStopList();
 }
+
+function pickupStopsForJob(jobId){
+    return (S.stops||[]).filter(s=>s.job_id===jobId && s.type==="dropoff" && !["cancelled"].includes(s.status))
+        .sort((a,b)=>(a.sequence||0)-(b.sequence||0));
+}
+
+function pickupManualDefaults(){
+    return {
+        chain_name:"",
+        location_number:"",
+        business_name:"",
+        street:"",
+        unit:"",
+        city:"",
+        province_code:"ON",
+        postal_code:"",
+        dock_door:"",
+        parking_notes:"",
+        driver_instructions:"",
+        pallets_out:1,
+        pod_required:true,
+    };
+}
+
+function pickupItemsForJob(jobId){
+    if(!S.loadPlan) return [];
+    const items = [];
+    const seen = new Set();
+    [...(S.loadPlan.unassigned_items||[]), ...(S.loadPlan.positions||[]).map(p=>p.item).filter(Boolean)].forEach(item=>{
+        if(item.job_id===jobId && !seen.has(item.id)){
+            seen.add(item.id);
+            items.push(item);
+        }
+    });
+    return items.sort((a,b)=>(a.name||"").localeCompare(b.name||""));
+}
+
+async function ensurePickupLoadPlan(){
+    const truck=S.dayData?.truck;
+    if(!truck?.id) return null;
+    if(S.loadPlan?.vehicle?.id===truck.id && S.loadPlan?.operating_date===S.selDate) return S.loadPlan;
+    const data=await rpc("/dispatch/driver/loadplan/get",{vehicle_id:truck.id,operating_date:S.selDate,driver_id:null});
+    if(data && data.success!==false) S.loadPlan=data;
+    return S.loadPlan;
+}
+
+function openPickupIntake(step=1){
+    if(!S.stop) return;
+    const stop=S.stop;
+    const job=stop.job_summary||{};
+    const state=stop.pickup_step_state||{};
+    S.pickupIntake={
+        stopId:stop.id,
+        jobId:stop.job_id,
+        step,
+        actual: job.actual_received_pallet_count ?? state.actual ?? job.expected_pallet_count ?? stop.pallets_in ?? 0,
+        varianceNotes: job.pickup_variance_notes || "",
+        routeSheetReceived: !!state.route_sheet_received,
+        locationMode:"search",
+        searchQuery:"",
+        searchResults:[],
+        manual: pickupManualDefaults(),
+        draftStops: pickupStopsForJob(stop.job_id).map(s=>({id:s.id,sequence:s.sequence,name:stopCompany(s),address:s.address,pallets_out:s.pallets_out||1,pod_required:s.pod_required!==false})),
+        saving:false,
+    };
+    renderPickupIntake();
+    show("oPickupIntake");
+    if(step>=3){
+        ensurePickupLoadPlan().then(()=>renderPickupIntake()).catch(()=>{});
+    }
+}
+window.openPickupIntake=openPickupIntake;
+
+function closePickupIntake(){
+    hide("oPickupIntake");
+    S.pickupIntake=null;
+}
+
+function pickupCurrentStop(){
+    const stopId=S.pickupIntake?.stopId;
+    return stopId ? findStopById(stopId) || S.stop : S.stop;
+}
+
+function pickupSetStep(step){
+    if(!S.pickupIntake) return;
+    S.pickupIntake.step=step;
+    if(step>=3){
+        ensurePickupLoadPlan().then(()=>renderPickupIntake()).catch(()=>renderPickupIntake());
+        return;
+    }
+    renderPickupIntake();
+}
+window.pickupSetStep=pickupSetStep;
+
+function renderPickupIntake(){
+    const flow=S.pickupIntake, body=q("#pickupIntakeBody"), title=q("#pickupIntakeTitle");
+    if(!flow||!body) return;
+    const stop=pickupCurrentStop();
+    const step=stop?.pickup_step_state||{};
+    const expected=stop?.job_summary?.expected_pallet_count ?? step.expected ?? stop?.pallets_in ?? 0;
+    if(title) title.textContent=`Pickup Intake — ${stopCompany(stop) || "Pickup"}`;
+    const steps=[
+        [1,"Confirm"],
+        [2,"Stops"],
+        [3,"Pallets"],
+        [4,"Save"],
+    ];
+    let html=`<div class="da-pickup-steps">${steps.map(([id,label])=>`<button class="da-pickup-step ${flow.step===id?"active":""}" onclick="pickupSetStep(${id})">${label}</button>`).join("")}</div>`;
+    if(flow.step===1){
+        const variance=Number(flow.actual||0)-Number(expected||0);
+        html+=`<div class="da-pickup-section">
+            <h4>Confirm Pickup</h4>
+            <div class="da-pickup-stat-grid">
+                <div class="da-pickup-stat"><div class="da-pickup-stat-label">Expected</div><div class="da-pickup-stat-value">${expected}</div></div>
+                <div class="da-pickup-stat"><div class="da-pickup-stat-label">Variance</div><div class="da-pickup-stat-value">${variance>0?"+":""}${variance}</div></div>
+            </div>
+            <div class="da-pickup-note">Actual pallets received</div>
+            <div class="da-pickup-qty">
+                <button class="da-svc-btn" onclick="pickupAdjustActual(-1)">−</button>
+                <input class="da-pickup-qty-input" type="number" min="0" max="99" value="${Number(flow.actual||0)}" onchange="pickupSetActual(this.value)"/>
+                <button class="da-svc-btn" onclick="pickupAdjustActual(1)">+</button>
+            </div>
+            <label class="da-route-opt" style="border-bottom:none;padding-left:0"><input type="checkbox" ${flow.routeSheetReceived?"checked":""} onchange="pickupToggleRouteSheet(this.checked)"/> Route sheet received</label>
+            <textarea class="da-pickup-textarea" placeholder="Over / short / damage notes" onchange="pickupSetVarianceNotes(this.value)">${esc(flow.varianceNotes||"")}</textarea>
+            ${(Number(flow.actual||0) > 14) ? `<div class="da-pickup-warning">More than 14 pallets exceeds the configured single-truck layouts. Split the load or use another truck.</div>` : ""}
+            <div class="da-pickup-row">
+                <button class="da-btn da-btn-secondary" onclick="savePickupActuals()">Save Draft</button>
+                <button class="da-btn da-btn-primary" onclick="savePickupActuals(2)">Save & Next</button>
+            </div>
+        </div>`;
+    } else if(flow.step===2){
+        html+=`<div class="da-pickup-section">
+            <h4>Add Delivery Stops</h4>
+            <div class="da-stop-methods">
+                <button class="da-btn ${flow.locationMode==="search"?"da-btn-primary":"da-btn-secondary"}" onclick="pickupSetLocationMode('search')">Search Saved Locations</button>
+                <button class="da-btn ${flow.locationMode==="manual"?"da-btn-primary":"da-btn-secondary"}" onclick="pickupSetLocationMode('manual')">Enter Location Manually</button>
+                <button class="da-btn da-btn-secondary" onclick="pickupScanLocation()">Scan Invoice / Ship To</button>
+            </div>
+        </div>`;
+        if(flow.locationMode==="search"){
+            html+=`<div class="da-pickup-section">
+                <input class="da-pickup-input" placeholder="Search company, chain, store #, city, postal code" value="${esc(flow.searchQuery||"")}" onchange="pickupSetSearchQuery(this.value)"/>
+                <div class="da-pickup-row" style="margin-top:8px">
+                    <button class="da-btn da-btn-secondary" onclick="pickupSearchLocations()">Search</button>
+                    <button class="da-btn da-btn-primary" onclick="pickupSearchLocations(true)">Refresh</button>
+                </div>
+                <div class="da-stop-list-mini" style="margin-top:10px">${(flow.searchResults||[]).map(loc=>`
+                    <div class="da-stop-mini">
+                        <div class="da-stop-mini-title">${esc(loc.display_label||loc.business_name||loc.address)}</div>
+                        <div class="da-stop-mini-sub">${esc(loc.address||"")}</div>
+                        <div class="da-pickup-row" style="margin-top:8px">
+                            <button class="da-btn da-btn-primary da-btn-sm" onclick="pickupAddSavedStop(${loc.id})">Use This Stop</button>
+                        </div>
+                    </div>
+                `).join("") || '<div class="da-pickup-note">Search results will appear here.</div>'}</div>
+            </div>`;
+        } else {
+            const m=flow.manual||pickupManualDefaults();
+            html+=`<div class="da-pickup-section">
+                <div class="da-stop-list-mini">
+                    <input class="da-pickup-input" placeholder="Chain / Brand" value="${esc(m.chain_name||"")}" onchange="pickupSetManual('chain_name',this.value)"/>
+                    <input class="da-pickup-input" placeholder="Store / Location #" value="${esc(m.location_number||"")}" onchange="pickupSetManual('location_number',this.value)"/>
+                    <input class="da-pickup-input" placeholder="Company Name" value="${esc(m.business_name||"")}" onchange="pickupSetManual('business_name',this.value)"/>
+                    <input class="da-pickup-input" placeholder="Street Address" value="${esc(m.street||"")}" onchange="pickupSetManual('street',this.value)"/>
+                    <input class="da-pickup-input" placeholder="Unit" value="${esc(m.unit||"")}" onchange="pickupSetManual('unit',this.value)"/>
+                    <input class="da-pickup-input" placeholder="City" value="${esc(m.city||"")}" onchange="pickupSetManual('city',this.value)"/>
+                    <input class="da-pickup-input" placeholder="Province" value="${esc(m.province_code||"ON")}" onchange="pickupSetManual('province_code',this.value)"/>
+                    <input class="da-pickup-input" placeholder="Postal Code" value="${esc(m.postal_code||"")}" onchange="pickupSetManual('postal_code',this.value)"/>
+                    <input class="da-pickup-input" placeholder="Dock / Door" value="${esc(m.dock_door||"")}" onchange="pickupSetManual('dock_door',this.value)"/>
+                    <textarea class="da-pickup-textarea" placeholder="Parking instructions" onchange="pickupSetManual('parking_notes',this.value)">${esc(m.parking_notes||"")}</textarea>
+                    <textarea class="da-pickup-textarea" placeholder="Driver instructions" onchange="pickupSetManual('driver_instructions',this.value)">${esc(m.driver_instructions||"")}</textarea>
+                </div>
+                <div class="da-pickup-row" style="margin-top:8px">
+                    <button class="da-btn da-btn-secondary" onclick="pickupCheckDuplicates()">Check Duplicates</button>
+                    <button class="da-btn da-btn-primary" onclick="pickupCreateManualStop()">Save Stop</button>
+                </div>
+            </div>`;
+        }
+        html+=`<div class="da-pickup-section">
+            <h4>Current Delivery Stops</h4>
+            <div class="da-stop-list-mini">${(flow.draftStops||[]).map((s,idx)=>`
+                <div class="da-stop-mini">
+                    <div class="da-stop-mini-title">${idx+1}. ${esc(s.name||"Stop")}</div>
+                    <div class="da-stop-mini-sub">${esc(s.address||"")}</div>
+                </div>`).join("") || '<div class="da-pickup-note">No delivery stops saved yet.</div>'}
+            </div>
+            <div class="da-pickup-row" style="margin-top:8px">
+                <button class="da-btn da-btn-ghost" onclick="pickupSetStep(1)">Back</button>
+                <button class="da-btn da-btn-primary" onclick="pickupSetStep(3)">Next</button>
+            </div>
+        </div>`;
+    } else if(flow.step===3){
+        const items=pickupItemsForJob(flow.jobId);
+        const stopOptions=(S.loadPlan?.available_stops||[]).find(g=>g.job_id===flow.jobId)?.stops || pickupStopsForJob(flow.jobId).map(s=>({stop_id:s.id,sequence:s.sequence,customer:stopCompany(s)}));
+        html+=`<div class="da-pickup-section">
+            <h4>Assign Pallets to Stops</h4>
+            <div class="da-pickup-note">Each pallet may serve up to five stops. Shared pallets stay onboard until their final allocation is delivered.</div>
+        </div>`;
+        html+=items.map(item=>{
+            const selected=(item.stops||[]).map(s=>s.stop_id);
+            return `<div class="da-pallet-card">
+                <div class="da-pallet-title">${esc(item.name)}</div>
+                <div class="da-pallet-sub">Choose one to five delivery stops.</div>
+                <div class="da-stop-chips">${stopOptions.map(opt=>{
+                    const active=selected.includes(opt.stop_id);
+                    return `<button class="da-stop-chip ${active?"selected":""}" onclick="pickupTogglePalletStop(${item.id},${opt.stop_id})">${opt.sequence} ${esc(opt.customer||"Stop")}</button>`;
+                }).join("")}</div>
+                <div class="da-pallet-sub">Assigned: ${selected.length} stop(s)</div>
+                <div class="da-pallet-shared">${selected.length>1 ? `Shared Pallet — ${selected.length} Stops` : "Single Stop Pallet"}</div>
+            </div>`;
+        }).join("") || `<div class="da-pickup-section"><div class="da-pickup-note">Save actual pallet count first to create physical pallets.</div></div>`;
+        html+=`<div class="da-pickup-row">
+            <button class="da-btn da-btn-ghost" onclick="pickupSetStep(2)">Back</button>
+            <button class="da-btn da-btn-primary" onclick="pickupSetStep(4)">Next</button>
+        </div>`;
+    } else {
+        const items=pickupItemsForJob(flow.jobId);
+        const allocated=items.filter(item=>(item.stops||[]).length).length;
+        html+=`<div class="da-pickup-section">
+            <h4>Save Route Details</h4>
+            <div class="da-pickup-stat-grid">
+                <div class="da-pickup-stat"><div class="da-pickup-stat-label">Actual Pallets</div><div class="da-pickup-stat-value">${flow.actual}</div></div>
+                <div class="da-pickup-stat"><div class="da-pickup-stat-label">Stops Added</div><div class="da-pickup-stat-value">${(flow.draftStops||[]).length}</div></div>
+            </div>
+            <div class="da-pickup-note">Allocated pallets: ${allocated}/${items.length}. Saving will rebuild the remaining route and refresh the load-plan recommendation.</div>
+            <div class="da-pickup-row" style="margin-top:10px">
+                <button class="da-btn da-btn-ghost" onclick="pickupSetStep(3)">Back</button>
+                <button class="da-btn da-btn-primary" onclick="pickupSaveRouteDetails()">Save Route Details</button>
+            </div>
+        </div>`;
+    }
+    body.innerHTML=html;
+}
+
+function pickupAdjustActual(delta){
+    if(!S.pickupIntake) return;
+    S.pickupIntake.actual=Math.max(0, Number(S.pickupIntake.actual||0)+delta);
+    renderPickupIntake();
+}
+window.pickupAdjustActual=pickupAdjustActual;
+function pickupSetActual(value){ if(S.pickupIntake){ S.pickupIntake.actual=Math.max(0, Number(value||0)); renderPickupIntake(); } }
+window.pickupSetActual=pickupSetActual;
+function pickupToggleRouteSheet(checked){ if(S.pickupIntake){ S.pickupIntake.routeSheetReceived=!!checked; } }
+window.pickupToggleRouteSheet=pickupToggleRouteSheet;
+function pickupSetVarianceNotes(value){ if(S.pickupIntake){ S.pickupIntake.varianceNotes=value||""; } }
+window.pickupSetVarianceNotes=pickupSetVarianceNotes;
+function pickupSetLocationMode(mode){ if(S.pickupIntake){ S.pickupIntake.locationMode=mode; renderPickupIntake(); } }
+window.pickupSetLocationMode=pickupSetLocationMode;
+function pickupSetSearchQuery(value){ if(S.pickupIntake){ S.pickupIntake.searchQuery=value||""; } }
+window.pickupSetSearchQuery=pickupSetSearchQuery;
+function pickupSetManual(field,value){ if(S.pickupIntake){ S.pickupIntake.manual[field]=value; } }
+window.pickupSetManual=pickupSetManual;
+
+async function savePickupActuals(nextStep){
+    const flow=S.pickupIntake, stop=pickupCurrentStop();
+    if(!flow||!stop) return;
+    try{
+        const res=await rpc("/dispatch/driver/pickup/confirm",{
+            stop_id:stop.id,
+            values:{
+                actual_received_pallet_count: Number(flow.actual||0),
+                variance_notes: flow.varianceNotes||"",
+                route_sheet_received: !!flow.routeSheetReceived,
+            },
+        });
+        if(res?.success===false){ toast(res.error||"Could not save pickup"); return; }
+        await reloadDay();
+        S.stop=findStopById(stop.id)||S.stop;
+        renderStopList();
+        renderStopDetail();
+        await ensurePickupLoadPlan();
+        renderLoadPlanChip();
+        toast("Pickup actuals saved");
+        if(nextStep) pickupSetStep(nextStep); else renderPickupIntake();
+    }catch(e){ toast(e.message||"Could not save pickup"); }
+}
+window.savePickupActuals=savePickupActuals;
+
+async function pickupSearchLocations(){
+    const flow=S.pickupIntake, stop=pickupCurrentStop();
+    if(!flow||!stop) return;
+    try{
+        const res=await rpc("/dispatch/driver/location/search",{query:flow.searchQuery||"",limit:10,offset:0});
+        flow.searchResults=res?.results||[];
+        renderPickupIntake();
+    }catch(e){ toast("Location search failed"); }
+}
+window.pickupSearchLocations=pickupSearchLocations;
+
+function nextStopSequenceForJob(jobId){
+    const seqs=pickupStopsForJob(jobId).map(s=>s.sequence||0);
+    return (seqs.length ? Math.max(...seqs) : 10) + 10;
+}
+
+async function pickupAddSavedStop(locationId){
+    const flow=S.pickupIntake, stop=pickupCurrentStop();
+    if(!flow||!stop) return;
+    const pallets=Math.max(1, parseInt(prompt("Pallets for this stop?", "1")||"1",10)||1);
+    try{
+        const res=await rpc("/dispatch/driver/stop/create",{
+            job_id: flow.jobId,
+            values:{
+                saved_location_id: locationId,
+                stop_type: "dropoff",
+                sequence: nextStopSequenceForJob(flow.jobId),
+                pallets_out: pallets,
+                pod_required: true,
+            },
+        });
+        if(!res?.success){ toast(res?.error||"Could not add stop"); return; }
+        await reloadDay();
+        S.stop=findStopById(stop.id)||S.stop;
+        flow.draftStops=pickupStopsForJob(flow.jobId).map(s=>({id:s.id,sequence:s.sequence,name:stopCompany(s),address:s.address,pallets_out:s.pallets_out||1,pod_required:s.pod_required!==false}));
+        await ensurePickupLoadPlan();
+        renderPickupIntake();
+        renderStopList();
+        renderStopDetail();
+        toast("Delivery stop added");
+    }catch(e){ toast(e.message||"Could not add stop"); }
+}
+window.pickupAddSavedStop=pickupAddSavedStop;
+
+async function pickupCheckDuplicates(){
+    const flow=S.pickupIntake;
+    if(!flow) return;
+    try{
+        const res=await rpc("/dispatch/driver/location/duplicates",{job_id:flow.jobId,values:flow.manual});
+        const cands=res?.candidates||[];
+        if(!cands.length){ toast("No similar saved locations found"); return; }
+        const first=cands[0];
+        if(confirm(`Use existing location?\n\n${first.display_label||first.business_name}\n${first.address}`)){
+            await pickupAddSavedStop(first.id);
+        }
+    }catch(e){ toast("Duplicate check failed"); }
+}
+window.pickupCheckDuplicates=pickupCheckDuplicates;
+
+async function pickupCreateManualStop(){
+    const flow=S.pickupIntake, stop=pickupCurrentStop();
+    if(!flow||!stop) return;
+    try{
+        const locationResult=await rpc("/dispatch/driver/location/create",{job_id:flow.jobId,values:flow.manual});
+        if(!locationResult?.success){ toast(locationResult?.error||"Could not save location"); return; }
+        await pickupAddSavedStop(locationResult.location.id);
+    }catch(e){ toast(e.message||"Could not save location"); }
+}
+window.pickupCreateManualStop=pickupCreateManualStop;
+
+function pickupScanLocation(){
+    const flow=S.pickupIntake;
+    if(!flow) return;
+    openScanner({mode:"location_extract",jobId:flow.jobId,stopId:flow.stopId,extractionContext:"ship_to"});
+}
+window.pickupScanLocation=pickupScanLocation;
+
+async function pickupTogglePalletStop(itemId,stopId){
+    const flow=S.pickupIntake;
+    if(!flow||!S.loadPlan) return;
+    const item=pickupItemsForJob(flow.jobId).find(it=>it.id===itemId);
+    if(!item) return;
+    const next = new Set((item.stops||[]).map(s=>s.stop_id));
+    if(next.has(stopId)) next.delete(stopId); else next.add(stopId);
+    if(next.size>5){ toast("A pallet can have at most five stops"); return; }
+    const payload=[...next].map((id,idx)=>({stop_id:id, unload_sequence:(idx+1)*10}));
+    const res=await lpCall("/dispatch/driver/loadplan/assign_stops",{item_id:itemId,stop_allocations:payload});
+    if(res){
+        S.loadPlan=res;
+        renderPickupIntake();
+        renderLoadPlanChip();
+    }
+}
+window.pickupTogglePalletStop=pickupTogglePalletStop;
+
+async function pickupSaveRouteDetails(){
+    const flow=S.pickupIntake, stop=pickupCurrentStop();
+    if(!flow||!stop) return;
+    try{
+        const res=await rpc("/dispatch/driver/pickup/finalize",{
+            stop_id:stop.id,
+            values:{
+                actual_received_pallet_count: Number(flow.actual||0),
+                route_sheet_received: !!flow.routeSheetReceived,
+                pickup_variance_notes: flow.varianceNotes||"",
+            },
+        });
+        if(!res?.success){ toast(res?.error||"Could not save route details"); return; }
+        await reloadDay();
+        await ensurePickupLoadPlan();
+        S.stop=findStopById(stop.id)||S.stop;
+        closePickupIntake();
+        renderStopList();
+        renderStopDetail();
+        renderLoadPlanChip();
+        toast(res.suggested_layout_ready ? "Suggested load plan ready" : "Route details saved");
+    }catch(e){ toast(e.message||"Could not save route details"); }
+}
+window.pickupSaveRouteDetails=pickupSaveRouteDetails;
 
 function renderActions(stop,isDone,isActive){
     if(isDone) return `<div class="da-detail-actions"><div class="da-done-card">✅ Completed</div>${renderReceivingTruckSection(stop,true)}<div class="da-btn-row"><button class="da-btn da-btn-ghost" onclick="APP.goBack()">← Back</button><button class="da-btn da-btn-secondary" onclick="doRestoreStop()">↺ Restore</button></div></div>`;
@@ -1331,9 +1762,29 @@ async function useScan(){
         if(_scanContext?.mode==="load_plan_document"){
             route="/dispatch/driver/loadplan/document/upload";
             payload={load_plan_id:_scanContext.loadPlanId, document_type:_scanContext.documentType||"loading_photo", item_id:_scanContext.itemId||null, data_b64:b64, filename:`loadplan_${Date.now()}.jpg`};
+        } else if(_scanContext?.mode==="location_extract"){
+            route="/dispatch/driver/location/extract";
+            payload={
+                job_id:_scanContext.jobId,
+                stop_id:_scanContext.stopId||null,
+                extraction_context:_scanContext.extractionContext||"ship_to",
+                data_b64:b64,
+                filename:`ship_to_${Date.now()}.jpg`,
+                mimetype:"image/jpeg",
+            };
         }
         const r=await rpc(route,payload);
         if(r?.success){
+            if(_scanContext?.mode==="location_extract"){
+                if(S.pickupIntake){
+                    S.pickupIntake.locationMode="manual";
+                    S.pickupIntake.manual={...S.pickupIntake.manual,...(r.extraction||{})};
+                    renderPickupIntake();
+                }
+                renderScanStatus("success", "Fields extracted");
+                setTimeout(()=>{ closeScanner(); renderScanStatus("idle"); }, 900);
+                return;
+            }
             renderScanStatus("success", r.duplicate?(r.message||"Already uploaded"):"Scan saved");
             const stop=S.stops.find(s=>s.id===_scanStopId);
             if(stop && !r.duplicate){
@@ -1372,9 +1823,9 @@ function renderLoadPlanChip(){
     if(S.loadPlan){
         const c=S.loadPlan.counts;
         chip.innerHTML=`<div class="da-lp-chip-title">LOAD PLAN</div>
-            <div class="da-lp-chip-line">${c.loaded} / ${c.confirmed} loaded</div>
-            <div class="da-lp-chip-line">${S.loadPlan.unassigned_items.length} unassigned</div>
-            <div class="da-lp-chip-line">${S.loadPlan.warnings.length} warning(s)</div>`;
+            <div class="da-lp-chip-line">${c.confirmed} confirmed · ${c.future_pickup||0} future pickup</div>
+            <div class="da-lp-chip-line">${c.assigned} assigned · ${c.loaded} loaded</div>
+            <div class="da-lp-chip-line">${S.loadPlan.is_stale ? "Suggested layout ready" : `${S.loadPlan.unassigned_items.length} unassigned`}</div>`;
         chip.style.display="block";
     } else {
         chip.innerHTML=`<div class="da-lp-chip-title">LOAD PLAN</div><div class="da-lp-chip-line">Tap to open</div>`;
@@ -1429,10 +1880,14 @@ function renderLoadPlan(){
     const passPos=lp.positions.filter(p=>p.side==="passenger");
     const centerPos=lp.positions.filter(p=>p.side==="center");
     const selected=lp.positions.find(p=>p.position_code===S.lpSelectedCode);
+    const stopGroups=lp.available_stops||[];
 
     let h=`<div class="da-lp-summary">
-        <span>Confirmed ${lp.counts.confirmed}</span><span>Assigned ${lp.counts.assigned}</span>
-        <span>Loaded ${lp.counts.loaded}</span><span>Vacant ${lp.counts.vacant}</span>
+        <span>Expected ${lp.counts.expected}</span><span>Reserved ${lp.counts.reserved}</span>
+        <span>Actual ${lp.counts.actual_received}</span><span>Confirmed ${lp.counts.confirmed}</span>
+        <span>Assigned ${lp.counts.assigned}</span><span>Loaded ${lp.counts.loaded}</span>
+        <span>Onboard ${lp.counts.onboard}</span><span>Future Pickup ${lp.counts.future_pickup}</span>
+        <span>Available ${lp.counts.available}</span>
         ${lp.is_stale?`<span class="da-lp-warn-badge">STALE</span>`:""}
         ${lp.is_locked?`<span class="da-lp-lock-badge">🔒 LOCKED</span>`:""}
     </div>`;
@@ -1462,13 +1917,21 @@ function renderLoadPlan(){
         if(selected.item){
             h+=`<div><b>${esc(selected.item.name)}</b> — ${esc(selected.item.status)}</div>`;
             if(selected.item.stops.length) h+=`<div class="da-lp-detail-stops">Stops: ${esc(selected.item.stops.map(s=>s.sequence+" ("+ (s.customer||"") +")").join(", "))}</div>`;
+            const stopOptions=(stopGroups.find(g=>g.job_id===selected.item.job_id)?.stops)||[];
+            if(stopOptions.length){
+                h+=`<div class="da-stop-chips">${stopOptions.map(opt=>{
+                    const active=(selected.item.stops||[]).some(s=>s.stop_id===opt.stop_id);
+                    return `<button class="da-stop-chip ${active?"selected":""}" onclick="lpToggleStop(${selected.item.id},${opt.stop_id})">${opt.sequence} ${esc(opt.customer||"Stop")}</button>`;
+                }).join("")}</div>
+                <div class="da-loadplan-pos-meta">${selected.item.stops.length>1 ? `Shared pallet — ${selected.item.stops.length} stops` : "Single-stop pallet"}</div>`;
+            }
             h+=`<div class="da-lp-detail-actions">
                 <button class="da-btn da-btn-secondary da-btn-sm" onclick="lpMarkLoaded(${selected.item.id})">Mark Loaded</button>
                 <button class="da-btn da-btn-ghost da-btn-sm" onclick="lpUnassign(${selected.item.id})">Unassign</button>
                 <button class="da-btn da-btn-orange da-btn-sm" onclick="lpReportException(${selected.item.id})">⚠ Exception</button>
             </div>`;
         } else {
-            h+=`<div><b>Position ${esc(selected.position_code)}</b> — select a pallet to assign</div><div class="da-lp-unassigned-list">`;
+            h+=`<div><b>Position ${esc(selected.position_code)}</b> — choose an unassigned pallet</div><div class="da-lp-unassigned-list">`;
             if(!lp.unassigned_items.length) h+=`<div class="da-empty-sub">No unassigned pallets.</div>`;
             lp.unassigned_items.forEach(it=>{
                 h+=`<div class="da-lp-unassigned-item" onclick="lpAssign(${it.id})">${esc(it.name)}</div>`;
@@ -1514,7 +1977,7 @@ async function lpAssign(itemId){
     const pos=S.loadPlan.positions.find(p=>p.position_code===S.lpSelectedCode);
     if(!pos)return;
     const r=await lpCall("/dispatch/driver/loadplan/assign",{item_id:itemId, position_id:pos.id});
-    if(r){ S.loadPlan=r; S.lpSelectedCode=null; renderLoadPlan(); renderLoadPlanChip(); }
+    if(r){ S.loadPlan=r; S.lpSelectedCode=pos.position_code; renderLoadPlan(); renderLoadPlanChip(); }
 }
 window.lpAssign=lpAssign;
 
@@ -1543,6 +2006,19 @@ async function lpReportException(itemId){
     if(r){ S.loadPlan=r; renderLoadPlan(); renderLoadPlanChip(); toast("Exception reported"); }
 }
 window.lpReportException=lpReportException;
+
+async function lpToggleStop(itemId, stopId){
+    if(!S.loadPlan) return;
+    const item=[...(S.loadPlan.unassigned_items||[]), ...(S.loadPlan.positions||[]).map(p=>p.item).filter(Boolean)].find(it=>it.id===itemId);
+    if(!item) return;
+    const next=new Set((item.stops||[]).map(s=>s.stop_id));
+    if(next.has(stopId)) next.delete(stopId); else next.add(stopId);
+    if(next.size>5){ toast("A pallet can have at most five stops"); return; }
+    const payload=[...next].map((id,idx)=>({stop_id:id, unload_sequence:(idx+1)*10}));
+    const r=await lpCall("/dispatch/driver/loadplan/assign_stops",{item_id:itemId,stop_allocations:payload});
+    if(r){ S.loadPlan=r; renderLoadPlan(); renderLoadPlanChip(); }
+}
+window.lpToggleStop=lpToggleStop;
 
 // ── Stop Map ──────────────────────────────────────────────────────
 function initStopMap(stop){
@@ -1765,6 +2241,11 @@ async function doArrived(){
 }
 
 async function doComplete(){
+    const stop=S.stop;
+    if(isPickupStop(stop?.type) && stop?.pickup_step_state?.needs_stop_entry){
+        openPickupIntake(1);
+        return;
+    }
     openFinishProof();
 }
 
@@ -2161,7 +2642,7 @@ function parseNavParams(source){
     const dateOk=!!dateParam&&/^\d{4}-\d{2}-\d{2}$/.test(dateParam);
     return {
         screen:["sStop","sNav","sLoadPlan","sSchedule"].includes(screen)?screen:"sSchedule",
-        date:dateOk?dateParam:today(),
+        date:dateOk?clampDriverDate(dateParam):today(),
         stopId:stopParam?parseInt(stopParam,10):null,
         tab:tab==="stops"?"stops":"home",
     };
@@ -2179,6 +2660,7 @@ function parseNavParams(source){
 async function applyNavState(target){
     S._suppressHistoryPush=true;
     try{
+        target.date=clampDriverDate(target.date||today());
         if(target.date!==S.selDate){
             try{
                 const day=await rpc("/dispatch/driver/stops",{date_str:target.date});

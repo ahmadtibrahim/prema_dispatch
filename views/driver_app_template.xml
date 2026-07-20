@@ -54,11 +54,9 @@
       <button class="da-icon-btn" onclick="APP.signOut()" title="Sign Out" style="font-size:14px">⏻</button>
     </div>
 
-    <!-- Week Calendar -->
+    <!-- Three-Day Window -->
     <div class="da-week-bar">
-      <button class="da-week-nav" onclick="APP.prevWeek()">‹</button>
-      <div id="weekLabel" class="da-week-label"></div>
-      <button class="da-week-nav" onclick="APP.nextWeek()">›</button>
+      <div class="da-week-label">Yesterday / Today / Tomorrow</div>
       <!-- Map toggle lives here (not inside routeMapWrap) so it's still
            reachable when the map is collapsed to 0 height -->
       <button class="da-week-nav da-week-map-toggle" onclick="APP.toggleMap()" id="mapToggleBtn" title="Show/hide map">▲</button>
@@ -217,6 +215,16 @@
   </div>
 
   <!-- ── OVERLAY: Route Settings ──────────────────────────── -->
+  <div id="oPickupIntake" class="da-overlay da-issue-overlay" style="display:none">
+    <div class="da-finish-card da-pickup-card">
+      <div class="da-finish-header">
+        <div id="pickupIntakeTitle" class="da-issue-title">Pickup Intake</div>
+        <button class="da-chat-close-btn da-finish-close" onclick="APP.closePickupIntake()">✕</button>
+      </div>
+      <div id="pickupIntakeBody" class="da-finish-body"></div>
+    </div>
+  </div>
+
   <div id="oRouteSettings" class="da-overlay da-issue-overlay" style="display:none">
     <div class="da-issue-card">
       <div class="da-issue-title">🚛 Route Options</div>

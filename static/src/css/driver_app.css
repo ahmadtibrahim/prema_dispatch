@@ -27,7 +27,7 @@ body.da-body{margin:0;padding:0;background:#f1f3f5;font-family:-apple-system,Bli
 .da-week-nav{background:none;border:1.5px solid #ddd;color:#444;font-size:18px;width:32px;height:32px;border-radius:50%;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0}
 .da-week-nav:active{background:#e8f0fe}
 .da-week-label{flex:1;text-align:center;font-size:12px;font-weight:600;color:#555}
-.da-week-days{display:grid;grid-template-columns:repeat(7,1fr);background:#fff;border-bottom:2px solid #e0e4ea;flex-shrink:0}
+.da-week-days{display:grid;grid-template-columns:repeat(3,1fr);background:#fff;border-bottom:2px solid #e0e4ea;flex-shrink:0}
 .da-weather-badge{display:none;align-items:center;justify-content:center;gap:6px;background:#f0f6ff;color:#1565C0;font-size:12px;font-weight:700;padding:6px 10px;border-bottom:1px solid #e0e4ea}
 .da-weather-icon{width:20px;height:20px;vertical-align:middle}
 .da-day-cell{display:flex;flex-direction:column;align-items:center;padding:8px 2px 6px;cursor:pointer;position:relative;user-select:none;transition:background .12s}
@@ -211,6 +211,7 @@ body.da-body{margin:0;padding:0;background:#f1f3f5;font-family:-apple-system,Bli
 .da-issue-card{background:#fff;border-radius:16px;padding:18px;width:100%;max-width:340px}
 .da-issue-title{font-size:16px;font-weight:800;color:#1a1a2e;margin-bottom:12px;text-align:center}
 .da-finish-card{background:#fff;border-radius:18px;padding:18px;width:100%;max-width:420px;max-height:min(88vh,760px);display:flex;flex-direction:column;overflow:hidden}
+.da-pickup-card{max-width:540px}
 .da-finish-header{display:flex;align-items:center;gap:12px}
 .da-finish-header .da-issue-title{flex:1;margin-bottom:0;text-align:left}
 .da-finish-close{background:#eef2f7;color:#334;padding:0}
@@ -229,6 +230,40 @@ body.da-body{margin:0;padding:0;background:#f1f3f5;font-family:-apple-system,Bli
 .da-finish-actions{display:flex;gap:10px;padding-top:4px}
 .da-finish-actions .da-btn{flex:1}
 .da-finish-empty{font-size:14px;color:#555;padding:6px 0 14px}
+.da-pickup-steps{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:14px}
+.da-pickup-step{background:#f5f7fa;border:1px solid #dbe2ea;border-radius:12px;padding:8px;text-align:center;font-size:11px;font-weight:800;color:#6b7280}
+.da-pickup-step.active{background:#1565C0;color:#fff;border-color:#1565C0}
+.da-pickup-section{background:#f7f9fc;border:1px solid #e2e8f0;border-radius:14px;padding:12px 14px;margin-bottom:12px}
+.da-pickup-section h4{margin:0 0 8px;font-size:13px;color:#1a1a2e}
+.da-pickup-stat-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
+.da-pickup-stat{background:#fff;border:1px solid #dde2ea;border-radius:12px;padding:10px}
+.da-pickup-stat-label{font-size:11px;font-weight:700;color:#667085;text-transform:uppercase}
+.da-pickup-stat-value{font-size:18px;font-weight:800;color:#111827;margin-top:4px}
+.da-pickup-qty{display:flex;align-items:center;gap:10px}
+.da-pickup-qty .da-svc-btn{width:38px;height:38px;border-radius:10px;font-size:20px}
+.da-pickup-qty-input{flex:1;border:1.5px solid #dde2ea;border-radius:12px;padding:12px;font-size:22px;font-weight:800;text-align:center}
+.da-pickup-input,.da-pickup-textarea{width:100%;border:1.5px solid #dde2ea;border-radius:12px;padding:11px 12px;font-size:14px;background:#fff;color:#111827}
+.da-pickup-textarea{min-height:88px;resize:vertical}
+.da-pickup-row{display:flex;gap:8px}
+.da-pickup-row .da-btn{flex:1}
+.da-pickup-note{font-size:12px;color:#667085;line-height:1.45;margin-top:6px}
+.da-pickup-warning{background:#fff3cd;border:1px solid #ffe082;border-radius:12px;padding:10px 12px;font-size:12px;color:#7a5d00;margin-bottom:10px}
+.da-stop-methods{display:grid;grid-template-columns:1fr;gap:8px}
+.da-stop-card{background:#fff;border:1px solid #dde2ea;border-radius:12px;padding:10px 12px}
+.da-stop-card-title{font-size:13px;font-weight:800;color:#111827}
+.da-stop-card-sub{font-size:12px;color:#667085;margin-top:2px}
+.da-stop-list-mini{display:flex;flex-direction:column;gap:8px}
+.da-stop-mini{background:#fff;border:1px solid #dde2ea;border-radius:12px;padding:10px 12px}
+.da-stop-mini-title{font-size:13px;font-weight:800;color:#111827}
+.da-stop-mini-sub{font-size:12px;color:#667085}
+.da-stop-chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
+.da-stop-chip{border:1.5px solid #cbd5e1;background:#fff;color:#0f172a;border-radius:999px;padding:7px 10px;font-size:12px;font-weight:700}
+.da-stop-chip.selected{background:#1565C0;border-color:#1565C0;color:#fff}
+.da-pallet-card{background:#fff;border:1px solid #dde2ea;border-radius:14px;padding:12px;margin-bottom:10px}
+.da-pallet-title{font-size:14px;font-weight:800;color:#111827}
+.da-pallet-sub{font-size:12px;color:#667085;margin:4px 0 8px}
+.da-pallet-shared{font-size:11px;font-weight:800;color:#7c3aed;text-transform:uppercase}
+.da-loadplan-pos-meta{font-size:11px;color:#475467;margin-top:4px}
 .da-issue-reasons{display:flex;flex-direction:column;gap:8px}
 .da-issue-btn{width:100%;padding:13px;border:1.5px solid #e0e4ea;border-radius:10px;background:#f8f9fc;font-size:14px;font-weight:600;color:#333;text-align:left;cursor:pointer}
 .da-issue-btn:active{background:#e8f0fe;border-color:#1565C0}

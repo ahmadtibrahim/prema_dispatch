@@ -215,6 +215,14 @@ class DriverAppController(http.Controller):
         except Exception as exc:
             return {"success": False, "code": str(exc), "error": str(exc)}
 
+    @http.route("/dispatch/driver/pickup/confirm", type="json", auth="user", methods=["POST"])
+    def driver_pickup_confirm(self, stop_id, values=None, **kw):
+        return request.env["prema.dispatch.job"].driver_confirm_pickup_actuals(int(stop_id), values or {})
+
+    @http.route("/dispatch/driver/pickup/finalize", type="json", auth="user", methods=["POST"])
+    def driver_pickup_finalize(self, stop_id, values=None, **kw):
+        return request.env["prema.dispatch.job"].driver_finalize_pickup_intake(int(stop_id), values or {})
+
     @http.route("/dispatch/driver/location/search", type="json", auth="user", methods=["POST"])
     def driver_location_search(self, query="", limit=20, offset=0, **kw):
         return request.env["prema.dispatch.location"].sudo().driver_search_locations(query, limit, offset)

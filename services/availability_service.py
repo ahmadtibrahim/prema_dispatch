@@ -171,7 +171,17 @@ class DispatchAvailabilityService:
             committed = sum(
                 j.max_onboard_pallets or j.approximate_skids or 0 for j in v_jobs
             )
-            cap = vehicle.x_max_pallets or 0
+            plan = self.env["prema.dispatch.load.plan"].search([
+                ("vehicle_id", "=", vehicle.id),
+                ("operating_date", "=", check_date),
+                ("active", "=", True),
+            ], limit=1)
+            if plan:
+                cap = plan._vehicle_layout_capacity()
+                layout_type = plan.layout_template_id.layout_type
+            else:
+                cap = vehicle.get_layout_capacity() if hasattr(vehicle, "get_layout_capacity") else (vehicle.x_max_pallets or 0)
+                layout_type = getattr(vehicle, "default_pallet_layout", "straight")
             avail_cap = max(0, cap - committed)
 
             # GPS age
@@ -324,6 +334,7 @@ class DispatchAvailabilityService:
                 "has_reefer": bool(vehicle.x_reefer),
                 "has_liftgate": bool(vehicle.x_liftgate),
                 "pallet_capacity": cap,
+                "layout_type": layout_type,
                 "lat": vehicle.x_last_location_lat or 0,
                 "lng": vehicle.x_last_location_lng or 0,
                 "gps_age_minutes": gps_age,
