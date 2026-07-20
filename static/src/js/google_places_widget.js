@@ -141,7 +141,7 @@ export class GooglePlacesChar extends CharField {
 
             await this._loadPlacesAPI(key);
 
-            const input = this.rootRef?.el?.querySelector("input");
+            const input = this.input?.el;
             if (!input || !window.google?.maps?.places) return;
 
             const G = window.google.maps.places;
