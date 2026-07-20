@@ -1,0 +1,41 @@
+<odoo>
+    <record id="view_prema_dispatch_book_load_wizard_form" model="ir.ui.view">
+        <field name="name">prema.dispatch.book.load.wizard.form</field>
+        <field name="model">prema.dispatch.book.load.wizard</field>
+        <field name="arch" type="xml">
+            <form string="Book Load">
+                <group>
+                    <field name="move_id" invisible="1"/>
+                    <field name="partner_id"/>
+                    <field name="route_definition_mode" widget="radio"/>
+                    <field name="pickup_saved_location_id"/>
+                    <field name="scheduled_pickup"/>
+                    <field name="expected_skids"/>
+                    <field name="planned_route_name"/>
+                    <field name="planned_route_corridor"/>
+                    <field name="planned_delivery_area"/>
+                    <field name="reserve_capacity"/>
+                    <field name="vehicle_id"/>
+                    <field name="driver_id"/>
+                </group>
+                <group>
+                    <field name="service_type"/>
+                    <field name="equipment_type"/>
+                    <field name="requires_reefer"/>
+                    <field name="requires_liftgate"/>
+                    <field name="commodity"/>
+                    <field name="temperature_requirement"/>
+                    <field name="total_weight_lbs"/>
+                    <field name="customer_reference"/>
+                    <field name="purchase_order"/>
+                    <field name="bol_reference"/>
+                    <field name="general_notes"/>
+                </group>
+                <footer>
+                    <button name="action_confirm" type="object" string="Confirm Booking" class="btn-primary"/>
+                    <button string="Cancel" special="cancel"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+</odoo>

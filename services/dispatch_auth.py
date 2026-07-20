@@ -173,3 +173,34 @@ def check_load_plan_access(env, load_plan, raise_on_fail=True, require_not_locke
     return DispatchAuthService(env).check_load_plan_access(
         load_plan, raise_on_fail=raise_on_fail, require_not_locked=require_not_locked
     )
+
+
+def _driver_partner(env):
+    partner = env.user.partner_id
+    if not partner:
+        raise AccessError("unauthorized")
+    return partner
+
+
+def check_driver_can_add_stop(env, job):
+    partner = _driver_partner(env)
+    if not job.exists():
+        raise AccessError("job_not_found")
+    if job.driver_id.id != partner.id:
+        raise AccessError("unauthorized")
+    if job.stage_id.is_completed or job.stage_id.is_cancelled:
+        raise AccessError("job_not_editable")
+    if job.stops_confirmation_state == "confirmed" and job.route_definition_mode == "stops_pending":
+        raise AccessError("route_already_confirmed")
+    return True
+
+
+def check_driver_can_create_location(env, job):
+    return check_driver_can_add_stop(env, job)
+
+
+def check_driver_can_update_location_operational_data(env, location, job):
+    check_driver_can_add_stop(env, job)
+    if location.verification_state == "verified":
+        return "pending_review"
+    return True

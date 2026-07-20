@@ -366,6 +366,30 @@ class PremaDispatchStop(models.Model):
         for stop in self:
             stop.pod_uploaded = bool(stop.pod_attachment_ids)
 
+
+    def _apply_saved_location(self, location):
+        self.ensure_one()
+        if not location:
+            return False
+        vals = self._saved_location_values(location)
+        self.write(vals)
+        return True
+
+    @api.model
+    def _saved_location_values(self, location):
+        return {
+            "saved_location_id": location.id,
+            "address": location.address or "",
+            "partner_id": location.partner_id.id if location.partner_id else False,
+            "contact_name": location.business_name or location.name or "",
+            "latitude": location.pin_lat or 0.0,
+            "longitude": location.pin_lng or 0.0,
+            "dock_door": location.dock_door or "",
+            "pin_lat": location.pin_lat or 0.0,
+            "pin_lng": location.pin_lng or 0.0,
+            "pin_set": bool(location.pin_set),
+        }
+
     # ── Onchange ──────────────────────────────────────────────────
 
     @api.onchange("saved_location_id")
@@ -378,17 +402,20 @@ class PremaDispatchStop(models.Model):
             loc = stop.saved_location_id
             if not loc:
                 continue
-            stop.address = loc.address
-            if loc.partner_id:
-                stop.partner_id = loc.partner_id
-            if not stop.contact_name:
-                stop.contact_name = loc.business_name or loc.name or ""
-            if loc.dock_door and not stop.dock_door:
-                stop.dock_door = loc.dock_door
-            if loc.pin_lat and loc.pin_lng:
-                stop.pin_lat = loc.pin_lat
-                stop.pin_lng = loc.pin_lng
-                stop.pin_set = True
+            vals = stop._saved_location_values(loc)
+            for key, value in vals.items():
+                if key in ("partner_id", "saved_location_id"):
+                    setattr(stop, key, value or False)
+                elif value not in (False, None, ""):
+                    setattr(stop, key, value)
+
+    @api.model_create_multi
+    def create(self, vals_list):
+        records = super().create(vals_list)
+        for rec in records:
+            if rec.saved_location_id:
+                rec._apply_saved_location(rec.saved_location_id)
+        return records
 
     @api.onchange("transfer_to_vehicle_id")
     def _onchange_transfer_to_vehicle_id(self):

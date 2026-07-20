@@ -1,0 +1,7 @@
+<odoo>
+    <record id="view_prema_dispatch_route_visit_list" model="ir.ui.view">
+        <field name="name">prema.dispatch.route.visit.list</field>
+        <field name="model">prema.dispatch.route.visit</field>
+        <field name="arch" type="xml"><list><field name="operating_date"/><field name="sequence"/><field name="saved_location_id"/><field name="status"/></list></field>
+    </record>
+</odoo>
