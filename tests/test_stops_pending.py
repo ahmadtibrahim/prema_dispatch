@@ -255,6 +255,7 @@ class TestDriverStopAndLocationAuthorization(TestStopsPendingBase):
         self.job.write({"stops_confirmation_state": "confirmed"})
         result = self.Job.with_user(self.driver_user).driver_edit_stop(drop.id, {
             "pallets_out": 3,
+            "shared_pallet_number": 3,
             "pod_required": False,
             "sequence": 40,
         })
@@ -262,6 +263,7 @@ class TestDriverStopAndLocationAuthorization(TestStopsPendingBase):
         drop.invalidate_recordset()
         self.job.invalidate_recordset()
         self.assertEqual(drop.pallets_out, 3)
+        self.assertEqual(drop.shared_pallet_number, 3)
         self.assertFalse(drop.pod_required)
         self.assertEqual(drop.sequence, 40)
         self.assertEqual(self.job.stops_confirmation_state, "partial")
@@ -346,6 +348,33 @@ class TestDriverDateAndPickupWorkflow(TestStopsPendingBase):
         items = self.job.item_ids.filtered(lambda item: item.status != "cancelled" and item.consumes_floor_position and not item.pending_future_pickup)
         self.assertEqual(len(items), 10)
         self.assertEqual(set(items.mapped("load_plan_id").ids), {self.plan.id})
+
+    def test_shared_pallet_number_auto_assigns_matching_stop_group_to_item(self):
+        stop_a = self.Stop.create({
+            "job_id": self.job.id,
+            "sequence": 20,
+            "stop_type": "dropoff",
+            "address": "Stop A",
+            "pallets_out": 1,
+            "shared_pallet_number": 3,
+        })
+        stop_b = self.Stop.create({
+            "job_id": self.job.id,
+            "sequence": 30,
+            "stop_type": "dropoff",
+            "address": "Stop B",
+            "pallets_out": 1,
+            "shared_pallet_number": 3,
+        })
+        self.Job.with_user(self.driver_user).driver_confirm_pickup_actuals(self.pickup_stop.id, {
+            "actual_received_pallet_count": 10,
+            "load_plan_id": self.plan.id,
+            "version": self.plan.version,
+        })
+        item = self.job.item_ids.filtered(lambda pallet: pallet.name == "U-03")
+        self.assertTrue(item)
+        alloc_stop_ids = set(item.stop_allocation_ids.filtered("active").mapped("stop_id").ids)
+        self.assertEqual(alloc_stop_ids, {stop_a.id, stop_b.id})
 
     def test_confirm_actual_pickup_blocks_impossible_layout(self):
         with self.assertRaises(UserError):

@@ -2997,6 +2997,7 @@ class PremaDispatchJob(models.Model):
             "pallets_in":        s.pallets_in,
             "pallets_in_estimated": s.pallets_in_estimated,
             "pallets_out":       s.pallets_out,
+            "shared_pallet_number": s.shared_pallet_number or 0,
             "onboard_after":     s.onboard_load_after_stop,
             "pod_required":      s.pod_required,
             "service_time_min":  s.service_time_minutes or 15,
@@ -3104,6 +3105,75 @@ class PremaDispatchJob(models.Model):
             "needs_stop_entry": self.route_definition_mode == "stops_pending" and self.stops_confirmation_state in ("pending", "partial"),
         }
 
+    def _sync_shared_stop_pallet_assignments(self, plan=None):
+        self.ensure_one()
+        if not self.vehicle_id:
+            return {"applied_groups": 0, "unresolved_numbers": []}
+        plan = plan or self.env["prema.dispatch.load.plan"].search([
+            ("vehicle_id", "=", self.vehicle_id.id),
+            ("operating_date", "=", fields.Date.to_date(self.scheduled_pickup) if self.scheduled_pickup else fields.Date.today()),
+            ("active", "=", True),
+        ], limit=1)
+        if not plan:
+            return {"applied_groups": 0, "unresolved_numbers": []}
+
+        floor_items = self.item_ids.filtered(
+            lambda item: item.consumes_floor_position and item.status != "cancelled" and not item.pending_future_pickup
+        ).sorted(key=lambda item: (item.sequence, item.id))
+        by_number = {}
+        for item in floor_items:
+            match = re.search(r"(\d+)(?!.*\d)", item.name or "")
+            if match:
+                by_number[int(match.group(1))] = item
+
+        grouped = {}
+        for stop in self.stop_ids.filtered(
+            lambda s: s.stop_type == "dropoff" and not s.planning_only and s.status != "cancelled" and (s.shared_pallet_number or 0) > 0
+        ):
+            grouped.setdefault(int(stop.shared_pallet_number), []).append(stop)
+
+        applied = 0
+        unresolved = []
+        Alloc = self.env["prema.dispatch.pallet.stop.allocation"]
+        for pallet_number, stops in sorted(grouped.items()):
+            item = by_number.get(pallet_number)
+            if not item:
+                unresolved.append(pallet_number)
+                continue
+            group_stop_ids = {stop.id for stop in stops}
+            other_allocs = Alloc.search([
+                ("stop_id", "in", list(group_stop_ids)),
+                ("dispatch_item_id", "!=", item.id),
+                ("active", "=", True),
+            ])
+            if other_allocs:
+                other_allocs.write({"active": False})
+            current_allocs = item.stop_allocation_ids.filtered("active")
+            preserved = [
+                {
+                    "stop_id": alloc.stop_id.id,
+                    "invoice_id": alloc.invoice_id.id or False,
+                    "unload_sequence": alloc.unload_sequence or ((idx + 1) * 10),
+                    "notes": alloc.notes or False,
+                }
+                for idx, alloc in enumerate(current_allocs.sorted("unload_sequence"))
+                if alloc.stop_id.id not in group_stop_ids
+            ]
+            grouped_payload = [
+                {
+                    "stop_id": stop.id,
+                    "invoice_id": stop.invoice_id.id if stop.invoice_id else False,
+                    "unload_sequence": (idx + 1) * 10,
+                    "notes": False,
+                }
+                for idx, stop in enumerate(sorted(stops, key=lambda s: (s.sequence, s.id)))
+            ]
+            plan.invalidate_recordset()
+            plan.assign_stops_to_pallet(item.id, preserved + grouped_payload, plan.version)
+            plan.invalidate_recordset()
+            applied += 1
+        return {"applied_groups": applied, "unresolved_numbers": unresolved}
+
     def _actual_pallet_prefix(self):
         self.ensure_one()
         source = (
@@ -3205,6 +3275,7 @@ class PremaDispatchJob(models.Model):
             missing_plan_items = floor_items.filtered(lambda item: not item.load_plan_id)
             if missing_plan_items:
                 missing_plan_items.write({"load_plan_id": plan.id})
+            job._sync_shared_stop_pallet_assignments(plan)
             plan._mark_stale(
                 f"Pickup actual pallets changed for {job.name}: expected {job.expected_pallet_count}, actual {actual_count}."
             )
@@ -3302,6 +3373,7 @@ class PremaDispatchJob(models.Model):
         ], limit=1)
         recommendation = None
         if plan:
+            job._sync_shared_stop_pallet_assignments(plan)
             plan._mark_stale(f"Route details updated for {job.name}.")
             job._sync_future_pickup_reservations(plan)
             try:
@@ -4027,6 +4099,11 @@ class PremaDispatchJob(models.Model):
             write_vals["pallets_out"] = pallets_out
         if "pod_required" in values:
             write_vals["pod_required"] = bool(values.get("pod_required"))
+        if "shared_pallet_number" in values:
+            shared_pallet_number = int(values.get("shared_pallet_number") or 0)
+            if shared_pallet_number < 0:
+                return {"success": False, "error": "Shared pallet number cannot be negative"}
+            write_vals["shared_pallet_number"] = shared_pallet_number
         if "sequence" in values and values.get("sequence") not in (None, ""):
             write_vals["sequence"] = max(10, int(values.get("sequence")))
 
@@ -4043,11 +4120,13 @@ class PremaDispatchJob(models.Model):
             ("active", "=", True),
         ], limit=1) if job.vehicle_id else False
         if plan:
+            job._sync_shared_stop_pallet_assignments(plan)
             plan._mark_stale(f"Delivery stop updated for {job.name}: {stop.address or stop.display_name}.")
 
         job.message_post(body=(
             f"Driver updated delivery stop {stop.address or stop.display_name}: "
-            f"pallets_out={stop.pallets_out}, pod_required={'yes' if stop.pod_required else 'no'}."
+            f"pallets_out={stop.pallets_out}, shared_pallet_number={stop.shared_pallet_number or 0}, "
+            f"pod_required={'yes' if stop.pod_required else 'no'}."
         ))
         return {
             "success": True,

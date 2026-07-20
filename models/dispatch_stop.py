@@ -166,6 +166,12 @@ class PremaDispatchStop(models.Model):
         help="Groups a pickup and its related drop-offs in a multi-round route. "
              "Round 1=1, Round 2=2, 0=ungrouped.",
     )
+    shared_pallet_number = fields.Integer(
+        string="Shared Pallet Number",
+        default=0,
+        help="Driver-entered shared pallet number for stops that ride on the same physical pallet. "
+             "Example: stops marked Shared Pallet #3 will be linked to pallet U-03 / TF-03 when available.",
+    )
     route_locked = fields.Boolean(
         string="Route Locked",
         help="Prevent auto-optimization from changing this stop's position.",
@@ -1156,7 +1162,7 @@ class PremaDispatchStop(models.Model):
                 ).write({"status": "cancelled"})
 
         if any(k in vals for k in ("sequence", "status", "address", "scheduled_time",
-                                    "pin_lat", "pin_lng", "pallets_in", "pallets_out")):
+                                    "pin_lat", "pin_lng", "pallets_in", "pallets_out", "shared_pallet_number")):
             self._notify_driver_route_changed()
         return result
 

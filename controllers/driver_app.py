@@ -245,12 +245,14 @@ class DriverAppController(http.Controller):
             job = request.env["prema.dispatch.job"].browse(int(job_id))
             check_driver_can_add_stop(request.env, job)
             values = values or {}
-            allowed = {"saved_location_id", "stop_type", "sequence", "address", "contact_name", "contact_phone", "dock_door", "pallets_in", "pallets_out", "pod_required", "scheduled_time"}
+            allowed = {"saved_location_id", "stop_type", "sequence", "address", "contact_name", "contact_phone", "dock_door", "pallets_in", "pallets_out", "pod_required", "scheduled_time", "shared_pallet_number"}
             vals = {k: values[k] for k in allowed if k in values}
             vals["job_id"] = job.id
             stop = request.env["prema.dispatch.stop"].sudo().create(vals)
             if job.route_definition_mode == "stops_pending" and job.stops_confirmation_state in ("pending", "confirmed"):
                 job.sudo().write({"stops_confirmation_state": "partial"})
+            if job.confirmed_pallet_count and job.vehicle_id:
+                job.sudo()._sync_shared_stop_pallet_assignments()
             return {"success": True, "stop": request.env["prema.dispatch.job"]._driver_stop_dict(stop)}
         except Exception as exc:
             return {"success": False, "code": str(exc), "error": str(exc)}

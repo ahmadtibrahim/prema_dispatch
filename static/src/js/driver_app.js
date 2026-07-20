@@ -622,8 +622,16 @@ function bindPickupDelegates(){
             pickupSetNewStopPallets(el.value);
             return;
         }
+        if(field==="pickup-new-stop-shared-number"){
+            pickupSetNewStopSharedNumber(el.value);
+            return;
+        }
         if(field==="pickup-edit-stop-pallets"){
             pickupSetEditStopField("pallets_out", el.value);
+            return;
+        }
+        if(field==="pickup-edit-stop-shared-number"){
+            pickupSetEditStopField("shared_pallet_number", el.value);
             return;
         }
         if(field==="pickup-edit-stop-sequence"){
@@ -650,8 +658,18 @@ function bindPickupDelegates(){
             pickupToggleRouteSheet(!!el.checked);
             return;
         }
+        if(field==="pickup-new-stop-shared"){
+            pickupSetNewStopShared(!!el.checked);
+            if(S.pickupStops) renderPickupStopsScreen(); else renderPickupIntake();
+            return;
+        }
         if(field==="pickup-edit-stop-pod_required"){
             pickupSetEditStopField("pod_required", !!el.checked);
+            return;
+        }
+        if(field==="pickup-edit-stop-shared-enabled"){
+            pickupSetEditStopField("shared_pallet_enabled", !!el.checked);
+            if(S.pickupStops) renderPickupStopsScreen(); else renderPickupIntake();
         }
     });
 
@@ -1442,6 +1460,16 @@ function pickupManualDefaults(){
     };
 }
 
+function pickupSharedPalletNumber(flow){
+    return Math.max(1, parseInt(flow?.newStopSharedNumber,10) || 1);
+}
+
+function pickupSharedPalletBadge(stop){
+    return Number(stop?.shared_pallet_number||0) > 0
+        ? `Shared Pallet #${Number(stop.shared_pallet_number)}`
+        : "";
+}
+
 function pickupItemsForJob(jobId){
     if(!S.loadPlan) return [];
     const items = [];
@@ -1480,6 +1508,8 @@ function pickupFlowState(stop, step=1){
         searchResults:[],
         searching:false,
         newStopPallets:1,
+        newStopShared:false,
+        newStopSharedNumber:1,
         manual: pickupManualDefaults(),
         draftStops: pickupStopsForJob(stop.job_id).map(s=>({
             id:s.id,
@@ -1487,6 +1517,7 @@ function pickupFlowState(stop, step=1){
             name:stopCompany(s),
             address:s.address,
             pallets_out:s.pallets_out||1,
+            shared_pallet_number:s.shared_pallet_number||0,
             pod_required:s.pod_required!==false,
             delete_request_state:s.delete_request_state||"none",
         })),
@@ -1538,6 +1569,8 @@ function pickupStartStopEdit(stopId){
         pallets_out: Math.max(0, parseInt(stop.pallets_out,10) || 0),
         pod_required: stop.pod_required!==false,
         sequence: Math.max(10, parseInt(stop.sequence,10) || 10),
+        shared_pallet_enabled: Number(stop.shared_pallet_number||0) > 0,
+        shared_pallet_number: Math.max(1, parseInt(stop.shared_pallet_number,10) || 1),
     };
     if(S.pickupStops) renderPickupStopsScreen(); else renderPickupIntake();
 }
@@ -1555,11 +1588,33 @@ function pickupSetEditStopField(field, value){
     if(!flow?.editingStop) return;
     if(field==="pod_required"){
         flow.editingStop.pod_required=!!value;
+    } else if(field==="shared_pallet_enabled"){
+        flow.editingStop.shared_pallet_enabled=!!value;
+        if(flow.editingStop.shared_pallet_enabled && !flow.editingStop.shared_pallet_number){
+            flow.editingStop.shared_pallet_number=1;
+        }
+    } else if(field==="shared_pallet_number"){
+        flow.editingStop.shared_pallet_number=Math.max(1, parseInt(value,10) || 1);
     } else if(field==="pallets_out"){
         flow.editingStop.pallets_out=Math.max(0, parseInt(value,10) || 0);
     } else if(field==="sequence"){
         flow.editingStop.sequence=Math.max(10, parseInt(value,10) || 10);
     }
+}
+
+function pickupSetNewStopShared(enabled){
+    const flow=currentPickupFlow();
+    if(!flow) return;
+    flow.newStopShared=!!enabled;
+    if(flow.newStopShared && !flow.newStopSharedNumber){
+        flow.newStopSharedNumber=1;
+    }
+}
+
+function pickupSetNewStopSharedNumber(value){
+    const flow=currentPickupFlow();
+    if(!flow) return;
+    flow.newStopSharedNumber=Math.max(1, parseInt(value,10) || 1);
 }
 
 function closePickupConfirm(){
@@ -1588,6 +1643,7 @@ function pickupDraftStopFromData(stopData){
         name:stopCompany(stopData) || stopData.customer_name || stopData.name || "Stop",
         address:stopData.address,
         pallets_out:stopData.pallets_out||1,
+        shared_pallet_number:stopData.shared_pallet_number||0,
         pod_required:stopData.pod_required!==false,
         delete_request_state:stopData.delete_request_state||"none",
     };
@@ -1681,8 +1737,17 @@ function pickupStopEditorHtml(flow){
                 <div class="da-pickup-qty-label" style="margin:0;min-width:140px">Pallets for next stop</div>
                 <input class="da-pickup-qty-input" style="max-width:110px" type="number" min="1" max="99" value="${Number(flow.newStopPallets||1)}" data-field="pickup-new-stop-pallets"/>
             </div>
+            <label class="da-route-opt" style="border-bottom:none;padding-left:0;margin-top:8px">
+                <input type="checkbox" ${flow.newStopShared?"checked":""} data-field="pickup-new-stop-shared"/> Shared pallet
+            </label>
+            ${flow.newStopShared ? `
+                <div class="da-pickup-row" style="margin-top:8px;align-items:center">
+                    <div class="da-pickup-qty-label" style="margin:0;min-width:140px">Shared pallet #</div>
+                    <input class="da-pickup-qty-input" style="max-width:110px" type="number" min="1" max="99" value="${pickupSharedPalletNumber(flow)}" data-field="pickup-new-stop-shared-number"/>
+                </div>
+            ` : ""}
             <div class="da-pickup-note" style="margin-top:8px">Suggestions appear as you type. Select one to add the stop immediately.</div>
-            <div class="da-pickup-note">If this stop shares a pallet with others, set this stop's pallet count here and assign the shared pallet in Step 3.</div>
+            <div class="da-pickup-note">If Stop 2 and Stop 3 share pallet #3, mark both stops as Shared Pallet #3 and the system will sync them onto pallet U-03 when pallets exist.</div>
             <div id="pickupSearchResults" class="da-stop-list-mini" style="margin-top:10px">${pickupSearchResultsHtml(flow)}</div>
         </div>`;
     }
@@ -1701,7 +1766,14 @@ function pickupStopEditorHtml(flow){
             ${m.address_formatted ? `<div class="da-pickup-note">Google verified address: <strong>${esc(m.address_formatted)}</strong></div>` : ""}
             <div class="da-pickup-qty-label">Pallets for this stop</div>
             <input class="da-pickup-qty-input" type="number" min="1" max="99" value="${Number(flow.newStopPallets||1)}" data-field="pickup-new-stop-pallets"/>
-            <div class="da-pickup-note">Shared pallets are assigned later in Step 3 by linking one pallet to multiple stops.</div>
+            <label class="da-route-opt" style="border-bottom:none;padding-left:0;margin-top:8px">
+                <input type="checkbox" ${flow.newStopShared?"checked":""} data-field="pickup-new-stop-shared"/> Shared pallet
+            </label>
+            ${flow.newStopShared ? `
+                <div class="da-pickup-qty-label">Shared pallet #</div>
+                <input class="da-pickup-qty-input" type="number" min="1" max="99" value="${pickupSharedPalletNumber(flow)}" data-field="pickup-new-stop-shared-number"/>
+            ` : ""}
+            <div class="da-pickup-note">Use the same shared pallet number on multiple stops when they ride on one pallet.</div>
             <input class="da-pickup-input" placeholder="Dock / Door" value="${esc(m.dock_door||"")}" data-field="manual-dock_door"/>
             <textarea class="da-pickup-textarea" placeholder="Parking instructions" data-field="manual-parking_notes">${esc(m.parking_notes||"")}</textarea>
             <textarea class="da-pickup-textarea" placeholder="Driver instructions" data-field="manual-driver_instructions">${esc(m.driver_instructions||"")}</textarea>
@@ -1721,18 +1793,26 @@ function pickupStopCardsHtml(flow){
             <div class="da-stop-mini-meta">
                 <span class="da-pickup-summary-pill">${s.pallets_out||1} pallet${(s.pallets_out||1)===1?"":"s"}</span>
                 <span class="da-pickup-summary-pill">${s.pod_required!==false?"POD required":"POD optional"}</span>
+                ${pickupSharedPalletBadge(s) ? `<span class="da-pickup-summary-pill">${esc(pickupSharedPalletBadge(s))}</span>` : ""}
                 ${s.delete_request_state==="pending" ? '<span class="da-pickup-summary-pill">Delete approval pending</span>' : ""}
             </div>
             ${flow.editingStopId===s.id && flow.editingStop ? `
                 <div class="da-stop-list-mini" style="margin-top:8px">
                     <div class="da-pickup-qty-label">Pallets for this stop</div>
                     <input class="da-pickup-qty-input" type="number" min="0" max="99" value="${Number(flow.editingStop.pallets_out||0)}" data-field="pickup-edit-stop-pallets"/>
+                    <label class="da-route-opt" style="border-bottom:none;padding-left:0;margin-top:8px">
+                        <input type="checkbox" ${flow.editingStop.shared_pallet_enabled?"checked":""} data-field="pickup-edit-stop-shared-enabled"/> Shared pallet
+                    </label>
+                    ${flow.editingStop.shared_pallet_enabled ? `
+                        <div class="da-pickup-qty-label" style="margin-top:8px">Shared pallet #</div>
+                        <input class="da-pickup-qty-input" type="number" min="1" max="99" value="${Number(flow.editingStop.shared_pallet_number||1)}" data-field="pickup-edit-stop-shared-number"/>
+                    ` : ""}
                     <div class="da-pickup-qty-label" style="margin-top:8px">Stop order</div>
                     <input class="da-pickup-qty-input" type="number" min="10" step="10" max="999" value="${Number(flow.editingStop.sequence||((idx+1)*10))}" data-field="pickup-edit-stop-sequence"/>
                     <label class="da-route-opt" style="border-bottom:none;padding-left:0;margin-top:8px">
                         <input type="checkbox" ${flow.editingStop.pod_required?"checked":""} data-field="pickup-edit-stop-pod_required"/> POD required
                     </label>
-                    <div class="da-pickup-note">Shared pallets are linked in Assign Stops to Pallets. Double-click also opens this editor on desktop.</div>
+                    <div class="da-pickup-note">Use the same shared pallet number on multiple stops to tie them to the same physical pallet. Double-click also opens this editor on desktop.</div>
                 </div>
                 <div class="da-stop-mini-actions">
                     <button class="da-btn da-btn-ghost" type="button" data-action="pickup-cancel-stop-edit">Cancel</button>
@@ -2036,6 +2116,7 @@ async function pickupAddSavedStop(locationId){
     const flow=currentPickupFlow(), stop=currentPickupStop();
     if(!flow||!stop) return;
     const pallets=Math.max(1, parseInt(flow.newStopPallets,10)||1);
+    const sharedPalletNumber=flow.newStopShared ? pickupSharedPalletNumber(flow) : 0;
     try{
         const res=await rpc("/dispatch/driver/stop/create",{
             job_id: flow.jobId,
@@ -2044,6 +2125,7 @@ async function pickupAddSavedStop(locationId){
                 stop_type: "dropoff",
                 sequence: nextStopSequenceForJob(flow.jobId),
                 pallets_out: pallets,
+                shared_pallet_number: sharedPalletNumber,
                 pod_required: true,
             },
         });
@@ -2053,6 +2135,8 @@ async function pickupAddSavedStop(locationId){
         flow.searchResults=[];
         flow.searching=false;
         flow.editorOpen=false;
+        flow.newStopShared=false;
+        flow.newStopSharedNumber=1;
         if(S.pickupStops) renderPickupStopsScreen(); else renderPickupIntake();
         await reloadDay();
         S.stop=findStopById(stop.id)||S.stop;
@@ -2129,6 +2213,9 @@ async function pickupSaveStopEdit(stopId){
             stop_id: stopId,
             values: {
                 pallets_out: Math.max(0, parseInt(flow.editingStop.pallets_out,10) || 0),
+                shared_pallet_number: flow.editingStop.shared_pallet_enabled
+                    ? Math.max(1, parseInt(flow.editingStop.shared_pallet_number,10) || 1)
+                    : 0,
                 pod_required: !!flow.editingStop.pod_required,
                 sequence: Math.max(10, parseInt(flow.editingStop.sequence,10) || 10),
             },
