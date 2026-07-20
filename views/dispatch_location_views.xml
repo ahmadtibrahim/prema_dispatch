@@ -8,7 +8,8 @@
             <form string="Saved Location">
                 <sheet>
                     <div class="oe_title">
-                        <h1><field name="name" placeholder="Location name…"/></h1>
+                        <h1><field name="name" widget="google_places"
+                                   placeholder="Search location name with Google Places (e.g. Foodland Picton)…"/></h1>
                         <field name="business_name" widget="google_places"
                                placeholder="Search company name with Google Places (e.g. Foodland Picton)…"/>
                     </div>
