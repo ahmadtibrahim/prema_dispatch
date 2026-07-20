@@ -191,7 +191,10 @@ def check_driver_can_add_stop(env, job):
     if job.stage_id.is_completed or job.stage_id.is_cancelled:
         raise AccessError("job_not_editable")
     if job.stops_confirmation_state == "confirmed" and job.route_definition_mode == "stops_pending":
-        raise AccessError("route_already_confirmed")
+        pickup = job.stop_ids.filtered(lambda s: s.stop_type == "pickup" and not s.planning_only)[:1]
+        pickup_locked = not pickup or pickup.status in ("completed", "cancelled") or bool(pickup.actual_departure_time)
+        if pickup_locked:
+            raise AccessError("route_already_confirmed")
     return True
 
 

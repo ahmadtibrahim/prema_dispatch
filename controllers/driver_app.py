@@ -245,7 +245,7 @@ class DriverAppController(http.Controller):
             vals = {k: values[k] for k in allowed if k in values}
             vals["job_id"] = job.id
             stop = request.env["prema.dispatch.stop"].sudo().create(vals)
-            if job.stops_confirmation_state == "pending":
+            if job.route_definition_mode == "stops_pending" and job.stops_confirmation_state in ("pending", "confirmed"):
                 job.sudo().write({"stops_confirmation_state": "partial"})
             return {"success": True, "stop": request.env["prema.dispatch.job"]._driver_stop_dict(stop)}
         except Exception as exc:

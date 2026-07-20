@@ -183,6 +183,39 @@ class TestDriverStopAndLocationAuthorization(TestStopsPendingBase):
         self.job.write({"stops_confirmation_state": "partial"})
         self.assertEqual(stop.address, self.pickup_location.address, "Creating a stop with saved_location_id must apply the location's address immediately")
 
+    def test_assigned_driver_can_edit_confirmed_route_while_pickup_active(self):
+        from odoo.addons.prema_dispatch.services.dispatch_auth import check_driver_can_add_stop
+        driver_user = self.env["res.users"].create({
+            "name": "Confirmed Route Driver", "login": "sp_confirmed_driver@example.com",
+            "partner_id": self.driver_partner.id,
+            "groups_id": [(6, 0, [self.env.ref("prema_dispatch.group_dispatch_driver").id])],
+        })
+        pickup = self.Stop.create({
+            "job_id": self.job.id, "sequence": 10, "stop_type": "pickup",
+            "saved_location_id": self.pickup_location.id, "status": "arrived",
+        })
+        self.job.write({"stops_confirmation_state": "confirmed"})
+        self.assertTrue(check_driver_can_add_stop(self.env(user=driver_user), self.job))
+        pickup.write({"status": "completed", "actual_departure_time": fields.Datetime.now()})
+        with self.assertRaises(AccessError):
+            check_driver_can_add_stop(self.env(user=driver_user), self.job)
+
+    def test_deleting_stop_reopens_confirmed_stops_pending_route_to_partial(self):
+        pickup = self.Stop.create({
+            "job_id": self.job.id, "sequence": 10, "stop_type": "pickup",
+            "saved_location_id": self.pickup_location.id, "status": "arrived",
+        })
+        drop = self.Stop.create({
+            "job_id": self.job.id, "sequence": 20, "stop_type": "dropoff",
+            "saved_location_id": self.pickup_location.id, "status": "pending",
+        })
+        self.job.write({"stops_confirmation_state": "confirmed"})
+        result = self.Job.driver_delete_stop(drop.id)
+        self.assertTrue(result["success"])
+        self.job.invalidate_recordset()
+        self.assertEqual(self.job.stops_confirmation_state, "partial")
+        self.assertTrue(pickup.exists())
+
 
 class TestDriverDateAndPickupWorkflow(TestStopsPendingBase):
     def setUp(self):

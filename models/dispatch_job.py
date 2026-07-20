@@ -3846,8 +3846,11 @@ class PremaDispatchJob(models.Model):
             return {"success": False, "error": "Not authorized for this stop"}
         if stop.status not in ("pending", "cancelled"):
             return {"success": False, "error": "Only pending stops can be deleted"}
-        job_id = stop.job_id.id
+        job = stop.job_id
+        job_id = job.id
         stop.unlink()
+        if job.route_definition_mode == "stops_pending" and job.stops_confirmation_state == "confirmed":
+            job.write({"stops_confirmation_state": "partial"})
         return {"success": True, "job_id": job_id}
 
     @api.model
@@ -3906,6 +3909,8 @@ class PremaDispatchJob(models.Model):
                 stop = self.env["prema.dispatch.stop"].browse(stop_id)
                 if stop.exists() and stop.job_id.id == job_id:
                     stop.write({"sequence": seq * 10})
+            if job.route_definition_mode == "stops_pending" and job.stops_confirmation_state == "confirmed":
+                job.write({"stops_confirmation_state": "partial"})
             if job.route_estimated_at:
                 from odoo.addons.prema_dispatch.services.route_service import DispatchRouteService
                 try:
