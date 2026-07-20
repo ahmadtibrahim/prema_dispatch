@@ -50,9 +50,37 @@ const isMaps = () => !!window.google?.maps;
 const GMAPS_KEY = document.getElementById("app")?.dataset.gmapsKey || "";
 const DISPATCH_PHONE = document.getElementById("app")?.dataset.dispatchPhone || "";
 const DISPATCH_VOIP_URI = document.getElementById("app")?.dataset.dispatchVoipUri || "";
+const DRIVER_PLACE_FIELDS = ["name", "formatted_address", "geometry", "address_components", "place_id"];
 function streetViewUrl(lat,lng){
     if(!GMAPS_KEY||!lat||!lng)return "";
     return `https://maps.googleapis.com/maps/api/streetview?size=400x200&location=${lat},${lng}&fov=80&key=${GMAPS_KEY}`;
+}
+function googlePlaceComponent(place, type, key="long_name"){
+    const comp=(place?.address_components||[]).find(item=>(item.types||[]).includes(type));
+    return comp ? (comp[key]||"") : "";
+}
+function parseGooglePlace(place){
+    const streetNumber=googlePlaceComponent(place,"street_number");
+    const route=googlePlaceComponent(place,"route");
+    const subpremise=googlePlaceComponent(place,"subpremise");
+    const floor=googlePlaceComponent(place,"floor");
+    const postalCode=googlePlaceComponent(place,"postal_code");
+    const postalSuffix=googlePlaceComponent(place,"postal_code_suffix");
+    return {
+        business_name: place?.name || "",
+        address: place?.formatted_address || "",
+        street: [streetNumber, route].filter(Boolean).join(" ").trim(),
+        unit: subpremise || floor || "",
+        city: googlePlaceComponent(place,"locality")
+            || googlePlaceComponent(place,"postal_town")
+            || googlePlaceComponent(place,"sublocality_level_1")
+            || googlePlaceComponent(place,"administrative_area_level_2"),
+        province_code: googlePlaceComponent(place,"administrative_area_level_1","short_name"),
+        postal_code: [postalCode, postalSuffix].filter(Boolean).join("-"),
+        google_place_id: place?.place_id || "",
+        lat: place?.geometry?.location?.lat?.(),
+        lng: place?.geometry?.location?.lng?.(),
+    };
 }
 function letterLabel(idx){
     let n=idx,s="";
@@ -1353,6 +1381,8 @@ function pickupManualDefaults(){
         chain_name:"",
         location_number:"",
         business_name:"",
+        name:"",
+        address:"",
         street:"",
         unit:"",
         city:"",
@@ -1363,6 +1393,12 @@ function pickupManualDefaults(){
         driver_instructions:"",
         pallets_out:1,
         pod_required:true,
+        google_place_id:"",
+        address_formatted:"",
+        address_validated:false,
+        exact_pin_confirmed:false,
+        lat:"",
+        lng:"",
     };
 }
 
@@ -1485,14 +1521,16 @@ function pickupStopEditorHtml(flow){
     const m=flow.manual||pickupManualDefaults();
     return `<div class="da-pickup-section">
         <div class="da-stop-list-mini">
+            <div class="da-pickup-note">Search by company or chain name, or type a verified street address.</div>
             <input class="da-pickup-input" placeholder="Chain / Brand" value="${esc(m.chain_name||"")}" data-field="manual-chain_name"/>
             <input class="da-pickup-input" placeholder="Store / Location #" value="${esc(m.location_number||"")}" data-field="manual-location_number"/>
-            <input class="da-pickup-input" placeholder="Company Name" value="${esc(m.business_name||"")}" data-field="manual-business_name"/>
-            <input class="da-pickup-input" placeholder="Street Address" value="${esc(m.street||"")}" data-field="manual-street"/>
+            <input class="da-pickup-input" placeholder="Company Name (Google autocomplete)" value="${esc(m.business_name||"")}" data-field="manual-business_name"/>
+            <input class="da-pickup-input" placeholder="Street Address (Google verified)" value="${esc(m.street||"")}" data-field="manual-street"/>
             <input class="da-pickup-input" placeholder="Unit" value="${esc(m.unit||"")}" data-field="manual-unit"/>
             <input class="da-pickup-input" placeholder="City" value="${esc(m.city||"")}" data-field="manual-city"/>
             <input class="da-pickup-input" placeholder="Province" value="${esc(m.province_code||"ON")}" data-field="manual-province_code"/>
             <input class="da-pickup-input" placeholder="Postal Code" value="${esc(m.postal_code||"")}" data-field="manual-postal_code"/>
+            ${m.address_formatted ? `<div class="da-pickup-note">Google verified address: <strong>${esc(m.address_formatted)}</strong></div>` : ""}
             <input class="da-pickup-input" placeholder="Dock / Door" value="${esc(m.dock_door||"")}" data-field="manual-dock_door"/>
             <textarea class="da-pickup-textarea" placeholder="Parking instructions" data-field="manual-parking_notes">${esc(m.parking_notes||"")}</textarea>
             <textarea class="da-pickup-textarea" placeholder="Driver instructions" data-field="manual-driver_instructions">${esc(m.driver_instructions||"")}</textarea>
@@ -1544,6 +1582,7 @@ function renderPickupStopsScreen(){
             <button class="da-btn da-btn-primary" type="button" data-action="pickup-save-route-details" data-confirm-stops="1">Confirm Stops</button>
         </div>
     </div>`;
+    if(flow.locationMode==="manual") setTimeout(()=>initPickupManualPlaceAutocomplete(), 0);
 }
 
 function renderPickupConfirm(){
@@ -1656,6 +1695,7 @@ function renderPickupIntake(){
         </div>`;
     }
     body.innerHTML=html;
+    if(flow.locationMode==="manual") setTimeout(()=>initPickupManualPlaceAutocomplete(), 0);
 }
 
 function pickupAdjustActual(delta){
@@ -1681,6 +1721,54 @@ function pickupSetSearchQuery(value){ const flow=currentPickupFlow(); if(flow){ 
 window.pickupSetSearchQuery=pickupSetSearchQuery;
 function pickupSetManual(field,value){ const flow=currentPickupFlow(); if(flow){ flow.manual[field]=value; } }
 window.pickupSetManual=pickupSetManual;
+
+function pickupApplyManualPlace(place,{preferBusinessName=false}={}){
+    const flow=currentPickupFlow();
+    if(!flow) return;
+    const parsed=parseGooglePlace(place);
+    if(parsed.business_name && (preferBusinessName || !flow.manual.business_name)) {
+        flow.manual.business_name=parsed.business_name;
+        flow.manual.name=parsed.business_name;
+        if(!flow.manual.chain_name) flow.manual.chain_name=parsed.business_name;
+    }
+    if(parsed.address){
+        flow.manual.address=parsed.address;
+        flow.manual.address_formatted=parsed.address;
+        flow.manual.address_validated=true;
+    }
+    if(parsed.street) flow.manual.street=parsed.street;
+    if(parsed.unit) flow.manual.unit=parsed.unit;
+    if(parsed.city) flow.manual.city=parsed.city;
+    if(parsed.province_code) flow.manual.province_code=parsed.province_code;
+    if(parsed.postal_code) flow.manual.postal_code=parsed.postal_code;
+    if(parsed.google_place_id) flow.manual.google_place_id=parsed.google_place_id;
+    if(Number.isFinite(parsed.lat)) flow.manual.lat=parsed.lat;
+    if(Number.isFinite(parsed.lng)) flow.manual.lng=parsed.lng;
+    flow.manual.exact_pin_confirmed=false;
+    if(S.pickupStops) renderPickupStopsScreen(); else renderPickupIntake();
+}
+
+function bindPickupManualAutocomplete(input, mode){
+    if(!input || input.dataset.placesBound==="1" || !window.google?.maps?.places) return;
+    const options={
+        componentRestrictions:{country:["ca","us"]},
+        fields:DRIVER_PLACE_FIELDS,
+    };
+    if(mode==="business") options.types=["establishment"];
+    if(mode==="address") options.types=["address"];
+    const ac=new google.maps.places.Autocomplete(input, options);
+    ac.addListener("place_changed", ()=>{
+        const place=ac.getPlace();
+        pickupApplyManualPlace(place,{preferBusinessName:mode==="business"});
+    });
+    input.dataset.placesBound="1";
+}
+
+function initPickupManualPlaceAutocomplete(){
+    if(!window.google?.maps?.places) return;
+    bindPickupManualAutocomplete(q('[data-field="manual-business_name"]'), "business");
+    bindPickupManualAutocomplete(q('[data-field="manual-street"]'), "address");
+}
 
 async function savePickupActuals(nextStep){
     const flow=S.pickupIntake, stop=currentPickupStop();

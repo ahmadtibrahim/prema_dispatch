@@ -5,6 +5,45 @@ import { registry } from "@web/core/registry";
 import { onMounted, onWillUnmount } from "@odoo/owl";
 import { useService } from "@web/core/utils/hooks";
 
+const SUPPORTED_COUNTRIES = ["ca", "us"];
+
+function placeComponent(place, type, key = "long_name") {
+    const comp = (place?.address_components || []).find((item) => (item.types || []).includes(type));
+    return comp ? (comp[key] || "") : "";
+}
+
+function parseGooglePlace(place) {
+    const streetNumber = placeComponent(place, "street_number");
+    const route = placeComponent(place, "route");
+    const subpremise = placeComponent(place, "subpremise");
+    const floor = placeComponent(place, "floor");
+    const postalCode = placeComponent(place, "postal_code");
+    const postalSuffix = placeComponent(place, "postal_code_suffix");
+    const postal = [postalCode, postalSuffix].filter(Boolean).join("-");
+    const street = [streetNumber, route].filter(Boolean).join(" ").trim();
+    const city = placeComponent(place, "locality")
+        || placeComponent(place, "postal_town")
+        || placeComponent(place, "sublocality_level_1")
+        || placeComponent(place, "administrative_area_level_2");
+    const provinceCode = placeComponent(place, "administrative_area_level_1", "short_name");
+    const countryCode = placeComponent(place, "country", "short_name");
+    const lat = place?.geometry?.location?.lat?.();
+    const lng = place?.geometry?.location?.lng?.();
+    return {
+        businessName: place?.name || "",
+        address: place?.formatted_address || "",
+        street,
+        unit: subpremise || floor || "",
+        city,
+        provinceCode,
+        postalCode: postal,
+        countryCode,
+        lat,
+        lng,
+        googlePlaceId: place?.place_id || "",
+    };
+}
+
 /**
  * GooglePlacesChar — drop-in replacement for CharField that adds
  * Google Places Autocomplete to the input. Falls back to plain text
@@ -33,6 +72,66 @@ export class GooglePlacesChar extends CharField {
         });
     }
 
+    _isBusinessAutocompleteField() {
+        return ["business_name", "name"].includes(this.props.name);
+    }
+
+    _isAddressAutocompleteField() {
+        return this.props.name === "address";
+    }
+
+    _autocompleteOptions() {
+        const options = {
+            componentRestrictions: { country: SUPPORTED_COUNTRIES },
+            fields: ["name", "formatted_address", "geometry", "address_components", "place_id"],
+        };
+        if (this._isBusinessAutocompleteField()) {
+            options.types = ["establishment"];
+        } else if (this._isAddressAutocompleteField()) {
+            options.types = ["address"];
+        }
+        return options;
+    }
+
+    _buildRecordUpdates(place) {
+        const rec = this.props.record;
+        if (!rec?.fields) return {};
+
+        const parsed = parseGooglePlace(place);
+        const updates = {};
+        const fieldNames = rec.fields;
+        const currentBusinessName = rec.data?.business_name || "";
+        const currentName = rec.data?.name || "";
+        const canSyncName = !currentName || currentName === currentBusinessName || currentName === rec.data?.address;
+
+        if ("address" in fieldNames && parsed.address) updates.address = parsed.address;
+        if ("address_formatted" in fieldNames && parsed.address) updates.address_formatted = parsed.address;
+        if ("address_validated" in fieldNames) updates.address_validated = Boolean(parsed.address);
+        if ("address_validation_warning" in fieldNames) updates.address_validation_warning = false;
+        if ("google_place_id" in fieldNames && parsed.googlePlaceId) updates.google_place_id = parsed.googlePlaceId;
+        if ("street" in fieldNames && parsed.street) updates.street = parsed.street;
+        if ("unit" in fieldNames && parsed.unit) updates.unit = parsed.unit;
+        if ("city" in fieldNames && parsed.city) updates.city = parsed.city;
+        if ("province_code" in fieldNames && parsed.provinceCode) updates.province_code = parsed.provinceCode;
+        if ("postal_code" in fieldNames && parsed.postalCode) updates.postal_code = parsed.postalCode;
+        if ("pin_lat" in fieldNames && Number.isFinite(parsed.lat)) updates.pin_lat = parsed.lat;
+        if ("pin_lng" in fieldNames && Number.isFinite(parsed.lng)) updates.pin_lng = parsed.lng;
+        if ("pin_source" in fieldNames && parsed.googlePlaceId) updates.pin_source = "google_place";
+        if ("pin_set" in fieldNames) updates.pin_set = false;
+        if ("source_type" in fieldNames && parsed.googlePlaceId) updates.source_type = "google_places";
+
+        if (parsed.businessName) {
+            if ("business_name" in fieldNames) updates.business_name = parsed.businessName;
+            if ("name" in fieldNames && (this._isBusinessAutocompleteField() || canSyncName)) {
+                updates.name = parsed.businessName;
+            }
+        } else if ("name" in fieldNames && this._isAddressAutocompleteField() && parsed.address && canSyncName) {
+            updates.name = parsed.address;
+        }
+
+        return updates;
+    }
+
     async _initAutocomplete() {
         try {
             const key = await this.orm.call(
@@ -46,39 +145,20 @@ export class GooglePlacesChar extends CharField {
             if (!input || !window.google?.maps?.places) return;
 
             const G = window.google.maps.places;
-            this._autocomplete = new G.Autocomplete(input, {
-                // No `types` restriction — lets the driver/dispatcher type
-                // either a business name or a plain address and get both
-                // kinds of suggestions (Google doesn't allow mixing
-                // "establishment" with "address" in one restricted request,
-                // so leaving it unset is what enables both).
-                componentRestrictions: { country: ["ca", "us"] },
-                fields: ["name", "formatted_address", "geometry", "address_components"],
-            });
+            this._autocomplete = new G.Autocomplete(input, this._autocompleteOptions());
 
             this._listener = this._autocomplete.addListener("place_changed", () => {
                 const place = this._autocomplete.getPlace();
-                if (!place.formatted_address) return;
-
-                // Write formatted address to the field
-                const ev = { target: { value: place.formatted_address } };
+                const updates = this._buildRecordUpdates(place);
+                if (Object.keys(updates).length && this.props.record) {
+                    this.props.record.update(updates).catch(() => {});
+                    return;
+                }
+                const fallbackValue = parseGooglePlace(place).address || place?.name || "";
+                if (!fallbackValue) return;
+                const ev = { target: { value: fallbackValue } };
                 this.onInput(ev);
                 this.onChange(ev);
-
-                // Capture lat/lng from the place and write to sibling latitude/longitude fields
-                const loc = place.geometry?.location;
-                if (loc && this.props.record) {
-                    const rec = this.props.record;
-                    const lat = loc.lat(), lng = loc.lng();
-                    const updates = {};
-                    if ("latitude"  in rec.fields) updates.latitude  = lat;
-                    if ("longitude" in rec.fields) updates.longitude = lng;
-                    if ("pin_lat"   in rec.fields) updates.pin_lat   = lat;
-                    if ("pin_lng"   in rec.fields) updates.pin_lng   = lng;
-                    if (Object.keys(updates).length) {
-                        rec.update(updates).catch(() => {});
-                    }
-                }
             });
         } catch (e) {
             // Silently degrade to plain text input

@@ -287,25 +287,28 @@ class DriverAppController(http.Controller):
         allowed = {
             "chain_name", "location_number", "business_name", "street", "street2", "unit",
             "city", "province_code", "postal_code", "dock_door", "parking_notes",
-            "driver_instructions",
+            "driver_instructions", "address", "google_place_id", "address_formatted",
+            "address_validated",
         }
         vals = {k: values[k] for k in allowed if k in values}
         if not vals.get("business_name"):
             return {"success": False, "code": "business_name_required", "error": "Business name is required."}
 
         address_parts = [vals.get(k) for k in ("street", "unit", "city", "province_code", "postal_code")]
-        full_address = ", ".join(p for p in address_parts if p)
+        full_address = (vals.get("address") or "").strip() or ", ".join(p for p in address_parts if p)
         if not full_address:
             return {"success": False, "code": "address_required", "error": "Address is required."}
         vals["address"] = full_address
-        vals["name"] = vals.get("business_name")
-        vals["source_type"] = "driver_manual"
+        vals["name"] = values.get("name") or vals.get("business_name")
+        vals["source_type"] = "google_places" if vals.get("google_place_id") else "driver_manual"
         vals["verification_state"] = "driver_submitted"
         vals["created_by_driver_id"] = request.env.user.partner_id.id
+        if vals.get("address_formatted") and "address_validated" not in vals:
+            vals["address_validated"] = True
 
         lat = values.get("lat")
         lng = values.get("lng")
-        pin_source = "driver_map" if (lat and lng and values.get("exact_pin_confirmed")) else None
+        pin_source = "driver_map" if (lat and lng and values.get("exact_pin_confirmed")) else ("google_place" if vals.get("google_place_id") and lat and lng else None)
         if not (lat and lng):
             try:
                 hits = request.env["premafirm.rate.estimator"].sudo().geocode_address_rpc(full_address)

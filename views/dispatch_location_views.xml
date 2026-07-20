@@ -9,7 +9,8 @@
                 <sheet>
                     <div class="oe_title">
                         <h1><field name="name" placeholder="Location name…"/></h1>
-                        <field name="business_name" placeholder="Business name (e.g. Acme Warehouse)…"/>
+                        <field name="business_name" widget="google_places"
+                               placeholder="Search company name with Google Places (e.g. Foodland Picton)…"/>
                     </div>
                     <div class="alert alert-warning" role="alert" invisible="not address_validation_warning">
                         <i class="fa fa-exclamation-triangle me-1"/>
@@ -20,7 +21,14 @@
                     </div>
                     <group>
                         <group string="Address">
+                            <field name="chain_name" placeholder="e.g. Foodland"/>
+                            <field name="location_number" placeholder="e.g. 3290"/>
                             <field name="address" widget="google_places" placeholder="Search address…"/>
+                            <field name="street"/>
+                            <field name="unit"/>
+                            <field name="city"/>
+                            <field name="province_code"/>
+                            <field name="postal_code"/>
                             <field name="partner_id" string="Customer / Warehouse"/>
                             <field name="location_type"/>
                             <field name="allow_cross_dock" widget="boolean_toggle"/>
