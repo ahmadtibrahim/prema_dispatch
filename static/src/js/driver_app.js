@@ -1555,12 +1555,41 @@ function pickupScheduleLocationSearch(){
     if(query.length < 2){
         flow.searchResults=[];
         flow.searching=false;
-        if(S.pickupStops) renderPickupStopsScreen(); else renderPickupIntake();
+        if(!pickupRenderSearchResults()) {
+            if(S.pickupStops) renderPickupStopsScreen(); else renderPickupIntake();
+        }
         return;
     }
     flow.searching=true;
-    if(S.pickupStops) renderPickupStopsScreen(); else renderPickupIntake();
+    if(!pickupRenderSearchResults()) {
+        if(S.pickupStops) renderPickupStopsScreen(); else renderPickupIntake();
+    }
     pickupLocationSearchTimer=window.setTimeout(()=>pickupSearchLocations(), 250);
+}
+
+function pickupSearchResultsHtml(flow){
+    const hasQuery=(flow.searchQuery||"").trim().length >= 2;
+    const resultsHtml=(flow.searchResults||[]).map(loc=>`
+        <div class="da-stop-mini">
+            <div class="da-stop-mini-title">${esc(loc.display_label||loc.business_name||loc.address)}</div>
+            <div class="da-stop-mini-sub">${esc(loc.address||"")}</div>
+            <div class="da-pickup-row" style="margin-top:8px">
+                <button class="da-btn da-btn-primary da-btn-sm" type="button" data-action="pickup-add-saved-stop" data-location-id="${loc.id}">Add Stop</button>
+            </div>
+        </div>
+    `).join("");
+    return flow.searching
+        ? '<div class="da-pickup-note">Searching saved locations…</div>'
+        : resultsHtml || `<div class="da-pickup-note">${hasQuery ? "No saved locations matched your search." : "Start typing to see saved-location suggestions."}</div>`;
+}
+
+function pickupRenderSearchResults(){
+    const flow=currentPickupFlow();
+    if(!flow || flow.locationMode!=="search" || !flow.editorOpen) return false;
+    const container=q("#pickupSearchResults");
+    if(!container) return false;
+    container.innerHTML=pickupSearchResultsHtml(flow);
+    return true;
 }
 
 function pickupStopEditorHtml(flow){
@@ -1573,22 +1602,10 @@ function pickupStopEditorHtml(flow){
         </div>`;
     }
     if(flow.locationMode==="search"){
-        const hasQuery=(flow.searchQuery||"").trim().length >= 2;
-        const resultsHtml=(flow.searchResults||[]).map(loc=>`
-            <div class="da-stop-mini">
-                <div class="da-stop-mini-title">${esc(loc.display_label||loc.business_name||loc.address)}</div>
-                <div class="da-stop-mini-sub">${esc(loc.address||"")}</div>
-                <div class="da-pickup-row" style="margin-top:8px">
-                    <button class="da-btn da-btn-primary da-btn-sm" type="button" data-action="pickup-add-saved-stop" data-location-id="${loc.id}">Add Stop</button>
-                </div>
-            </div>
-        `).join("");
         return `<div class="da-pickup-section">
             <input class="da-pickup-input" placeholder="Search company, chain, store #, city, postal code" value="${esc(flow.searchQuery||"")}" data-field="pickup-search-query"/>
             <div class="da-pickup-note" style="margin-top:8px">Suggestions appear as you type. Select one to add the stop immediately.</div>
-            <div class="da-stop-list-mini" style="margin-top:10px">${flow.searching
-                ? '<div class="da-pickup-note">Searching saved locations…</div>'
-                : resultsHtml || `<div class="da-pickup-note">${hasQuery ? "No saved locations matched your search." : "Start typing to see saved-location suggestions."}</div>`}</div>
+            <div id="pickupSearchResults" class="da-stop-list-mini" style="margin-top:10px">${pickupSearchResultsHtml(flow)}</div>
         </div>`;
     }
     const m=flow.manual||pickupManualDefaults();
@@ -1880,7 +1897,9 @@ async function pickupSearchLocations(){
     if(query.length < 2){
         flow.searchResults=[];
         flow.searching=false;
-        if(S.pickupStops) renderPickupStopsScreen(); else renderPickupIntake();
+        if(!pickupRenderSearchResults()) {
+            if(S.pickupStops) renderPickupStopsScreen(); else renderPickupIntake();
+        }
         return;
     }
     try{
@@ -1888,10 +1907,14 @@ async function pickupSearchLocations(){
         if((currentPickupFlow()?.searchQuery||"").trim()!==query) return;
         flow.searchResults=res?.results||[];
         flow.searching=false;
-        if(S.pickupStops) renderPickupStopsScreen(); else renderPickupIntake();
+        if(!pickupRenderSearchResults()) {
+            if(S.pickupStops) renderPickupStopsScreen(); else renderPickupIntake();
+        }
     }catch(e){
         flow.searching=false;
-        if(S.pickupStops) renderPickupStopsScreen(); else renderPickupIntake();
+        if(!pickupRenderSearchResults()) {
+            if(S.pickupStops) renderPickupStopsScreen(); else renderPickupIntake();
+        }
         toast("Location search failed");
     }
 }
