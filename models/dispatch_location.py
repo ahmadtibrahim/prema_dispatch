@@ -233,6 +233,17 @@ class PremaDispatchLocation(models.Model):
 
     def _driver_payload(self):
         self.ensure_one()
+        photos = self.env["prema.dispatch.location.photo"].sudo().search([
+            ("location_id", "=", self.id), ("active", "=", True),
+        ])
+        entrance_photos = photos.filtered(lambda p: p.photo_type in ("entrance", "truck_entrance"))
+        primary_entrance = entrance_photos.filtered("is_primary")[:1] or entrance_photos[:1]
+        if primary_entrance:
+            primary_entrance_photo_url = f"/web/image/ir.attachment/{primary_entrance.attachment_id.id}/datas"
+        elif self.entrance_photo:
+            primary_entrance_photo_url = f"/web/image/prema.dispatch.location/{self.id}/entrance_photo"
+        else:
+            primary_entrance_photo_url = ""
         return {
             "id": self.id, "display_label": self.location_display_label or self.display_name,
             "chain_name": self.chain_name or "", "location_number": self.location_number or "",
@@ -241,7 +252,11 @@ class PremaDispatchLocation(models.Model):
             "dock_door": self.dock_door or "", "pin_lat": self.pin_lat, "pin_lng": self.pin_lng,
             "pin_source": self.pin_source or "", "exact_pin_available": bool(self.pin_set),
             "verification_state": self.verification_state or "",
-            "primary_entrance_photo_url": f"/web/image/prema.dispatch.location/{self.id}/entrance_photo" if self.entrance_photo else "",
+            "primary_entrance_photo_url": primary_entrance_photo_url,
+            "photos": [
+                {"id": p.id, "photo_type": p.photo_type, "url": f"/web/image/ir.attachment/{p.attachment_id.id}/datas"}
+                for p in photos
+            ],
             "parking_notes": self.parking_notes or "", "driver_instructions": self.driver_instructions or "",
         }
 
@@ -266,6 +281,13 @@ class PremaDispatchLocation(models.Model):
                 break
             op = "=" if field in ("google_place_id", "normalized_address") else "ilike"
             results |= self.search([(field, op, norm if field in ("normalized_address", "location_search_key") else query)], limit=limit)
+        if len(results) < limit + offset and len(words) >= 2:
+            # Free-text queries like "No Frills Belleville" rarely appear as one
+            # contiguous substring (business names use separators like "–"), so
+            # fall back to requiring every query word to appear somewhere in the
+            # location's search key.
+            word_domain = [("location_search_key", "ilike", word) for word in words]
+            results |= self.search(word_domain, limit=limit)
         sliced = results[offset:offset + limit]
         return {"success": True, "results": [r._driver_payload() for r in sliced], "limit": limit, "offset": offset}
 

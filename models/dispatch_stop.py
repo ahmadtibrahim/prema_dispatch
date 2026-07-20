@@ -409,14 +409,6 @@ class PremaDispatchStop(models.Model):
                 elif value not in (False, None, ""):
                     setattr(stop, key, value)
 
-    @api.model_create_multi
-    def create(self, vals_list):
-        records = super().create(vals_list)
-        for rec in records:
-            if rec.saved_location_id:
-                rec._apply_saved_location(rec.saved_location_id)
-        return records
-
     @api.onchange("transfer_to_vehicle_id")
     def _onchange_transfer_to_vehicle_id(self):
         for stop in self:
@@ -1050,6 +1042,8 @@ class PremaDispatchStop(models.Model):
         records._validate_freight_item_links()
         records._sync_selected_item_pallet_counts()
         for rec in records:
+            if rec.saved_location_id:
+                rec._apply_saved_location(rec.saved_location_id)
             if rec.address and not (rec.latitude or rec.longitude):
                 rec._geocode_address()
             if rec.address and not rec.address_validated:

@@ -123,6 +123,12 @@ class PremaDispatchItem(models.Model):
         ("none", "None"), ("damaged", "Damaged"), ("shortage", "Shortage"),
         ("overage", "Overage"), ("other", "Other"),
     ], default="none")
+    pending_future_pickup = fields.Boolean(
+        compute="_compute_pending_future_pickup", store=True,
+        help="True when this item is tied to a future pickup stop that has not "
+             "physically happened yet — excluded from onboard/confirmed/committed "
+             "counts until that pickup stop's actual_departure_time is recorded.",
+    )
     damage_notes = fields.Text()
     damage_reported_by = fields.Many2one("res.users")
     damage_reported_at = fields.Datetime()
@@ -136,6 +142,13 @@ class PremaDispatchItem(models.Model):
         for item in self:
             if not item.id or item._origin.load_unit_type != item.load_unit_type or not item.position_id:
                 item.consumes_floor_position = item.load_unit_type in ("pallet", "shared_pallet", "container")
+
+    @api.depends("available_after_stop_id", "available_after_stop_id.actual_departure_time")
+    def _compute_pending_future_pickup(self):
+        for item in self:
+            item.pending_future_pickup = bool(
+                item.available_after_stop_id and not item.available_after_stop_id.actual_departure_time
+            )
 
     def write(self, vals):
         dimension_fields = {"weight_lbs", "length_in", "width_in", "height_in"}

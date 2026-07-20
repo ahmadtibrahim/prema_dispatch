@@ -64,12 +64,14 @@ class PremaDispatchLoadPlan(models.Model):
     @api.depends(
         "load_plan_job_ids.job_id.approximate_skids", "load_plan_job_ids.reserved_floor_positions", "load_plan_job_ids.reserve_capacity",
         "pallet_ids", "pallet_ids.consumes_floor_position", "pallet_ids.position_id",
-        "pallet_ids.status", "pallet_ids.weight_lbs",
+        "pallet_ids.status", "pallet_ids.weight_lbs", "pallet_ids.pending_future_pickup",
         "layout_template_id.max_positions", "vehicle_id.x_max_payload_lbs",
     )
     def _compute_counts(self):
         for plan in self:
-            floor_items = plan.pallet_ids.filtered(lambda i: i.status != "cancelled" and i.consumes_floor_position)
+            floor_items = plan.pallet_ids.filtered(
+                lambda i: i.status != "cancelled" and i.consumes_floor_position and not i.pending_future_pickup
+            )
             plan.expected_pallet_count = sum(plan.load_plan_job_ids.mapped("job_id.approximate_skids"))
             plan.confirmed_pallet_count = len(floor_items.filtered(lambda i: i.status != "cancelled"))
             plan.reserved_pallet_count = sum(plan.load_plan_job_ids.filtered("active").mapped("reserved_floor_positions"))
@@ -741,6 +743,188 @@ class PremaDispatchLoadPlan(models.Model):
                     "load_plan_id": self.id, "item_id": item.id,
                 })
         self._log_event("damage_reported", item=item, reason=notes)
+        return self.get_load_plan()
+
+    # ── Physical route visits: combine shared delivery addresses ──────
+
+    def find_shared_visit_candidates(self):
+        """Stops across the jobs on this Load Plan that share a saved_location_id
+        and aren't already linked into the same route visit. Returns a list of
+        {saved_location_id, address, stop_ids: [...]} groups with 2+ stops."""
+        self.ensure_one()
+        jobs = self.load_plan_job_ids.filtered("active").mapped("job_id")
+        stops = jobs.mapped("stop_ids").filtered(
+            lambda s: s.saved_location_id and s.stop_type in ("dropoff", "delivery")
+        )
+        groups = {}
+        for stop in stops:
+            groups.setdefault(stop.saved_location_id.id, []).append(stop)
+        candidates = []
+        for loc_id, group_stops in groups.items():
+            job_ids = {s.job_id.id for s in group_stops}
+            if len(group_stops) < 2 or len(job_ids) < 2:
+                continue
+            already_linked = self.env["prema.dispatch.route.visit.stop"].search([
+                ("stop_id", "in", [s.id for s in group_stops]), ("active", "=", True),
+            ])
+            if len(already_linked) >= len(group_stops):
+                continue
+            candidates.append({
+                "saved_location_id": loc_id,
+                "address": group_stops[0].saved_location_id.address,
+                "stop_ids": [s.id for s in group_stops],
+            })
+        return candidates
+
+    def combine_physical_visit(self, stop_ids):
+        """Link 2+ delivery stops (from different, financially separate jobs)
+        that are physically the same address into ONE route visit — one map
+        marker / navigation destination / arrival event, while every stop
+        keeps its own job, invoice, pallet allocation, POD and completion
+        status. Never merges the underlying financial jobs."""
+        self.ensure_one()
+        self._check_access()
+        stops = self.env["prema.dispatch.stop"].browse(stop_ids)
+        if len(stops) < 2:
+            raise UserError("At least two stops are required to combine a physical visit.")
+        locations = stops.mapped("saved_location_id")
+        if len(locations) != 1:
+            raise UserError("All stops must share the same Saved Location to be combined into one physical visit.")
+        job_ids = set(stops.mapped("job_id.id"))
+        plan_job_ids = set(self.load_plan_job_ids.filtered("active").mapped("job_id.id"))
+        if not job_ids.issubset(plan_job_ids):
+            raise UserError("All stops must belong to jobs linked to this Load Plan.")
+        visit = self.env["prema.dispatch.route.visit"].create({
+            "load_plan_id": self.id, "operating_date": self.operating_date,
+            "vehicle_id": self.vehicle_id.id, "driver_id": self.driver_id.id,
+            "visit_type": "delivery", "saved_location_id": locations.id,
+            "address": locations.address, "effective_lat": locations.pin_lat,
+            "effective_lng": locations.pin_lng,
+        })
+        for stop in stops:
+            self.env["prema.dispatch.route.visit.stop"].create({
+                "route_visit_id": visit.id, "stop_id": stop.id,
+            })
+        self._log_event("stop_allocation_changed", reason=f"Combined {len(stops)} stops into one physical visit at {locations.address}")
+        return {"success": True, "route_visit_id": visit.id, "stop_ids": stop_ids}
+
+    # ── Future pickup: reserve positions, compute exact rehandle plan ──
+
+    def reserve_future_positions(self, job_id, count, version=None):
+        """Reserve `count` currently-vacant positions for freight that will
+        physically be picked up later (e.g. a second pickup on the same
+        route/truck). Prefers positions nearest the door (lowest
+        distance_from_rear_in) so the future pickup needs the fewest
+        rehandles. Creates prema.dispatch.load.plan.operation rows of type
+        reserve_position with item_id left empty until the pickup happens."""
+        self.ensure_one()
+        self._check_access(require_not_locked=True)
+        self._check_version(version)
+        job = self.env["prema.dispatch.job"].browse(job_id)
+        if not job.exists():
+            raise UserError("Job not found.")
+        occupied_ids = set(self.pallet_ids.filtered(lambda i: i.status != "cancelled").mapped("position_id.id"))
+        already_reserved_ids = set(self.env["prema.dispatch.load.plan.operation"].search([
+            ("load_plan_id", "=", self.id), ("operation_type", "=", "reserve_position"),
+            ("state", "=", "pending"), ("active", "=", True),
+        ]).mapped("to_position_id.id"))
+        blocked_ids = occupied_ids | already_reserved_ids
+        candidates = self.layout_template_id.position_ids.filtered(
+            lambda p: p.id not in blocked_ids and not p.blocked
+        ).sorted(key=lambda p: p.distance_from_rear_in or 0)
+        if len(candidates) < count:
+            raise UserError(f"Only {len(candidates)} accessible position(s) available; cannot reserve {count}.")
+        chosen = candidates[:count]
+        pickup_stop = job.stop_ids.filtered(lambda s: s.stop_type == "pickup")[:1]
+        ops = self.env["prema.dispatch.load.plan.operation"]
+        for pos in chosen:
+            ops |= ops.create({
+                "load_plan_id": self.id, "operation_type": "reserve_position",
+                "to_position_id": pos.id, "related_pickup_stop_id": pickup_stop.id if pickup_stop else False,
+                "reason": f"Reserved for future pickup: {job.name}",
+            })
+        self._log_event("stop_allocation_changed", reason=f"Reserved {count} position(s) for future pickup on {job.name}")
+        self._bump_version()
+        return {"success": True, "reserved_position_ids": chosen.ids, "operation_ids": ops.ids}
+
+    def get_future_pickup_plan(self, job_id):
+        """Return the exact, position-level loading instructions for a
+        reserved future pickup: if the reserved positions are still vacant,
+        say so explicitly (no rehandle needed); if another item now occupies
+        a reserved position, generate exact temporary_unload + reload
+        operations naming the specific blocking item and position, in the
+        correct sequence."""
+        self.ensure_one()
+        job = self.env["prema.dispatch.job"].browse(job_id)
+        reservations = self.env["prema.dispatch.load.plan.operation"].search([
+            ("load_plan_id", "=", self.id), ("operation_type", "=", "reserve_position"),
+            ("state", "=", "pending"), ("active", "=", True),
+            ("related_pickup_stop_id.job_id", "=", job_id),
+        ])
+        if not reservations:
+            return {"success": True, "reserved_positions": [], "steps": [], "rehandle_required": False}
+
+        steps = []
+        rehandle_required = False
+        sequence = 10
+        for res in reservations:
+            pos = res.to_position_id
+            blocker = self.pallet_ids.filtered(
+                lambda i, p=pos: i.status != "cancelled" and i.position_id.id == p.id
+            )
+            if blocker:
+                rehandle_required = True
+                steps.append({
+                    "sequence": sequence, "action": "temporary_unload",
+                    "item_id": blocker[0].id, "item_name": blocker[0].name,
+                    "position_code": pos.position_code,
+                })
+                sequence += 10
+        for res in reservations:
+            steps.append({
+                "sequence": sequence, "action": "load_future_pickup",
+                "position_code": res.to_position_id.position_code,
+                "operation_id": res.id,
+            })
+            sequence += 10
+        for res in reservations:
+            pos = res.to_position_id
+            blocker = self.pallet_ids.filtered(
+                lambda i, p=pos: i.status != "cancelled" and i.position_id.id == p.id
+            )
+            if blocker:
+                steps.append({
+                    "sequence": sequence, "action": "reload",
+                    "item_id": blocker[0].id, "item_name": blocker[0].name,
+                    "position_code": pos.position_code,
+                })
+                sequence += 10
+        return {
+            "success": True,
+            "reserved_positions": [{"position_code": r.to_position_id.position_code, "operation_id": r.id} for r in reservations],
+            "steps": steps, "rehandle_required": rehandle_required,
+            "message": "NO TEMPORARY UNLOADING REQUIRED" if not rehandle_required else "Rehandle required — follow steps in exact sequence.",
+        }
+
+    def confirm_future_pickup_operation(self, operation_id, item_id, version=None):
+        """Load the actual physical item into its reserved position and mark
+        the reservation completed. Any temporary_unload/reload steps for
+        blocking items must already have been performed by the driver."""
+        self.ensure_one()
+        self._check_access(require_not_locked=True)
+        self._check_version(version)
+        op = self.env["prema.dispatch.load.plan.operation"].browse(operation_id)
+        if not op.exists() or op.load_plan_id.id != self.id:
+            raise UserError("Operation not found on this load plan.")
+        pos = op.to_position_id
+        occupant = self.pallet_ids.filtered(lambda i: i.position_id.id == pos.id and i.status != "cancelled")
+        if occupant:
+            raise UserError(f"Position {pos.position_code} is still occupied by {occupant[0].name}; complete the rehandle steps first.")
+        item = self.env["prema.dispatch.item"].browse(item_id)
+        item.write({"position_id": pos.id, "status": "loaded", "loaded_at": fields.Datetime.now(), "loaded_by": self.env.user.id})
+        op.write({"item_id": item.id, "state": "completed", "completed_by": self.env.user.id, "completed_at": fields.Datetime.now()})
+        self._log_event("pallet_loaded", item=item, to_position=pos, reason="Future pickup confirmed")
+        self._bump_version()
         return self.get_load_plan()
 
     # ── Documents (reuses the Phase 1C validator, no second one) ──────

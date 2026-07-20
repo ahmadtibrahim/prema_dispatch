@@ -242,3 +242,128 @@ class DriverAppController(http.Controller):
             return {"success": True, "stop": request.env["prema.dispatch.job"]._driver_stop_dict(stop)}
         except Exception as exc:
             return {"success": False, "code": str(exc), "error": str(exc)}
+
+    # ── Manual location creation (Phase 16) ──────────────────────
+
+    @http.route("/dispatch/driver/location/duplicates", type="json", auth="user", methods=["POST"])
+    def driver_location_duplicates(self, job_id, values=None, **kw):
+        from odoo.addons.prema_dispatch.services.dispatch_auth import check_driver_can_create_location
+        try:
+            job = request.env["prema.dispatch.job"].browse(int(job_id))
+            check_driver_can_create_location(request.env, job)
+        except Exception as exc:
+            return {"success": False, "code": str(exc), "error": str(exc)}
+        values = values or {}
+        query = " ".join(filter(None, [values.get("chain_name"), values.get("location_number"), values.get("business_name")])) \
+            or values.get("business_name") or values.get("street") or ""
+        result = request.env["prema.dispatch.location"].sudo().driver_search_locations(query, limit=10)
+        return {"success": True, "candidates": result.get("results", [])}
+
+    @http.route("/dispatch/driver/location/create", type="json", auth="user", methods=["POST"])
+    def driver_location_create(self, job_id, values=None, use_existing_location_id=None, **kw):
+        from odoo.addons.prema_dispatch.services.dispatch_auth import check_driver_can_create_location
+        try:
+            job = request.env["prema.dispatch.job"].browse(int(job_id))
+            check_driver_can_create_location(request.env, job)
+        except Exception as exc:
+            return {"success": False, "code": str(exc), "error": str(exc)}
+
+        Location = request.env["prema.dispatch.location"].sudo()
+        if use_existing_location_id:
+            loc = Location.browse(int(use_existing_location_id))
+            if not loc.exists():
+                return {"success": False, "code": "location_not_found", "error": "Location not found"}
+            return {"success": True, "location": loc._driver_payload(), "reused_existing": True}
+
+        values = values or {}
+        allowed = {
+            "chain_name", "location_number", "business_name", "street", "street2", "unit",
+            "city", "province_code", "postal_code", "dock_door", "parking_notes",
+            "driver_instructions",
+        }
+        vals = {k: values[k] for k in allowed if k in values}
+        if not vals.get("business_name"):
+            return {"success": False, "code": "business_name_required", "error": "Business name is required."}
+
+        address_parts = [vals.get(k) for k in ("street", "unit", "city", "province_code", "postal_code")]
+        full_address = ", ".join(p for p in address_parts if p)
+        if not full_address:
+            return {"success": False, "code": "address_required", "error": "Address is required."}
+        vals["address"] = full_address
+        vals["name"] = vals.get("business_name")
+        vals["source_type"] = "driver_manual"
+        vals["verification_state"] = "driver_submitted"
+        vals["created_by_driver_id"] = request.env.user.partner_id.id
+
+        lat = values.get("lat")
+        lng = values.get("lng")
+        pin_source = "driver_map" if (lat and lng and values.get("exact_pin_confirmed")) else None
+        if not (lat and lng):
+            try:
+                hits = request.env["premafirm.rate.estimator"].sudo().geocode_address_rpc(full_address)
+                if hits:
+                    lat, lng = hits[0].get("lat"), hits[0].get("lng")
+                    pin_source = "geocoded_address"
+            except Exception:
+                _logger.warning("driver_location_create: geocoding failed for %r", full_address, exc_info=True)
+        if lat and lng:
+            vals["pin_lat"] = lat
+            vals["pin_lng"] = lng
+            vals["pin_set"] = bool(values.get("exact_pin_confirmed"))
+            vals["pin_source"] = pin_source
+
+        loc = Location.create(vals)
+        return {"success": True, "location": loc._driver_payload(), "reused_existing": False}
+
+    # ── Photo-to-location extraction: Ship To vs Invoice To (Phase 17) ─
+
+    @http.route("/dispatch/driver/location/extract", type="json", auth="user", methods=["POST"])
+    def driver_location_extract(self, job_id, data_b64, filename="scan.jpg", mimetype="image/jpeg",
+                                 extraction_context="ship_to", stop_id=None, **kw):
+        from odoo.addons.prema_dispatch.services.dispatch_auth import check_driver_can_create_location
+        from odoo.addons.prema_dispatch.services.location_extraction_service import LocationExtractionService
+
+        try:
+            job = request.env["prema.dispatch.job"].browse(int(job_id))
+            check_driver_can_create_location(request.env, job)
+        except Exception as exc:
+            return {"success": False, "code": str(exc), "error": str(exc)}
+
+        try:
+            image_bytes = base64.b64decode(data_b64)
+        except Exception:
+            return {"success": False, "code": "invalid_image", "error": "Could not decode image."}
+
+        service = LocationExtractionService(request.env)
+        try:
+            normalized = service.extract_location(
+                image_bytes, extraction_context, filename=filename, mimetype=mimetype,
+                job_id=job.id, stop_id=int(stop_id) if stop_id else None,
+            )
+        except Exception as exc:
+            return {"success": False, "code": str(exc), "error": str(exc)}
+        return {"success": True, "extraction": normalized}
+
+    # ── Location photo history (Phase 26) ────────────────────────
+
+    @http.route("/dispatch/driver/location/photo/upload", type="json", auth="user", methods=["POST"])
+    def driver_location_photo_upload(self, location_id, photo_type, data_b64, filename="photo.jpg", job_id=None, stop_id=None, **kw):
+        loc = request.env["prema.dispatch.location"].sudo().browse(int(location_id))
+        if not loc.exists():
+            return {"success": False, "code": "location_not_found", "error": "Location not found"}
+        try:
+            image_bytes = base64.b64decode(data_b64)
+        except Exception:
+            return {"success": False, "code": "invalid_image", "error": "Could not decode image."}
+        attachment = request.env["ir.attachment"].sudo().create({
+            "name": filename, "datas": base64.b64encode(image_bytes),
+            "res_model": "prema.dispatch.location.photo", "mimetype": "image/jpeg",
+        })
+        photo = request.env["prema.dispatch.location.photo"].sudo().create({
+            "location_id": loc.id, "attachment_id": attachment.id, "photo_type": photo_type,
+            "source_job_id": int(job_id) if job_id else False,
+            "source_stop_id": int(stop_id) if stop_id else False,
+            "uploaded_by": request.env.user.id,
+        })
+        attachment.write({"res_id": photo.id})
+        return {"success": True, "photo_id": photo.id}
