@@ -102,6 +102,10 @@ class DriverAppController(http.Controller):
     def delete_stop(self, stop_id, **kwargs):
         return request.env["prema.dispatch.job"].driver_delete_stop(int(stop_id))
 
+    @http.route("/dispatch/driver/stop/update", type="json", auth="user", methods=["POST"])
+    def update_stop_details(self, stop_id, values=None, **kwargs):
+        return request.env["prema.dispatch.job"].driver_edit_stop(int(stop_id), values or {})
+
     @http.route("/dispatch/driver/stop/service_time", type="json", auth="user", methods=["POST"])
     def update_service_time(self, stop_id, minutes, **kwargs):
         return request.env["prema.dispatch.job"].driver_update_service_time(int(stop_id), int(minutes))

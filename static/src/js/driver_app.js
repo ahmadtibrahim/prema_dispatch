@@ -539,6 +539,10 @@ function bindPickupDelegates(){
                 ev.preventDefault();
                 await pickupAddSavedStop(parseInt(btn.dataset.locationId,10));
                 break;
+            case "pickup-edit-stop":
+                ev.preventDefault();
+                pickupStartStopEdit(parseInt(btn.dataset.stopId,10));
+                break;
             case "pickup-check-duplicates":
                 ev.preventDefault();
                 await pickupCheckDuplicates();
@@ -562,6 +566,14 @@ function bindPickupDelegates(){
             case "pickup-remove-stop":
                 ev.preventDefault();
                 await pickupRemoveStop(parseInt(btn.dataset.stopId,10));
+                break;
+            case "pickup-save-stop-edit":
+                ev.preventDefault();
+                await pickupSaveStopEdit(parseInt(btn.dataset.stopId,10));
+                break;
+            case "pickup-cancel-stop-edit":
+                ev.preventDefault();
+                pickupCancelStopEdit();
                 break;
             case "pickup-stops-back":
                 ev.preventDefault();
@@ -610,6 +622,14 @@ function bindPickupDelegates(){
             pickupSetNewStopPallets(el.value);
             return;
         }
+        if(field==="pickup-edit-stop-pallets"){
+            pickupSetEditStopField("pallets_out", el.value);
+            return;
+        }
+        if(field==="pickup-edit-stop-sequence"){
+            pickupSetEditStopField("sequence", el.value);
+            return;
+        }
         if(field && field.startsWith("manual-")){
             pickupSetManual(field.replace("manual-",""), el.value);
             return;
@@ -628,7 +648,18 @@ function bindPickupDelegates(){
         const field=el.dataset?.field;
         if(field==="pickup-route-sheet"){
             pickupToggleRouteSheet(!!el.checked);
+            return;
         }
+        if(field==="pickup-edit-stop-pod_required"){
+            pickupSetEditStopField("pod_required", !!el.checked);
+        }
+    });
+
+    app.addEventListener("dblclick", (ev) => {
+        const card=ev.target.closest("[data-pickup-stop-card]");
+        if(!card) return;
+        const stopId=parseInt(card.dataset.stopId,10);
+        if(stopId) pickupStartStopEdit(stopId);
     });
 }
 
@@ -1424,10 +1455,10 @@ function pickupItemsForJob(jobId){
     return items.sort((a,b)=>(a.name||"").localeCompare(b.name||""));
 }
 
-async function ensurePickupLoadPlan(){
+async function ensurePickupLoadPlan(forceRefresh=false){
     const truck=S.dayData?.truck;
     if(!truck?.id) return null;
-    if(S.loadPlan?.vehicle?.id===truck.id && S.loadPlan?.operating_date===S.selDate) return S.loadPlan;
+    if(!forceRefresh && S.loadPlan?.vehicle?.id===truck.id && S.loadPlan?.operating_date===S.selDate) return S.loadPlan;
     const data=await rpc("/dispatch/driver/loadplan/get",{vehicle_id:truck.id,operating_date:S.selDate,driver_id:null});
     if(data && data.success!==false) S.loadPlan=data;
     return S.loadPlan;
@@ -1459,6 +1490,8 @@ function pickupFlowState(stop, step=1){
             pod_required:s.pod_required!==false,
             delete_request_state:s.delete_request_state||"none",
         })),
+        editingStopId:null,
+        editingStop:null,
         saving:false,
     };
 }
@@ -1471,7 +1504,7 @@ function openPickupIntake(step=1){
     renderPickupIntake();
     show("oPickupIntake");
     if(step>=3){
-        ensurePickupLoadPlan().then(()=>renderPickupIntake()).catch(()=>{});
+        ensurePickupLoadPlan(true).then(()=>renderPickupIntake()).catch(()=>{});
     }
 }
 
@@ -1496,6 +1529,39 @@ function openPickupStops(stop=S.stop, opts={}){
     renderPickupStopsScreen();
 }
 
+function pickupStartStopEdit(stopId){
+    const flow=currentPickupFlow();
+    const stop=pickupStopsForJob(flow?.jobId).find(s=>s.id===stopId);
+    if(!flow || !stop) return;
+    flow.editingStopId=stopId;
+    flow.editingStop={
+        pallets_out: Math.max(0, parseInt(stop.pallets_out,10) || 0),
+        pod_required: stop.pod_required!==false,
+        sequence: Math.max(10, parseInt(stop.sequence,10) || 10),
+    };
+    if(S.pickupStops) renderPickupStopsScreen(); else renderPickupIntake();
+}
+
+function pickupCancelStopEdit(){
+    const flow=currentPickupFlow();
+    if(!flow) return;
+    flow.editingStopId=null;
+    flow.editingStop=null;
+    if(S.pickupStops) renderPickupStopsScreen(); else renderPickupIntake();
+}
+
+function pickupSetEditStopField(field, value){
+    const flow=currentPickupFlow();
+    if(!flow?.editingStop) return;
+    if(field==="pod_required"){
+        flow.editingStop.pod_required=!!value;
+    } else if(field==="pallets_out"){
+        flow.editingStop.pallets_out=Math.max(0, parseInt(value,10) || 0);
+    } else if(field==="sequence"){
+        flow.editingStop.sequence=Math.max(10, parseInt(value,10) || 10);
+    }
+}
+
 function closePickupConfirm(){
     hide("oPickupConfirm");
     S.pickupConfirm=null;
@@ -1505,7 +1571,7 @@ function pickupSetStep(step){
     if(!S.pickupIntake) return;
     S.pickupIntake.step=step;
     if(step>=3){
-        ensurePickupLoadPlan().then(()=>renderPickupIntake()).catch(()=>renderPickupIntake());
+        ensurePickupLoadPlan(true).then(()=>renderPickupIntake()).catch(()=>renderPickupIntake());
         return;
     }
     renderPickupIntake();
@@ -1649,7 +1715,7 @@ function pickupStopEditorHtml(flow){
 
 function pickupStopCardsHtml(flow){
     return `<div class="da-stop-list-mini">${(flow.draftStops||[]).map((s,idx)=>`
-        <div class="da-stop-mini">
+        <div class="da-stop-mini" data-pickup-stop-card="1" data-stop-id="${s.id}">
             <div class="da-stop-mini-title">${idx+1}. ${esc(s.name||"Stop")}</div>
             <div class="da-stop-mini-sub">${esc(s.address||"")}</div>
             <div class="da-stop-mini-meta">
@@ -1657,9 +1723,27 @@ function pickupStopCardsHtml(flow){
                 <span class="da-pickup-summary-pill">${s.pod_required!==false?"POD required":"POD optional"}</span>
                 ${s.delete_request_state==="pending" ? '<span class="da-pickup-summary-pill">Delete approval pending</span>' : ""}
             </div>
-            <div class="da-stop-mini-actions">
-                <button class="da-btn da-btn-ghost" type="button" data-action="pickup-remove-stop" data-stop-id="${s.id}">Remove</button>
-            </div>
+            ${flow.editingStopId===s.id && flow.editingStop ? `
+                <div class="da-stop-list-mini" style="margin-top:8px">
+                    <div class="da-pickup-qty-label">Pallets for this stop</div>
+                    <input class="da-pickup-qty-input" type="number" min="0" max="99" value="${Number(flow.editingStop.pallets_out||0)}" data-field="pickup-edit-stop-pallets"/>
+                    <div class="da-pickup-qty-label" style="margin-top:8px">Stop order</div>
+                    <input class="da-pickup-qty-input" type="number" min="10" step="10" max="999" value="${Number(flow.editingStop.sequence||((idx+1)*10))}" data-field="pickup-edit-stop-sequence"/>
+                    <label class="da-route-opt" style="border-bottom:none;padding-left:0;margin-top:8px">
+                        <input type="checkbox" ${flow.editingStop.pod_required?"checked":""} data-field="pickup-edit-stop-pod_required"/> POD required
+                    </label>
+                    <div class="da-pickup-note">Shared pallets are linked in Assign Stops to Pallets. Double-click also opens this editor on desktop.</div>
+                </div>
+                <div class="da-stop-mini-actions">
+                    <button class="da-btn da-btn-ghost" type="button" data-action="pickup-cancel-stop-edit">Cancel</button>
+                    <button class="da-btn da-btn-primary" type="button" data-action="pickup-save-stop-edit" data-stop-id="${s.id}">Save</button>
+                </div>
+            ` : `
+                <div class="da-stop-mini-actions">
+                    <button class="da-btn da-btn-secondary" type="button" data-action="pickup-edit-stop" data-stop-id="${s.id}">Edit</button>
+                    <button class="da-btn da-btn-ghost" type="button" data-action="pickup-remove-stop" data-stop-id="${s.id}">Remove</button>
+                </div>
+            `}
         </div>`).join("") || '<div class="da-pickup-note">No delivery stops saved yet.</div>'}
     </div>`;
 }
@@ -1905,7 +1989,7 @@ async function savePickupActuals(nextStep){
         S.stop=findStopById(stop.id)||S.stop;
         renderStopList();
         renderStopDetail();
-        await ensurePickupLoadPlan();
+        await ensurePickupLoadPlan(true);
         renderLoadPlanChip();
         toast("Pickup actuals saved");
         if(nextStep) pickupSetStep(nextStep); else renderPickupIntake();
@@ -1973,7 +2057,7 @@ async function pickupAddSavedStop(locationId){
         await reloadDay();
         S.stop=findStopById(stop.id)||S.stop;
         pickupRefreshDraftStops(flow);
-        await ensurePickupLoadPlan();
+        await ensurePickupLoadPlan(true);
         if(S.pickupStops) renderPickupStopsScreen(); else renderPickupIntake();
         renderStopList();
         renderStopDetail();
@@ -2018,7 +2102,11 @@ window.pickupScanLocation=pickupScanLocation;
 async function pickupTogglePalletStop(itemId,stopId){
     const flow=currentPickupFlow();
     if(!flow||!S.loadPlan) return;
-    const item=pickupItemsForJob(flow.jobId).find(it=>it.id===itemId);
+    let item=pickupItemsForJob(flow.jobId).find(it=>it.id===itemId);
+    if(!item){
+        await ensurePickupLoadPlan(true);
+        item=pickupItemsForJob(flow.jobId).find(it=>it.id===itemId);
+    }
     if(!item) return;
     const next = new Set((item.stops||[]).map(s=>s.stop_id));
     if(next.has(stopId)) next.delete(stopId); else next.add(stopId);
@@ -2032,6 +2120,37 @@ async function pickupTogglePalletStop(itemId,stopId){
     }
 }
 window.pickupTogglePalletStop=pickupTogglePalletStop;
+
+async function pickupSaveStopEdit(stopId){
+    const flow=currentPickupFlow();
+    if(!flow?.editingStop || !stopId) return;
+    try{
+        const res=await rpc("/dispatch/driver/stop/update",{
+            stop_id: stopId,
+            values: {
+                pallets_out: Math.max(0, parseInt(flow.editingStop.pallets_out,10) || 0),
+                pod_required: !!flow.editingStop.pod_required,
+                sequence: Math.max(10, parseInt(flow.editingStop.sequence,10) || 10),
+            },
+        });
+        if(!res?.success){
+            toast(res?.error || "Could not update stop");
+            return;
+        }
+        await reloadDay();
+        await ensurePickupLoadPlan(true);
+        flow.editingStopId=null;
+        flow.editingStop=null;
+        pickupRefreshDraftStops(flow);
+        S.stop=findStopById(flow.stopId)||S.stop;
+        renderStopList();
+        renderStopDetail();
+        if(S.pickupStops) renderPickupStopsScreen(); else renderPickupIntake();
+        toast("Delivery stop updated");
+    }catch(e){
+        toast(e.message || "Could not update stop");
+    }
+}
 
 async function pickupSaveRouteDetails(opts={}){
     const flow=currentPickupFlow(), stop=currentPickupStop();
@@ -2052,7 +2171,7 @@ async function pickupSaveRouteDetails(opts={}){
         });
         if(!res?.success){ toast(res?.error||"Could not save route details"); return; }
         await reloadDay();
-        await ensurePickupLoadPlan();
+        await ensurePickupLoadPlan(true);
         S.stop=findStopById(stop.id)||S.stop;
         closePickupIntake();
         S.pickupStops=null;
@@ -2093,7 +2212,7 @@ async function pickupOptimizeRoute(stopId){
             return;
         }
         await reloadDay();
-        await ensurePickupLoadPlan();
+        await ensurePickupLoadPlan(true);
         S.stop=findStopById(stop.id)||S.stop;
         renderStopList();
         renderStopDetail();
@@ -2114,6 +2233,7 @@ async function pickupRemoveStop(stopId){
     if(!res?.success){ toast(res?.error||"Could not remove stop"); return; }
     if(res.approval_required){
         await reloadDay();
+        await ensurePickupLoadPlan(true);
         pickupRefreshDraftStops(flow);
         S.stop=findStopById(flow.stopId)||S.stop;
         renderStopList();
@@ -2123,6 +2243,7 @@ async function pickupRemoveStop(stopId){
         return;
     }
     await reloadDay();
+    await ensurePickupLoadPlan(true);
     pickupRefreshDraftStops(flow);
     S.stop=findStopById(flow.stopId)||S.stop;
     renderStopList();
@@ -2173,7 +2294,7 @@ async function submitPickupConfirm(){
     state.error="";
     renderPickupConfirm();
     try{
-        await ensurePickupLoadPlan();
+        await ensurePickupLoadPlan(true);
         const res=await rpc("/dispatch/driver/pickup/confirm",{
             stop_id:stop.id,
             values:{
@@ -2193,7 +2314,7 @@ async function submitPickupConfirm(){
         }
         pickupSetDraftActual(stop.id, res.actual_received_pallet_count);
         await reloadDay();
-        await ensurePickupLoadPlan();
+        await ensurePickupLoadPlan(true);
         S.stop=findStopById(stop.id)||S.stop;
         closePickupConfirm();
         renderStopList();

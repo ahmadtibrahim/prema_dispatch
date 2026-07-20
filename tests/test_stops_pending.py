@@ -242,6 +242,30 @@ class TestDriverStopAndLocationAuthorization(TestStopsPendingBase):
         self.assertEqual(planning.status, "cancelled")
         self.assertEqual(planning.delete_request_state, "approved")
 
+    def test_driver_can_edit_delivery_stop_pallet_count_on_active_pickup_route(self):
+        self.Stop.create({
+            "job_id": self.job.id, "sequence": 10, "stop_type": "pickup",
+            "saved_location_id": self.pickup_location.id, "status": "arrived",
+        })
+        drop = self.Stop.create({
+            "job_id": self.job.id, "sequence": 20, "stop_type": "dropoff",
+            "saved_location_id": self.pickup_location.id, "status": "pending",
+            "pallets_out": 1, "pod_required": True,
+        })
+        self.job.write({"stops_confirmation_state": "confirmed"})
+        result = self.Job.with_user(self.driver_user).driver_edit_stop(drop.id, {
+            "pallets_out": 3,
+            "pod_required": False,
+            "sequence": 40,
+        })
+        self.assertTrue(result["success"])
+        drop.invalidate_recordset()
+        self.job.invalidate_recordset()
+        self.assertEqual(drop.pallets_out, 3)
+        self.assertFalse(drop.pod_required)
+        self.assertEqual(drop.sequence, 40)
+        self.assertEqual(self.job.stops_confirmation_state, "partial")
+
 
 class TestDriverDateAndPickupWorkflow(TestStopsPendingBase):
     def setUp(self):
@@ -306,6 +330,22 @@ class TestDriverDateAndPickupWorkflow(TestStopsPendingBase):
             "actual_received_pallet_count": 10,
         })
         self.assertEqual(len(self.job.item_ids.filtered(lambda item: item.status != "cancelled" and not item.pending_future_pickup)), 10)
+
+    def test_increasing_confirmed_pickup_assigns_new_items_to_existing_load_plan(self):
+        self.Job.with_user(self.driver_user).driver_confirm_pickup_actuals(self.pickup_stop.id, {
+            "actual_received_pallet_count": 8,
+            "load_plan_id": self.plan.id,
+            "version": self.plan.version,
+        })
+        self.plan.invalidate_recordset()
+        self.Job.with_user(self.driver_user).driver_confirm_pickup_actuals(self.pickup_stop.id, {
+            "actual_received_pallet_count": 10,
+            "load_plan_id": self.plan.id,
+            "version": self.plan.version,
+        })
+        items = self.job.item_ids.filtered(lambda item: item.status != "cancelled" and item.consumes_floor_position and not item.pending_future_pickup)
+        self.assertEqual(len(items), 10)
+        self.assertEqual(set(items.mapped("load_plan_id").ids), {self.plan.id})
 
     def test_confirm_actual_pickup_blocks_impossible_layout(self):
         with self.assertRaises(UserError):

@@ -3202,8 +3202,9 @@ class PremaDispatchJob(models.Model):
             ], limit=1)
         recommendation = None
         if plan:
-            if not floor_items.filtered("load_plan_id"):
-                floor_items.write({"load_plan_id": plan.id})
+            missing_plan_items = floor_items.filtered(lambda item: not item.load_plan_id)
+            if missing_plan_items:
+                missing_plan_items.write({"load_plan_id": plan.id})
             plan._mark_stale(
                 f"Pickup actual pallets changed for {job.name}: expected {job.expected_pallet_count}, actual {actual_count}."
             )
@@ -3994,6 +3995,66 @@ class PremaDispatchJob(models.Model):
                 return {"success": False, "error": "Completed stops cannot be removed"}
             return self._apply_stop_removal(stop)
         return self._create_stop_delete_request(stop)
+
+    @api.model
+    def driver_edit_stop(self, stop_id, values=None):
+        from odoo.addons.prema_dispatch.services.dispatch_auth import check_driver_can_add_stop, check_stop_access
+
+        stop = self.env["prema.dispatch.stop"].browse(stop_id)
+        if not stop.exists():
+            return {"success": False, "error": "Stop not found"}
+        if not check_stop_access(self.env, stop, raise_on_fail=False):
+            return {"success": False, "error": "Not authorized for this stop"}
+        if stop.stop_type != "dropoff":
+            return {"success": False, "error": "Only delivery stops can be edited here"}
+        if stop.status in ("arrived", "completed", "cancelled"):
+            return {"success": False, "error": "This stop can no longer be edited"}
+        if stop.planning_only:
+            return {"success": False, "error": "Planning anchors must be reviewed by dispatch"}
+
+        job = stop.job_id
+        try:
+            check_driver_can_add_stop(self.env, job)
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+
+        values = values or {}
+        write_vals = {}
+        if "pallets_out" in values:
+            pallets_out = int(values.get("pallets_out") or 0)
+            if pallets_out < 0:
+                return {"success": False, "error": "Pallet count cannot be negative"}
+            write_vals["pallets_out"] = pallets_out
+        if "pod_required" in values:
+            write_vals["pod_required"] = bool(values.get("pod_required"))
+        if "sequence" in values and values.get("sequence") not in (None, ""):
+            write_vals["sequence"] = max(10, int(values.get("sequence")))
+
+        if not write_vals:
+            return {"success": False, "error": "No editable fields were provided"}
+
+        stop.write(write_vals)
+        if job.route_definition_mode == "stops_pending" and job.stops_confirmation_state == "confirmed":
+            job.write({"stops_confirmation_state": "partial"})
+
+        plan = self.env["prema.dispatch.load.plan"].search([
+            ("vehicle_id", "=", job.vehicle_id.id),
+            ("operating_date", "=", fields.Date.to_date(job.scheduled_pickup) if job.scheduled_pickup else fields.Date.today()),
+            ("active", "=", True),
+        ], limit=1) if job.vehicle_id else False
+        if plan:
+            plan._mark_stale(f"Delivery stop updated for {job.name}: {stop.address or stop.display_name}.")
+
+        job.message_post(body=(
+            f"Driver updated delivery stop {stop.address or stop.display_name}: "
+            f"pallets_out={stop.pallets_out}, pod_required={'yes' if stop.pod_required else 'no'}."
+        ))
+        return {
+            "success": True,
+            "stop": self._driver_stop_dict(stop),
+            "job": job._driver_job_summary(),
+            "pickup_step_state": job._pickup_completion_step_state(),
+        }
 
     @api.model
     def driver_update_service_time(self, stop_id, minutes):
