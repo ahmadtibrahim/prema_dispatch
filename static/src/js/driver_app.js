@@ -472,6 +472,10 @@ function bindPickupDelegates(){
                 }
                 openPickupIntake(3);
                 break;
+            case "pickup-optimize-route":
+                ev.preventDefault();
+                await pickupOptimizeRoute(parseInt(btn.dataset.stopId,10));
+                break;
             case "pickup-actual-minus":
             case "pickup-actual-plus": {
                 ev.preventDefault();
@@ -890,16 +894,20 @@ function pickupSummary(stop){
     const job=stop?.job_summary||{};
     const step=stop?.pickup_step_state||{};
     const expected=job.expected_pallet_count ?? step.expected ?? stop?.pallets_in ?? 0;
-    const confirmed=!!(job.pickup_actuals_confirmed || step.actual_confirmed);
+    const confirmedBase=!!(job.pickup_actuals_confirmed || step.actual_confirmed);
     const confirmedActual=job.actual_received_pallet_count ?? step.actual_saved ?? 0;
     const draft=S.pickupDrafts?.[stop?.id];
     const actual=draft && Number.isFinite(Number(draft.actual))
         ? Math.max(0, Number(draft.actual))
-        : (confirmed ? confirmedActual : (step.actual ?? expected));
+        : (confirmedBase ? confirmedActual : (step.actual ?? expected));
+    const needsReconfirm=confirmedBase && Number(actual) !== Number(confirmedActual);
+    const confirmed=confirmedBase && !needsReconfirm;
     return {
         expected,
         actual,
         confirmed,
+        confirmedBase,
+        needsReconfirm,
         confirmedActual,
         variance: actual - expected,
         deliveryStopCount: step.delivery_stop_count || 0,
@@ -912,12 +920,15 @@ function pickupSummary(stop){
         confirmedAt: job.pickup_actuals_confirmed_at || step.actual_confirmed_at || "",
         confirmedBy: job.pickup_actuals_confirmed_by || step.actual_confirmed_by || "",
         needsStopEntry: !!step.needs_stop_entry,
-        canAssignPallets: (step.confirmed_pallet_count || 0) > 0,
+        canAssignPallets: confirmed && (step.confirmed_pallet_count || 0) > 0,
     };
 }
 
 function pickupStatusLabel(stop){
     const summary=pickupSummary(stop);
+    if(summary.needsReconfirm){
+        return "Actual changed — confirm pickup again";
+    }
     if(summary.confirmed){
         const who=stop?.job_summary?.pickup_actuals_confirmed_by || stop?.pickup_step_state?.actual_confirmed_by || "Driver";
         const when=summary.confirmedAt ? fmtStopTime(summary.confirmedAt, stop?.tz_name || "America/Toronto") : "";
@@ -932,7 +943,7 @@ function pickupStatusLabel(stop){
 function pickupStatusClass(stop){
     const summary=pickupSummary(stop);
     if(summary.confirmed) return "confirmed";
-    if(summary.actual !== summary.expected) return "unsaved";
+    if(summary.needsReconfirm || summary.actual !== summary.expected) return "unsaved";
     return "";
 }
 
@@ -942,6 +953,10 @@ function renderPickupActualsCard(stop){
     const statusLabel=pickupStatusLabel(stop);
     const editDisabled=!summary.confirmed;
     const assignDisabled=!summary.confirmed || summary.deliveryStopCount===0 || !summary.canAssignPallets;
+    const confirmLabel=summary.needsReconfirm ? "Reconfirm Pickup" : (summary.confirmed ? "Pickup Confirmed" : "Confirm Pickup");
+    const guidance=summary.confirmed
+        ? (summary.deliveryStopCount ? "Pickup confirmed. Edit delivery stops, then assign stops to pallets, then optimize the remaining route." : "Pickup confirmed. Add delivery stops next, then assign stops to pallets.")
+        : "Confirm pickup first, then edit delivery stops, then assign stops to pallets.";
     return `<div class="da-pickup-section" data-stop-id="${stop.id}">
         <h4>Pickup Progress</h4>
         <div class="da-pickup-progress">
@@ -961,17 +976,20 @@ function renderPickupActualsCard(stop){
             <span class="da-pickup-status ${pickupStatusClass(stop)}" data-role="pickup-status">${esc(statusLabel)}</span>
         </div>
         <div class="da-pickup-note" data-role="pickup-variance">Variance: ${summary.variance>0?"+":""}${summary.variance}</div>
-        <div class="da-pickup-note">Current layout: ${esc(summary.layoutType.replace("_","-"))} — ${summary.layoutCapacity ? `${summary.confirmed ? summary.confirmedActual : summary.actual} / ${summary.layoutCapacity}` : "capacity pending"}.</div>
-        ${!summary.confirmed ? `<div class="da-pickup-note">Confirm pickup first, then edit delivery stops, then assign stops to pallets.</div>` : ""}
+        <div class="da-pickup-note" data-role="pickup-layout-line">Current layout: ${esc(summary.layoutType.replace("_","-"))} — ${summary.layoutCapacity ? `${summary.confirmed ? summary.confirmedActual : summary.actual} / ${summary.layoutCapacity}` : "capacity pending"}.</div>
+        <div class="da-pickup-note" data-role="pickup-guidance">${guidance}</div>
         <div class="da-pickup-card-actions">
-            <button class="da-btn ${summary.confirmed ? "da-btn-primary" : "da-btn-secondary"}" type="button" data-action="confirm-pickup" data-stop-id="${stop.id}">
-                ${summary.confirmed ? "Pickup Confirmed" : "Confirm Pickup"}
+            <button class="da-btn ${summary.confirmed && !summary.needsReconfirm ? "da-btn-primary" : "da-btn-secondary"}" type="button" data-action="confirm-pickup" data-stop-id="${stop.id}" data-role="pickup-confirm-btn">
+                ${confirmLabel}
             </button>
-            <button class="da-btn da-btn-primary" type="button" data-action="edit-delivery-stops" data-stop-id="${stop.id}" data-job-id="${stop.job_id}" ${editDisabled?"disabled aria-disabled=\"true\"":""}>
+            <button class="da-btn da-btn-primary" type="button" data-action="edit-delivery-stops" data-stop-id="${stop.id}" data-job-id="${stop.job_id}" data-role="pickup-edit-btn" ${editDisabled?"disabled aria-disabled=\"true\"":""}>
                 ${step.needs_stop_entry ? "Add Delivery Stops" : "Edit Delivery Stops"}
             </button>
-            <button class="da-btn da-btn-secondary" type="button" data-action="assign-stops-pallets" data-stop-id="${stop.id}" ${assignDisabled?"disabled aria-disabled=\"true\"":""}>
+            <button class="da-btn da-btn-secondary" type="button" data-action="assign-stops-pallets" data-stop-id="${stop.id}" data-role="pickup-assign-btn" ${assignDisabled?"disabled aria-disabled=\"true\"":""}>
                 Assign Stops to Pallets
+            </button>
+            <button class="da-btn da-btn-ghost" type="button" data-action="pickup-optimize-route" data-stop-id="${stop.id}" data-role="pickup-optimize-btn" ${(!summary.confirmed || summary.deliveryStopCount===0) ? "disabled aria-disabled=\"true\"" : ""}>
+                Optimize Remaining Stops
             </button>
         </div>
     </div>`;
@@ -1257,11 +1275,44 @@ function refreshPickupCardMetrics(stopId){
     const actualDisplay=card.querySelector(`[data-role="pickup-actual-display"]`);
     const variance=card.querySelector(`[data-role="pickup-variance"]`);
     const status=card.querySelector(`[data-role="pickup-status"]`);
+    const layoutLine=card.querySelector(`[data-role="pickup-layout-line"]`);
+    const guidance=card.querySelector(`[data-role="pickup-guidance"]`);
+    const confirmBtn=card.querySelector(`[data-role="pickup-confirm-btn"]`);
+    const editBtn=card.querySelector(`[data-role="pickup-edit-btn"]`);
+    const assignBtn=card.querySelector(`[data-role="pickup-assign-btn"]`);
+    const optimizeBtn=card.querySelector(`[data-role="pickup-optimize-btn"]`);
     if(actualDisplay) actualDisplay.textContent=summary.confirmed ? `${summary.actual} confirmed` : `${summary.actual}`;
     if(variance) variance.textContent=`Variance: ${summary.variance>0?"+":""}${summary.variance}`;
     if(status){
         status.textContent=pickupStatusLabel(stop);
         status.className=`da-pickup-status ${pickupStatusClass(stop)}`.trim();
+    }
+    if(layoutLine){
+        layoutLine.textContent=`Current layout: ${String(summary.layoutType||"straight").replace("_","-")} — ${summary.layoutCapacity ? `${summary.confirmed ? summary.confirmedActual : summary.actual} / ${summary.layoutCapacity}` : "capacity pending"}.`;
+    }
+    if(guidance){
+        guidance.textContent=summary.confirmed
+            ? (summary.deliveryStopCount ? "Pickup confirmed. Edit delivery stops, then assign stops to pallets, then optimize the remaining route." : "Pickup confirmed. Add delivery stops next, then assign stops to pallets.")
+            : "Confirm pickup first, then edit delivery stops, then assign stops to pallets.";
+    }
+    if(confirmBtn){
+        confirmBtn.textContent=summary.needsReconfirm ? "Reconfirm Pickup" : (summary.confirmed ? "Pickup Confirmed" : "Confirm Pickup");
+        confirmBtn.classList.toggle("da-btn-primary", summary.confirmed && !summary.needsReconfirm);
+        confirmBtn.classList.toggle("da-btn-secondary", !(summary.confirmed && !summary.needsReconfirm));
+    }
+    if(editBtn){
+        editBtn.disabled=!summary.confirmed;
+        editBtn.setAttribute("aria-disabled", String(!summary.confirmed));
+    }
+    if(assignBtn){
+        const disable=!summary.confirmed || summary.deliveryStopCount===0 || !summary.canAssignPallets;
+        assignBtn.disabled=disable;
+        assignBtn.setAttribute("aria-disabled", String(disable));
+    }
+    if(optimizeBtn){
+        const disable=!summary.confirmed || summary.deliveryStopCount===0;
+        optimizeBtn.disabled=disable;
+        optimizeBtn.setAttribute("aria-disabled", String(disable));
     }
     const loadMeta=q('[data-role="pickup-load-meta"]');
     if(loadMeta){
@@ -1274,6 +1325,11 @@ function refreshPickupCardMetrics(stopId){
 
 function focusPickupSection(){
     const target=q(".da-pickup-section");
+    if(target) target.scrollIntoView({block:"start", behavior:"smooth"});
+}
+
+function focusProofSection(){
+    const target=q(".da-evidence-section");
     if(target) target.scrollIntoView({block:"start", behavior:"smooth"});
 }
 
@@ -1778,10 +1834,50 @@ async function pickupSaveRouteDetails(opts={}){
         renderLoadPlanChip();
         showScreen("sStop");
         focusPickupSection();
-        toast(res.suggested_layout_ready ? "Suggested load plan ready" : "Route details saved");
+        toast(res.suggested_layout_ready ? "Route saved. Suggested load plan ready." : "Route details saved. Remaining route optimized.");
     }catch(e){ toast(e.message||"Could not save route details"); }
 }
 window.pickupSaveRouteDetails=pickupSaveRouteDetails;
+
+async function pickupOptimizeRoute(stopId){
+    const stop=findStopById(stopId) || currentPickupStop() || S.stop;
+    if(!stop) return;
+    const summary=pickupSummary(stop);
+    if(!summary.confirmed){
+        toast("Confirm pickup first.");
+        openPickupConfirm(stop.id);
+        return;
+    }
+    if(summary.deliveryStopCount===0){
+        toast("Add delivery stops first.");
+        return;
+    }
+    try{
+        const res=await rpc("/dispatch/driver/pickup/finalize",{
+            stop_id:stop.id,
+            values:{
+                route_sheet_received: !!stop.pickup_step_state?.route_sheet_received,
+                pickup_variance_notes: stop.job_summary?.pickup_variance_notes || "",
+                stops_confirmation_state: "confirmed",
+            },
+        });
+        if(!res?.success){
+            toast(res?.error || "Could not optimize remaining route");
+            return;
+        }
+        await reloadDay();
+        await ensurePickupLoadPlan();
+        S.stop=findStopById(stop.id)||S.stop;
+        renderStopList();
+        renderStopDetail();
+        renderLoadPlanChip();
+        focusPickupSection();
+        toast(res.suggested_layout_ready ? "Remaining route optimized. Suggested load plan ready." : "Remaining route optimized.");
+    }catch(e){
+        toast(e.message || "Could not optimize remaining route");
+    }
+}
+window.pickupOptimizeRoute=pickupOptimizeRoute;
 
 async function pickupRemoveStop(stopId){
     const flow=currentPickupFlow();
@@ -2749,6 +2845,7 @@ function openPickupCompletionSummary(){
     const stop=S.stop;
     if(!stop) return;
     const checklist=pickupIntakeChecklist(stop);
+    const summary=pickupSummary(stop);
     const body=q("#pickupIntakeBody");
     const title=q("#pickupIntakeTitle");
     if(title) title.textContent=`Pickup Intake — ${stopCompany(stop) || "Pickup"}`;
@@ -2763,9 +2860,10 @@ function openPickupCompletionSummary(){
             </div>
         </div>
         <div class="da-pickup-card-actions">
-            <button class="da-btn da-btn-secondary" type="button" data-action="confirm-pickup" data-stop-id="${stop.id}">Confirm Pickup</button>
-            <button class="da-btn da-btn-primary" type="button" data-action="edit-delivery-stops" data-stop-id="${stop.id}" data-job-id="${stop.job_id}">Edit Delivery Stops</button>
-            <button class="da-btn da-btn-secondary" type="button" data-action="assign-stops-pallets" data-stop-id="${stop.id}" ${pickupSummary(stop).deliveryStopCount===0?"disabled aria-disabled=\"true\"":""}>Assign Stops to Pallets</button>
+            <button class="da-btn da-btn-secondary" type="button" data-action="confirm-pickup" data-stop-id="${stop.id}">${summary.needsReconfirm ? "Reconfirm Pickup" : "Confirm Pickup"}</button>
+            <button class="da-btn da-btn-primary" type="button" data-action="edit-delivery-stops" data-stop-id="${stop.id}" data-job-id="${stop.job_id}" ${!summary.confirmed?"disabled aria-disabled=\"true\"":""}>Edit Delivery Stops</button>
+            <button class="da-btn da-btn-secondary" type="button" data-action="assign-stops-pallets" data-stop-id="${stop.id}" ${(!summary.confirmed || summary.deliveryStopCount===0)?"disabled aria-disabled=\"true\"":""}>Assign Stops to Pallets</button>
+            <button class="da-btn da-btn-ghost" type="button" data-action="pickup-optimize-route" data-stop-id="${stop.id}" ${(!summary.confirmed || summary.deliveryStopCount===0)?"disabled aria-disabled=\"true\"":""}>Optimize Remaining Stops</button>
             <button class="da-btn da-btn-ghost" type="button" data-action="pickup-completion-cancel">Finish Later</button>
         </div>`;
     }
@@ -2776,8 +2874,24 @@ async function doComplete(){
     const stop=S.stop;
     if(isPickupStop(stop?.type)){
         const checklist=pickupIntakeChecklist(stop);
-        if(!checklist.actualConfirmed || !checklist.stopsConfirmed || !checklist.palletsAssigned || !checklist.popUploaded){
-            openPickupCompletionSummary();
+        if(!checklist.actualConfirmed){
+            toast("Confirm pickup first.");
+            openPickupConfirm(stop.id);
+            return;
+        }
+        if(!checklist.stopsConfirmed){
+            toast("Add and confirm delivery stops next.");
+            openPickupStops(stop, {returnScreen:"sStop"});
+            return;
+        }
+        if(!checklist.palletsAssigned){
+            toast("Assign stops to pallets before finishing.");
+            openPickupIntake(3);
+            return;
+        }
+        if(!checklist.popUploaded){
+            toast("Upload POP before finishing this pickup.");
+            focusProofSection();
             return;
         }
     }
