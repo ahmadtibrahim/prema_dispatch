@@ -1,7 +1,8 @@
 # Prema Dispatch Master Reference
 
-**CURRENT STATUS:** IMPLEMENTED AND AUTOMATED TESTS CLEAN — READY FOR LIVE AUDIT
-**LAST UPDATED:** 2026-08-01 20:25 UTC
+**CURRENT STATUS:** SIMPLIFIED V4 MENU — READY FOR MAP & HUB IMPLEMENTATION
+**LAST UPDATED:** 2026-08-02
+**PRODUCTION:** Odoo active. Final menu hierarchy applied. 12 legacy menus hidden.
 **TEST DATABASE:** Prod-db-test1a (fresh copy of current Prod-db)
 **TEST COMMAND:** `--test-enable -u prema_logistics_booking,prema_dispatch,agent_wa --no-http --log-level=test`
 **TESTS:** 22/22 V4 PASS, 62 post-tests total. Registry: 74s. 0 upgrade errors.
