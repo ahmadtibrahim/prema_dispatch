@@ -38,7 +38,7 @@ function drawRoute(){lines.forEach(function(l){l.setMap(null)});lines=[];var r=d
 if(typeof google!=='undefined'&&google.maps)init();else window.initMap=init;
 </script></body></html>'''
 
-    @http.route("/logistics/where-we-go/data", type="json", auth="user")
+    @http.route("/logistics/where-we-go/data", type="json", auth="public")
     def where_we_go_data(self, **kwargs):
         """Return all map data: regions, hubs, lanes, services, departures."""
         Region = request.env["logistics.region"].sudo()
