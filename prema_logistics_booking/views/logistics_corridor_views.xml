@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- Corridor List View -->
+    <record id="view_logistics_corridor_list" model="ir.ui.view">
+        <field name="name">logistics.corridor.list</field>
+        <field name="model">logistics.corridor</field>
+        <field name="arch" type="xml">
+            <list>
+                <field name="name"/>
+                <field name="direction"/>
+                <field name="phase"/>
+                <field name="truck_slot"/>
+                <field name="weekday"/>
+                <field name="equipment_type"/>
+                <field name="full_revenue_target" widget="monetary"/>
+                <field name="planned_pallets"/>
+                <field name="truck_capacity"/>
+                <field name="active"/>
+            </list>
+        </field>
+    </record>
+
+    <!-- Corridor Form View -->
+    <record id="view_logistics_corridor_form" model="ir.ui.view">
+        <field name="name">logistics.corridor.form</field>
+        <field name="model">logistics.corridor</field>
+        <field name="arch" type="xml">
+            <form>
+                <sheet>
+                    <div class="oe_title"><h1><field name="name"/></h1></div>
+                    <group string="Route">
+                        <group>
+                            <field name="name"/>
+                            <field name="direction"/>
+                            <field name="equipment_type"/>
+                            <field name="phase"/>
+                            <field name="truck_slot"/>
+                            <field name="weekday"/>
+                        </group>
+                        <group>
+                            <field name="start_hub_id"/>
+                            <field name="end_hub_id"/>
+                            <field name="via_hub_id"/>
+                            <field name="start_time"/>
+                            <field name="overnight"/>
+                            <field name="temperature_capability"/>
+                        </group>
+                    </group>
+                    <group string="Capacity &amp; Revenue">
+                        <group>
+                            <field name="truck_capacity"/>
+                            <field name="planned_pallets"/>
+                            <field name="full_distance_km"/>
+                        </group>
+                        <group>
+                            <field name="full_revenue_target" widget="monetary"/>
+                            <field name="min_departure_revenue" widget="monetary"/>
+                            <field name="conditional"/>
+                        </group>
+                    </group>
+                    <group string="Links">
+                        <field name="lane_ids" widget="many2many_tags"/>
+                        <field name="return_corridor_id"/>
+                        <field name="feeds_corridor_id"/>
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <!-- Action -->
+    <record id="action_logistics_corridor" model="ir.actions.act_window">
+        <field name="name">Corridors</field>
+        <field name="res_model">logistics.corridor</field>
+        <field name="view_mode">list,form</field>
+    </record>
+</odoo>

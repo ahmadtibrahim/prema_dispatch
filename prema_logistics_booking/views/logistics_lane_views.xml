@@ -1,0 +1,119 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- Lane List View -->
+    <record id="view_logistics_lane_list" model="ir.ui.view">
+        <field name="name">logistics.lane.list</field>
+        <field name="model">logistics.lane</field>
+        <field name="arch" type="xml">
+            <list>
+                <field name="name"/>
+                <field name="origin_region_id"/>
+                <field name="destination_region_id"/>
+                <field name="revenue_target" string="Revenue Target" widget="monetary"/>
+                <field name="target_load_pallets" string="Planned Pallets"/>
+                <field name="target_avg_per_pallet" string="Customer Price / Pallet" widget="monetary"/>
+                <field name="estimated_one_way_cost" string="Est. Cost" widget="monetary" optional="hide"/>
+                <field name="road_km" optional="hide"/>
+                <field name="active"/>
+            </list>
+        </field>
+    </record>
+
+    <!-- Lane Form View (with inline Rate Plan pricing) -->
+    <record id="view_logistics_lane_form" model="ir.ui.view">
+        <field name="name">logistics.lane.form</field>
+        <field name="model">logistics.lane</field>
+        <field name="arch" type="xml">
+            <form>
+                <header>
+                    <button name="action_refresh_cost" string="Estimate One-Way Cost" type="object" class="btn-secondary"
+                            help="Use Prema AI Estimator for one-way: Hub → Destination Region (no margin)."/>
+                    <button name="action_open_one_way_estimator" string="Open One-Way Estimator" type="object" class="btn-primary"
+                            help="Open Prema AI Estimator pre-configured for one-way route calculation (no margin)."/>
+                </header>
+                <sheet>
+                    <div class="oe_title">
+                        <h1><field name="name"/></h1>
+                    </div>
+
+                    <!-- SECTION 1: Route -->
+                    <group string="Route">
+                        <group>
+                            <field name="origin_region_id"/>
+                            <field name="destination_region_id"/>
+                            <field name="phase"/>
+                        </group>
+                        <group>
+                            <field name="equipment_profile_id" domain="[('fleet_vehicle_id','!=',False)]"/>
+                            <field name="road_km"/>
+                            <field name="via_hub_id"/>
+                            <field name="active"/>
+                        </group>
+                    </group>
+
+                    <!-- SECTION 2: Pricing (was Rate Plan) -->
+                    <group string="Pricing">
+                        <group>
+                            <field name="revenue_target" string="Revenue Target" widget="monetary"/>
+                            <field name="target_load_pallets" string="Planned Pallets"/>
+                            <field name="target_avg_per_pallet" string="Customer Price / Pallet" readonly="1" widget="monetary"/>
+                            <div class="text-muted small">
+                                Customer Price / Pallet = Revenue Target ÷ Planned Pallets
+                            </div>
+                        </group>
+                        <group>
+                            <field name="preferred_revenue_target" string="Preferred Revenue" widget="monetary"/>
+                            <field name="preferred_avg_per_pallet" string="Preferred / Pallet" readonly="1" widget="monetary"/>
+                            <field name="max_pallets"/>
+                            <field name="max_weight_lbs"/>
+                        </group>
+                    </group>
+
+                    <!-- SECTION 3: One-Way Cost (Prema AI Estimator, no margin) -->
+                    <group string="One-Way Cost">
+                        <group>
+                            <field name="estimated_one_way_cost" string="Estimated One-Way Cost" widget="monetary"/>
+                            <field name="cost_vehicle_id" readonly="1"/>
+                            <field name="cost_estimated_at" readonly="1"/>
+                            <div class="text-muted small">
+                                Estimated by Prema AI Estimator using vehicle fuel consumption, driver rate, and route distance. No margin included.
+                            </div>
+                        </group>
+                        <group>
+                            <field name="target_net_profit" string="Net Profit" readonly="1" widget="monetary"/>
+                            <field name="target_margin_pct" string="Margin %" readonly="1"/>
+                        </group>
+                    </group>
+
+                    <!-- SECTION 4: Capabilities -->
+                    <group string="Capabilities">
+                        <field name="ltl_capable"/>
+                        <field name="ftl_capable"/>
+                        <field name="reefer_supported"/>
+                    </group>
+
+                    <!-- Rate Plan smart button — uses parent.active_id via context -->
+                    <div class="oe_button_box" name="button_box">
+                        <button name="%(prema_logistics_booking.action_logistics_rate_plan)d"
+                                type="action" class="oe_stat_button" icon="fa-usd"
+                                string="Rate Plan"
+                                context="{'search_default_lane_id': id}"/>
+                    </div>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <!-- Actions -->
+    <record id="action_logistics_lane" model="ir.actions.act_window">
+        <field name="name">Lanes &amp; Pricing</field>
+        <field name="res_model">logistics.lane</field>
+        <field name="view_mode">list,form</field>
+    </record>
+
+    <record id="action_logistics_schedule_calendar" model="ir.actions.act_window">
+        <field name="name">Weekly Schedule</field>
+        <field name="res_model">logistics.lane.schedule</field>
+        <field name="view_mode">list,form</field>
+    </record>
+</odoo>

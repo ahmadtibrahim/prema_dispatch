@@ -1,0 +1,187 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_logistics_rate_plan_list" model="ir.ui.view">
+        <field name="name">logistics.rate.plan.list</field>
+        <field name="model">logistics.rate.plan</field>
+        <field name="arch" type="xml">
+            <list class="o_list_sticky_header">
+                <field name="service_offering_id" string="Service"/>
+                <field name="revenue_target" string="Revenue Target" widget="monetary"/>
+                <field name="planned_pallets" string="Planned Pallets"/>
+                <field name="customer_price_per_pallet" string="Customer Price / Pallet" widget="monetary"/>
+                <field name="estimated_one_way_cost" string="Est. One-Way Cost" widget="monetary" optional="hide"/>
+                <field name="effective_from"/>
+                <field name="effective_to"/>
+                <field name="active"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="view_logistics_rate_plan_form" model="ir.ui.view">
+        <field name="name">logistics.rate.plan.form</field>
+        <field name="model">logistics.rate.plan</field>
+        <field name="arch" type="xml">
+            <form>
+                <header>
+                    <button name="action_create_new_version" string="Create New Version"
+                            type="object" class="btn-primary"
+                            confirm="Close the current version and create a new one, copying all configuration?"/>
+                    <field name="active" widget="boolean_toggle"/>
+                </header>
+                <sheet>
+                    <div class="oe_title">
+                        <h1><field name="name"/></h1>
+                    </div>
+
+                    <!-- SECTION 1: Route -->
+                    <group string="Route">
+                        <group>
+                            <field name="service_offering_id" readonly="1" string="Service"/>
+                            <field name="lane_id" readonly="1" string="Route"/>
+                        </group>
+                        <group>
+                            <field name="version" readonly="1"/>
+                            <field name="effective_from"/>
+                            <field name="effective_to"/>
+                            <field name="currency_id" invisible="1"/>
+                        </group>
+                    </group>
+
+                    <!-- SECTION 2: Pricing -->
+                    <group string="Pricing">
+                        <group>
+                            <field name="revenue_target" string="Revenue Target" widget="monetary"/>
+                            <field name="planned_pallets" string="Planned Pallets"/>
+                            <field name="customer_price_per_pallet" string="Customer Price / Pallet" readonly="1" widget="monetary"/>
+                            <div class="text-muted small">
+                                Customer Price / Pallet = Revenue Target ÷ Planned Pallets
+                            </div>
+                        </group>
+                        <group>
+                            <field name="truck_capacity" readonly="1" string="Auto-Booking Max Pallets"/>
+                            <div class="text-muted small">
+                                1–12: Straight | 13: Pin-wheel
+                            </div>
+                        </group>
+                    </group>
+
+                    <!-- SECTION 3: Prema AI Estimated Cost -->
+                    <group string="Prema AI Estimated Cost">
+                        <group>
+                            <field name="lane_id" readonly="1" string="Pickup → Delivery"/>
+                            <field name="estimated_one_way_cost" string="Estimated One-Way Cost"
+                                   widget="monetary"/>
+                        </group>
+                        <group>
+                            <div class="text-muted small">
+                                Internal operational cost estimate only.
+                                Never changes the customer pallet price.
+                            </div>
+                        </group>
+                    </group>
+
+                    <!-- SECTION 4: Customer Pricing (Tier Table — disabled) -->
+                    <group string="Customer Pricing Tiers (Legacy — Not Used)" colspan="2">
+                        <div class="text-muted small mb-2">
+                            Customer pricing now uses the simple formula:
+                            Revenue Target ÷ Planned Pallets × Pallet Quantity.
+                            The tier table below is maintained for backward compatibility
+                            but does not affect customer prices.
+                        </div>
+                        <field name="tier_ids" string="Quantity Pricing">
+                            <list editable="bottom" class="o_list_sticky_header">
+                                <field name="min_qty" string="Qty" required="1"/>
+                                <field name="base_amount" string="Base Benchmark"
+                                       widget="monetary" readonly="1"/>
+                                <field name="discount_amount" string="Discount"
+                                       widget="monetary" readonly="1"/>
+                                <field name="dry_total" string="Customer Dry Price"
+                                       widget="monetary" readonly="1"/>
+                                <field name="avg_per_pallet" string="Average / Pallet"
+                                       widget="monetary" readonly="1"/>
+                                <field name="rate" string="Rate (Edit)" widget="monetary"/>
+                                <field name="tier_type" invisible="1"/>
+                                <field name="calc_method" invisible="1"/>
+                                <field name="cap_amount" invisible="1"/>
+                                <field name="max_qty" invisible="1"/>
+                            </list>
+                        </field>
+                    </group>
+
+                    <!-- SECTION 5: Surcharges -->
+                    <group string="Active Surcharges">
+                        <field name="surcharge_ids">
+                            <list editable="bottom">
+                                <field name="surcharge_type_id"/>
+                                <field name="amount_override"/>
+                            </list>
+                        </field>
+                    </group>
+
+                    <!-- FSA Adjustments (legacy) -->
+                    <notebook>
+                        <page string="FSA Adjustments (Legacy)">
+                            <field name="fsa_adjustment_ids">
+                                <list editable="bottom">
+                                    <field name="fsa_id"/>
+                                    <field name="adjustment_type"/>
+                                    <field name="calc_type"/>
+                                    <field name="amount"/>
+                                    <field name="active"/>
+                                </list>
+                            </field>
+                        </page>
+                    </notebook>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <record id="action_logistics_rate_plan" model="ir.actions.act_window">
+        <field name="name">Rate Plans</field>
+        <field name="res_model">logistics.rate.plan</field>
+        <field name="view_mode">list,form</field>
+    </record>
+
+    <record id="view_logistics_surcharge_type_list" model="ir.ui.view">
+        <field name="name">logistics.surcharge.type.list</field>
+        <field name="model">logistics.surcharge.type</field>
+        <field name="arch" type="xml">
+            <list editable="bottom">
+                <field name="code"/>
+                <field name="name"/>
+                <field name="calc_type"/>
+                <field name="default_amount"/>
+                <field name="is_global"/>
+                <field name="active"/>
+            </list>
+        </field>
+    </record>
+    <record id="action_logistics_surcharge_type" model="ir.actions.act_window">
+        <field name="name">Surcharge Types</field>
+        <field name="res_model">logistics.surcharge.type</field>
+        <field name="view_mode">list,form</field>
+    </record>
+
+    <record id="view_logistics_customer_rate_list" model="ir.ui.view">
+        <field name="name">logistics.customer.rate.list</field>
+        <field name="model">logistics.customer.rate</field>
+        <field name="arch" type="xml">
+            <list editable="bottom">
+                <field name="partner_id"/>
+                <field name="lane_id"/>
+                <field name="service_offering_id"/>
+                <field name="discount_pct"/>
+                <field name="override_rate_plan_id"/>
+                <field name="effective_from"/>
+                <field name="effective_to"/>
+                <field name="active"/>
+            </list>
+        </field>
+    </record>
+    <record id="action_logistics_customer_rate" model="ir.actions.act_window">
+        <field name="name">Customer Contract Rates</field>
+        <field name="res_model">logistics.customer.rate</field>
+        <field name="view_mode">list,form</field>
+    </record>
+</odoo>

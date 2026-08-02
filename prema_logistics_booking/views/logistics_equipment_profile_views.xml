@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_logistics_equipment_profile_list" model="ir.ui.view">
+        <field name="name">logistics.equipment.profile.list</field>
+        <field name="model">logistics.equipment.profile</field>
+        <field name="arch" type="xml">
+            <list>
+                <field name="name"/>
+                <field name="is_requirement_class" string="Req. Class"/>
+                <field name="fleet_vehicle_id" string="Fleet Vehicle"/>
+                <field name="license_plate"/>
+                <field name="body_length_ft"/>
+                <field name="max_pallets" string="Pallets"/>
+                <field name="max_payload_lbs"/>
+                <field name="reefer"/>
+                <field name="liftgate_capable"/>
+                <field name="active"/>
+            </list>
+        </field>
+    </record>
+    <record id="view_logistics_equipment_profile_form" model="ir.ui.view">
+        <field name="name">logistics.equipment.profile.form</field>
+        <field name="model">logistics.equipment.profile</field>
+        <field name="arch" type="xml">
+            <form>
+                <sheet>
+                    <div class="oe_title"><h1><field name="name"/></h1></div>
+                    <group>
+                        <field name="is_requirement_class" string="Requirement Class"/>
+                    </group>
+                    <notebook>
+                        <!-- MODE 1: Actual Fleet -->
+                        <page string="Actual Fleet" invisible="is_requirement_class">
+                            <group string="Linked Fleet Vehicle">
+                                <field name="fleet_vehicle_id"
+                                       domain="[('active','=',True),('x_operational_logistics','=',True)]"
+                                       string="Select Fleet Vehicle"/>
+                            </group>
+                            <group string="Effective Capabilities (read from fleet.vehicle)" colspan="2">
+                                <group>
+                                    <field name="vehicle_model_name" readonly="1"/>
+                                    <field name="license_plate" readonly="1"/>
+                                    <field name="body_length_ft" readonly="1"/>
+                                    <field name="max_pallets" readonly="1" string="Straight Pallets"/>
+                                    <field name="pin_wheel_pallet_capacity" readonly="1"/>
+                                </group>
+                                <group>
+                                    <field name="max_payload_lbs" readonly="1"/>
+                                    <field name="reefer" readonly="1"/>
+                                    <field name="liftgate_capable" readonly="1"/>
+                                    <field name="air_ride" readonly="1"/>
+                                    <field name="dock_high" readonly="1"/>
+                                    <field name="geotab_active" readonly="1"/>
+                                    <field name="fuel_efficiency_km_l" readonly="1"/>
+                                </group>
+                            </group>
+                        </page>
+                        <!-- MODE 2: Requirement Class -->
+                        <page string="Requirement Class" invisible="not is_requirement_class">
+                            <group string="Equipment Requirements">
+                                <group>
+                                    <field name="min_body_length_ft"/>
+                                    <field name="min_pallets"/>
+                                    <field name="min_payload_lbs"/>
+                                </group>
+                                <group>
+                                    <field name="reefer_required"/>
+                                    <field name="liftgate_required"/>
+                                    <field name="air_ride_preferred"/>
+                                    <field name="dock_high_required"/>
+                                    <field name="stacking_allowed"/>
+                                </group>
+                            </group>
+                        </page>
+                    </notebook>
+                    <group>
+                        <field name="active"/>
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+    <record id="action_logistics_equipment_profile" model="ir.actions.act_window">
+        <field name="name">Equipment Profiles</field>
+        <field name="res_model">logistics.equipment.profile</field>
+        <field name="view_mode">list,form</field>
+    </record>
+</odoo>

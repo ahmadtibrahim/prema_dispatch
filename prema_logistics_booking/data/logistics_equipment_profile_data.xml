@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data noupdate="1">
+        <!-- Baseline profile per the approved operational assumptions.
+             max_payload_lbs set to the conservative end (13000) of the given
+             13,000-14,000 lb range; editable in the admin UI at any time. -->
+        <record id="equipment_profile_26ft_reefer" model="logistics.equipment.profile">
+            <field name="name">26 ft Reefer Straight Truck</field>
+            <field name="body_length_ft">26.0</field>
+            <field name="max_pallets">12</field>
+            <field name="max_payload_lbs">13000.0</field>
+            <field name="reefer" eval="True"/>
+            <field name="liftgate_capable" eval="True"/>
+            <field name="stacking_allowed" eval="False"/>
+        </record>
+    </data>
+</odoo>

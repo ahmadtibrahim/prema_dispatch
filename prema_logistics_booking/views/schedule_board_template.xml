@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="action_logistics_schedule_board" model="ir.actions.act_url">
+        <field name="name">Weekly Schedule Board</field>
+        <field name="url">/dispatch/schedule-board</field>
+        <field name="target">self</field>
+    </record>
+
+    <template id="weekly_schedule_board" name="Weekly Schedule Board">
+        <t t-call="web.layout">
+            <div id="schedule_board_wrap" class="container-fluid py-3">
+                <!-- Header -->
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <div>
+                        <h3 class="mb-0">Weekly Schedule Board</h3>
+                        <small class="text-muted" t-esc="monday.strftime('%B %d') + ' — ' + (monday + __import__('datetime').timedelta(days=6)).strftime('%B %d, %Y')"/>
+                    </div>
+                    <div>
+                        <span class="badge bg-success me-2">● On Time</span>
+                        <span class="badge bg-warning text-dark me-2">● Delayed</span>
+                        <span class="badge bg-danger me-2">● Cancelled</span>
+                        <span class="badge bg-secondary">● Completed</span>
+                    </div>
+                </div>
+
+                <!-- 7-Column Week Grid -->
+                <div class="row g-2">
+                    <t t-foreach="week_days" t-as="day">
+                        <div class="col" style="min-width: 190px;">
+                            <!-- Day Header -->
+                            <div t-attf-class="text-center p-2 rounded-top fw-bold #{'bg-primary text-white' if day['date'] == today else 'bg-light'}">
+                                <div t-esc="day['label']"/>
+                                <small class="d-block" t-esc="day['date'].strftime('%b %d')"/>
+                            </div>
+
+                            <!-- Lane Cards for this day -->
+                            <div class="border border-top-0 rounded-bottom bg-white" style="min-height: 200px;">
+                                <t t-if="day_cards[day_index]">
+                                    <t t-foreach="day_cards[day_index]" t-as="card">
+                                        <a t-attf-href="/web#id=#{card['id']}&amp;model=logistics.lane&amp;view_type=form"
+                                           class="text-decoration-none">
+                                            <div t-attf-class="p-2 border-bottom schedule-card schedule-card-#{card['status']}">
+                                                <!-- Status dot -->
+                                                <div class="d-flex justify-content-between align-items-start mb-1">
+                                                    <t t-if="card['status'] == 'today'">
+                                                        <span class="badge bg-success">On Time</span>
+                                                    </t>
+                                                    <t t-elif="card['status'] == 'completed'">
+                                                        <span class="badge bg-secondary">Completed</span>
+                                                    </t>
+                                                    <t t-else="">
+                                                        <span class="badge bg-info">Scheduled</span>
+                                                    </t>
+                                                    <small class="text-muted" t-esc="card['phase']"/>
+                                                </div>
+                                                <!-- Route -->
+                                                <div class="fw-bold text-dark small mb-1" t-esc="card['route']"/>
+                                                <!-- Times -->
+                                                <div class="small text-muted">
+                                                    <t t-if="card['cutoff']">
+                                                        <div>Cutoff: <strong t-esc="card['cutoff']"/></div>
+                                                    </t>
+                                                    <t t-if="card['pu_start']">
+                                                        <div>Pickup: <strong t-esc="card['pu_start']"/>
+                                                            <t t-if="card['pu_end']"> — <t t-esc="card['pu_end']"/></t>
+                                                        </div>
+                                                    </t>
+                                                    <t t-if="card['delivery']">
+                                                        <div>Delivery: <strong t-esc="card['delivery']"/></div>
+                                                    </t>
+                                                </div>
+                                            </div>
+                                        </a>
+                                    </t>
+                                </t>
+                                <t t-else="">
+                                    <div class="p-3 text-center text-muted small">
+                                        <i class="fa fa-minus-circle mb-1 d-block"/>
+                                        No pickups
+                                    </div>
+                                </t>
+                            </div>
+                        </div>
+                    </t>
+                </div>
+            </div>
+
+            <style>
+                .schedule-card { transition: background 0.15s; cursor: pointer; }
+                .schedule-card:hover { background: #e8f4fd !important; }
+                .schedule-card-today { background: #e6ffe6; }
+                .schedule-card-completed { background: #f5f5f5; opacity: 0.8; }
+                .schedule-card-scheduled { background: #fff; }
+            </style>
+        </t>
+    </template>
+</odoo>

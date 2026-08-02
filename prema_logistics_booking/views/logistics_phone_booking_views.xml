@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_logistics_phone_booking_form" model="ir.ui.view">
+        <field name="name">logistics.phone.booking.form</field>
+        <field name="model">logistics.phone.booking</field>
+        <field name="arch" type="xml">
+            <form>
+                <header>
+                    <button name="action_get_price" string="Get Price" type="object" class="btn-primary"
+                            invisible="price > 0"/>
+                    <button name="action_confirm_booking" string="Confirm &amp; Book" type="object"
+                            class="btn-success" invisible="price == 0"/>
+                </header>
+                <sheet>
+                    <h3>Phone Booking</h3>
+                    <group>
+                        <group>
+                            <field name="partner_id" required="1"/>
+                            <field name="pickup_postal_code" required="1"/>
+                            <field name="pickup_address"/>
+                            <field name="pickup_instructions"/>
+                        </group>
+                        <group>
+                            <field name="delivery_postal_code" required="1"/>
+                            <field name="delivery_address"/>
+                            <field name="delivery_instructions"/>
+                        </group>
+                    </group>
+                    <group>
+                        <group>
+                            <field name="pallets"/>
+                            <field name="weight_lbs"/>
+                        </group>
+                        <group>
+                            <field name="temperature_mode"/>
+                            <field name="shipment_type"/>
+                        </group>
+                    </group>
+                    <group>
+                        <field name="liftgate_pickup"/>
+                        <field name="liftgate_delivery"/>
+                        <field name="appointment"/>
+                        <field name="residential"/>
+                    </group>
+                    <group string="Results" invisible="price == 0">
+                        <field name="price"/>
+                        <field name="pickup_date"/>
+                        <field name="delivery_date"/>
+                    </group>
+                    <field name="result_text" readonly="1" widget="text"
+                           invisible="not result_text"/>
+                    <field name="booking_id" readonly="1"
+                           invisible="not booking_id"/>
+                </sheet>
+            </form>
+        </field>
+    </record>
+    <record id="action_logistics_phone_booking" model="ir.actions.act_window">
+        <field name="name">Phone Booking</field>
+        <field name="res_model">logistics.phone.booking</field>
+        <field name="view_mode">form</field>
+        <field name="target">new</field>
+    </record>
+</odoo>

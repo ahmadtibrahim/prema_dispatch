@@ -1,0 +1,100 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_logistics_custom_quote_list" model="ir.ui.view">
+        <field name="name">logistics.custom.quote.list</field>
+        <field name="model">logistics.custom.quote</field>
+        <field name="arch" type="xml">
+            <list>
+                <field name="name"/>
+                <field name="company_name"/>
+                <field name="contact_name"/>
+                <field name="pickup_postal_code"/>
+                <field name="delivery_postal_code"/>
+                <field name="pallets"/>
+                <field name="quoted_price"/>
+                <field name="state"/>
+                <field name="source"/>
+            </list>
+        </field>
+    </record>
+    <record id="view_logistics_custom_quote_form" model="ir.ui.view">
+        <field name="name">logistics.custom.quote.form</field>
+        <field name="model">logistics.custom.quote</field>
+        <field name="arch" type="xml">
+            <form>
+                <header>
+                    <button name="action_start_review" string="Start Review" type="object"
+                            invisible="state != 'new'"/>
+                    <button name="action_quote" string="Quote" type="object"
+                            invisible="state not in ('reviewing',)"/>
+                    <button name="action_accept" string="Accept" type="object"
+                            invisible="state != 'quoted'"/>
+                    <button name="action_decline" string="Decline" type="object"
+                            invisible="state != 'quoted'"/>
+                    <button name="action_convert_to_booking" string="Convert to Booking" type="object"
+                            class="btn-success" invisible="state != 'accepted'"/>
+                    <button name="action_open_estimator" string="Prema AI Estimator" type="object"
+                            class="btn-secondary"/>
+                    <field name="state" widget="statusbar"/>
+                </header>
+                <sheet>
+                    <div class="oe_title"><h1><field name="name"/></h1></div>
+                    <group>
+                        <group>
+                            <field name="partner_id"/>
+                            <field name="contact_name"/>
+                            <field name="contact_email"/>
+                            <field name="contact_phone"/>
+                            <field name="company_name"/>
+                            <field name="source"/>
+                        </group>
+                        <group>
+                            <field name="state"/>
+                            <field name="quoted_price"/>
+                            <field name="reason_code"/>
+                        </group>
+                    </group>
+                    <notebook>
+                        <page string="Shipment">
+                            <group>
+                                <group>
+                                    <field name="pickup_postal_code"/>
+                                    <field name="pickup_address"/>
+                                    <field name="resolved_fsa_pickup"/>
+                                    <field name="resolved_region_pickup"/>
+                                </group>
+                                <group>
+                                    <field name="delivery_postal_code"/>
+                                    <field name="delivery_address"/>
+                                    <field name="resolved_fsa_delivery"/>
+                                    <field name="resolved_region_delivery"/>
+                                </group>
+                            </group>
+                            <group>
+                                <field name="pallets"/>
+                                <field name="weight_lbs"/>
+                                <field name="temperature_mode"/>
+                                <field name="commodity"/>
+                                <field name="requested_pickup_date"/>
+                                <field name="routing_strategy"/>
+                            </group>
+                        </page>
+                        <page string="Notes">
+                            <field name="notes"/>
+                            <field name="internal_notes"/>
+                        </page>
+                        <page string="Booking">
+                            <field name="booking_id" readonly="1"/>
+                            <field name="estimator_id" readonly="1"/>
+                        </page>
+                    </notebook>
+                </sheet>
+            </form>
+        </field>
+    </record>
+    <record id="action_logistics_custom_quote" model="ir.actions.act_window">
+        <field name="name">Custom Quotes</field>
+        <field name="res_model">logistics.custom.quote</field>
+        <field name="view_mode">list,form</field>
+    </record>
+</odoo>

@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_partner_form_logistics_pricing" model="ir.ui.view">
+        <field name="name">res.partner.form.logistics.pricing</field>
+        <field name="model">res.partner</field>
+        <field name="inherit_id" ref="base.view_partner_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//div[@name='button_box']" position="inside">
+                <button name="action_approve_logistics_pricing" type="object" string="Approve for Logistics Pricing"
+                        class="oe_stat_button" icon="fa-check-circle"
+                        invisible="logistics_pricing_status == 'approved'"
+                        groups="prema_logistics_booking.group_logistics_pricing_manager"/>
+            </xpath>
+            <xpath expr="//sheet" position="inside">
+                <group string="Logistics Pricing / Booking" groups="prema_logistics_booking.group_logistics_pricing_viewer">
+                    <field name="logistics_pricing_status"/>
+                    <button name="action_block_logistics_pricing" type="object" string="Block"
+                            invisible="logistics_pricing_status != 'approved'"
+                            groups="prema_logistics_booking.group_logistics_pricing_manager"/>
+                </group>
+            </xpath>
+        </field>
+    </record>
+</odoo>

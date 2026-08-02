@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data noupdate="1">
+        <record id="region_r1" model="logistics.region">
+            <field name="code">R1</field>
+            <field name="name">GTA Central</field>
+            <field name="hub_name">Mississauga</field>
+            <field name="phase">1</field>
+        </record>
+        <record id="region_r2" model="logistics.region">
+            <field name="code">R2</field>
+            <field name="name">Southwest Ontario</field>
+            <field name="hub_name">London</field>
+            <field name="phase">1</field>
+        </record>
+        <record id="region_r3" model="logistics.region">
+            <field name="code">R3</field>
+            <field name="name">Golden Horseshoe South</field>
+            <field name="hub_name">Hamilton</field>
+            <field name="phase">1</field>
+        </record>
+        <record id="region_r4" model="logistics.region">
+            <field name="code">R4</field>
+            <field name="name">Central Ontario / Grey-Bruce</field>
+            <field name="hub_name">Barrie</field>
+            <field name="phase">1</field>
+        </record>
+        <record id="region_r5" model="logistics.region">
+            <field name="code">R5</field>
+            <field name="name">East-Central Ontario</field>
+            <field name="hub_name">Peterborough</field>
+            <field name="phase">1</field>
+        </record>
+        <record id="region_r6" model="logistics.region">
+            <field name="code">R6</field>
+            <field name="name">Eastern Ontario</field>
+            <field name="hub_name">Kingston</field>
+            <field name="phase">1</field>
+        </record>
+        <record id="region_r7" model="logistics.region">
+            <field name="code">R7</field>
+            <field name="name">Ottawa Valley</field>
+            <field name="hub_name">Ottawa</field>
+            <field name="phase">1</field>
+        </record>
+        <record id="region_r8" model="logistics.region">
+            <field name="code">R8</field>
+            <field name="name">Greater Montreal</field>
+            <field name="hub_name">Montreal</field>
+            <field name="phase">1</field>
+        </record>
+        <record id="region_r9" model="logistics.region">
+            <field name="code">R9</field>
+            <field name="name">Central Quebec</field>
+            <field name="hub_name">Drummondville</field>
+            <field name="phase">1</field>
+        </record>
+        <record id="region_r10" model="logistics.region">
+            <field name="code">R10</field>
+            <field name="name">Quebec City Region</field>
+            <field name="hub_name">Quebec City</field>
+            <field name="phase">1</field>
+        </record>
+    </data>
+</odoo>

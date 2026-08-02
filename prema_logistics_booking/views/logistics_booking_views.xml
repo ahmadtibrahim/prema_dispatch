@@ -1,0 +1,120 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_logistics_booking_list" model="ir.ui.view">
+        <field name="name">logistics.booking.list</field>
+        <field name="model">logistics.booking</field>
+        <field name="arch" type="xml">
+            <list>
+                <field name="booking_number"/>
+                <field name="partner_id"/>
+                <field name="pickup_fsa_id"/>
+                <field name="delivery_fsa_id"/>
+                <field name="pickup_date"/>
+                <field name="estimated_delivery_date"/>
+                <field name="calculated_price"/>
+                <field name="state"/>
+                <field name="dispatch_job_id"/>
+            </list>
+        </field>
+    </record>
+    <record id="view_logistics_booking_form" model="ir.ui.view">
+        <field name="name">logistics.booking.form</field>
+        <field name="model">logistics.booking</field>
+        <field name="arch" type="xml">
+            <form>
+                <sheet>
+                    <!-- Tax Review Required Banner -->
+                    <field name="tax_review_required" invisible="1"/>
+                    <div class="alert alert-danger" role="alert"
+                         invisible="not tax_review_required">
+                        <strong>⚠ Tax Review Required</strong><br/>
+                        <field name="tax_reason" readonly="1" nolabel="1"/>
+                        <div class="mt-2">
+                            Freight tax configuration is missing or incomplete.
+                            This invoice cannot be posted until tax is resolved.
+                            Go to <em>Settings → Prema Logistics → Freight Tax Configuration</em>
+                            to configure the required tax mapping.
+                        </div>
+                    </div>
+                    <group>
+                        <group>
+                            <field name="booking_number" readonly="1"/>
+                            <field name="partner_id" readonly="1"/>
+                            <field name="state"/>
+                            <field name="dispatch_job_id" readonly="1"/>
+                            <field name="booking_channel" readonly="1"/>
+                        </group>
+                        <group>
+                            <field name="service_offering_id" readonly="1"/>
+                            <field name="rate_plan_id" readonly="1"/>
+                            <field name="pickup_date" readonly="1"/>
+                            <field name="estimated_delivery_date" readonly="1"/>
+                            <field name="calculated_price" readonly="1"/>
+                        </group>
+                    </group>
+                    <notebook>
+                        <page string="Pickup">
+                            <group>
+                                <field name="pickup_fsa_id" readonly="1"/>
+                                <field name="pickup_company" readonly="1"/>
+                                <field name="pickup_address" readonly="1"/>
+                                <field name="pickup_contact_name" readonly="1"/>
+                                <field name="pickup_phone" readonly="1"/>
+                                <field name="pickup_instructions" readonly="1"/>
+                            </group>
+                        </page>
+                        <page string="Delivery">
+                            <group>
+                                <field name="delivery_fsa_id" readonly="1"/>
+                                <field name="delivery_company" readonly="1"/>
+                                <field name="delivery_address" readonly="1"/>
+                                <field name="delivery_contact_name" readonly="1"/>
+                                <field name="delivery_phone" readonly="1"/>
+                                <field name="delivery_instructions" readonly="1"/>
+                            </group>
+                        </page>
+                        <page string="Shipment">
+                            <group>
+                                <field name="shipment_type" readonly="1"/>
+                                <field name="temperature_mode" readonly="1"/>
+                                <field name="pallets" readonly="1"/>
+                                <field name="weight_lbs" readonly="1"/>
+                                <field name="liftgate_pickup" readonly="1"/>
+                                <field name="liftgate_delivery" readonly="1"/>
+                                <field name="appointment" readonly="1"/>
+                                <field name="equipment_profile_id" readonly="1"/>
+                            </group>
+                        </page>
+                        <page string="Tax &amp; Invoice">
+                            <group>
+                                <field name="tax_review_required" widget="boolean_toggle"/>
+                                <field name="tax_reason" readonly="1"/>
+                                <field name="billing_relationship" readonly="1"/>
+                                <field name="tax_treatment" readonly="1"/>
+                                <field name="tax_rule_id" readonly="1"/>
+                                <field name="tax_rule_name" readonly="1"/>
+                                <field name="fiscal_position_id" readonly="1"/>
+                            </group>
+                            <group string="Invoice Totals">
+                                <field name="amount_untaxed" readonly="1"/>
+                                <field name="amount_tax" readonly="1"/>
+                                <field name="amount_total" readonly="1"/>
+                                <field name="currency_id" readonly="1"/>
+                                <field name="invoice_id" readonly="1"/>
+                                <field name="invoice_created_at" readonly="1"/>
+                            </group>
+                        </page>
+                        <page string="Price Snapshot (immutable)">
+                            <field name="price_snapshot" readonly="1" widget="text"/>
+                        </page>
+                    </notebook>
+                </sheet>
+            </form>
+        </field>
+    </record>
+    <record id="action_logistics_booking" model="ir.actions.act_window">
+        <field name="name">Bookings</field>
+        <field name="res_model">logistics.booking</field>
+        <field name="view_mode">list,form</field>
+    </record>
+</odoo>

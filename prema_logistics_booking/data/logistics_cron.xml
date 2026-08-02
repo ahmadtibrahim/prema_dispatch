@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<odoo>
+    <!-- V3: Recurring booking generation from logistics.recurring.agreement
+         Replaces the deprecated prema.dispatch.booking.template cron. -->
+    <record id="ir_cron_logistics_generate_recurring_bookings" model="ir.cron">
+        <field name="name">Logistics: Generate Recurring Bookings (V3)</field>
+        <field name="model_id" ref="model_logistics_recurring_agreement"/>
+        <field name="state">code</field>
+        <field name="code">model._generate_due_bookings()</field>
+        <field name="interval_number">1</field>
+        <field name="interval_type">days</field>
+        <field name="active" eval="True"/>
+        <field name="priority">10</field>
+    </record>
+
+    <!-- V4: Maintain 12-week rolling departure horizon -->
+    <record id="ir_cron_maintain_departure_horizon" model="ir.cron">
+        <field name="name">Prema Dispatch: Maintain Phase 1 Departure Horizon</field>
+        <field name="model_id" ref="model_logistics_corridor_departure"/>
+        <field name="state">code</field>
+        <field name="code">model._maintain_departure_horizon()</field>
+        <field name="interval_number">1</field>
+        <field name="interval_type">days</field>
+        <field name="active" eval="True"/>
+        <field name="priority">5</field>
+    </record>
+
+</odoo>

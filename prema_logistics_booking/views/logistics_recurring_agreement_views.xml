@@ -1,0 +1,89 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_logistics_recurring_agreement_list" model="ir.ui.view">
+        <field name="name">logistics.recurring.agreement.list</field>
+        <field name="model">logistics.recurring.agreement</field>
+        <field name="arch" type="xml">
+            <list>
+                <field name="name"/>
+                <field name="partner_id"/>
+                <field name="pickup_fsa_id"/>
+                <field name="delivery_fsa_id"/>
+                <field name="pallets"/>
+                <field name="frequency"/>
+                <field name="contract_months" string="Months"/>
+                <field name="rate_per_shipment"/>
+                <field name="next_shipment_date"/>
+                <field name="state"/>
+            </list>
+        </field>
+    </record>
+    <record id="view_logistics_recurring_agreement_form" model="ir.ui.view">
+        <field name="name">logistics.recurring.agreement.form</field>
+        <field name="model">logistics.recurring.agreement</field>
+        <field name="arch" type="xml">
+            <form>
+                <header>
+                    <button name="action_calculate_rate" string="Calculate Rate" type="object" class="btn-secondary"/>
+                    <button name="action_activate" string="Activate" type="object" class="btn-success" invisible="state != 'draft'"/>
+                    <button name="action_pause" string="Pause" type="object" invisible="state != 'active'"/>
+                    <button name="action_cancel" string="Cancel" type="object" invisible="state in ('cancelled','expired')"/>
+                    <field name="state" widget="statusbar"/>
+                </header>
+                <sheet>
+                    <div class="oe_title"><h1><field name="name"/></h1></div>
+                    <group>
+                        <group>
+                            <field name="partner_id"/>
+                            <field name="pickup_fsa_id"/>
+                            <field name="delivery_fsa_id"/>
+                            <field name="commodity"/>
+                        </group>
+                        <group>
+                            <field name="pallets"/>
+                            <field name="weight_lbs"/>
+                            <field name="temperature_mode"/>
+                            <field name="rate_per_shipment"/>
+                        </group>
+                    </group>
+                    <group>
+                        <group>
+                            <field name="frequency"/>
+                            <field name="preferred_weekday"/>
+                        </group>
+                        <group>
+                            <field name="start_date"/>
+                            <field name="end_date"/>
+                            <field name="contract_months" readonly="1"/>
+                        </group>
+                    </group>
+                    <group string="Route Commitment">
+                        <field name="route_run_id"/>
+                        <field name="committed_pallets"/>
+                        <field name="committed_weight_lbs"/>
+                        <field name="next_shipment_date" readonly="1"/>
+                    </group>
+                    <notebook>
+                        <page string="Bookings">
+                            <field name="booking_ids">
+                                <list>
+                                    <field name="booking_number"/>
+                                    <field name="pickup_date"/>
+                                    <field name="estimated_delivery_date"/>
+                                    <field name="pallets"/>
+                                    <field name="calculated_price"/>
+                                    <field name="state"/>
+                                </list>
+                            </field>
+                        </page>
+                    </notebook>
+                </sheet>
+            </form>
+        </field>
+    </record>
+    <record id="action_logistics_recurring_agreement" model="ir.actions.act_window">
+        <field name="name">Recurring Agreements</field>
+        <field name="res_model">logistics.recurring.agreement</field>
+        <field name="view_mode">list,form</field>
+    </record>
+</odoo>

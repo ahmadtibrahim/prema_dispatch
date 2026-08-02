@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_logistics_holiday_calendar_form" model="ir.ui.view">
+        <field name="name">logistics.holiday.calendar.form</field>
+        <field name="model">logistics.holiday.calendar</field>
+        <field name="arch" type="xml">
+            <form>
+                <sheet>
+                    <group>
+                        <field name="name"/>
+                        <field name="active"/>
+                    </group>
+                    <field name="line_ids">
+                        <list editable="bottom">
+                            <field name="date"/>
+                            <field name="description"/>
+                        </list>
+                    </field>
+                </sheet>
+            </form>
+        </field>
+    </record>
+    <record id="view_logistics_holiday_calendar_list" model="ir.ui.view">
+        <field name="name">logistics.holiday.calendar.list</field>
+        <field name="model">logistics.holiday.calendar</field>
+        <field name="arch" type="xml">
+            <list>
+                <field name="name"/>
+                <field name="active"/>
+            </list>
+        </field>
+    </record>
+    <record id="action_logistics_holiday_calendar" model="ir.actions.act_window">
+        <field name="name">Holiday Calendars</field>
+        <field name="res_model">logistics.holiday.calendar</field>
+        <field name="view_mode">list,form</field>
+    </record>
+</odoo>

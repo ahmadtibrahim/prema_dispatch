@@ -1,0 +1,251 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+<template id="portal_landing_anonymous" name="Booking Landing (Anonymous)">
+    <t t-call="website.layout">
+        <div class="container o_page_container py-5">
+            <h1>PremaFirm Logistics Booking</h1>
+            <p>Please log in or create an account to get pricing and book a shipment.</p>
+            <a class="btn btn-primary" href="/web/login">Login</a>
+            <a class="btn btn-secondary" href="/web/signup">Register</a>
+        </div>
+    </t>
+</template>
+
+<template id="portal_pending_approval" name="Booking Pending Approval">
+    <t t-call="portal.portal_layout">
+        <div class="container o_page_container py-5">
+            <h2>Your account is not yet approved for booking</h2>
+            <p>Please contact us to request access to online pricing and booking.</p>
+        </div>
+    </t>
+</template>
+
+<template id="portal_not_available" name="Booking Not Available">
+    <t t-call="portal.portal_layout">
+        <div class="container o_page_container py-5">
+            <h2>Request Quote</h2>
+            <p>We couldn't return an instant price for this shipment
+                (reason code: <t t-esc="reason"/>). Please contact us for a manual quote.</p>
+            <a class="btn btn-secondary" href="/my/booking/new">Try a different shipment</a>
+        </div>
+    </t>
+</template>
+
+<template id="portal_booking_error" name="Booking Confirmation Error">
+    <t t-call="portal.portal_layout">
+        <div class="container o_page_container py-5">
+            <h2>We couldn't confirm this booking</h2>
+            <p t-esc="message"/>
+            <a class="btn btn-secondary" href="/my/booking/new">Start a new booking</a>
+        </div>
+    </t>
+</template>
+
+<template id="portal_step1_postal" name="Booking Step 1 - Postal Codes">
+    <t t-call="portal.portal_layout">
+        <div class="container o_page_container py-5">
+            <h2>New Booking</h2>
+            <div t-if="error" class="alert alert-danger" t-esc="error"/>
+            <form action="/my/booking/new" method="post" class="row g-3">
+                <input type="hidden" name="csrf_token" t-att-value="request.csrf_token()"/>
+                <div class="col-md-6">
+                    <label class="form-label">Pickup Postal Code</label>
+                    <input type="text" name="pickup_postal_code" class="form-control" required="required"/>
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label">Delivery Postal Code</label>
+                    <input type="text" name="delivery_postal_code" class="form-control" required="required"/>
+                </div>
+                <div class="col-12">
+                    <button type="submit" class="btn btn-primary">Continue</button>
+                </div>
+            </form>
+        </div>
+    </t>
+</template>
+
+<template id="portal_step2_shipment" name="Booking Step 2 - Shipment Basics">
+    <t t-call="portal.portal_layout">
+        <div class="container o_page_container py-5">
+            <h2>Shipment Details</h2>
+            <p>
+                Pickup: <strong t-esc="pickup_fsa.display_city or pickup_fsa.fsa"/>
+                &#8594;
+                Delivery: <strong t-esc="delivery_fsa.display_city or delivery_fsa.fsa"/>
+            </p>
+            <div t-if="error" class="alert alert-danger" t-esc="error"/>
+            <form action="/my/booking/quote" method="post" class="row g-3">
+                <input type="hidden" name="csrf_token" t-att-value="request.csrf_token()"/>
+                <input type="hidden" name="pickup_fsa" t-att-value="pickup_fsa.fsa"/>
+                <input type="hidden" name="delivery_fsa" t-att-value="delivery_fsa.fsa"/>
+                <div class="col-md-6">
+                    <label class="form-label">Shipment Type</label>
+                    <select name="shipment_type" class="form-select">
+                        <option value="ltl">LTL</option>
+                        <option value="ftl">FTL</option>
+                    </select>
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label">Temperature</label>
+                    <select name="temperature_mode" class="form-select">
+                        <option value="dry">Dry</option>
+                        <option value="reefer">Reefer</option>
+                    </select>
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label">Pallets</label>
+                    <input type="number" name="pallets" class="form-control" min="1" required="required"/>
+                </div>
+                <div class="col-md-6">
+                    <label class="form-label">Total Weight (lbs)</label>
+                    <input type="number" step="0.1" name="weight_lbs" class="form-control" required="required"/>
+                </div>
+                <div class="col-md-4 form-check">
+                    <input type="checkbox" class="form-check-input" name="liftgate_pickup" value="1"/>
+                    <label class="form-check-label">Liftgate Pickup</label>
+                </div>
+                <div class="col-md-4 form-check">
+                    <input type="checkbox" class="form-check-input" name="liftgate_delivery" value="1"/>
+                    <label class="form-check-label">Liftgate Delivery</label>
+                </div>
+                <div class="col-md-4 form-check">
+                    <input type="checkbox" class="form-check-input" name="appointment" value="1"/>
+                    <label class="form-check-label">Appointment Required</label>
+                </div>
+                <div class="col-md-4 form-check">
+                    <input type="checkbox" class="form-check-input" name="residential" value="1"/>
+                    <label class="form-check-label">Residential / Limited Access</label>
+                </div>
+                <div class="col-md-4 form-check">
+                    <input type="checkbox" class="form-check-input" name="same_day_requested" value="1"/>
+                    <label class="form-check-label">Same-Day Express (if available)</label>
+                </div>
+                <div class="col-12">
+                    <button type="submit" class="btn btn-primary">Get Price</button>
+                </div>
+            </form>
+        </div>
+    </t>
+</template>
+
+<template id="portal_step3_result" name="Booking Step 3 - Price Result">
+    <t t-call="portal.portal_layout">
+        <div class="container o_page_container py-5">
+            <h2>Your Rate</h2>
+            <table class="table table-sm">
+                <tr><td>Pickup</td><td t-esc="session.pickup_date"/></tr>
+                <tr><td>Estimated Delivery</td><td t-esc="session.delivery_date_estimate"/></tr>
+                <tr><td>Service</td><td t-esc="session.service_offering_id.name"/></tr>
+                <tr t-foreach="session.price_snapshot or []" t-as="line">
+                    <td t-esc="line['label']"/>
+                    <td t-esc="'%.2f' % line['amount']"/>
+                </tr>
+            </table>
+            <p><strong>Price: $<t t-esc="'%.2f' % session.calculated_price"/> CAD</strong>
+                <br/><small>This price is guaranteed for 20 minutes. The price shown is the price you will be charged.</small></p>
+
+            <form action="/my/booking/confirm" method="post" class="row g-3">
+                <input type="hidden" name="csrf_token" t-att-value="request.csrf_token()"/>
+                <input type="hidden" name="token" t-att-value="session.token"/>
+                <h4 class="mt-3">Pickup</h4>
+                <div class="col-md-6"><label class="form-label">Company</label>
+                    <input type="text" name="pickup_company" class="form-control"/></div>
+                <div class="col-md-6"><label class="form-label">Postal Code</label>
+                    <input type="text" name="pickup_postal_code" class="form-control"
+                           t-att-value="pickup_fsa.fsa" required="required"/></div>
+                <div class="col-md-6"><label class="form-label">Address</label>
+                    <input type="text" name="pickup_address" class="form-control" required="required"/></div>
+                <div class="col-md-6"><label class="form-label">Contact Name</label>
+                    <input type="text" name="pickup_contact_name" class="form-control"/></div>
+                <div class="col-md-6"><label class="form-label">Phone</label>
+                    <input type="text" name="pickup_phone" class="form-control"/></div>
+                <div class="col-md-12"><label class="form-label">Instructions</label>
+                    <textarea name="pickup_instructions" class="form-control"/></div>
+
+                <h4 class="mt-3">Delivery</h4>
+                <div class="col-md-6"><label class="form-label">Company</label>
+                    <input type="text" name="delivery_company" class="form-control"/></div>
+                <div class="col-md-6"><label class="form-label">Postal Code</label>
+                    <input type="text" name="delivery_postal_code" class="form-control"
+                           t-att-value="delivery_fsa.fsa" required="required"/></div>
+                <div class="col-md-6"><label class="form-label">Address</label>
+                    <input type="text" name="delivery_address" class="form-control" required="required"/></div>
+                <div class="col-md-6"><label class="form-label">Contact Name</label>
+                    <input type="text" name="delivery_contact_name" class="form-control"/></div>
+                <div class="col-md-6"><label class="form-label">Phone</label>
+                    <input type="text" name="delivery_phone" class="form-control"/></div>
+                <div class="col-md-12"><label class="form-label">Instructions</label>
+                    <textarea name="delivery_instructions" class="form-control"/></div>
+
+                <div class="col-12">
+                    <button type="submit" class="btn btn-success">Book Now</button>
+                </div>
+            </form>
+        </div>
+    </t>
+</template>
+
+<template id="portal_my_bookings" name="My Bookings">
+    <t t-call="portal.portal_layout">
+        <div class="container o_page_container py-5">
+            <h2>My Bookings</h2>
+            <table class="table">
+                <thead><tr><th>Booking #</th><th>Pickup</th><th>Delivery</th><th>Pickup Date</th><th>Est. Delivery</th><th>Price</th></tr></thead>
+                <tbody>
+                    <tr t-foreach="bookings" t-as="b">
+                        <td><a t-attf-href="/my/bookings/#{b.id}" t-esc="b.booking_number"/></td>
+                        <td t-esc="b.pickup_fsa_id.display_city or b.pickup_fsa_id.fsa"/>
+                        <td t-esc="b.delivery_fsa_id.display_city or b.delivery_fsa_id.fsa"/>
+                        <td t-esc="b.pickup_date"/>
+                        <td t-esc="b.estimated_delivery_date"/>
+                        <td t-esc="'%.2f' % b.calculated_price"/>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </t>
+</template>
+
+<template id="portal_booking_detail" name="Booking Detail">
+    <t t-call="portal.portal_layout">
+        <div class="container o_page_container py-5">
+            <h2>Booking <t t-esc="booking.booking_number"/></h2>
+            <p>Status: <t t-esc="booking.state"/></p>
+            <p t-if="booking.dispatch_job_id">
+                Tracking: <a t-attf-href="/dispatch/track/#{booking.booking_number}"
+                              t-esc="booking.booking_number"/>
+            </p>
+            <table class="table table-sm">
+                <tr><td>Pickup</td><td t-esc="booking.pickup_address"/></tr>
+                <tr><td>Delivery</td><td t-esc="booking.delivery_address"/></tr>
+                <tr><td>Pickup Date</td><td t-esc="booking.pickup_date"/></tr>
+                <tr><td>Estimated Delivery</td><td t-esc="booking.estimated_delivery_date"/></tr>
+                <tr><td>Price</td><td>$<t t-esc="'%.2f' % booking.calculated_price"/> CAD</td></tr>
+            </table>
+
+            <!-- Price Breakdown (collapsible) -->
+            <div class="card mt-3" t-if="booking.price_snapshot">
+                <div class="card-header p-2" style="cursor:pointer"
+                     onclick="var el=document.getElementById('priceBreakdown');el.style.display=el.style.display==='none'?'block':'none';">
+                    <strong>View Price Details &#x25BE;</strong>
+                </div>
+                <div id="priceBreakdown" style="display:none">
+                    <table class="table table-sm mb-0">
+                        <t t-foreach="booking.price_snapshot or []" t-as="line">
+                            <tr>
+                                <td t-esc="line['label']"/>
+                                <td class="text-end"
+                                    t-att-class="'text-end ' + ('text-success' if line['amount'] &lt; 0 else '')">
+                                    $<t t-esc="'%.2f' % line['amount']"/>
+                                </td>
+                            </tr>
+                        </t>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </t>
+</template>
+
+</odoo>

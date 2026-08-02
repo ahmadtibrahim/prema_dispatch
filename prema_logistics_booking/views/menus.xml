@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- V4 MENU HIERARCHY -->
+
+    <!-- PARENT MENUS -->
+    <menuitem id="menu_v4_operations" name="Dispatch Operations" parent="prema_dispatch.menu_prema_dispatch_root" sequence="10" groups="prema_dispatch.group_dispatcher"/>
+    <menuitem id="menu_v4_bookings" name="Bookings" parent="prema_dispatch.menu_prema_dispatch_root" sequence="20" groups="prema_dispatch.group_dispatcher"/>
+    <menuitem id="menu_v4_network" name="Network" parent="prema_dispatch.menu_prema_dispatch_root" sequence="30" groups="prema_dispatch.group_dispatch_manager"/>
+    <menuitem id="menu_v4_pricing" name="Pricing" parent="prema_dispatch.menu_prema_dispatch_root" sequence="40" groups="group_logistics_pricing_viewer"/>
+    <menuitem id="menu_v4_fleet" name="Fleet" parent="prema_dispatch.menu_prema_dispatch_root" sequence="50" groups="prema_dispatch.group_dispatch_manager"/>
+
+    <!-- DISPATCH OPERATIONS -->
+    <menuitem id="prema_dispatch.menu_reparent_live_map" name="Live Map" parent="menu_v4_operations" action="prema_dispatch.action_dispatch_live_map" sequence="1" groups="prema_dispatch.group_dispatcher"/>
+    <menuitem id="prema_dispatch.menu_reparent_booking_board" name="Booking Board" parent="menu_v4_operations" action="prema_dispatch.action_booking_status_board" sequence="10" groups="prema_dispatch.group_dispatcher"/>
+    <menuitem id="menu_v4_weekly_schedule" name="Weekly Schedule" parent="menu_v4_operations" action="prema_dispatch.action_dispatch_planner_board" sequence="15" groups="prema_dispatch.group_dispatcher"/>
+    <menuitem id="prema_dispatch.menu_reparent_planner" name="Dispatch Planner" parent="menu_v4_operations" action="prema_dispatch.action_dispatch_planner_board" sequence="20" groups="prema_dispatch.group_dispatcher"/>
+    <menuitem id="prema_dispatch.menu_reparent_load_plans" name="Load Plans" parent="menu_v4_operations" action="prema_dispatch.action_load_plan" sequence="25" groups="prema_dispatch.group_dispatcher"/>
+    <menuitem id="prema_dispatch.menu_reparent_worksheets" name="Driver Worksheets" parent="menu_v4_operations" action="prema_dispatch.action_driver_worksheet_live" sequence="30" groups="prema_dispatch.group_dispatcher"/>
+    <menuitem id="prema_dispatch.menu_reparent_adhoc" name="Find Available Truck" parent="menu_v4_operations" action="prema_dispatch.action_adhoc_load_finder" sequence="35" groups="prema_dispatch.group_dispatcher"/>
+
+    <!-- BOOKINGS -->
+    <menuitem id="menu_v4_all_bookings" name="All Bookings" parent="menu_v4_bookings" action="action_logistics_booking" sequence="10" groups="prema_dispatch.group_dispatcher"/>
+    <menuitem id="menu_v4_phone_booking" name="Phone Booking" parent="menu_v4_bookings" action="action_logistics_phone_booking" sequence="20" groups="prema_dispatch.group_dispatcher"/>
+    <menuitem id="menu_v4_recurring_agreements" name="Recurring Agreements" parent="menu_v4_bookings" action="action_logistics_recurring_agreement" sequence="30" groups="prema_dispatch.group_dispatcher"/>
+    <menuitem id="menu_v4_custom_quotes" name="Custom Quotes" parent="menu_v4_bookings" action="action_logistics_custom_quote" sequence="40" groups="prema_dispatch.group_dispatcher"/>
+    <menuitem id="menu_v4_wa_negotiations" name="WhatsApp Negotiations" parent="menu_v4_bookings" action="agent_wa.action_wa_negotiations" sequence="50" groups="prema_dispatch.group_dispatcher"/>
+
+    <!-- NETWORK -->
+    <menuitem id="menu_v4_corridors" name="Corridors" parent="menu_v4_network" action="action_logistics_corridor" sequence="10" groups="prema_dispatch.group_dispatch_manager"/>
+    <menuitem id="menu_v4_daily_local" name="Daily Local Operations" parent="menu_v4_network" action="action_logistics_daily_local" sequence="20" groups="prema_dispatch.group_dispatch_manager"/>
+    <menuitem id="menu_v4_lanes" name="Lanes" parent="menu_v4_network" action="action_logistics_lane" sequence="30" groups="prema_dispatch.group_dispatch_manager"/>
+    <menuitem id="menu_v4_regions" name="Regions" parent="menu_v4_network" action="action_logistics_region" sequence="40" groups="prema_dispatch.group_dispatch_manager"/>
+    <menuitem id="menu_v4_fsas" name="FSAs" parent="menu_v4_network" action="action_logistics_fsa" sequence="50" groups="prema_dispatch.group_dispatch_manager"/>
+    <menuitem id="menu_v4_cities" name="Cities" parent="menu_v4_network" action="action_logistics_city" sequence="60" groups="prema_dispatch.group_dispatch_manager"/>
+    <menuitem id="menu_v4_region_destinations" name="Region Destinations" parent="menu_v4_network" action="action_logistics_region_destination" sequence="70" groups="prema_dispatch.group_dispatch_manager"/>
+
+    <!-- PRICING -->
+    <menuitem id="menu_v4_rate_plans" name="Rate Plans" parent="menu_v4_pricing" action="action_logistics_rate_plan" sequence="10" groups="group_logistics_pricing_manager"/>
+    <menuitem id="menu_v4_customer_rates" name="Customer Contract Rates" parent="menu_v4_pricing" action="action_logistics_customer_rate" sequence="20" groups="group_logistics_pricing_manager"/>
+    <menuitem id="menu_v4_service_offerings" name="Service Offerings" parent="menu_v4_pricing" action="action_logistics_service_offering" sequence="30" groups="group_logistics_pricing_manager"/>
+    <menuitem id="menu_v4_service_levels" name="Service Levels" parent="menu_v4_pricing" action="action_logistics_service_level" sequence="40" groups="group_logistics_pricing_manager"/>
+    <menuitem id="menu_v4_rate_simulator" name="Rate Simulator" parent="menu_v4_pricing" action="action_logistics_rate_simulator" sequence="50" groups="group_logistics_pricing_manager"/>
+    <menuitem id="menu_v4_schedule_simulator" name="Schedule Simulator" parent="menu_v4_pricing" action="action_logistics_schedule_simulator" sequence="60" groups="group_logistics_pricing_manager"/>
+
+    <!-- FLEET -->
+    <menuitem id="menu_v4_trucks" name="Trucks" parent="menu_v4_fleet" action="fleet.fleet_vehicle_action" sequence="10" groups="prema_dispatch.group_dispatch_manager"/>
+    <menuitem id="menu_v4_drivers" name="Drivers" parent="menu_v4_fleet" action="contacts.action_contacts" sequence="20" groups="prema_dispatch.group_dispatch_manager"/>
+    <menuitem id="menu_v4_equipment_profiles" name="Equipment Profiles" parent="menu_v4_fleet" action="action_logistics_equipment_profile" sequence="30" groups="prema_dispatch.group_dispatch_manager"/>
+    <menuitem id="menu_v4_geotab" name="GeoTab Settings" parent="menu_v4_fleet" sequence="40" groups="prema_dispatch.group_dispatch_manager"/>
+
+    <!-- REMOVE OLD TOP-LEVEL SHORTCUTS -->
+    <delete model="ir.ui.menu" search="[('id','=',ref('prema_dispatch.menu_booking_board'))]"/>
+    <delete model="ir.ui.menu" search="[('id','=',ref('prema_dispatch.menu_load_plans'))]"/>
+    <delete model="ir.ui.menu" search="[('id','=',ref('prema_dispatch.menu_driver_worksheet'))]"/>
+    <delete model="ir.ui.menu" search="[('id','=',ref('prema_dispatch.menu_adhoc_load_finder'))]"/>
+    <delete model="ir.ui.menu" search="[('id','=',ref('prema_dispatch.menu_dispatch_live_map'))]"/>
+    <delete model="ir.ui.menu" search="[('id','=',ref('prema_dispatch.menu_dispatch_planner'))]"/>
+    <delete model="ir.ui.menu" search="[('id','=',ref('prema_dispatch.menu_dispatch_locations'))]"/>
+    <delete model="ir.ui.menu" search="[('id','=',ref('menu_logistics_route_run'))]"/>
+    <delete model="ir.ui.menu" search="[('id','=',ref('menu_logistics_pricing_root'))]"/>
+    <delete model="ir.ui.menu" search="[('id','=',ref('menu_logistics_fsa_zone'))]"/>
+
+</odoo>

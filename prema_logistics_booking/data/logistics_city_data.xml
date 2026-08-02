@@ -1,0 +1,203 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data noupdate="1">
+    <!-- Phase 3: Ontario + Quebec City Directory (~25 cities)
+         Maps city names to regions for customer-facing display.
+         Pricing stays at region level — city is display-only. -->
+
+    <!-- Region R1 — GTA Central (Mississauga) -->
+    <record id="city_mississauga" model="logistics.city">
+        <field name="name">Mississauga</field>
+        <field name="province_state">ON</field>
+        <field name="region_id" ref="region_r1"/>
+        <field name="latitude">43.5890</field>
+        <field name="longitude">-79.6441</field>
+    </record>
+    <record id="city_brampton" model="logistics.city">
+        <field name="name">Brampton</field>
+        <field name="province_state">ON</field>
+        <field name="region_id" ref="region_r1"/>
+        <field name="latitude">43.7315</field>
+        <field name="longitude">-79.7624</field>
+    </record>
+    <record id="city_toronto" model="logistics.city">
+        <field name="name">Toronto</field>
+        <field name="province_state">ON</field>
+        <field name="region_id" ref="region_r1"/>
+        <field name="latitude">43.6532</field>
+        <field name="longitude">-79.3832</field>
+    </record>
+    <record id="city_milton" model="logistics.city">
+        <field name="name">Milton</field>
+        <field name="province_state">ON</field>
+        <field name="region_id" ref="region_r1"/>
+        <field name="latitude">43.5087</field>
+        <field name="longitude">-79.8872</field>
+    </record>
+    <record id="city_oakville" model="logistics.city">
+        <field name="name">Oakville</field>
+        <field name="province_state">ON</field>
+        <field name="region_id" ref="region_r1"/>
+        <field name="latitude">43.4675</field>
+        <field name="longitude">-79.6877</field>
+    </record>
+    <record id="city_ajax" model="logistics.city">
+        <field name="name">Ajax</field>
+        <field name="province_state">ON</field>
+        <field name="region_id" ref="region_r1"/>
+        <field name="latitude">43.8509</field>
+        <field name="longitude">-79.0204</field>
+    </record>
+
+    <!-- Region R2 — Southwest Ontario (London) -->
+    <record id="city_london" model="logistics.city">
+        <field name="name">London</field>
+        <field name="province_state">ON</field>
+        <field name="region_id" ref="region_r2"/>
+        <field name="latitude">42.9849</field>
+        <field name="longitude">-81.2453</field>
+    </record>
+
+    <!-- Region R3 — Golden Horseshoe South (Hamilton/Niagara) -->
+    <record id="city_hamilton" model="logistics.city">
+        <field name="name">Hamilton</field>
+        <field name="province_state">ON</field>
+        <field name="region_id" ref="region_r3"/>
+        <field name="latitude">43.2557</field>
+        <field name="longitude">-79.8711</field>
+    </record>
+    <record id="city_stcatharines" model="logistics.city">
+        <field name="name">St Catharines</field>
+        <field name="province_state">ON</field>
+        <field name="region_id" ref="region_r3"/>
+        <field name="latitude">43.1594</field>
+        <field name="longitude">-79.2469</field>
+    </record>
+    <record id="city_niagarafalls" model="logistics.city">
+        <field name="name">Niagara Falls</field>
+        <field name="province_state">ON</field>
+        <field name="region_id" ref="region_r3"/>
+        <field name="latitude">43.0896</field>
+        <field name="longitude">-79.0849</field>
+    </record>
+
+    <!-- Region R4 — Central Ontario / Grey-Bruce (Barrie) -->
+    <record id="city_orangeville" model="logistics.city">
+        <field name="name">Orangeville</field>
+        <field name="province_state">ON</field>
+        <field name="region_id" ref="region_r4"/>
+        <field name="latitude">43.9192</field>
+        <field name="longitude">-80.0943</field>
+    </record>
+    <record id="city_sudbury" model="logistics.city">
+        <field name="name">Sudbury</field>
+        <field name="province_state">ON</field>
+        <field name="region_id" ref="region_r4"/>
+        <field name="latitude">46.5222</field>
+        <field name="longitude">-80.9534</field>
+    </record>
+
+    <!-- Region R5 — East-Central Ontario (Peterborough) -->
+    <record id="city_lindsay" model="logistics.city">
+        <field name="name">Lindsay</field>
+        <field name="province_state">ON</field>
+        <field name="region_id" ref="region_r5"/>
+        <field name="latitude">44.3550</field>
+        <field name="longitude">-78.7403</field>
+    </record>
+    <record id="city_minden" model="logistics.city">
+        <field name="name">Minden</field>
+        <field name="province_state">ON</field>
+        <field name="region_id" ref="region_r5"/>
+        <field name="latitude">44.9260</field>
+        <field name="longitude">-78.7257</field>
+    </record>
+    <record id="city_haliburton" model="logistics.city">
+        <field name="name">Haliburton</field>
+        <field name="province_state">ON</field>
+        <field name="region_id" ref="region_r5"/>
+        <field name="latitude">45.0468</field>
+        <field name="longitude">-78.5083</field>
+    </record>
+    <record id="city_campbellford" model="logistics.city">
+        <field name="name">Campbellford</field>
+        <field name="province_state">ON</field>
+        <field name="region_id" ref="region_r5"/>
+        <field name="latitude">44.3088</field>
+        <field name="longitude">-77.7975</field>
+    </record>
+
+    <!-- Region R6 — Eastern Ontario (Kingston) -->
+    <record id="city_kingston" model="logistics.city">
+        <field name="name">Kingston</field>
+        <field name="province_state">ON</field>
+        <field name="region_id" ref="region_r6"/>
+        <field name="latitude">44.2312</field>
+        <field name="longitude">-76.4860</field>
+    </record>
+    <record id="city_belleville" model="logistics.city">
+        <field name="name">Belleville</field>
+        <field name="province_state">ON</field>
+        <field name="region_id" ref="region_r6"/>
+        <field name="latitude">44.1628</field>
+        <field name="longitude">-77.3832</field>
+    </record>
+    <record id="city_cobourg" model="logistics.city">
+        <field name="name">Cobourg</field>
+        <field name="province_state">ON</field>
+        <field name="region_id" ref="region_r6"/>
+        <field name="latitude">43.9598</field>
+        <field name="longitude">-78.1672</field>
+    </record>
+    <record id="city_brockville" model="logistics.city">
+        <field name="name">Brockville</field>
+        <field name="province_state">ON</field>
+        <field name="region_id" ref="region_r6"/>
+        <field name="latitude">44.5895</field>
+        <field name="longitude">-75.6843</field>
+    </record>
+    <record id="city_cornwall" model="logistics.city">
+        <field name="name">Cornwall</field>
+        <field name="province_state">ON</field>
+        <field name="region_id" ref="region_r6"/>
+        <field name="latitude">45.0213</field>
+        <field name="longitude">-74.7303</field>
+    </record>
+
+    <!-- Region R7 — Ottawa Valley -->
+    <record id="city_ottawa" model="logistics.city">
+        <field name="name">Ottawa</field>
+        <field name="province_state">ON</field>
+        <field name="region_id" ref="region_r7"/>
+        <field name="latitude">45.4215</field>
+        <field name="longitude">-75.6972</field>
+    </record>
+
+    <!-- Region R8 — Greater Montreal -->
+    <record id="city_montreal" model="logistics.city">
+        <field name="name">Montreal</field>
+        <field name="province_state">QC</field>
+        <field name="region_id" ref="region_r8"/>
+        <field name="latitude">45.5017</field>
+        <field name="longitude">-73.5673</field>
+    </record>
+
+    <!-- Region R9 — Central Quebec (Drummondville) -->
+    <record id="city_drummondville" model="logistics.city">
+        <field name="name">Drummondville</field>
+        <field name="province_state">QC</field>
+        <field name="region_id" ref="region_r9"/>
+        <field name="latitude">45.8833</field>
+        <field name="longitude">-72.4833</field>
+    </record>
+
+    <!-- Region R10 — Quebec City Region -->
+    <record id="city_quebec_city" model="logistics.city">
+        <field name="name">Quebec City</field>
+        <field name="province_state">QC</field>
+        <field name="region_id" ref="region_r10"/>
+        <field name="latitude">46.8139</field>
+        <field name="longitude">-71.2080</field>
+    </record>
+    </data>
+</odoo>

@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_logistics_service_offering_list" model="ir.ui.view">
+        <field name="name">logistics.service.offering.list</field>
+        <field name="model">logistics.service.offering</field>
+        <field name="arch" type="xml">
+            <list>
+                <field name="name"/>
+                <field name="lane_id"/>
+                <field name="service_level_id"/>
+                <field name="temperature_mode"/>
+                <field name="shipment_type"/>
+                <field name="active"/>
+            </list>
+        </field>
+    </record>
+    <record id="view_logistics_service_offering_form" model="ir.ui.view">
+        <field name="name">logistics.service.offering.form</field>
+        <field name="model">logistics.service.offering</field>
+        <field name="arch" type="xml">
+            <form>
+                <sheet>
+                    <group>
+                        <field name="lane_id"/>
+                        <field name="service_level_id"/>
+                        <field name="temperature_mode"/>
+                        <field name="shipment_type"/>
+                        <field name="active"/>
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+    <record id="action_logistics_service_offering" model="ir.actions.act_window">
+        <field name="name">Service Offerings</field>
+        <field name="res_model">logistics.service.offering</field>
+        <field name="view_mode">list,form</field>
+    </record>
+</odoo>

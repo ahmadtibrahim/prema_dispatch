@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data noupdate="1">
+        <record id="param_logistics_booking_portal_enabled" model="ir.config_parameter">
+            <field name="key">logistics_booking.portal_enabled</field>
+            <field name="value">False</field>
+        </record>
+        <record id="param_logistics_booking_public_test_mode" model="ir.config_parameter">
+            <field name="key">logistics_booking.public_test_mode</field>
+            <field name="value">True</field>
+        </record>
+    </data>
+</odoo>

@@ -1,0 +1,103 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_logistics_route_run_list" model="ir.ui.view">
+        <field name="name">logistics.route.run.list</field>
+        <field name="model">logistics.route.run</field>
+        <field name="arch" type="xml">
+            <list>
+                <field name="name"/>
+                <field name="run_date"/>
+                <field name="corridor_name"/>
+                <field name="vehicle_id"/>
+                <field name="booked_revenue" string="Revenue" sum="Booked Revenue"/>
+                <field name="revenue_target" string="Target"/>
+                <field name="route_cost" string="Cost"/>
+                <field name="net_profit" string="NET Profit" sum="NET Profit"/>
+                <field name="booked_pallets" string="Pallets"/>
+                <field name="state"/>
+            </list>
+        </field>
+    </record>
+    <record id="view_logistics_route_run_form" model="ir.ui.view">
+        <field name="name">logistics.route.run.form</field>
+        <field name="model">logistics.route.run</field>
+        <field name="arch" type="xml">
+            <form>
+                <header>
+                    <button name="action_estimate_cost" string="Estimate Route Cost" type="object" class="btn-secondary"/>
+                    <button name="action_open_dispatch" string="Open Dispatch" type="object" class="btn-primary"/>
+                    <field name="state" widget="statusbar"/>
+                </header>
+                <sheet>
+                    <div class="oe_title"><h1><field name="name"/></h1></div>
+                    <group>
+                        <group>
+                            <field name="run_date"/>
+                            <field name="recurring_day"/>
+                            <field name="corridor_name"/>
+                            <field name="routing_strategy"/>
+                        </group>
+                        <group>
+                            <field name="vehicle_id"/>
+                            <field name="driver_id"/>
+                            <field name="equipment_profile_id"/>
+                            <field name="temperature_mode"/>
+                        </group>
+                    </group>
+                    <group string="Regions">
+                        <field name="origin_region_id"/>
+                        <field name="destination_region_id"/>
+                        <field name="via_hub_id"/>
+                    </group>
+                    <notebook>
+                        <page string="Capacity">
+                            <group>
+                                <group>
+                                    <field name="max_pallets"/>
+                                    <field name="booked_pallets"/>
+                                    <field name="available_pallets"/>
+                                </group>
+                                <group>
+                                    <field name="max_weight_lbs"/>
+                                    <field name="booked_weight_lbs"/>
+                                    <field name="available_weight_lbs"/>
+                                </group>
+                            </group>
+                        </page>
+                        <page string="Revenue &amp; Profit">
+                            <group>
+                                <group>
+                                    <field name="revenue_target"/>
+                                    <field name="booked_revenue"/>
+                                    <field name="remaining_target"/>
+                                </group>
+                                <group>
+                                    <field name="route_cost"/>
+                                    <field name="net_profit"/>
+                                </group>
+                            </group>
+                        </page>
+                        <page string="Bookings" autofocus="1">
+                            <field name="booking_ids">
+                                <list>
+                                    <field name="booking_number"/>
+                                    <field name="partner_id"/>
+                                    <field name="pickup_fsa_id"/>
+                                    <field name="delivery_fsa_id"/>
+                                    <field name="pallets"/>
+                                    <field name="calculated_price"/>
+                                    <field name="state"/>
+                                </list>
+                            </field>
+                        </page>
+                    </notebook>
+                </sheet>
+            </form>
+        </field>
+    </record>
+    <record id="action_logistics_route_run" model="ir.actions.act_window">
+        <field name="name">Route Runs</field>
+        <field name="res_model">logistics.route.run</field>
+        <field name="view_mode">list,form</field>
+    </record>
+</odoo>

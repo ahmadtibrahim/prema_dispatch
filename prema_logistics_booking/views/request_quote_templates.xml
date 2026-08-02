@@ -1,0 +1,480 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+<!-- ======== STEP 1: LOCATIONS ======== -->
+<template id="portal_booking_step1_locations" name="Booking Step 1 — Locations">
+    <t t-call="website.layout">
+        <div class="container o_page_container py-5">
+            <div class="mx-auto" style="max-width:600px">
+                <h1 class="mb-2">Book a Shipment</h1>
+                <p class="text-muted mb-4">Enter pickup and delivery postal codes to see available delivery days and pricing.</p>
+
+                <div class="d-flex align-items-center mb-4">
+                    <span class="badge bg-primary rounded-pill px-3 py-2 me-2">1</span>
+                    <span class="fw-bold">Locations</span>
+                    <span class="mx-2 text-muted">→</span>
+                    <span class="text-muted">2 Shipment</span>
+                    <span class="mx-2 text-muted">→</span>
+                    <span class="text-muted">3 Delivery Options</span>
+                    <span class="mx-2 text-muted">→</span>
+                    <span class="text-muted">4 Review</span>
+                </div>
+
+                <div t-if="error" class="alert alert-warning" t-esc="error"/>
+
+                <form action="/request-a-quote/locations" method="post">
+                    <input type="hidden" name="csrf_token" t-att-value="request.csrf_token()"/>
+                    <div class="mb-3">
+                        <label class="form-label fw-bold">Pickup Postal Code</label>
+                        <input type="text" name="pickup_postal_code" class="form-control form-control-lg"
+                               placeholder="e.g. N6A 1A1" required="required" autofocus="autofocus"/>
+                        <div class="form-text">Where will your shipment be picked up?</div>
+                    </div>
+                    <div class="mb-4">
+                        <label class="form-label fw-bold">Delivery Postal Code</label>
+                        <input type="text" name="delivery_postal_code" class="form-control form-control-lg"
+                               placeholder="e.g. H2X 1Y4" required="required"/>
+                        <div class="form-text">Where should it be delivered?</div>
+                    </div>
+                    <button type="submit" class="btn btn-primary btn-lg w-100">Continue</button>
+                </form>
+                <p class="mt-3 text-muted small text-center">We serve Ontario and Quebec with scheduled LTL service.</p>
+            </div>
+        </div>
+    </t>
+</template>
+
+<!-- ======== STEP 2: SHIPMENT ======== -->
+<template id="portal_booking_step2_shipment" name="Booking Step 2 — Shipment">
+    <t t-call="website.layout">
+        <div class="container o_page_container py-5">
+            <div class="mx-auto" style="max-width:700px">
+                <h2>Shipment Details</h2>
+                <div class="d-flex align-items-center mb-4">
+                    <span class="text-muted small">1 Locations</span>
+                    <span class="mx-2 text-muted small">→</span>
+                    <span class="badge bg-primary rounded-pill px-3 py-2 me-2">2</span>
+                    <span class="fw-bold">Shipment</span>
+                    <span class="mx-2 text-muted small">→</span>
+                    <span class="text-muted small">3 Delivery Options</span>
+                    <span class="mx-2 text-muted small">→</span>
+                    <span class="text-muted small">4 Review</span>
+                </div>
+
+                <div class="card bg-light mb-4"><div class="card-body">
+                    <div class="row">
+                        <div class="col-6">
+                            <strong>From:</strong> <t t-esc="pickup_city"/>
+                            <br/><small class="text-muted" t-esc="pickup_region"/>
+                        </div>
+                        <div class="col-6">
+                            <strong>To:</strong> <t t-esc="delivery_city"/>
+                            <br/><small class="text-muted" t-esc="delivery_region"/>
+                        </div>
+                    </div>
+                </div></div>
+
+                <form action="/request-a-quote/delivery-options" method="post">
+                    <input type="hidden" name="csrf_token" t-att-value="request.csrf_token()"/>
+                    <input type="hidden" name="pickup_fsa" t-att-value="pickup_fsa"/>
+                    <input type="hidden" name="delivery_fsa" t-att-value="delivery_fsa"/>
+                    <input type="hidden" name="pickup_city" t-att-value="pickup_city"/>
+                    <input type="hidden" name="delivery_city" t-att-value="delivery_city"/>
+                    <input type="hidden" name="pickup_region" t-att-value="pickup_region"/>
+                    <input type="hidden" name="delivery_region" t-att-value="delivery_region"/>
+
+                    <div class="row g-3 mb-3">
+                        <div class="col-6">
+                            <label class="form-label">Number of Pallets</label>
+                            <input type="number" name="pallets" id="pallets_input" class="form-control" min="1" max="26" value="1" required="required"
+                                   onchange="updateWeightEstimate()"/>
+                        </div>
+                        <div class="col-6">
+                            <label class="form-label">Total Weight (lbs) <small class="text-muted">— estimated at 500 lb/pallet</small></label>
+                            <input type="number" name="weight_lbs" id="weight_input" class="form-control" value="500" step="10" required="required"/>
+                            <div class="form-text">Default is 500 lb per pallet. Adjust to your actual total weight.</div>
+                        </div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label">Temperature</label>
+                        <select name="temperature_mode" class="form-select">
+                            <option value="dry">Ambient / No temperature control</option>
+                            <option value="chilled">Refrigerated (Chilled)</option>
+                            <option value="frozen">Frozen</option>
+                        </select>
+                    </div>
+
+                    <div class="row g-2 mb-3">
+                        <div class="col-6">
+                            <div class="form-check">
+                                <input type="checkbox" class="form-check-input" name="liftgate_pickup" value="1" id="lp"/>
+                                <label class="form-check-label" for="lp">No loading dock at pickup</label>
+                            </div>
+                        </div>
+                        <div class="col-6">
+                            <div class="form-check">
+                                <input type="checkbox" class="form-check-input" name="liftgate_delivery" value="1" id="ld"/>
+                                <label class="form-check-label" for="ld">No loading dock at delivery</label>
+                            </div>
+                        </div>
+                        <div class="col-6">
+                            <div class="form-check">
+                                <input type="checkbox" class="form-check-input" name="residential" value="1" id="res"/>
+                                <label class="form-check-label" for="res">Delivering to a home</label>
+                            </div>
+                        </div>
+                        <div class="col-6">
+                            <div class="form-check">
+                                <input type="checkbox" class="form-check-input" name="appointment" value="1" id="appt"/>
+                                <label class="form-check-label" for="appt">Need a specific time window</label>
+                            </div>
+                        </div>
+                    </div>
+
+                    <button type="submit" class="btn btn-primary btn-lg w-100">See Available Delivery Dates</button>
+                </form>
+            </div>
+        </div>
+    </t>
+    <script>
+        let weightManuallySet = false;
+        function updateWeightEstimate() {
+            if (weightManuallySet) return;
+            var p = parseInt(document.getElementById('pallets_input').value) || 1;
+            document.getElementById('weight_input').value = p * 500;
+        }
+        document.addEventListener('DOMContentLoaded', function() {
+            var wi = document.getElementById('weight_input');
+            if (wi) {
+                wi.addEventListener('input', function() { weightManuallySet = true; });
+            }
+        });
+    </script>
+</template>
+
+<!-- ======== STEP 3: DELIVERY OPTIONS (14-day forward search) ======== -->
+<template id="portal_booking_step3_options" name="Booking Step 3 — Delivery Options">
+    <t t-call="website.layout">
+        <div class="container o_page_container py-5">
+            <div class="mx-auto" style="max-width:750px">
+                <h2>Available Delivery Dates</h2>
+                <div class="d-flex align-items-center mb-3">
+                    <span class="text-muted small">1 Locations</span>
+                    <span class="mx-2 text-muted small">→</span>
+                    <span class="text-muted small">2 Shipment</span>
+                    <span class="mx-2 text-muted small">→</span>
+                    <span class="badge bg-primary rounded-pill px-3 py-2 me-2">3</span>
+                    <span class="fw-bold">Delivery Options</span>
+                    <span class="mx-2 text-muted small">→</span>
+                    <span class="text-muted small">4 Review</span>
+                </div>
+
+                <div class="card bg-light mb-3"><div class="card-body">
+                    <strong t-esc="pickup_city"/> <t t-esc="pickup_fsa.region_id.name if pickup_fsa.region_id else ''"/>
+                    → <strong t-esc="delivery_city"/> <t t-esc="delivery_fsa.region_id.name if delivery_fsa.region_id else ''"/>
+                    · <t t-esc="pallets"/> pallet(s) · <t t-esc="temperature_mode"/>
+                </div></div>
+
+                <!-- Scheduled Options with capacity labels -->
+                <t t-if="has_scheduled">
+                    <t t-foreach="options" t-as="opt">
+                        <div t-att-class="'card mb-3 ' + ('border-success' if opt['capacity_label'] == 'AVAILABLE' else ('border-warning' if opt['capacity_label'] == 'LIMITED_SPACE' else 'border-danger'))">
+                            <div class="card-body">
+                                <div class="row align-items-center">
+                                    <div class="col-md-7">
+                                        <div class="d-flex align-items-center gap-2 mb-1">
+                                            <h5 class="mb-0" t-esc="opt['delivery_day_name'] + ' DELIVERY' if opt['delivery_day_name'] else 'Scheduled Service'"/>
+                                            <span t-att-class="'badge ' + ('bg-success' if opt['capacity_label'] == 'AVAILABLE' else ('bg-warning text-dark' if opt['capacity_label'] == 'LIMITED_SPACE' else 'bg-danger'))"
+                                                  t-esc="opt['capacity_label']"/>
+                                        </div>
+                                        <p class="mb-1 text-muted">
+                                            Pickup: <strong t-esc="opt['pickup_date_formatted'] or 'TBD'"/>
+                                            · Delivery: <strong t-esc="opt['delivery_date_formatted'] or 'TBD'"/>
+                                        </p>
+                                        <span class="badge bg-info" t-esc="'Same-Day' if 'same_day' in opt['priority'] else 'Scheduled LTL'"/>
+                                        <t t-if="opt['capacity_label'] == 'SOLD_OUT'">
+                                            <small class="text-danger ms-2">This departure is full</small>
+                                        </t>
+                                        <t t-if="opt['available_pallets'] > 0 and opt['capacity_label'] != 'SOLD_OUT'">
+                                            <small class="text-muted ms-2" t-esc="'%s positions available' % opt['available_pallets']"/>
+                                        </t>
+                                    </div>
+                                    <div class="col-md-3 text-md-end">
+                                        <h4 class="mb-0 text-success" t-esc="opt['price']"/>
+                                        <small class="text-muted">CAD</small>
+                                    </div>
+                                    <div class="col-md-2 text-md-end mt-2 mt-md-0">
+                                        <t t-if="opt['capacity_label'] != 'SOLD_OUT'">
+                                            <form action="/request-a-quote/select" method="post">
+                                                <input type="hidden" name="csrf_token" t-att-value="request.csrf_token()"/>
+                                                <input type="hidden" name="pickup_fsa" t-att-value="pickup_fsa.fsa"/>
+                                                <input type="hidden" name="delivery_fsa" t-att-value="delivery_fsa.fsa"/>
+                                                <input type="hidden" name="pickup_city" t-att-value="pickup_city"/>
+                                                <input type="hidden" name="delivery_city" t-att-value="delivery_city"/>
+                                                <input type="hidden" name="pallets" t-att-value="pallets"/>
+                                                <input type="hidden" name="weight_lbs" t-att-value="weight_lbs"/>
+                                                <input type="hidden" name="temperature_mode" t-att-value="temperature_mode"/>
+                                                <input type="hidden" name="delivery_day" t-att-value="opt['delivery_date_formatted']"/>
+                                                <input type="hidden" name="pickup_day" t-att-value="opt['pickup_date_formatted']"/>
+                                                <button type="submit" class="btn btn-primary">Select</button>
+                                            </form>
+                                        </t>
+                                        <t t-if="opt['capacity_label'] == 'SOLD_OUT'">
+                                            <span class="text-muted">SOLD OUT</span>
+                                        </t>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </t>
+                </t>
+
+                <!-- No scheduled options — show friendly custom quote -->
+                <t t-if="not has_scheduled">
+                    <div class="card mb-4 border-warning">
+                        <div class="card-body text-center py-4">
+                            <h5>Scheduled service is not currently available for this route</h5>
+                            <p class="text-muted">We can prepare a custom quote for your shipment.</p>
+                            <a t-attf-href="/request-a-quote/submit?pickup_postal_code=#{pickup_fsa.fsa}&amp;delivery_postal_code=#{delivery_fsa.fsa}"
+                               class="btn btn-outline-primary">Request a Custom Quote</a>
+                        </div>
+                    </div>
+                </t>
+
+                <!-- View Later Dates -->
+                <div class="text-center mt-3">
+                    <p class="text-muted small">Looking for a later date?</p>
+                    <a href="#" class="btn btn-sm btn-outline-secondary" onclick="alert('Browse future dates coming soon.')">View Later Dates</a>
+                </div>
+
+                <div class="text-center mt-3">
+                    <a href="/request-a-quote" class="btn btn-link">Start Over</a>
+                </div>
+            </div>
+        </div>
+    </t>
+</template>
+
+<!-- ======== STEP 4: REVIEW & BOOK ======== -->
+<template id="portal_booking_step4_review" name="Booking Step 4 — Review &amp; Book">
+    <t t-call="website.layout">
+        <div class="container o_page_container py-5">
+            <div class="mx-auto" style="max-width:700px">
+                <h2>Review &amp; Book</h2>
+                <div class="d-flex align-items-center mb-4">
+                    <span class="text-muted small">1 Locations</span>
+                    <span class="mx-2 text-muted small">→</span>
+                    <span class="text-muted small">2 Shipment</span>
+                    <span class="mx-2 text-muted small">→</span>
+                    <span class="text-muted small">3 Delivery Options</span>
+                    <span class="mx-2 text-muted small">→</span>
+                    <span class="badge bg-primary rounded-pill px-3 py-2 me-2">4</span>
+                    <span class="fw-bold">Review</span>
+                </div>
+
+                <!-- Delivery summary -->
+                <div class="card bg-success text-white mb-4"><div class="card-body">
+                    <div class="row">
+                        <div class="col-6">
+                            <small>PICKUP</small><br/>
+                            <strong t-esc="pickup_day or session.pickup_date"/>
+                        </div>
+                        <div class="col-6 text-end">
+                            <small>DELIVERY</small><br/>
+                            <strong t-esc="delivery_day or session.delivery_date_estimate"/>
+                        </div>
+                    </div>
+                </div></div>
+
+                <!-- Price -->
+                <div class="card mb-4"><div class="card-body">
+                    <table class="table table-sm mb-0"><tbody>
+                        <tr t-foreach="session.price_snapshot or []" t-as="line">
+                            <td t-esc="line['label']"/>
+                            <td class="text-end" t-esc="line['amount']"/>
+                        </tr>
+                    </tbody></table>
+                </div></div>
+
+                <p class="text-muted small mb-3">This price is guaranteed for a limited time. The price shown is the price you will be charged.</p>
+
+                <!-- Address form -->
+                <form action="/request-a-quote/confirm" method="post">
+                    <input type="hidden" name="csrf_token" t-att-value="request.csrf_token()"/>
+                    <input type="hidden" name="token" t-att-value="session.token"/>
+                    <input type="hidden" name="pickup_postal_code" t-att-value="pickup_fsa.fsa"/>
+                    <input type="hidden" name="delivery_postal_code" t-att-value="delivery_fsa.fsa"/>
+
+                    <h5 class="mb-3">Pickup Address</h5>
+                    <div class="row g-2 mb-3">
+                        <div class="col-md-6">
+                            <input type="text" name="pickup_company" class="form-control" placeholder="Company name"/>
+                        </div>
+                        <div class="col-md-6">
+                            <input type="text" name="pickup_address" class="form-control" placeholder="Street address" required="required"/>
+                        </div>
+                        <div class="col-md-6">
+                            <input type="text" name="pickup_contact_name" class="form-control" placeholder="Contact name"/>
+                        </div>
+                        <div class="col-md-6">
+                            <input type="text" name="pickup_phone" class="form-control" placeholder="Phone"/>
+                        </div>
+                        <div class="col-12">
+                            <textarea name="pickup_instructions" class="form-control" placeholder="Pickup instructions (optional)"/>
+                        </div>
+                    </div>
+
+                    <h5 class="mb-3 mt-4">Delivery Address</h5>
+                    <div class="row g-2 mb-4">
+                        <div class="col-md-6">
+                            <input type="text" name="delivery_company" class="form-control" placeholder="Company name"/>
+                        </div>
+                        <div class="col-md-6">
+                            <input type="text" name="delivery_address" class="form-control" placeholder="Street address" required="required"/>
+                        </div>
+                        <div class="col-md-6">
+                            <input type="text" name="delivery_contact_name" class="form-control" placeholder="Contact name"/>
+                        </div>
+                        <div class="col-md-6">
+                            <input type="text" name="delivery_phone" class="form-control" placeholder="Phone"/>
+                        </div>
+                        <div class="col-12">
+                            <textarea name="delivery_instructions" class="form-control" placeholder="Delivery instructions (optional)"/>
+                        </div>
+                    </div>
+
+                    <button type="submit" class="btn btn-success btn-lg w-100">Confirm Booking</button>
+                </form>
+            </div>
+        </div>
+    </t>
+</template>
+
+<!-- ======== BOOKING CONFIRMED ======== -->
+<template id="portal_booking_confirmed" name="Booking Confirmed">
+    <t t-call="website.layout">
+        <div class="container o_page_container py-5 text-center">
+            <div class="mx-auto" style="max-width:550px">
+                <div class="mb-3"><span style="font-size:60px">&#10003;</span></div>
+                <h2>Booking Confirmed</h2>
+                <div class="card mb-4"><div class="card-body">
+                    <h4 class="text-primary"><t t-esc="booking.booking_number"/></h4>
+                    <p class="text-muted">Tracking Number</p>
+                    <hr/>
+                    <div class="row text-start">
+                        <div class="col-6"><small class="text-muted">FROM</small><br/><strong t-esc="booking.pickup_fsa_id.display_city or booking.pickup_fsa_id.fsa"/></div>
+                        <div class="col-6"><small class="text-muted">TO</small><br/><strong t-esc="booking.delivery_fsa_id.display_city or booking.delivery_fsa_id.fsa"/></div>
+                        <div class="col-6 mt-2"><small class="text-muted">PICKUP</small><br/><strong t-esc="booking.pickup_date"/></div>
+                        <div class="col-6 mt-2"><small class="text-muted">DELIVERY</small><br/><strong t-esc="booking.estimated_delivery_date"/></div>
+                        <div class="col-6 mt-2"><small class="text-muted">SHIPMENT</small><br/><t t-esc="booking.pallets"/> pallet(s) · <t t-esc="booking.temperature_mode"/></div>
+                        <div class="col-6 mt-2"><small class="text-muted">TOTAL</small><br/><strong><t t-esc="booking.calculated_price"/> CAD</strong></div>
+                    </div>
+                </div></div>
+                <a t-attf-href="/track" class="btn btn-outline-primary me-2">Track Shipment</a>
+                <a href="/request-a-quote" class="btn btn-outline-secondary">Book Another</a>
+            </div>
+        </div>
+    </t>
+</template>
+
+<!-- ======== CUSTOM QUOTE OFFER (kept from before) ======== -->
+<template id="portal_custom_quote_offer" name="Custom Quote Offer">
+    <t t-call="website.layout">
+        <div class="container o_page_container py-5">
+            <div class="mx-auto" style="max-width:600px">
+                <h2>We'll Prepare a Custom Quote</h2>
+                <p>This shipment is outside our current scheduled network, but we can still help.</p>
+                <div class="alert alert-info">
+                    <strong>From:</strong> <t t-esc="pickup_fsa.display_city or pickup_fsa.fsa"/>
+                    → <strong>To:</strong> <t t-esc="delivery_fsa.display_city or delivery_fsa.fsa"/>
+                </div>
+                <form action="/request-a-quote/submit" method="post">
+                    <input type="hidden" name="csrf_token" t-att-value="request.csrf_token()"/>
+                    <input type="hidden" name="pickup_postal_code" t-att-value="pickup_fsa.fsa"/>
+                    <input type="hidden" name="delivery_postal_code" t-att-value="delivery_fsa.fsa"/>
+                    <div class="row g-2 mb-3">
+                        <div class="col-md-6"><input type="text" name="contact_name" class="form-control" placeholder="Your Name" required="required"/></div>
+                        <div class="col-md-6"><input type="text" name="company_name" class="form-control" placeholder="Company"/></div>
+                        <div class="col-md-6"><input type="email" name="contact_email" class="form-control" placeholder="Email" required="required"/></div>
+                        <div class="col-md-6"><input type="text" name="contact_phone" class="form-control" placeholder="Phone"/></div>
+                    </div>
+                    <textarea name="pickup_address" class="form-control mb-2" placeholder="Full pickup address"/>
+                    <textarea name="delivery_address" class="form-control mb-2" placeholder="Full delivery address"/>
+                    <div class="row g-2 mb-3">
+                        <div class="col-4"><input type="number" name="pallets" class="form-control" value="1" placeholder="Pallets"/></div>
+                        <div class="col-4"><input type="number" name="weight_lbs" class="form-control" value="800" placeholder="Weight (lbs)"/></div>
+                        <div class="col-4"><input type="text" name="commodity" class="form-control" placeholder="Commodity"/></div>
+                    </div>
+                    <textarea name="notes" class="form-control mb-3" placeholder="Any special requirements..."/>
+                    <button type="submit" class="btn btn-primary btn-lg w-100">Submit Quote Request</button>
+                </form>
+            </div>
+        </div>
+    </t>
+</template>
+
+<!-- ======== CUSTOM QUOTE CONFIRMED ======== -->
+<template id="portal_custom_quote_confirmed" name="Custom Quote Confirmed">
+    <t t-call="website.layout">
+        <div class="container o_page_container py-5 text-center">
+            <h2>Quote Request Received</h2>
+            <div class="alert alert-success">
+                <strong>Reference:</strong> <t t-esc="quote.name"/>
+            </div>
+            <p>Our team will review your request and respond, usually within a few hours during business days.</p>
+            <a href="/request-a-quote" class="btn btn-primary">Request Another Quote</a>
+        </div>
+    </t>
+</template>
+
+<!-- ======== ERROR ======== -->
+<template id="portal_quote_error" name="Quote Error">
+    <t t-call="website.layout">
+        <div class="container o_page_container py-5 text-center">
+            <h2>We couldn't confirm this booking</h2>
+            <p class="text-muted" t-esc="message"/>
+            <a href="/request-a-quote" class="btn btn-primary">Start a new booking</a>
+        </div>
+    </t>
+</template>
+
+<!-- ======== TRACKING PAGES ======== -->
+<template id="portal_tracking_lookup" name="Tracking Lookup">
+    <t t-call="website.layout">
+        <div class="container o_page_container py-5">
+            <div class="mx-auto" style="max-width:500px">
+                <h1 class="text-center">Track Shipment</h1>
+                <div t-if="error" class="alert alert-warning" t-esc="error"/>
+                <form action="/track/search" method="post">
+                    <input type="hidden" name="csrf_token" t-att-value="request.csrf_token()"/>
+                    <div class="mb-3"><input type="text" name="tracking_number" class="form-control form-control-lg"
+                           placeholder="Tracking number (e.g. PF-260728-000123)" required="required"/></div>
+                    <button type="submit" class="btn btn-primary btn-lg w-100">Track</button>
+                </form>
+            </div>
+        </div>
+    </t>
+</template>
+
+<template id="portal_tracking_result" name="Tracking Result">
+    <t t-call="website.layout">
+        <div class="container o_page_container py-5">
+            <div class="mx-auto" style="max-width:550px">
+                <h2>Tracking: <t t-esc="booking.booking_number"/></h2>
+                <div class="card mb-3"><div class="card-body"><span class="badge bg-success fs-6 px-3 py-2" t-esc="status_label"/></div></div>
+                <div class="card"><div class="card-body">
+                    <div class="row">
+                        <div class="col-6"><small class="text-muted">FROM</small><br/><t t-esc="booking.pickup_fsa_id.display_city or booking.pickup_fsa_id.fsa"/></div>
+                        <div class="col-6"><small class="text-muted">TO</small><br/><t t-esc="booking.delivery_fsa_id.display_city or booking.delivery_fsa_id.fsa"/></div>
+                        <div class="col-6 mt-2"><small class="text-muted">PICKUP DATE</small><br/><t t-esc="booking.pickup_date"/></div>
+                        <div class="col-6 mt-2"><small class="text-muted">EST. DELIVERY</small><br/><t t-esc="booking.estimated_delivery_date"/></div>
+                    </div>
+                </div></div>
+                <p class="mt-3"><a href="/track">Track another</a></p>
+            </div>
+        </div>
+    </t>
+</template>
+
+</odoo>
