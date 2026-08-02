@@ -1,11 +1,45 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <odoo>
 
+    <!-- ═════════════════════════════════════════════════════════════════════
+         FORM VIEW
+         ════════════════════════════════════════════════════════════════════ -->
     <record id="dispatch_location_form" model="ir.ui.view">
         <field name="name">prema.dispatch.location.form</field>
         <field name="model">prema.dispatch.location</field>
         <field name="arch" type="xml">
             <form string="Saved Location">
+                <header>
+                    <!-- Google Verified badge -->
+                    <span class="badge bg-success" invisible="not google_verified">
+                        ✓ Google Verified
+                    </span>
+                    <span class="badge bg-warning text-dark" invisible="google_verified">
+                        ⚠ Not Verified
+                    </span>
+                    <!-- Possible duplicate warning -->
+                    <div class="alert alert-warning mb-0 ms-2 d-inline-flex align-items-center"
+                         role="alert" invisible="duplicate_status != 'possible'">
+                        <i class="fa fa-exclamation-triangle me-1"/>
+                        Possible duplicate found.
+                        <button type="object" name="action_find_possible_matches"
+                                class="btn btn-sm btn-outline-warning ms-2"
+                                invisible="not duplicate_of_id">
+                            View Matches
+                        </button>
+                        <button type="object" name="action_merge_duplicate"
+                                class="btn btn-sm btn-outline-danger ms-1"
+                                invisible="not duplicate_of_id"
+                                groups="prema_dispatch.group_dispatch_manager">
+                            Merge
+                        </button>
+                    </div>
+                    <!-- Scan &amp; merge actions (manager) -->
+                    <button type="object" name="action_scan_duplicates"
+                            class="btn btn-secondary ms-auto"
+                            groups="prema_dispatch.group_dispatch_manager"
+                            string="Scan Duplicates" colspan="1"/>
+                </header>
                 <sheet>
                     <div class="oe_title">
                         <h1><field name="name" widget="google_places"
@@ -22,18 +56,25 @@
                     </div>
                     <group>
                         <group string="Address">
-                            <field name="chain_name" placeholder="e.g. Foodland"/>
-                            <field name="location_number" placeholder="e.g. 3290"/>
+                            <field name="chain_name" placeholder="e.g. Sobeys"/>
+                            <field name="business_name" placeholder="e.g. Healthy Planet"/>
+                            <field name="branch_name" placeholder="e.g. Belleville"/>
+                            <field name="location_number" placeholder="e.g. 678"/>
                             <field name="address" widget="google_places" placeholder="Search address…"/>
                             <field name="street"/>
                             <field name="unit"/>
                             <field name="city"/>
                             <field name="province_code"/>
                             <field name="postal_code"/>
+                            <field name="country_id" invisible="1"/>
                             <field name="partner_id" string="Customer / Warehouse"/>
                             <field name="location_type"/>
                             <field name="allow_cross_dock" widget="boolean_toggle"/>
                             <field name="dock_door" placeholder="e.g. Door 7, Bay 3"/>
+                            <field name="google_place_id" invisible="1"/>
+                            <field name="google_verified" invisible="1"/>
+                            <field name="duplicate_status" invisible="1"/>
+                            <field name="duplicate_of_id" invisible="1"/>
                         </group>
                         <group string="Parking Pin">
                             <field name="pin_lat" string="Pin Latitude"/>
@@ -139,44 +180,108 @@
         </field>
     </record>
 
+    <!-- ═════════════════════════════════════════════════════════════════════
+         TREE VIEW
+         ════════════════════════════════════════════════════════════════════ -->
     <record id="dispatch_location_list" model="ir.ui.view">
         <field name="name">prema.dispatch.location.list</field>
         <field name="model">prema.dispatch.location</field>
         <field name="arch" type="xml">
-            <list string="Saved Locations" decoration-muted="not pin_set">
-                <field name="name"/>
-                <field name="business_name"/>
-                <field name="location_type"/>
-                <field name="allow_cross_dock" string="Cross-Dock"/>
+            <list string="Saved Locations"
+                  decoration-warning="duplicate_status == 'possible'"
+                  decoration-muted="not pin_set">
+                <field name="location_display_label" string="Display Name"/>
+                <field name="chain_name" string="Chain / Brand"/>
+                <field name="business_name" string="Business"/>
+                <field name="location_number" string="Store #"/>
+                <field name="branch_name" string="Branch"/>
+                <field name="unit" string="Unit"/>
                 <field name="address"/>
-                <field name="partner_id"/>
-                <field name="dock_door"/>
-                <field name="pin_set" string="Pin Set"/>
+                <field name="partner_id" string="Customer"/>
+                <field name="location_type" string="Type"/>
+                <field name="allow_cross_dock" string="Cross-Dock"/>
+                <field name="dock_door" string="Door"/>
+                <field name="google_verified" string="Google Verified"/>
+                <field name="duplicate_status" string="Possible Duplicate"/>
                 <field name="use_count" string="Visits"/>
                 <field name="last_visited" string="Last Visit"/>
             </list>
         </field>
     </record>
 
+    <!-- ═════════════════════════════════════════════════════════════════════
+         SEARCH VIEW
+         ════════════════════════════════════════════════════════════════════ -->
     <record id="dispatch_location_search" model="ir.ui.view">
         <field name="name">prema.dispatch.location.search</field>
         <field name="model">prema.dispatch.location</field>
         <field name="arch" type="xml">
             <search>
+                <field name="location_display_label"/>
                 <field name="name"/>
+                <field name="chain_name"/>
+                <field name="business_name"/>
+                <field name="location_number"/>
+                <field name="branch_name"/>
                 <field name="address"/>
+                <field name="unit"/>
+                <field name="city"/>
+                <field name="postal_code"/>
                 <field name="partner_id"/>
+
+                <separator/>
+
+                <!-- Verification filters -->
+                <filter name="google_verified_filter" string="Google Verified"
+                        domain="[('google_verified','=',True)]"/>
+                <filter name="needs_verification" string="Needs Verification"
+                        domain="[('google_verified','=',False)]"/>
+
+                <!-- Duplicate filters -->
+                <filter name="possible_duplicates" string="Possible Duplicates"
+                        domain="[('duplicate_status','=','possible')]"/>
+                <filter name="clean_locations" string="Clean"
+                        domain="[('duplicate_status','=','clean')]"/>
+
+                <separator/>
+
+                <!-- Data-quality filters -->
+                <filter name="missing_store_number" string="Missing Store #"
+                        domain="[('location_number','=',False)]"/>
+                <filter name="missing_brand" string="Missing Brand"
+                        domain="[('chain_name','=',False)]"/>
+                <filter name="missing_business" string="Missing Business"
+                        domain="[('business_name','=',False)]"/>
+                <filter name="missing_unit" string="Missing Unit"
+                        domain="[('unit','=',False)]"/>
+
+                <separator/>
+
+                <!-- Standard filters -->
                 <filter name="pin_set" string="Pin Set" domain="[('pin_set','=',True)]"/>
                 <filter name="has_photo" string="Has Photo" domain="[('entrance_photo','!=',False)]"/>
                 <filter name="allow_cross_dock" string="Allow Cross-Dock" domain="[('allow_cross_dock','=',True)]"/>
+
+                <separator/>
+
+                <!-- Group By -->
                 <group expand="0" string="Group By">
+                    <filter name="group_brand" string="Brand" context="{'group_by':'chain_name'}"/>
+                    <filter name="group_business" string="Business" context="{'group_by':'business_name'}"/>
+                    <filter name="group_store_number" string="Store #" context="{'group_by':'location_number'}"/>
+                    <filter name="group_city" string="City" context="{'group_by':'city'}"/>
+                    <filter name="group_postal_code" string="Postal Code" context="{'group_by':'postal_code'}"/>
                     <filter name="group_partner" string="Customer" context="{'group_by':'partner_id'}"/>
                     <filter name="group_location_type" string="Location Type" context="{'group_by':'location_type'}"/>
+                    <filter name="group_duplicate_status" string="Duplicate Status" context="{'group_by':'duplicate_status'}"/>
                 </group>
             </search>
         </field>
     </record>
 
+    <!-- ═════════════════════════════════════════════════════════════════════
+         ACTION
+         ════════════════════════════════════════════════════════════════════ -->
     <record id="action_dispatch_locations" model="ir.actions.act_window">
         <field name="name">Saved Locations</field>
         <field name="res_model">prema.dispatch.location</field>

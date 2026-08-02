@@ -14,6 +14,7 @@ class TestDispatchCapacity(TransactionCase):
 
     def setUp(self):
         super().setUp()
+        install_google_mocks(self)
         self.stage_draft = self.env["prema.dispatch.stage"].search(
             [("stage_type", "=", "draft")], limit=1
         )
@@ -117,6 +118,7 @@ class TestDispatchTimeWindows(TransactionCase):
 
     def setUp(self):
         super().setUp()
+        install_google_mocks(self)
         self.stage_draft = self.env["prema.dispatch.stage"].search(
             [("stage_type", "=", "draft")], limit=1
         )
@@ -182,6 +184,7 @@ class TestDispatchAssignment(TransactionCase):
 
     def setUp(self):
         super().setUp()
+        install_google_mocks(self)
         self.stage_draft = self.env["prema.dispatch.stage"].search(
             [("stage_type", "=", "draft")], limit=1
         )
@@ -306,6 +309,7 @@ class TestDispatchStopOnboard(TransactionCase):
 
     def setUp(self):
         super().setUp()
+        install_google_mocks(self)
         self.stage_draft = self.env["prema.dispatch.stage"].search(
             [("stage_type", "=", "draft")], limit=1
         )
@@ -415,6 +419,7 @@ class TestDispatchWorkflowAudit4(TransactionCase):
 
     def setUp(self):
         super().setUp()
+        install_google_mocks(self)
         self.stage_draft = self.env["prema.dispatch.stage"].search(
             [("stage_type", "=", "draft")], limit=1
         )
@@ -573,6 +578,7 @@ class TestAutoPlanCrossDock(TransactionCase):
 
     def setUp(self):
         super().setUp()
+        install_google_mocks(self)
         self.stage_draft = self.env["prema.dispatch.stage"].search(
             [("stage_type", "=", "draft")], limit=1
         )
@@ -721,6 +727,7 @@ class TestDispatchCrossDockCustody(TransactionCase):
 
     def setUp(self):
         super().setUp()
+        install_google_mocks(self)
         self.stage_draft = self.env["prema.dispatch.stage"].search(
             [("stage_type", "=", "draft")], limit=1
         )

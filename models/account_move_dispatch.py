@@ -370,3 +370,131 @@ class AccountMove(models.Model):
     # Backward-compatibility alias — existing Odoo action IDs in the DB still work
     action_create_dispatch_job = action_book_load
 
+    def action_create_or_open_booking(self):
+        """Create or open a logistics.booking from this invoice.
+
+        - If logistics_booking_id already exists: open the booking.
+        - Otherwise: extract shipment data from invoice/estimators, create a
+          normalized booking through BookingOrchestrationService, link the
+          existing invoice (no duplicate invoice), and create dispatch job.
+
+        Replaces the legacy "Book Load → dispatch directly" path with the
+        canonical booking-centered workflow per Prema AI V4.
+        """
+        self.ensure_one()
+
+        # ── If booking already exists, open it ────────────────────────────
+        if self.logistics_booking_id:
+            return {
+                "type": "ir.actions.act_window",
+                "name": "Booking",
+                "res_model": "logistics.booking",
+                "res_id": self.logistics_booking_id.id,
+                "view_mode": "form",
+                "target": "current",
+            }
+
+        # ── Extract shipment data from invoice ───────────────────────────
+        try:
+            from odoo.addons.prema_logistics_booking.services.booking_orchestration_service import (
+                BookingOrchestrationService,
+            )
+        except ImportError:
+            # Fallback: use legacy Book Load wizard
+            return self.action_book_load()
+
+        svc = BookingOrchestrationService(self.env)
+
+        # Build stop data from estimators if available
+        pickup_stops = []
+        delivery_stops = []
+        pallets = 1
+        weight_lbs = 0.0
+        commodity = ""
+
+        estimators = self.dispatch_estimator_ids
+        if estimators:
+            for est in estimators[:1]:  # Use first estimator for shipment data
+                pallets = est.load_pallets or 1
+                weight_lbs = est.load_weight_lbs or 0.0
+                for stop in est.stop_ids.sorted("sequence"):
+                    stop_data = {
+                        "company_name": stop.company_name or "",
+                        "street": stop.street or "",
+                        "city": stop.city or "",
+                        "province_state": stop.province_state or stop.province or "",
+                        "formatted_address": stop.address or "",
+                        "latitude": stop.latitude or 0.0,
+                        "longitude": stop.longitude or 0.0,
+                        "pallet_count": stop.pallets or 0,
+                        "weight_lb": stop.weight or stop.weight_lbs or 0.0,
+                        "instructions": stop.instructions or "",
+                        "reference": stop.reference or "",
+                    }
+                    if stop.stop_type in ("pickup", "origin"):
+                        pickup_stops.append(stop_data)
+                    else:
+                        delivery_stops.append(stop_data)
+        else:
+            # No estimators: use invoice line descriptions as basic data
+            for line in self.invoice_line_ids:
+                if line.product_id and line.product_id.detailed_type == "service":
+                    continue
+                pallets = max(pallets, int(line.quantity or 1))
+                weight_lbs += line.product_id.weight * line.quantity if line.product_id.weight else 0.0
+
+            # Build minimal stops from invoice partner
+            pickup_stops.append({
+                "company_name": self.partner_id.name or "",
+                "formatted_address": self.partner_id.contact_address or "",
+            })
+
+        # Fallback pallet count
+        if not pallets:
+            pallets = 1
+
+        # ── Create normalized request ─────────────────────────────────────
+        partner_id = self.partner_id.commercial_partner_id.id or self.partner_id.id
+
+        try:
+            norm = svc.normalize_request({
+                "partner_id": partner_id,
+                "pickup_stops": pickup_stops or [{"formatted_address": self.partner_id.contact_address or ""}],
+                "delivery_stops": delivery_stops or [{"formatted_address": ""}],
+                "pallets": pallets,
+                "weight_lbs": weight_lbs,
+                "commodity": commodity or self.ref or "",
+                "po_number": self.ref or "",
+                "customer_reference": self.name or "",
+                "pricing_method": "imported_invoice",
+                "existing_invoice_id": self.id,
+                "idempotency_key": f"invoice:{self.id}",
+            }, source_channel="invoice")
+
+            # Link existing invoice — do NOT create a new one
+            booking = svc.confirm_from_internal(
+                norm,
+                existing_invoice=self,  # Links this invoice, does NOT create new one
+                skip_invoice=False,
+            )
+
+            # Write back to invoice
+            self.write({"logistics_booking_id": booking.id})
+
+            return {
+                "type": "ir.actions.act_window",
+                "name": "Booking",
+                "res_model": "logistics.booking",
+                "res_id": booking.id,
+                "view_mode": "form",
+                "target": "current",
+            }
+
+        except Exception as e:
+            _logger = __import__("logging").getLogger(__name__)
+            _logger.warning(
+                "Invoice %s: Create/Open Booking failed (%s), falling back to legacy Book Load",
+                self.name, e,
+            )
+            return self.action_book_load()
+

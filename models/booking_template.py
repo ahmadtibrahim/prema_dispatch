@@ -5,8 +5,20 @@ from odoo import api, exceptions, fields, models
 
 
 class PremaDispatchBookingTemplate(models.Model):
+    """[DEPRECATED] Recurring Booking Template.
+
+    Use logistics.recurring.agreement instead. This model is kept for backwards
+    compatibility. The logistics.recurring.agreement model has a richer state
+    machine, pricing integration, and route commitment.
+
+    Migrate existing templates to logistics.recurring.agreement records:
+    - day_of_week → preferred_weekday
+    - recurrence_type → frequency
+    - approximate_skids → pallets
+    - partner_id → partner_id (same)
+    """
     _name = "prema.dispatch.booking.template"
-    _description = "Recurring Booking Template"
+    _description = "Recurring Booking Template [DEPRECATED — use logistics.recurring.agreement]"
     _inherit = ["mail.thread"]
     _order = "name asc"
 

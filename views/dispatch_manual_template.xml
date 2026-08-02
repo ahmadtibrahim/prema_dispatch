@@ -1,7 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <odoo>
 
-<!-- Opens the standalone manual page in a new tab -->
 <record id="action_dispatch_manual" model="ir.actions.act_url">
     <field name="name">User Manual</field>
     <field name="url">/dispatch/manual</field>
@@ -14,262 +13,645 @@
     <title>Prema Dispatch — User Manual</title>
     <meta name="viewport" content="width=device-width,initial-scale=1"/>
     <style>
-        body.dm-body {
-            background: #f4f5f7;
-            color: #1b1b1b;
-            font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-            line-height: 1.55;
-        }
-        .dm-wrap { max-width: 920px; margin: 0 auto; padding: 24px 20px 80px; }
-        .dm-title { font-size: 28px; font-weight: 700; margin: 0 0 4px; }
-        .dm-subtitle { color: #666; margin: 0 0 24px; }
-        .dm-toc {
-            background: #fff; border: 1px solid #e0e0e0; border-radius: 8px;
-            padding: 16px 20px; margin-bottom: 28px;
-        }
-        .dm-toc h2 { font-size: 15px; text-transform: uppercase; letter-spacing: .03em; color: #555; margin: 0 0 10px; }
-        .dm-toc ol { margin: 0; padding-left: 20px; columns: 2; }
-        .dm-toc a { color: #1565C0; text-decoration: none; }
-        .dm-toc a:hover { text-decoration: underline; }
-        .dm-section {
-            background: #fff; border: 1px solid #e0e0e0; border-radius: 8px;
-            padding: 22px 26px; margin-bottom: 20px; scroll-margin-top: 12px;
-        }
-        .dm-section h2 {
-            font-size: 20px; margin: 0 0 4px; color: #0d3d75;
-            border-bottom: 2px solid #1565C0; padding-bottom: 8px;
-        }
-        .dm-section h3 { font-size: 15px; margin: 18px 0 6px; color: #1b1b1b; }
-        .dm-section p { margin: 6px 0; }
-        .dm-section ul, .dm-section ol { margin: 6px 0 6px 0; padding-left: 22px; }
-        .dm-section li { margin: 3px 0; }
-        code, .dm-kbd {
-            background: #eef1f5; border: 1px solid #dbe0e6; border-radius: 4px;
-            padding: 1px 6px; font-size: 0.92em; font-family: ui-monospace, Consolas, monospace;
-        }
-        .dm-btn {
-            display: inline-block; background: #eef1f5; border: 1px solid #cfd6de;
-            border-radius: 5px; padding: 1px 8px; font-weight: 600; font-size: 0.9em;
-        }
-        table.dm-table { width: 100%; border-collapse: collapse; margin: 10px 0; }
-        table.dm-table th, table.dm-table td {
-            border: 1px solid #e0e0e0; padding: 6px 10px; text-align: left; font-size: 0.95em;
-        }
-        table.dm-table th { background: #f4f5f7; }
-        .dm-note {
-            background: #fff8e1; border-left: 4px solid #f0ad4e; padding: 8px 14px;
-            margin: 10px 0; font-size: 0.95em;
-        }
-        .dm-print-btn {
-            position: fixed; top: 18px; right: 18px; background: #1565C0; color: #fff;
-            border: none; border-radius: 6px; padding: 8px 16px; font-weight: 600;
-            cursor: pointer; box-shadow: 0 2px 6px rgba(0,0,0,.2);
-        }
-        @media print {
-            .dm-print-btn, .dm-toc { display: none; }
-            .dm-section { break-inside: avoid; border: none; box-shadow: none; }
-        }
+        body.dm-body { background:#f4f5f7; color:#1b1b1b; font-family:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; line-height:1.55; }
+        .dm-wrap { max-width:920px; margin:0 auto; padding:24px 20px 80px; }
+        .dm-title { font-size:28px; font-weight:700; margin:0 0 4px; }
+        .dm-subtitle { color:#666; margin:0 0 24px; }
+        .dm-toc { background:#fff; border:1px solid #e0e0e0; border-radius:8px; padding:16px 20px; margin-bottom:28px; }
+        .dm-toc h2 { font-size:15px; text-transform:uppercase; letter-spacing:.03em; color:#555; margin:0 0 10px; }
+        .dm-toc ol { margin:0; padding-left:20px; columns:2; column-gap:30px; }
+        .dm-toc li { margin-bottom:4px; font-size:14px; }
+        .dm-toc a { color:#0077cc; text-decoration:none; }
+        .dm-section { background:#fff; border:1px solid #e0e0e0; border-radius:8px; padding:20px 24px; margin-bottom:20px; }
+        .dm-section h2 { font-size:20px; margin:0 0 12px; color:#1b1b1b; }
+        .dm-section h3 { font-size:16px; margin:16px 0 8px; color:#333; }
+        .dm-section p { margin:6px 0 10px; }
+        .dm-section ul, .dm-section ol { margin:6px 0 10px 20px; }
+        .dm-section li { margin-bottom:4px; }
+        .dm-btn { display:inline-block; background:#eef1f5; border:1px solid #cfd6de; border-radius:5px; padding:1px 8px; font-weight:600; font-size:0.9em; }
+        table.dm-table { width:100%; border-collapse:collapse; margin:10px 0; }
+        table.dm-table th { background:#f0f2f5; text-align:left; padding:6px 10px; border:1px solid #ddd; font-size:13px; }
+        table.dm-table td { padding:6px 10px; border:1px solid #ddd; font-size:13px; }
+        .dm-warn { background:#fff8e1; border-left:4px solid #f0a020; padding:10px 14px; margin:10px 0; border-radius:4px; }
+        .dm-info { background:#e3f2fd; border-left:4px solid #1a73e8; padding:10px 14px; margin:10px 0; border-radius:4px; }
+        .dm-danger { background:#ffebee; border-left:4px solid #d32f2f; padding:10px 14px; margin:10px 0; border-radius:4px; }
     </style>
 </t>
-<t t-set="body_classname">dm-body</t>
-
-<button class="dm-print-btn" onclick="window.print()">🖨 Print / Save PDF</button>
-
+<div class="dm-body">
 <div class="dm-wrap">
-    <h1 class="dm-title">Prema Dispatch — User Manual</h1>
-    <p class="dm-subtitle">Reference guide for dispatchers, managers and drivers. Covers booking, planning, live tracking, the driver app, calling, AI document extraction and reporting.</p>
 
-    <div class="dm-toc">
-        <h2>Contents</h2>
-        <ol>
-            <li><a href="#booking">Booking a Load</a></li>
-            <li><a href="#planner">Dispatch Planner</a></li>
-            <li><a href="#livemap">Live Map</a></li>
-            <li><a href="#board">Booking Board</a></li>
-            <li><a href="#driverapp">Driver App</a></li>
-            <li><a href="#voip">VoIP &amp; Dispatch Calling</a></li>
-            <li><a href="#ai">AI Document Extraction</a></li>
-            <li><a href="#reports">Reporting Suite</a></li>
-            <li><a href="#loadplan">Load Plan &amp; Pallet Positioning</a></li>
-        </ol>
-    </div>
+<h1 class="dm-title">Prema Dispatch — User Manual</h1>
+<p class="dm-subtitle">Version 4.0 - Updated August 2026 - PremaFirm Logistics</p>
 
-    <!-- 1. BOOKING -->
-    <div class="dm-section" id="booking">
-        <h2>1. Booking a Load</h2>
-        <p>There are three ways to create a Dispatch Booking (a <code>prema.dispatch.job</code> record, numbered <code>DISP/YYYY/#####</code>):</p>
-        <h3>From a Sales Order or Invoice</h3>
-        <p>Click <span class="dm-btn">Book Load</span> on the Sales Order or Invoice. If a booking already exists for that document, you'll be asked whether to open the existing one or create a separate one — this avoids duplicate bookings if the button is clicked twice.</p>
-        <h3>Generate from Text (AI)</h3>
-        <p>On a Sales Order's <b>Generate from Text</b> tab, paste a customer WhatsApp message, SMS or email into the text box and click <span class="dm-btn">Generate Dispatch Booking</span>. AI extracts the pickup/delivery stops, pallet counts per stop, route, date, and reefer/liftgate requirements, then creates the booking with stops already filled in — you just review and confirm.</p>
-        <h3>Manually</h3>
-        <p>Create a Dispatch Booking directly from the Dispatch Planner or backend list, filling in customer, reference/BOL/PO, stops, equipment and skid counts by hand.</p>
-        <h3>Booking Stages</h3>
-        <p>Every booking moves through stages: <code>Draft → New Booking → Planning → Assigned → Ready to Dispatch</code> (booking phase), then <code>Sent to Driver → En Route Pickup → At Pickup → Picked Up → In Transit → At Delivery → Delivered → POD Received</code> (dispatched phase), ending at <code>Completed</code>, <code>Exception</code> or <code>Cancelled</code>.</p>
-        <h3>Templates &amp; Consolidation</h3>
-        <ul>
-            <li><b>Booking Templates</b> (Settings menu) — save a recurring lane's stop pattern to reuse for repeat customers.</li>
-            <li><b>Find Available Truck</b> — mid-day load finder for slotting an ad-hoc booking onto a truck that already has room on its route.</li>
-            <li><b>LTL Consolidations</b> (Reports menu) — combine multiple LTL bookings that share a lane onto one truck.</li>
-        </ul>
-    </div>
+<div class="dm-toc">
+    <h2>Table of Contents</h2>
+    <ol>
+        <li><a href="#overview">System Overview</a></li>
+        <li><a href="#getting-started">Getting Started</a></li>
+        <li><a href="#customers">Customers &amp; Contacts</a></li>
+        <li><a href="#locations">Saved Locations</a></li>
+        <li><a href="#geography">Geography: FSAs, Regions, Cities</a></li>
+        <li><a href="#network">Network: Corridors &amp; Departures</a></li>
+        <li><a href="#pricing">Pricing: Rate Plans &amp; Lanes</a></li>
+        <li><a href="#booking-flows">Booking Flows (All 7 Channels)</a></li>
+        <li><a href="#portal">Portal Booking</a></li>
+        <li><a href="#phone">Phone Booking</a></li>
+        <li><a href="#internal">Internal Staff Booking</a></li>
+        <li><a href="#invoice-booking">Invoice Create/Open Booking</a></li>
+        <li><a href="#whatsapp">WhatsApp Booking</a></li>
+        <li><a href="#custom-quote">Custom Quote</a></li>
+        <li><a href="#recurring">Recurring Agreements</a></li>
+        <li><a href="#capacity">Capacity &amp; 13-Pallet Override</a></li>
+        <li><a href="#tax">Freight Tax</a></li>
+        <li><a href="#booking-board">Booking Board</a></li>
+        <li><a href="#weekly-schedule">Weekly Schedule Board</a></li>
+        <li><a href="#dispatch-planner">Dispatch Planner</a></li>
+        <li><a href="#live-map">Live Fleet Map</a></li>
+        <li><a href="#load-plans">Load Plans</a></li>
+        <li><a href="#driver-worksheets">Driver Worksheets</a></li>
+        <li><a href="#trucks-drivers">Trucks &amp; Drivers</a></li>
+        <li><a href="#pickup-delivery">Pickup, Transfer &amp; Delivery</a></li>
+        <li><a href="#pod">Proof of Delivery</a></li>
+        <li><a href="#invoicing">Invoice Review &amp; Accounting</a></li>
+        <li><a href="#tracking">Customer Tracking</a></li>
+        <li><a href="#settings">Settings</a></li>
+        <li><a href="#security">Security Roles</a></li>
+        <li><a href="#troubleshooting">Troubleshooting</a></li>
+        <li><a href="#daily-checklist">Daily Dispatcher Checklist</a></li>
+        <li><a href="#e2e-checklist">End-to-End Testing Checklist</a></li>
+    </ol>
+</div>
 
-    <!-- 2. PLANNER -->
-    <div class="dm-section" id="planner">
-        <h2>2. Dispatch Planner</h2>
-        <p>The Planner is the main scheduling board: unassigned jobs on one side, trucks with their assigned stops on the other.</p>
-        <h3>Assigning a Job to a Truck</h3>
-        <ul>
-            <li><b>Drag and drop</b> — drag a job card from the Unassigned panel onto a truck row.</li>
-            <li><b>Click to assign</b> — click <span class="dm-btn">Assign</span> on a job card, then click the target truck row.</li>
-            <li>If the system flags the assignment as <b>infeasible</b> (e.g. truck can't make the time window), a manager can confirm an override to force the assignment anyway.</li>
-        </ul>
-        <h3>Per-Truck Actions</h3>
-        <table class="dm-table">
-            <tr><th>Button</th><th>What it does</th></tr>
-            <tr><td><span class="dm-btn">ETAs</span></td><td>Requests Google-estimated arrival times for every stop on that truck's route.</td></tr>
-            <tr><td><span class="dm-btn">Optimize</span></td><td>Re-orders the truck's pending stops for the shortest total drive time.</td></tr>
-            <tr><td><span class="dm-btn">Sheet</span></td><td>Generates/refreshes that truck's Driver Worksheet for the day (stop count, total drive time, total detention time).</td></tr>
-        </table>
-        <h3>View &amp; Layout Controls</h3>
-        <ul>
-            <li><b>Stop View / Block View</b> — toggle the timeline between individual stop markers and stretched job blocks.</li>
-            <li><b>Layout modes: Normal / Wide / Multi</b> — Wide collapses the side panels for more room; Multi (and the <span class="dm-btn">New Window</span> button) opens a synced second Planner window for a two-monitor dispatch desk. Your choice is remembered between sessions.</li>
-            <li><b>Auto Plan</b> — automatically assigns unassigned loads to the best-fit truck.</li>
-            <li><b>Feasibility</b> — opens the feasibility checker for a job before assigning it.</li>
-        </ul>
-        <h3>Map &amp; Stops Panel</h3>
-        <p>The bottom map shows truck GPS and route with satellite/hybrid toggle and <b>No Tolls / No Highways / No Ferries</b> routing checkboxes. The Stops panel lets you drag-reorder stops on a truck, adjust service time with the +/- stepper, delete a stop, and see a pallet-capacity bar for the truck.</p>
-        <div class="dm-note">Hover over driver names, reefer/liftgate badges, the GPS-age indicator, or the ETAs/Optimize/Sheet buttons for a short delay to see a detail tooltip.</div>
-    </div>
+<!-- ================================================================ -->
+<div class="dm-section" id="overview">
+    <h2>1. System Overview</h2>
+    <p>Prema Dispatch is a <b>scheduled shared-LTL freight management system</b> for the Ontario–Quebec corridor. It handles every step from customer booking through dispatch execution, load planning, GPS tracking, POD collection, invoicing, and accounting.</p>
 
-    <!-- 3. LIVE MAP -->
-    <div class="dm-section" id="livemap">
-        <h2>3. Live Map</h2>
-        <p>The <b>Live Map</b> menu shows every active truck's real-time GPS position alongside its remaining stops, refreshed automatically as drivers update their status in the Driver App. Use it to see at a glance where every truck is right now without opening individual bookings.</p>
-        <p>Customers get a scaled-down, privacy-filtered version of this: the public tracking page at <code>/dispatch/track/&lt;tracking number&gt;</code> shows their own stop's live ETA and status, with other stops on the truck shown only by city, and polls for updates every 30 seconds.</p>
-    </div>
+    <h3>The Core Model</h3>
+    <p>Everything centers on the <b>Booking</b> (<code>logistics.booking</code>). Whether a shipment comes in by phone, customer portal, WhatsApp, an existing invoice, a custom quote, or a recurring agreement — it always becomes one Booking with its own stops, freight lines, operational legs, tax decision, invoice, and dispatch job.</p>
 
-    <!-- 4. BOOKING BOARD -->
-    <div class="dm-section" id="board">
-        <h2>4. Booking Board</h2>
-        <p>The <b>Booking Board</b> (managers only) is an airport-terminal-style status overview of every booking — a live table, not a kanban — refreshing every 20 seconds.</p>
-        <h3>Columns</h3>
-        <p>Booking #, Customer, Status, Pickup, Deadline, Route, Skids, Equipment, Priority, Truck, Driver, Feasibility, Notes.</p>
-        <h3>Statuses</h3>
-        <p>Planned, Picked Up, In-Progress, Late, Delivered, Cancelled.</p>
-        <h3>Unassigned Panel</h3>
-        <p>A strip above the table lists every booking with no truck yet — reference, feasibility badge, customer, route, pickup, skids, equipment, priority and notes — so nothing falls through the cracks before end of day.</p>
-        <h3>Unassign</h3>
-        <p>Click the <b>×</b> button on any row to pull that booking back off its truck and return it to the Unassigned panel — the same action available from the Planner.</p>
-    </div>
+    <h3>Seven Entry Channels</h3>
+    <table class="dm-table">
+        <tr><th>Channel</th><th>How it starts</th><th>Navigation</th></tr>
+        <tr><td>Portal</td><td>Customer books online</td><td>/my/booking</td></tr>
+        <tr><td>Phone Booking</td><td>Dispatcher takes a call</td><td>Bookings → Phone Booking</td></tr>
+        <tr><td>Internal Booking</td><td>Staff creates booking</td><td>Bookings → All Bookings → Create</td></tr>
+        <tr><td>Invoice Create/Open</td><td>From existing invoice</td><td>Invoice → Create/Open Booking</td></tr>
+        <tr><td>WhatsApp</td><td>Customer sends load tender via WA</td><td>Bookings → WhatsApp Negotiations</td></tr>
+        <tr><td>Custom Quote</td><td>Unsupported destination</td><td>Bookings → Custom Quotes</td></tr>
+        <tr><td>Recurring Agreement</td><td>Weekly contract</td><td>Bookings → Recurring Agreements</td></tr>
+    </table>
 
-    <!-- 5. DRIVER APP -->
-    <div class="dm-section" id="driverapp">
-        <h2>5. Driver App</h2>
-        <p>Drivers use the mobile web app at <code>/dispatch/driver</code> (add it to your phone's home screen for a full-screen app feel). Sign in with your driver account.</p>
-        <h3>Schedule</h3>
-        <p>The Home screen shows a weekly calendar and today's summary; the <b>Stops</b> tab lists every stop in a flat list. Tap the map icon (⛶) for a fullscreen route map, or the gear (⚙) to set route options (avoid tolls / highways / ferries).</p>
-        <h3>Working a Stop</h3>
-        <ul>
-            <li>Tap a stop to open its detail screen with a map and address.</li>
-            <li>Tap <span class="dm-btn">✓ I'm Here</span> in navigation once arrived — a geofence banner also prompts "You've arrived!" automatically within 150m of the stop.</li>
-            <li>Drag the pin in the pin editor and tap <span class="dm-btn">Save Pin</span> to mark the exact parking/entrance spot, use <span class="dm-btn">📡 My GPS</span> for your current location, or <span class="dm-btn">📍 Use Address</span> to reset to the geocoded address.</li>
-            <li>Reorder stops, or adjust service time, from the stop list.</li>
-            <li>Tap <span class="dm-btn">⚠ Report Issue</span> to flag Road Closure, Business Closed, Recipient Unavailable, Address Not Found, or another problem — dispatch is notified immediately.</li>
-        </ul>
-        <h3>Evidence &amp; Photos</h3>
-        <p>Attach entrance photos and delivery/POD photos per stop directly from the app; use the built-in <b>document scanner</b> (frame the page, capture, retake or enhance, then <span class="dm-btn">✓ Use This</span>) to photograph BOLs and paperwork with auto-cropping. A custody/POD photo is required before a transfer stop can be marked complete.</p>
-        <h3>Navigation</h3>
-        <p>In-app turn-by-turn navigation with North-up/Heading-up toggle, voice guidance, fullscreen mode, a live distance badge, and a one-tap <span class="dm-btn">🗺️ Open in Maps app</span> handoff to Google/Apple Maps for full voice-guided driving directions.</p>
-        <h3>Chat &amp; Calling</h3>
-        <p>Tap the 💬 icon to open an in-app chat thread with dispatch (unread messages show a badge on the icon); tap 📞 to call dispatch directly from any screen.</p>
-    </div>
+    <h3>The Flow</h3>
+    <p><b>Booking → Stops → Lines → Legs → Tax → Invoice → Dispatch Job → Load Plan → Driver Worksheet → Pickup → Transit → Delivery → POD → Accounting</b></p>
+</div>
 
-    <!-- 6. VOIP -->
-    <div class="dm-section" id="voip">
-        <h2>6. VoIP &amp; Dispatch Calling</h2>
-        <p>Dispatchers place and receive calls through Odoo's standard VoIP widget (top bar) — Prema Dispatch does not replace this, it adds two things on top of it:</p>
-        <ul>
-            <li><b>Team-wide call visibility</b> — Dispatchers and Dispatch Managers can see every call in the call log, not just their own, so anyone can follow up on a customer or driver call.</li>
-            <li><b>Recording playback</b> — calls that were recorded by the phone system show a <b>Recording</b> column with a ▶ play button in the call list; it streams the matched Asterisk recording for that call.</li>
-        </ul>
-    </div>
+<!-- ================================================================ -->
+<div class="dm-section" id="getting-started">
+    <h2>2. Getting Started</h2>
+    <h3>Navigation</h3>
+    <p>Click <b>Prema Dispatch</b> in the top navigation bar. The default page is the <b>Live Fleet Map</b> showing all operational trucks with GPS positions. The sidebar menu is organized into:</p>
+    <ul>
+        <li><b>Dispatch Operations</b> — Live Map, Booking Board, Weekly Schedule, Dispatch Planner, Load Plans, Driver Worksheets, Find Available Truck</li>
+        <li><b>Bookings</b> — All Bookings, Phone Booking, Internal Booking, Recurring Agreements, Custom Quotes, WhatsApp Negotiations</li>
+        <li><b>Network</b> — Corridors, Departures, Daily Local Operations, Lanes, Regions, FSAs, Cities, Region Destinations, Saved Locations</li>
+        <li><b>Pricing</b> — Rate Plans, Customer Contract Rates, Service Offerings, Service Levels, Rate Simulator, Schedule Simulator</li>
+        <li><b>Fleet</b> — Trucks, Drivers, Equipment Profiles, GeoTab Settings</li>
+        <li><b>Reports</b> — All Jobs, Completed, Stops, Freight Items, LTL Consolidations, On-Time %, Lane Profitability, Fuel Efficiency, POD Aging</li>
+        <li><b>User Manual</b> — This page</li>
+        <li><b>Settings</b> — Stages, Booking Templates</li>
+    </ul>
+    <div class="dm-info">The top navigation shows <b>8 parent menus</b> under Prema Dispatch. All 7 Dispatch Operations items, 6 Bookings items, and all Network/Pricing/Fleet submenus are visible when you have the correct permissions.</div>
+</div>
 
-    <!-- 7. AI EXTRACTION -->
-    <div class="dm-section" id="ai">
-        <h2>7. AI Document Extraction</h2>
-        <p>Instead of retyping a rate confirmation or route sheet by hand, upload it (or paste its text) and let AI read it:</p>
-        <ol>
-            <li>Open the AI Job Planner wizard (from an invoice's <b>Add Dispatch Job</b> action) and attach the rate confirmation / BOL / route sheet file(s), or paste the text directly.</li>
-            <li>Click <span class="dm-btn">Analyze with AI</span>. The engine classifies the document (rate confirmation vs. stop sheet) and extracts stop addresses, company names, time windows, PO numbers, pallet counts and weights.</li>
-            <li>Review the <b>Rate Confirmation Fields</b> tab — extracted rate amount, BOL #, PO # and load reference — and the editable stops list, correcting anything the AI got wrong.</li>
-            <li>Click <span class="dm-btn">Create Job &amp; Schedule</span>, then use <span class="dm-btn">Book Load</span> on the invoice to turn it into an active Dispatch Booking.</li>
-        </ol>
-        <p>The same underlying AI is used for the Sales Order <b>Generate from Text</b> flow described in <a href="#booking">Booking a Load</a> — every extraction also feeds a learning loop that improves future parsing accuracy.</p>
-    </div>
+<!-- ================================================================ -->
+<div class="dm-section" id="customers">
+    <h2>3. Customers &amp; Contacts</h2>
+    <h3>Setting Up a Customer for Booking</h3>
+    <ol>
+        <li>Open <b>Contacts</b> and create or select the customer</li>
+        <li>Under <b>Sales &amp; Purchase</b>: set <span class="dm-btn">Logistics Pricing Status</span> to <b>Approved</b></li>
+        <li>Under <b>Freight Tax Profile</b>: set <b>Billing Relationship</b> (Direct Shipper / Interlining Carrier / Manual Review)</li>
+        <li>Set <b>Tax Treatment</b> (Automatic / Zero-Rated / Manual Review)</li>
+    </ol>
+    <div class="dm-info"><b>Billing Relationship</b> determines how tax is applied. Direct Shippers get destination-based HST/GST. Interlining Carriers get zero-rated tax. Manual Review flags every booking for accountant review.</div>
+    <h3>Driver Contacts</h3>
+    <p>To make a contact usable as a driver: check <span class="dm-btn">Is Driver</span> on the contact form. This enables the Driver App login and driver assignment on dispatch jobs.</p>
+</div>
 
-    <!-- 8. REPORTS -->
-    <div class="dm-section" id="reports">
-        <h2>8. Reporting Suite</h2>
-        <p>All reports live under the <b>Reports</b> menu.</p>
-        <table class="dm-table">
-            <tr><th>Report</th><th>Answers</th></tr>
-            <tr><td>All Jobs</td><td>Every booking, any stage, for browsing/searching.</td></tr>
-            <tr><td>Completed</td><td>Bookings that have finished, for closing out and billing checks.</td></tr>
-            <tr><td>Stops</td><td>Stop-by-stop detail for a driver/truck/date range, with total drive and detention time.</td></tr>
-            <tr><td>Driver Sheets</td><td>Historical Driver Worksheets (the live version also appears as its own top-level "Driver Worksheets" menu).</td></tr>
-            <tr><td>Freight Items</td><td>Line-item freight detail across bookings.</td></tr>
-            <tr><td>LTL Consolidations</td><td>Which bookings were combined onto shared LTL loads.</td></tr>
-            <tr><td>On-Time %</td><td>What percentage of completed stops arrived within their scheduled window, and average lateness.</td></tr>
-            <tr><td>Stop Time by Location</td><td>Which pickup/delivery locations have the longest average and worst-case dwell time.</td></tr>
-            <tr><td>Driver / Truck Performance</td><td>Jobs, stops, on-time %, and drive/detention time, grouped by driver or by truck.</td></tr>
-            <tr><td>Lane Profitability</td><td>Revenue, estimated cost and margin by origin → destination lane (managers only).</td></tr>
-            <tr><td>Fuel Efficiency</td><td>Which trucks are getting the worst km/L, from GeoTab-synced fuel telemetry.</td></tr>
-            <tr><td>Missed / Late Stops</td><td>Every late-arriving stop in a date range, worst lateness first.</td></tr>
-            <tr><td>POD Aging</td><td>Completed stops still missing proof-of-delivery evidence, oldest first.</td></tr>
-        </table>
-    </div>
+<!-- ================================================================ -->
+<div class="dm-section" id="locations">
+    <h2>4. Saved Locations</h2>
+    <p>Navigate: <b>Network → Saved Locations</b></p>
+    <p>Saved Locations are the canonical address book for pickups and deliveries. Each location stores:</p>
+    <ul>
+        <li>Address, Google Place ID, GPS coordinates</li>
+        <li>Entrance/dock/parking/gate photos</li>
+        <li>Dock height, liftgate availability, truck accessibility</li>
+        <li>Visit statistics (average wait, unload times)</li>
+        <li>Duplicate detection (same address + same company = duplicate warning)</li>
+    </ul>
+    <h3>Creating a Location</h3>
+    <ol>
+        <li>Click <span class="dm-btn">Create</span></li>
+        <li>Enter address or use Google Places autocomplete</li>
+        <li>The system auto-geocodes and validates the address</li>
+        <li>Set location type (Warehouse / Customer / Relay / Rest Area / Fuel Station)</li>
+        <li>Upload entrance/dock photos for driver reference</li>
+    </ol>
+    <div class="dm-warn">A location that matches an existing one (same company + Google Place ID or address) will be flagged as a possible duplicate. Use the existing location instead unless this is genuinely a different entry.</div>
+</div>
 
-    <!-- 9. LOAD PLAN -->
-    <div class="dm-section" id="loadplan">
-        <h2>9. Load Plan &amp; Pallet Positioning</h2>
-        <h3>What a Load Plan is</h3>
-        <p>A Load Plan is the <b>physical</b> record of one truck's actual loading for one day — which pallets go where inside the truck. It is separate from the financial booking(s) riding on that truck: one Load Plan can carry pallets from <b>several different customers' bookings</b> at once, but each booking's invoice, sales order, and revenue stay completely independent. Sharing a truck never merges two customers' accounting.</p>
-        <h3>Physical pallet vs. stop allocation</h3>
-        <p>A physical pallet (<code>prema.dispatch.item</code> with <code>load_unit_type</code> pallet/shared pallet/container) occupies exactly one truck position. If that same pallet contains freight for more than one delivery stop (a <b>shared skid</b>), each stop it serves is a separate <b>allocation</b> record — the pallet count never multiplies by the number of stops. A pallet feeding 3 stops still counts as 1 pallet, 1 position, 3 allocations.</p>
-        <h3>Layout types</h3>
-        <ul>
-            <li><b>Straight</b> — the default for up to the template's straight capacity (12 for the seeded 26ft template). Lengthwise positions, driver side (L1-L6) and passenger side (R1-R6).</li>
-            <li><b>Pin-Wheel</b> — automatically proposed (never silently applied) when confirmed pallets exceed Straight's capacity, e.g. a 13th pallet. Existing assignments are preserved wherever the position code still exists in the new template; anything that no longer fits becomes Unassigned.</li>
-            <li><b>Turned</b> — higher-density angled positions requiring four-way-entry pallets and forklift access at both ends. Not a legal safety guarantee — a planning aid only.</li>
-        </ul>
-        <p><i>All seeded 26ft templates ship as "unverified" until real interior measurements are entered on the template (Settings &gt; Vehicle Layout Templates) — don't treat an unverified template's capacity as guaranteed. While unverified, the Planner shows an "UNVERIFIED VEHICLE LAYOUT" banner and a Dispatch Manager/Dispatcher must explicitly acknowledge it before <span class="dm-btn">Confirm Loading</span> is allowed — this acknowledgement is logged in the Load Plan's event timeline. Turned is never auto-proposed while unverified; only Straight/Pin-Wheel are considered by the automatic capacity check.</i></p>
-        <h3>Assigning positions</h3>
-        <p>Airline-seat-style tap interaction, both in the Dispatch Planner's <span class="dm-btn">Pallet Layout</span> panel and the Driver App's Load Plan screen: tap a vacant (green) position, then pick an unassigned pallet to assign it there. Tap an occupied position to see its detail and Move/Swap/Unassign/Mark Loaded/Report Exception. No drag-and-drop is required on mobile.</p>
-        <h3>Stale plan warning</h3>
-        <p>Any material change after planning starts — a stop added/removed, a pallet's weight/dimensions changed, a job added to the truck — marks the plan <b>stale</b>. Existing pallet positions are never silently moved; the plan shows a stale banner until a dispatcher reviews it (Validate) and clears the flag.</p>
-        <h3>Locking &amp; unlocking</h3>
-        <p>A Load Plan locks automatically once the truck's job reaches the <b>Picked Up</b> stage (assuming validation passes — if not, the lock is deferred and flagged for dispatcher follow-up rather than blocking the actual pickup). Once locked, no one can rearrange pallets. A <b>frozen snapshot</b> of the entire plan (positions, pallets, stops, counts) is saved at that moment for claims/disputes. A Dispatch Manager can unlock with a mandatory reason, which is logged.</p>
-        <h3>Transfer handoff</h3>
-        <p>When a pallet moves to a different truck mid-route (the existing Driver Transfer feature), its Load Plan history follows it: the giving truck's Load Plan keeps a record of the handoff, the receiving truck's Load Plan gets the pallet as <b>unassigned</b> (never a blind copy of the old position — the new truck may use a different layout). The pallet's identity and financial job never change.</p>
-        <h3>Driver App Load Plan</h3>
-        <p>A "LOAD PLAN" status card on the driver's Stops screen shows loaded/unassigned/warning counts at a glance and opens the full diagram. Drivers can assign, move, mark loaded, report an exception, and confirm loading — all through the same tap interaction as the dispatcher panel. Locked plans block further edits.</p>
-        <h3>Warehouse workflow &amp; QR</h3>
-        <p>Warehouse Loader accounts (a separate, more restricted role from Driver) sign in at <code>/dispatch/warehouse</code> to view active Load Plans, mark pallets loaded, move a pallet if permitted, and report damage — with no access to rates, invoices, or truck/driver reassignment. Every physical pallet also has a QR code; scanning it with a phone's normal camera opens a read-only summary (reference, truck, position, stop numbers, shared/exception status) with no financial data, and prompts for login before any write action.</p>
-        <h3>Recommendation engine</h3>
-        <p><span class="dm-btn">Recommend Layout</span> proposes positions using simple rules — earliest deliveries nearest the rear door, later deliveries farther forward, basic weight/side-balance and four-way-entry checks. It is always advisory: a dispatcher or driver must explicitly Accept or Reject before anything changes, and both the recommendation and the decision are logged.</p>
-        <h3>Security</h3>
-        <p>Every Load Plan action goes through the same driver-ownership and record-state checks as the rest of the Driver App (Phase 1A). Drivers see only their own truck's plan; Warehouse Loaders see any operationally active plan but never financial data; only Dispatch Manager can unlock a locked plan.</p>
-        <h3>Troubleshooting</h3>
-        <ul>
-            <li><b>"No layout template available for this vehicle"</b> — no layout template exists yet; add one under Settings &gt; Vehicle Layout Templates, or leave a template's Applicable Vehicles blank to apply it generically.</li>
-            <li><b>"This load plan was updated by someone else"</b> — another user (or the driver) saved a change first; refresh and retry your action.</li>
-            <li><b>Plan won't lock</b> — check Validate for the specific blocking reason (usually an unassigned required pallet or capacity exceeded).</li>
-        </ul>
-    </div>
+<!-- ================================================================ -->
+<div class="dm-section" id="geography">
+    <h2>5. Geography: FSAs, Regions, Cities</h2>
+    <p>Navigate: <b>Network → FSAs / Regions / Cities</b></p>
+    <table class="dm-table">
+        <tr><th>Layer</th><th>What it does</th><th>Example</th></tr>
+        <tr><td>Postal Code</td><td>Customer's address</td><td>K7M 3E5</td></tr>
+        <tr><td>FSA</td><td>First 3 chars → determines eligibility</td><td>K7M → Kingston area</td></tr>
+        <tr><td>Region</td><td>Pricing &amp; network zone</td><td>R6 = Eastern Ontario</td></tr>
+        <tr><td>City</td><td>Display label only (not used for pricing)</td><td>Kingston</td></tr>
+        <tr><td>Lane</td><td>Region-pair commercial capability</td><td>R6→R8 (Kingston→Montreal)</td></tr>
+    </table>
+    <div class="dm-warn">Cities are display-only. Pricing is determined by <b>Region pairs</b>, not city names. Small towns (Minden, Bobcaygeon) do not need their own corridors or special pricing.</div>
+</div>
 
+<!-- ================================================================ -->
+<div class="dm-section" id="network">
+    <h2>6. Network: Corridors &amp; Departures</h2>
+    <p>Navigate: <b>Network → Corridors / Departures / Daily Local Operations</b></p>
+    <h3>Corridors</h3>
+    <p>A Corridor is a <b>directional operational route</b> with ordered stops. Each corridor represents one direction — reverse direction requires a separate corridor.</p>
+    <table class="dm-table">
+        <tr><th>Corridor</th><th>Direction</th><th>Stops (in order)</th></tr>
+        <tr><td>Quebec Eastbound</td><td>East</td><td>Transit Mississauga → Belleville → Kingston → Brockville → Cornwall → Montreal → Drummondville → Quebec City</td></tr>
+        <tr><td>Quebec Westbound</td><td>West</td><td>Quebec City → Drummondville → Montreal → Cornwall → Brockville → Kingston → Belleville → Transit Mississauga</td></tr>
+        <tr><td>Local &amp; Regional</td><td>Local</td><td>GTA-area pickups/deliveries</td></tr>
+        <tr><td>Ottawa Corridor</td><td>East</td><td>Transit Mississauga → Ottawa</td></tr>
+    </table>
+    <h3>Corridor Stops</h3>
+    <p>Each stop on a corridor has: sequence, region, pickup/delivery/transfer permission, planned arrival/departure offsets, service duration, distance from origin, customer-visibility flag.</p>
+    <h3>Departures</h3>
+    <p>A Departure is <b>one scheduled execution</b> of a corridor on a specific date. It has: vehicle, driver, status (scheduled/departed/in_transit/completed/cancelled/delayed), cutoff time, max capacity.</p>
+    <h3>Phase 1 Weekly Schedule</h3>
+    <table class="dm-table">
+        <tr><th>Day</th><th>Operation</th><th>Revenue Target</th></tr>
+        <tr><td>Monday</td><td>Local &amp; Regional Ops + Quebec staging</td><td>$1,200</td></tr>
+        <tr><td>Tuesday</td><td>Quebec Eastbound (~00:00-01:00)</td><td>$2,300 full / $1,600 Montreal</td></tr>
+        <tr><td>Wednesday</td><td>Quebec Westbound Return</td><td>—</td></tr>
+        <tr><td>Thursday</td><td>Local &amp; Regional Ops + Ottawa staging</td><td>$1,200</td></tr>
+        <tr><td>Friday</td><td>Ottawa Corridor</td><td>$1,200</td></tr>
+        <tr><td>Saturday</td><td>No default operation</td><td>Carryover only</td></tr>
+        <tr><td>Sunday</td><td>No default operation</td><td>—</td></tr>
+    </table>
+</div>
+
+<!-- ================================================================ -->
+<div class="dm-section" id="pricing">
+    <h2>7. Pricing: Rate Plans &amp; Lanes</h2>
+    <p>Navigate: <b>Pricing → Rate Plans / Lanes / Service Offerings / Rate Simulator</b></p>
+    <h3>How Pricing Works</h3>
+    <p><b>Customer Price per Pallet = Revenue Target ÷ Planned Pallets</b></p>
+    <p><b>Booking Total = Customer Price per Pallet × Booked Pallets</b></p>
+    <h3>Rate Plan</h3>
+    <p>A Rate Plan is the <b>customer-price authority</b>. Each lane segment (e.g., Kingston → Montreal) gets its own rate plan. Plans use Simple mode (one revenue target ÷ planned pallets).</p>
+    <h3>Default Lane Targets</h3>
+    <table class="dm-table">
+        <tr><th>Lane</th><th>Revenue Target</th><th>Planned Pallets</th><th>Price/Pallet</th></tr>
+        <tr><td>Mississauga ↔ Montreal</td><td>$1,600</td><td>8</td><td>$200.00</td></tr>
+        <tr><td>Mississauga ↔ Quebec City</td><td>$2,300</td><td>8</td><td>$287.50</td></tr>
+        <tr><td>Mississauga ↔ Ottawa</td><td>$1,200</td><td>8</td><td>$150.00</td></tr>
+        <tr><td>Mississauga ↔ Sudbury</td><td>$1,200</td><td>8</td><td>$150.00</td></tr>
+        <tr><td>Mississauga ↔ Niagara Falls</td><td>$350</td><td>8</td><td>$43.75</td></tr>
+    </table>
+    <h3>Price vs Cost</h3>
+    <p><b>Rate Plan</b> = what the customer pays (PricingService). <b>Prema AI Estimator</b> = what it costs us internally (fuel + maintenance + insurance + driver). These are NEVER mixed. The Estimator's cost is internal only — never shown to customers.</p>
+    <h3>Rate Simulator</h3>
+    <p>Navigate: <b>Pricing → Rate Simulator</b>. Enter pickup/delivery FSAs, pallets, weight, temperature. Preview price without creating a booking.</p>
+</div>
+
+<!-- ================================================================ -->
+<div class="dm-section" id="booking-flows">
+    <h2>8. Booking Flows — Complete Overview</h2>
+    <p>Every booking follows the same path regardless of how it enters the system:</p>
+    <ol>
+        <li><b>Customer Request</b> — from any channel</li>
+        <li><b>Normalized Booking Request</b> — all channels produce the same structure</li>
+        <li><b>Route Resolution</b> — FSA → Region → Lane → Corridor → Departure</li>
+        <li><b>Pricing</b> — Rate Plan lookup or agreed/negotiated rate</li>
+        <li><b>Tax Decision</b> — destination province → correct HST/GST</li>
+        <li><b>Capacity Check</b> — per-segment pallet/weight validation with row locking</li>
+        <li><b>Booking Confirmation</b> — one atomic transaction creates: Booking + Stops + Lines + Legs + Tax Snapshot + Invoice + Dispatch Job</li>
+    </ol>
+    <div class="dm-info"><b>Idempotency:</b> Every booking has a unique idempotency key. Clicking "Confirm" twice, running the recurring cron twice, or approving a WhatsApp negotiation twice will NOT create duplicate bookings, invoices, or dispatch jobs.</div>
+</div>
+
+<!-- ================================================================ -->
+<div class="dm-section" id="portal">
+    <h2>9. Portal Booking (Customer Self-Service)</h2>
+    <p>Route: <code>/my/booking</code> (customer logs into their account)</p>
+    <ol>
+        <li>Customer enters <b>pickup postal code</b> and <b>delivery postal code</b></li>
+        <li>System resolves FSAs → Regions → Lane → available service options</li>
+        <li>Customer sees <b>price quote</b> with pickup/delivery dates</li>
+        <li>Customer enters detailed addresses and shipment info (pallets, weight, temperature)</li>
+        <li>Customer <b>confirms</b> — system creates pricing session (20-min TTL)</li>
+        <li>On confirmation: Booking + Stops + Lines + Legs + Tax + Draft Invoice + Dispatch Job</li>
+    </ol>
+    <div class="dm-info">Portal bookings require the customer to have <b>Logistics Pricing Status = Approved</b> and be in the <b>Logistics Customer</b> group.</div>
+</div>
+
+<!-- ================================================================ -->
+<div class="dm-section" id="phone">
+    <h2>10. Phone Booking (Dispatcher Takes a Call)</h2>
+    <p>Navigate: <b>Bookings → Phone Booking</b></p>
+    <ol>
+        <li>Select <b>Customer</b></li>
+        <li>Enter <b>Pickup Postal Code</b> and <b>Delivery Postal Code</b></li>
+        <li>Enter <b>Pallets</b>, <b>Weight (lbs)</b>, <b>Temperature Mode</b> (Dry/Reefer)</li>
+        <li>Click <span class="dm-btn">Get Price</span> — system shows lane, service, pickup date, delivery date, price</li>
+        <li>Click <span class="dm-btn">Confirm Booking</span> — creates booking with tax, invoice, dispatch job</li>
+    </ol>
+    <div class="dm-warn"><b>Double-click safe:</b> Clicking Confirm twice returns the same booking. No duplicate will be created.</div>
+</div>
+
+<!-- ================================================================ -->
+<div class="dm-section" id="internal">
+    <h2>11. Internal Staff Booking</h2>
+    <p>Navigate: <b>Bookings → All Bookings → Create</b></p>
+    <ol>
+        <li>Select <b>Customer</b></li>
+        <li>Add <b>Pickup Stops</b> and <b>Delivery Stops</b> (with postal codes, addresses, contacts)</li>
+        <li>Set <b>Pallets</b>, <b>Weight</b>, <b>Equipment Type</b> (Dry/Reefer), <b>Temperature</b></li>
+        <li>Choose <b>Pricing Method</b>: Rate Plan, Negotiated, Manual, or Imported Invoice</li>
+        <li>If Rate Plan: system auto-resolves pricing. Otherwise: enter agreed rate.</li>
+        <li>Click <span class="dm-btn">Confirm</span> — booking created with all linked records</li>
+    </ol>
+    <div class="dm-info">Internal users can see both <b>Customer Price</b> and <b>Internal Cost/NET PROFIT</b>. This information is never visible to customers.</div>
+</div>
+
+<!-- ================================================================ -->
+<div class="dm-section" id="invoice-booking">
+    <h2>12. Invoice Create/Open Booking</h2>
+    <p>Navigate: Open any <b>Draft Invoice</b> → click <span class="dm-btn">Create/Open Booking</span></p>
+    <ol>
+        <li>System checks if a <b>Booking already exists</b> for this invoice</li>
+        <li>If it exists: opens the existing Booking (no duplicate)</li>
+        <li>If not: extracts shipment data from invoice/estimator → creates normalized booking → <b>links existing invoice</b> (does NOT create a new invoice)</li>
+        <li>Creates: Booking Stops, Lines, Legs, reserves capacity, creates Dispatch Job</li>
+    </ol>
+    <div class="dm-danger"><b>Repeated clicks safe:</b> Clicking Create/Open Booking twice opens the same booking. No duplicate invoice or dispatch job.</div>
+    <div class="dm-info">Historical invoices with existing dispatch jobs remain unchanged. Only new bookings use the V4 workflow.</div>
+</div>
+
+<!-- ================================================================ -->
+<div class="dm-section" id="whatsapp">
+    <h2>13. WhatsApp Booking</h2>
+    <p>Navigate: <b>Bookings → WhatsApp Negotiations</b></p>
+    <ol>
+        <li>Customer sends <b>load tender</b> (PDF/image) via WhatsApp</li>
+        <li>System <b>AI-extracts</b>: stops, pallets, weight, commodity, pickup times</li>
+        <li>System runs <b>Prema AI Estimator</b> for internal cost</li>
+        <li>Staff reviews and <b>negotiates rate</b> via WhatsApp (interactive buttons)</li>
+        <li>Customer <b>agrees</b> on rate</li>
+        <li>Staff clicks <span class="dm-btn">Create Booking</span> — system creates complete booking with:
+            <ul>
+                <li>Correct <b>freight tax</b> by destination province</li>
+                <li>Draft <b>invoice</b> with proper tax line</li>
+                <li><b>Dispatch job</b> linked to booking and invoice</li>
+            </ul>
+        </li>
+    </ol>
+    <div class="dm-warn"><b>Internal cost is NEVER sent to the customer.</b> WhatsApp replies show only: agreed rate, pickup/delivery, route description. Internal cost, NET PROFIT, and margin are hidden.</div>
+</div>
+
+<!-- ================================================================ -->
+<div class="dm-section" id="custom-quote">
+    <h2>14. Custom Quote</h2>
+    <p>Navigate: <b>Bookings → Custom Quotes</b></p>
+    <p>For <b>unsupported destinations</b> or special requests that don't match a standard corridor/lane.</p>
+    <ol>
+        <li>Create a new quote with: customer, pickup/delivery addresses, pallets, weight, equipment</li>
+        <li>Set <b>quoted price</b> manually</li>
+        <li>State flow: <b>Draft → Reviewing → Quoted → Accepted/Declined → Converted</b></li>
+        <li>When Accepted: click <span class="dm-btn">Convert to Booking</span> — creates complete booking through canonical service</li>
+    </ol>
+</div>
+
+<!-- ================================================================ -->
+<div class="dm-section" id="recurring">
+    <h2>15. Recurring Agreements</h2>
+    <p>Navigate: <b>Bookings → Recurring Agreements</b></p>
+    <p>For <b>regular weekly/biweekly LTL shipments</b>.</p>
+    <ol>
+        <li>Create agreement: customer, pickup/delivery FSAs, pallets, weight, temperature</li>
+        <li>Set: <b>Frequency</b> (weekly/biweekly), <b>Preferred Weekday</b>, <b>Start/End Date</b></li>
+        <li>The <b>daily cron</b> automatically generates bookings on due dates</li>
+        <li>Each generated booking uses an idempotency key: <code>recurring:{agreement_id}:{shipment_date}</code></li>
+        <li>Running the cron twice creates <b>no duplicates</b></li>
+    </ol>
+    <div class="dm-info">The next shipment date advances <b>only after successful booking creation</b>. Failures create administrator activities (not silently swallowed).</div>
+</div>
+
+<!-- ================================================================ -->
+<div class="dm-section" id="capacity">
+    <h2>16. Capacity &amp; 13-Pallet Override</h2>
+    <h3>How Capacity Works</h3>
+    <p>Capacity is calculated <b>per corridor segment</b>, not per total truck. For each adjacent stop pair on a corridor, the system sums pallets and weight from all active bookings whose pickup is at or before that point and delivery is after it.</p>
+    <table class="dm-table">
+        <tr><th>Pallets</th><th>Layout</th><th>Result</th></tr>
+        <tr><td>≤ 12</td><td>Straight</td><td><b>Accepted</b> — no override needed</td></tr>
+        <tr><td>13</td><td>Pin-Wheel</td><td><b>Override Required</b> — dispatcher must enable capacity override and provide reason</td></tr>
+        <tr><td>≥ 14</td><td>—</td><td><b>Rejected</b> — exceeds physical truck capacity</td></tr>
+    </table>
+    <h3>Transactional Capacity</h3>
+    <p>When a booking is confirmed, the system <b>locks the corridor departure row</b> (PostgreSQL SELECT FOR UPDATE), recalculates all active reservations, validates the proposed booking against per-segment limits, and commits atomically. If any segment fails, the entire booking rolls back — no partial reservations.</p>
+    <div class="dm-warn"><b>Payload weight limit</b> is always enforced independently of pallet count.</div>
+</div>
+
+<!-- ================================================================ -->
+<div class="dm-section" id="tax">
+    <h2>17. Freight Tax</h2>
+    <p>Navigate: <b>Settings → Prema Logistics → Freight Tax Configuration</b></p>
+    <h3>How Freight Tax Works</h3>
+    <p>Tax is determined by the <b>final delivery destination province</b> and the customer's <b>Billing Relationship</b>.</p>
+    <table class="dm-table">
+        <tr><th>Destination</th><th>Tax Type</th><th>Rate</th></tr>
+        <tr><td>Ontario</td><td>HST</td><td>13%</td></tr>
+        <tr><td>Quebec (interprovincial)</td><td>GST</td><td>5%</td></tr>
+        <tr><td>Quebec (domestic, both ends QC)</td><td>GST + QST</td><td>~15% (manual review)</td></tr>
+        <tr><td>NS, NB, PE, NL</td><td>HST</td><td>15%</td></tr>
+        <tr><td>AB, BC, MB, SK, NT, YT, NU</td><td>GST</td><td>5%</td></tr>
+        <tr><td>Interlining Carrier</td><td>Zero-Rated</td><td>0%</td></tr>
+        <tr><td>International (documented)</td><td>Zero-Rated</td><td>0%</td></tr>
+    </table>
+    <h3>Missing Tax Mapping</h3>
+    <p>If a required tax mapping is not configured:</p>
+    <ul>
+        <li><code>tax_review_required = True</code> on the booking</li>
+        <li>Invoice stays <b>Draft</b> — cannot be posted or sent</li>
+        <li>An <b>Accounting Review activity</b> is created</li>
+        <li>A <b>visible red banner</b> appears on the booking form</li>
+    </ul>
+    <div class="dm-danger">Invoice posting is BLOCKED until the tax configuration is resolved. This prevents silently issuing tax-free invoices.</div>
+</div>
+
+<!-- ================================================================ -->
+<div class="dm-section" id="booking-board">
+    <h2>18. Booking Board</h2>
+    <p>Navigate: <b>Dispatch Operations → Booking Board</b></p>
+    <p>The primary board for <b>ALL customer shipments</b> regardless of entry channel. Shows every confirmed booking with:</p>
+    <ul>
+        <li><b>Source badge</b> — Portal / Phone / Internal / Invoice / WhatsApp / Quote / Recurring</li>
+        <li>Booking number, Customer, Status (confirmed/planned/in_execution/delivered/completed/cancelled/exception)</li>
+        <li>Pickup, Delivery, Route, Departure</li>
+        <li>Pallets, Weight, Temperature</li>
+        <li>Tax review warning, Capacity status</li>
+        <li>Invoice status, Dispatch status, Truck, Driver</li>
+    </ul>
+    <p>Clicking any card opens the canonical <b>Booking form</b>.</p>
+</div>
+
+<!-- ================================================================ -->
+<div class="dm-section" id="weekly-schedule">
+    <h2>19. Weekly Schedule Board</h2>
+    <p>Navigate: <b>Dispatch Operations → Weekly Schedule</b></p>
+    <p>7-day horizontal scrolling view showing corridor departures and local operations.</p>
+    <h3>Corridor Cards Show</h3>
+    <ul>
+        <li>Status (scheduled/ontime/completed/cancelled/delayed), Truck, Driver, Equipment</li>
+        <li>Peak Pallets, Peak Weight, Total Pallets Handled</li>
+        <li><b>Outbound Revenue</b>, <b>Backhaul Revenue</b>, <b>Gross Revenue</b></li>
+        <li>Estimated Cost, <b>Departure NET PROFIT</b>, <b>Cycle NET PROFIT</b>, Margin %</li>
+        <li>Booking count, Stop count, Readiness</li>
+    </ul>
+    <div class="dm-info"><b>Cycle NET PROFIT</b> = Outbound Revenue + Backhaul Revenue − Full Cycle Cost. This accounts for the complete operating cycle (e.g., Tuesday outbound + Wednesday return), not just one-way profit.</div>
+    <h3>Filters</h3>
+    <p>Truck filter, Phase filter, Region filter. <b>PB38446 appears. DEMO-01 is excluded.</b> Saturday and Sunday show no default operations unless confirmed carryover work exists.</p>
+</div>
+
+<!-- ================================================================ -->
+<div class="dm-section" id="dispatch-planner">
+    <h2>20. Dispatch Planner</h2>
+    <p>Navigate: <b>Dispatch Operations → Dispatch Planner</b></p>
+    <p>Drag-and-drop board for assigning dispatch jobs to trucks and days. Features:</p>
+    <ul>
+        <li>Weekly calendar view with truck columns</li>
+        <li>Drag unassigned jobs onto truck/day slots</li>
+        <li>Auto-creates Load Plans on assignment</li>
+        <li>Pallet Layout panel for floor positioning</li>
+        <li>Truck utilization and driver assignment</li>
+        <li>Cross-dock transfer handoff tracking</li>
+    </ul>
+</div>
+
+<!-- ================================================================ -->
+<div class="dm-section" id="live-map">
+    <h2>21. Live Fleet Map</h2>
+    <p>Navigate: <b>Dispatch Operations → Live Map</b> (also the default home page)</p>
+    <p>Real-time map showing all <b>operational vehicles</b> with:</p>
+    <ul>
+        <li>Current GPS position (from GeoTab)</li>
+        <li>Last GPS update time / stale warning</li>
+        <li>Vehicle name, license plate, driver</li>
+        <li>Current dispatch job and customer</li>
+        <li>Active stops with sequence and status</li>
+        <li><b>PB38446 visible. DEMO-01 hidden</b> (x_operational_logistics filter)</li>
+    </ul>
+    <div class="dm-info">The map shows ALL operational vehicles even without active dispatch jobs. Vehicles without recent GPS show their last known position with a "stale" indicator.</div>
+</div>
+
+<!-- ================================================================ -->
+<div class="dm-section" id="load-plans">
+    <h2>22. Load Plans</h2>
+    <p>Navigate: <b>Dispatch Operations → Load Plans</b></p>
+    <p>Physical truck loading plans. One per vehicle per operating date.</p>
+    <h3>Layout Types</h3>
+    <ul>
+        <li><b>Straight (12)</b> — default, lengthwise positions L1-L6, R1-R6</li>
+        <li><b>Pin-Wheel (13)</b> — proposed when pallets exceed 12, requires dispatcher acknowledgment</li>
+        <li><b>Turned (14)</b> — angled positions, requires four-way-entry pallets</li>
+    </ul>
+    <h3>Key Operations</h3>
+    <ul>
+        <li><b>Assign/Move/Swap/Unassign</b> — position pallets on the truck floor</li>
+        <li><b>Validate</b> — check layout for blocking issues</li>
+        <li><b>Confirm Loading</b> — mark as loaded</li>
+        <li><b>Lock/Unlock</b> — manager can lock plan (prevents edits), unlock requires reason</li>
+        <li><b>Transfer Handoff</b> — move pallets between trucks at transfer hubs</li>
+        <li><b>Recommend Layout</b> — AI-suggested positions (advisory only, never auto-applied)</li>
+    </ul>
+</div>
+
+<!-- ================================================================ -->
+<div class="dm-section" id="driver-worksheets">
+    <h2>23. Driver Worksheets</h2>
+    <p>Navigate: <b>Dispatch Operations → Driver Worksheets</b></p>
+    <p>Generated when: <b>Truck assigned + Driver assigned + Stops complete</b>.</p>
+    <p>Each worksheet is unique per: <b>driver + vehicle + operation/date</b>.</p>
+    <p>Shows: ordered stops, booking references, customer names, pallets, weight, temperature, PO numbers, pickup/delivery windows, transfer info, contact info, POD requirements.</p>
+    <div class="dm-warn">Worksheets are <b>idempotent</b> — generating twice returns the same worksheet. Missing stops block creation.</div>
+</div>
+
+<!-- ================================================================ -->
+<div class="dm-section" id="trucks-drivers">
+    <h2>24. Trucks &amp; Drivers</h2>
+    <p>Navigate: <b>Fleet → Trucks / Drivers</b></p>
+    <h3>Truck Assignment</h3>
+    <p>Assign truck on dispatch job or via Dispatch Planner. System validates:</p>
+    <ul>
+        <li>Reefer capability (if temperature-controlled freight)</li>
+        <li>Liftgate availability</li>
+        <li>Pallet capacity (straight/pin-wheel/turned)</li>
+        <li>Payload weight capacity</li>
+    </ul>
+    <div class="dm-info">Conflicts show warnings. Manager can override with a mandatory reason logged in the assignment history.</div>
+    <h3>Driver Assignment</h3>
+    <p>Driver must have <code>x_is_driver = True</code> on their contact record. System auto-creates driver chat channel.</p>
+</div>
+
+<!-- ================================================================ -->
+<div class="dm-section" id="pickup-delivery">
+    <h2>25. Pickup, Transfer &amp; Delivery</h2>
+    <h3>Pickup</h3>
+    <p>Driver opens <b>Driver App</b> (<code>/dispatch/driver</code>). Sees scheduled stops for today. At pickup: confirms pallet count, weight, takes photo evidence. System updates booking status and custody records.</p>
+    <h3>Transfer (Transit Mississauga)</h3>
+    <p>Freight moves from one truck to another at the hub. Cross-dock drop → custody transition → cross-dock pickup on next truck. System tracks chain of custody.</p>
+    <div class="dm-info">Customer sees "Transit Mississauga, ON" — internal hub details (exact address, cross-dock layout) are never exposed.</div>
+    <h3>Delivery</h3>
+    <p>Driver arrives at delivery. App shows: address, contact, items, instructions. Driver confirms delivery with POD photo/signature. System updates booking to delivered.</p>
+</div>
+
+<!-- ================================================================ -->
+<div class="dm-section" id="pod">
+    <h2>26. Proof of Delivery (POD)</h2>
+    <p>POD collected through the <b>Driver App</b>: photos of delivered freight, recipient signature, timestamp, GPS stamp. Attached to dispatch stop and booking. Triggers booking completion workflow.</p>
+</div>
+
+<!-- ================================================================ -->
+<div class="dm-section" id="invoicing">
+    <h2>27. Invoice Review &amp; Accounting</h2>
+    <h3>Invoice Creation</h3>
+    <p>Booking confirmation auto-creates a <b>Draft Invoice</b> with:</p>
+    <ul>
+        <li>Correct freight product (Dry/Reefer, CA/US)</li>
+        <li>Correct tax line from the booking's tax decision</li>
+        <li>Booking number as origin reference</li>
+        <li>Deterministic description (pickup, delivery, pallets, weight, PO, reference)</li>
+    </ul>
+    <h3>Before Posting</h3>
+    <ul>
+        <li>Verify: price matches booking, tax matches destination province</li>
+        <li>If <code>tax_review_required = True</code>: cannot post — resolve tax config first</li>
+        <li>Booking amount_untaxed + amount_tax = amount_total MUST equal invoice totals</li>
+    </ul>
+    <h3>Accounting</h3>
+    <p>Posted invoices flow to standard Odoo accounting. Bank reconciliation via Plaid sync (Wise, TD). Auto-reconcile models for recurring payment patterns.</p>
+</div>
+
+<!-- ================================================================ -->
+<div class="dm-section" id="tracking">
+    <h2>28. Customer Tracking</h2>
+    <p>Route: <code>/track</code></p>
+    <p>Customers track shipments using <b>Booking Number + Tracking Token</b> (both required).</p>
+    <p>Visible to customer: status, pickup/delivery cities, estimated delivery date.</p>
+    <p><b>Never visible:</b> internal cost, NET PROFIT, margin, GPS coordinates, driver personal details, internal hub addresses, other customers' records.</p>
+    <div class="dm-danger">The tracking token is a high-entropy random string. A booking number alone reveals nothing. This prevents anyone from guessing sequential booking numbers to see other shipments.</div>
+</div>
+
+<!-- ================================================================ -->
+<div class="dm-section" id="settings">
+    <h2>29. Settings</h2>
+    <p>Navigate: <b>Settings</b> (under Prema Dispatch)</p>
+    <h3>Dispatch Stages</h3>
+    <p>16 stages: Draft → New Booking → Planning → Assigned → Ready to Dispatch → Sent to Driver → En Route Pickup → At Pickup → Picked Up → In Transit → At Delivery → Delivered → POD Received → Completed / Exception / Cancelled.</p>
+    <h3>Freight Tax Configuration</h3>
+    <p>Navigate: <b>Settings → Technical → System Parameters</b> or <b>Settings → Prema Logistics → Freight Tax Configuration</b>. Map account.tax records for each province.</p>
+    <h3>Booking Templates [DEPRECATED]</h3>
+    <p>Replaced by Recurring Agreements. Use <b>Bookings → Recurring Agreements</b> instead.</p>
+    <h3>Vehicle Layout Templates</h3>
+    <p>Under Fleet → Equipment Profiles → Vehicle Layout Templates. Define pallet positions for each truck layout.</p>
+</div>
+
+<!-- ================================================================ -->
+<div class="dm-section" id="security">
+    <h2>30. Security Roles</h2>
+    <table class="dm-table">
+        <tr><th>Role</th><th>Group</th><th>Access</th></tr>
+        <tr><td>Dispatch Manager</td><td>group_dispatch_manager</td><td>Full access: capacity/tax override, corridor management, truck/driver assignment, all reports</td></tr>
+        <tr><td>Dispatcher</td><td>group_dispatcher</td><td>Booking creation, truck/driver assignment, board management, phone booking</td></tr>
+        <tr><td>Dispatch Readonly</td><td>group_dispatch_readonly</td><td>View boards and reports only</td></tr>
+        <tr><td>Driver</td><td>group_dispatch_driver</td><td>Driver App: own jobs/stops only, evidence upload, POD</td></tr>
+        <tr><td>Warehouse</td><td>group_dispatch_warehouse</td><td>Warehouse App: load plans, mark loaded, report damage</td></tr>
+        <tr><td>Pricing Manager</td><td>group_logistics_pricing_manager</td><td>Rate plans, pricing config</td></tr>
+        <tr><td>Logistics Customer</td><td>group_logistics_customer</td><td>Portal: own bookings, own tracking</td></tr>
+    </table>
+</div>
+
+<!-- ================================================================ -->
+<div class="dm-section" id="troubleshooting">
+    <h2>31. Troubleshooting</h2>
+    <table class="dm-table">
+        <tr><th>Problem</th><th>Solution</th></tr>
+        <tr><td>Booking not on Booking Board</td><td>Check booking state is "confirmed". Refresh board.</td></tr>
+        <tr><td>Tax review banner showing</td><td>Go to Settings → Freight Tax Configuration and map the missing tax.</td></tr>
+        <tr><td>Invoice won't post</td><td>Booking has tax_review_required=True. Resolve tax config, clear flag, then post.</td></tr>
+        <tr><td>Capacity error on booking</td><td>Check peak pallets on departure. Try different departure or split shipment.</td></tr>
+        <tr><td>Duplicate booking created</td><td>Call the canonical service — it's idempotent. Direct model creates bypass this.</td></tr>
+        <tr><td>DEMO-01 on map</td><td>Set x_operational_logistics=False on the vehicle. Map filters it out.</td></tr>
+        <tr><td>Portal 404 for non-staff</td><td>Portal requires beta-tester group or portal_enabled parameter = True.</td></tr>
+        <tr><td>"No layout template available"</td><td>Create a layout template under Fleet → Equipment Profiles → Layout Templates.</td></tr>
+        <tr><td>Menu items missing</td><td>Check user has Dispatcher or Dispatch Manager group. Ctrl+F5 to refresh.</td></tr>
+        <tr><td>Recurring cron not creating bookings</td><td>Check cron is active, agreement is within date range, no existing booking for that date.</td></tr>
+    </table>
+</div>
+
+<!-- ================================================================ -->
+<div class="dm-section" id="daily-checklist">
+    <h2>32. Daily Dispatcher Checklist</h2>
+    <ol>
+        <li>Open <b>Live Map</b> — verify all operational trucks have recent GPS positions</li>
+        <li>Open <b>Weekly Schedule Board</b> — verify today's departures are scheduled with trucks/drivers</li>
+        <li>Open <b>Booking Board</b> — review new bookings from all channels overnight</li>
+        <li>Assign <b>trucks</b> to unassigned departures</li>
+        <li>Assign <b>drivers</b> to unassigned jobs</li>
+        <li>Verify <b>Load Plans</b> for today's departures — confirm loading, check capacity</li>
+        <li>Generate <b>Driver Worksheets</b> for all assigned driver/truck/date combinations</li>
+        <li>Monitor <b>Driver App</b> for pickup/delivery confirmations throughout the day</li>
+        <li>Check <b>tax-review bookings</b> — resolve any with missing tax configurations</li>
+        <li>Review <b>exception-stage bookings</b> — resolve issues, contact customers if needed</li>
+        <li>Verify <b>Saturday/Sunday carryover</b> work if the week requires it</li>
+    </ol>
+</div>
+
+<!-- ================================================================ -->
+<div class="dm-section" id="e2e-checklist">
+    <h2>33. End-to-End Testing Checklist</h2>
+    <table class="dm-table">
+        <tr><th>#</th><th>Test</th><th>Expected Result</th></tr>
+        <tr><td>1</td><td>Portal: customer books Kingston → Montreal</td><td>Booking created with correct price, tax, invoice, dispatch</td></tr>
+        <tr><td>2</td><td>Phone: dispatcher books Kingston → Belleville</td><td>One booking. Double-click = same booking.</td></tr>
+        <tr><td>3</td><td>Internal: staff books Kingston → Hamilton via Transit Mississauga</td><td>Two booking legs created</td></tr>
+        <tr><td>4</td><td>Invoice: draft invoice → Create/Open Booking</td><td>Existing invoice linked. No duplicate. One dispatch job.</td></tr>
+        <tr><td>5</td><td>Invoice: click Create/Open Booking twice</td><td>Opens same booking. No duplicate.</td></tr>
+        <tr><td>6</td><td>WhatsApp: customer tenders load → negotiate → approve</td><td>Booking with tax. Invoice with tax line. Internal cost hidden.</td></tr>
+        <tr><td>7</td><td>Custom Quote: create → quote → accept → convert</td><td>Booking created with quoted price</td></tr>
+        <tr><td>8</td><td>Recurring: activate agreement → run cron → run cron again</td><td>One booking. Second run = no duplicate.</td></tr>
+        <tr><td>9</td><td>Capacity: Mississauga→Montreal 8 + Kingston→Montreal 8</td><td>Second rejected (overlapping segment = 16 pallets)</td></tr>
+        <tr><td>10</td><td>Capacity: Mississauga→Kingston 8 + Kingston→Montreal 8</td><td>Both accepted (non-overlapping segments)</td></tr>
+        <tr><td>11</td><td>Tax: Ontario destination</td><td>HST applied. Booking total = Invoice total.</td></tr>
+        <tr><td>12</td><td>Tax: clear tax mapping → create booking</td><td>tax_review_required=True. Invoice draft. Cannot post.</td></tr>
+        <tr><td>13</td><td>Tracking: booking number only (no token)</td><td>No shipment data returned</td></tr>
+        <tr><td>14</td><td>Tracking: booking number + correct token</td><td>Status, cities, delivery estimate. No cost/GPS/driver data.</td></tr>
+        <tr><td>15</td><td>Portal: Customer A tries Customer B booking</td><td>Access denied</td></tr>
+        <tr><td>16</td><td>Live Map: PB38446 visible, DEMO-01 hidden</td><td>Correct vehicle shown on map</td></tr>
+    </table>
+</div>
+
+</div>
 </div>
 </t>
 </template>
+
 </odoo>

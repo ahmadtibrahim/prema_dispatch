@@ -8,49 +8,70 @@ class DispatchTrackingController(http.Controller):
 
     @http.route("/web/dispatch/live-map/data", type="json", auth="user")
     def live_map_data(self, **kwargs):
-        """Return active dispatch jobs with truck GPS and stop coordinates."""
+        """Return all operational vehicles with GPS positions and active dispatch jobs.
+        Excludes non-operational vehicles (e.g. DEMO-01)."""
+        Vehicle = request.env["fleet.vehicle"].sudo()
         Job = request.env["prema.dispatch.job"]
-        active_jobs = Job.search([
-            ("stage_id.stage_type", "not in", ["cancelled", "completed"]),
-            ("vehicle_id", "!=", False),
-        ], limit=200)
 
         now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
 
+        # ── 1. Seed all operational vehicles ────────────────────────────
+        vehicles = Vehicle.search([
+            ("active", "=", True),
+            ("x_operational_logistics", "=", True),
+        ])
+
         trucks = {}
+        for v in vehicles:
+            lat = v.x_last_location_lat or 0.0
+            lng = v.x_last_location_lng or 0.0
+            gps_at = v.x_last_location_at
+            gps_age_min = None
+            if gps_at:
+                delta = now_utc - gps_at.replace(tzinfo=None)
+                gps_age_min = int(delta.total_seconds() // 60)
+
+            driver = v.driver_id.name or v.x_current_driver_contact_id.name or ""
+            trucks[v.id] = {
+                "id": v.id,
+                "name": v.name or "",
+                "license_plate": v.license_plate or "",
+                "driver": driver,
+                "customer": "",
+                "lat": lat,
+                "lng": lng,
+                "gps_age_min": gps_age_min,
+                "address": v.x_last_location_address or "",
+                "job_id": None,
+                "job_name": "",
+                "stops": [],
+            }
+
+        # ── 2. Overlay active dispatch jobs ────────────────────────────
+        active_jobs = Job.search([
+            ("stage_id.stage_type", "not in", ["cancelled", "completed"]),
+            ("vehicle_id", "!=", False),
+            ("vehicle_id.x_operational_logistics", "=", True),
+        ], limit=200)
+
         for job in active_jobs:
             vehicle = job.vehicle_id
             vid = vehicle.id
             if vid not in trucks:
-                lat = vehicle.x_last_location_lat or 0.0
-                lng = vehicle.x_last_location_lng or 0.0
-                gps_at = vehicle.x_last_location_at
-                gps_age_min = None
-                if gps_at:
-                    delta = now_utc - gps_at.replace(tzinfo=None)
-                    gps_age_min = int(delta.total_seconds() // 60)
+                continue  # Non-operational vehicle — skip
 
-                driver = (
-                    (job.driver_id.name if job.driver_id else "")
-                    or vehicle.driver_id.name
-                    or vehicle.x_current_driver_contact_id.name
+            # Update with job-specific data
+            trucks[vid]["customer"] = job.partner_id.name if job.partner_id else ""
+            trucks[vid]["job_id"] = job.id
+            trucks[vid]["job_name"] = job.name
+
+            # Update driver from job if not already set from vehicle
+            if not trucks[vid]["driver"]:
+                trucks[vid]["driver"] = (
+                    (job.driver_id.name if job.driver_id else "") or ""
                 )
-                trucks[vid] = {
-                    "id": vid,
-                    "name": vehicle.name or "",
-                    "license_plate": vehicle.license_plate or "",
-                    "driver": driver,
-                    "customer": job.partner_id.name if job.partner_id else "",
-                    "lat": lat,
-                    "lng": lng,
-                    "gps_age_min": gps_age_min,
-                    "address": vehicle.x_last_location_address or "",
-                    "job_id": job.id,
-                    "job_name": job.name,
-                    "stops": [],
-                }
 
-            # Attach stops (skip cancelled)
+            # Attach stops
             for stop in job.stop_ids.filtered(
                 lambda s: s.status != "cancelled"
             ).sorted("sequence"):
@@ -72,10 +93,23 @@ class DispatchTrackingController(http.Controller):
         type="http", auth="public", website=True, sitemap=False,
     )
     def track_shipment(self, tracking_number, **kwargs):
-        job = request.env["prema.dispatch.job"].sudo().search(
-            [("tracking_number", "=", tracking_number)], limit=1
-        )
+        tracking_token = (kwargs.get("token") or "").strip()
+
+        # Security: require token to prevent sequential-number enumeration.
+        # The tracking URL in customer emails includes ?token=...
+        domain = [("tracking_number", "=", tracking_number)]
+        if tracking_token:
+            domain.append(("tracking_token", "=", tracking_token))
+
+        job = request.env["prema.dispatch.job"].sudo().search(domain, limit=1)
         if not job:
+            return request.render(
+                "prema_dispatch.portal_tracking_not_found",
+                {"tracking_number": tracking_number},
+            )
+        # If no token provided, fall back to requiring the tracking token match
+        # (legacy jobs without tokens will get a not-found until tokens are backfilled)
+        if not tracking_token:
             return request.render(
                 "prema_dispatch.portal_tracking_not_found",
                 {"tracking_number": tracking_number},
@@ -118,10 +152,12 @@ class DispatchTrackingController(http.Controller):
     )
     def track_live(self, tracking_number, **kwargs):
         """JSON endpoint polled every 30s by the tracking portal for live updates."""
-        job = request.env["prema.dispatch.job"].sudo().search(
-            [("tracking_number", "=", tracking_number)], limit=1
-        )
-        if not job:
+        tracking_token = (kwargs.get("token") or "").strip()
+        domain = [("tracking_number", "=", tracking_number)]
+        if tracking_token:
+            domain.append(("tracking_token", "=", tracking_token))
+        job = request.env["prema.dispatch.job"].sudo().search(domain, limit=1)
+        if not job or not tracking_token:
             return {"error": "not found"}
         vehicle = job.vehicle_id
         stops = job.stop_ids.filtered(lambda s: s.status != "cancelled").sorted("sequence")

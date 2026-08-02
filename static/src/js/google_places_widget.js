@@ -105,10 +105,12 @@ export class GooglePlacesChar extends CharField {
         const canSyncName = !currentName || currentName === currentBusinessName || currentName === rec.data?.address;
 
         if ("address" in fieldNames && parsed.address) updates.address = parsed.address;
+        if ("hub_location_address" in fieldNames && parsed.address) updates.hub_location_address = parsed.address;
         if ("address_formatted" in fieldNames && parsed.address) updates.address_formatted = parsed.address;
         if ("address_validated" in fieldNames) updates.address_validated = Boolean(parsed.address);
         if ("address_validation_warning" in fieldNames) updates.address_validation_warning = false;
         if ("google_place_id" in fieldNames && parsed.googlePlaceId) updates.google_place_id = parsed.googlePlaceId;
+        if ("google_verified" in fieldNames && parsed.googlePlaceId) updates.google_verified = true;
         if ("street" in fieldNames && parsed.street) updates.street = parsed.street;
         if ("unit" in fieldNames && parsed.unit) updates.unit = parsed.unit;
         if ("city" in fieldNames && parsed.city) updates.city = parsed.city;
@@ -117,6 +119,11 @@ export class GooglePlacesChar extends CharField {
         if ("pin_lat" in fieldNames && Number.isFinite(parsed.lat)) updates.pin_lat = parsed.lat;
         if ("pin_lng" in fieldNames && Number.isFinite(parsed.lng)) updates.pin_lng = parsed.lng;
         if ("pin_source" in fieldNames && parsed.googlePlaceId) updates.pin_source = "google_place";
+        // Hub Location settings fields
+        if ("hub_location_lat" in fieldNames && Number.isFinite(parsed.lat)) updates.hub_location_lat = parsed.lat;
+        if ("hub_location_lng" in fieldNames && Number.isFinite(parsed.lng)) updates.hub_location_lng = parsed.lng;
+        if ("hub_location_name" in fieldNames && parsed.businessName) updates.hub_location_name = parsed.businessName;
+        if ("hub_location_place_id" in fieldNames && parsed.googlePlaceId) updates.hub_location_place_id = parsed.googlePlaceId;
         if ("pin_set" in fieldNames) updates.pin_set = false;
         if ("source_type" in fieldNames && parsed.googlePlaceId) updates.source_type = "google_places";
 
@@ -157,8 +164,12 @@ export class GooglePlacesChar extends CharField {
                 const fallbackValue = parseGooglePlace(place).address || place?.name || "";
                 if (!fallbackValue) return;
                 const ev = { target: { value: fallbackValue } };
-                this.onInput(ev);
-                this.onChange(ev);
+                try {
+                    if (typeof this.onInput === 'function') this.onInput(ev);
+                } catch (_) { /* settings view fallback */ }
+                try {
+                    if (typeof this.onChange === 'function') this.onChange(ev);
+                } catch (_) { /* settings view fallback */ }
             });
         } catch (e) {
             // Silently degrade to plain text input

@@ -11,6 +11,7 @@ from odoo.tests.common import TransactionCase
 class TestLoadPlanBase(TransactionCase):
     def setUp(self):
         super().setUp()
+        install_google_mocks(self)
         self.Job = self.env["prema.dispatch.job"]
         self.Stop = self.env["prema.dispatch.stop"]
         self.Item = self.env["prema.dispatch.item"]

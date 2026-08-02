@@ -16,6 +16,7 @@ from odoo.tests.common import TransactionCase
 class TestStopsPendingBase(TransactionCase):
     def setUp(self):
         super().setUp()
+        install_google_mocks(self)
         self.Job = self.env["prema.dispatch.job"]
         self.Stop = self.env["prema.dispatch.stop"]
         self.Item = self.env["prema.dispatch.item"]
@@ -110,6 +111,7 @@ class TestCapacityReservation(TestStopsPendingBase):
 class TestSavedLocationSearch(TestStopsPendingBase):
     def setUp(self):
         super().setUp()
+        install_google_mocks(self)
         self.foodland = self.Location.create({
             "name": "Foodland #3290 – Picton", "business_name": "Foodland #3290 – Picton",
             "chain_name": "Foodland", "location_number": "3290",
@@ -152,6 +154,7 @@ class TestSavedLocationSearch(TestStopsPendingBase):
 class TestDriverStopAndLocationAuthorization(TestStopsPendingBase):
     def setUp(self):
         super().setUp()
+        install_google_mocks(self)
         self.job = self.Job.create({
             "partner_id": self.customer.id, "stage_id": self.stage_draft.id,
             "driver_id": self.driver_partner.id, "vehicle_id": self.vehicle.id,
@@ -272,6 +275,7 @@ class TestDriverStopAndLocationAuthorization(TestStopsPendingBase):
 class TestDriverDateAndPickupWorkflow(TestStopsPendingBase):
     def setUp(self):
         super().setUp()
+        install_google_mocks(self)
         self.driver_user = self.env["res.users"].create({
             "name": "SP Driver User", "login": "sp_driver_user@example.com",
             "partner_id": self.driver_partner.id,
@@ -575,6 +579,7 @@ class TestRouteVisitCombine(TestStopsPendingBase):
 class TestFuturePickupAndRehandle(TestStopsPendingBase):
     def setUp(self):
         super().setUp()
+        install_google_mocks(self)
         self.job_united = self.Job.create({"partner_id": self.customer.id, "stage_id": self.stage_draft.id, "vehicle_id": self.vehicle.id})
         self.terra_customer = self.env["res.partner"].create({"name": "Terra Freska Financial Customer"})
         self.job_terra = self.Job.create({"partner_id": self.terra_customer.id, "stage_id": self.stage_draft.id, "vehicle_id": self.vehicle.id})
@@ -640,6 +645,7 @@ class TestFuturePickupAndRehandle(TestStopsPendingBase):
 class TestLocationExtractionService(TransactionCase):
     def setUp(self):
         super().setUp()
+        install_google_mocks(self)
         from odoo.addons.prema_dispatch.services.location_extraction_service import LocationExtractionService
         self.service = LocationExtractionService(self.env)
 

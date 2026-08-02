@@ -3,6 +3,7 @@
 import { Component, onMounted, onWillUnmount, useRef, useState } from "@odoo/owl";
 import { registry } from "@web/core/registry";
 import { useService } from "@web/core/utils/hooks";
+import { standardActionServiceProps } from "@web/webclient/actions/action_service";
 
 // ── Colour helpers ──────────────────────────────────────────────────────────
 
@@ -57,7 +58,7 @@ function truckFill(ageMin) {
 
 export class DispatchLiveMap extends Component {
     static template = "prema_dispatch.LiveMap";
-    static props    = {};
+    static props    = { ...standardActionServiceProps };
 
     setup() {
         this.orm      = useService("orm");

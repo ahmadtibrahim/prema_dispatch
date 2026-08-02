@@ -3,6 +3,7 @@ import logging
 import re
 
 from odoo import api, fields, models
+from odoo.exceptions import ValidationError
 from odoo.osv import expression
 
 _logger = logging.getLogger(__name__)
@@ -16,6 +17,7 @@ class PremaDispatchLocation(models.Model):
     the right spot without re-pinning every time.
     """
     _name = "prema.dispatch.location"
+    _inherit = ["mail.thread"]
     _description = "Saved Dispatch Location"
     _order = "use_count desc, name"
     _rec_name = "name"
@@ -27,11 +29,24 @@ class PremaDispatchLocation(models.Model):
              "so repeat stops (e.g. two pickups from the same shipper) are recognizable "
              "at a glance instead of just an address.",
     )
+    branch_name = fields.Char(
+        string="Branch Name",
+        help="Franchise operator or branch identifier — e.g. 'Belleville', 'Peterborough', "
+             "'Milton'. Kept separate from the business name so two branches of the same "
+             "chain are distinguishable.",
+    )
     address = fields.Char(string="Address", required=True)
 
     chain_name = fields.Char(string="Chain / Brand", index=True)
     location_number = fields.Char(string="Store / Location #", index=True)
     location_number_normalized = fields.Char(compute="_compute_location_search_fields", store=True, index=True)
+
+    # ── Normalized fields (computed, stored, indexed for efficient duplicate scans) ──
+    normalized_brand = fields.Char(compute="_compute_location_search_fields", store=True, index=True)
+    normalized_business = fields.Char(compute="_compute_location_search_fields", store=True, index=True)
+    normalized_branch = fields.Char(compute="_compute_location_search_fields", store=True, index=True)
+    normalized_unit = fields.Char(compute="_compute_location_search_fields", store=True, index=True)
+
     location_search_key = fields.Char(compute="_compute_location_search_fields", store=True, index=True)
     location_display_label = fields.Char(compute="_compute_location_search_fields")
     street = fields.Char()
@@ -62,8 +77,15 @@ class PremaDispatchLocation(models.Model):
     pin_accuracy_m = fields.Float()
 
     google_place_id = fields.Char(
-        string="Google Place ID",
+        string="Google Place ID", index=True,
         help="Google Places identifier for precise address matching.",
+    )
+    google_verified = fields.Boolean(
+        string="Google Verified",
+        default=False,
+        help="True when the address was selected from Google Places and has not been "
+             "manually edited since. Cleared automatically when any address field is "
+             "hand-edited.",
     )
 
     # Address Validation API (same pattern as prema.dispatch.stop)
@@ -102,6 +124,17 @@ class PremaDispatchLocation(models.Model):
              "(e.g. drop one job's skid here, pick up another job's freight, come back "
              "for it later) — a property of a location, not a separate Location Type. "
              "A Warehouse most commonly allows this, but any location type can.",
+    )
+
+    # ── Duplicate detection ──
+    duplicate_status = fields.Selection([
+        ("clean", "Clean"),
+        ("possible", "Possible Duplicate"),
+        ("confirmed_unique", "Confirmed Unique"),
+    ], string="Duplicate Status", default="clean", index=True)
+    duplicate_of_id = fields.Many2one(
+        "prema.dispatch.location", string="Possible Duplicate Of",
+        index=True, ondelete="set null",
     )
 
     # Entrance photo
@@ -189,47 +222,629 @@ class PremaDispatchLocation(models.Model):
     )
     stop_count = fields.Integer(compute="_compute_stop_count", string="# Stops")
 
+    # ═══════════════════════════════════════════════════════════════════════
+    # Normalization Helpers
+    # ═══════════════════════════════════════════════════════════════════════
+
+    @api.model
+    def _normalize_business(self, value):
+        """Normalize a business / brand / branch name for duplicate comparison.
+
+        - lowercase, trim, collapse whitespace
+        - remove punctuation (including apostrophes)
+        - & → and
+        - strip trailing legal suffixes (Inc, Ltd, Corp, etc.)
+        """
+        if not value:
+            return ""
+        v = value.lower().strip()
+        v = v.replace("&", " and ")
+        v = re.sub(r"'", "", v)                               # Joe's → Joes
+        v = re.sub(r"[.,|\":;!@#$%^*()_+=\[\]{}<>?/\\~`-]", " ", v)
+        v = re.sub(r"\s+", " ", v).strip()
+        v = re.sub(r"\s+(inc|ltd|limited|corp|corporation|company|co)\.?\s*$", "", v)
+        return v.strip()
+
+    @api.model
+    def _normalize_address_street(self, value):
+        """Normalize an address line: abbreviate street types, directions,
+        remove punctuation, collapse whitespace.  Unit / suite is NOT part
+        of the normalized address — it belongs in normalized_unit."""
+        if not value:
+            return ""
+        v = value.lower().strip()
+        v = re.sub(r"[,.]", "", v)
+        v = re.sub(r"\s+", " ", v)
+        street_map = {
+            "street": "st", "road": "rd", "avenue": "ave", "boulevard": "blvd",
+            "drive": "dr", "highway": "hwy", "lane": "ln", "court": "ct",
+            "terrace": "terr", "circle": "cir", "parkway": "pkwy", "place": "pl",
+            "square": "sq", "expressway": "expy", "freeway": "fwy",
+            "north": "n", "south": "s", "east": "e", "west": "w",
+            "northeast": "ne", "northwest": "nw", "southeast": "se", "southwest": "sw",
+        }
+        # Whole-word replacement
+        for full, abbr in street_map.items():
+            v = re.sub(r'\b' + full + r'\b', abbr, v)
+        return v.strip()
+
+    @api.model
+    def _normalize_unit(self, value):
+        """Normalize a unit / suite number.
+
+        Unit F / Suite F / #F / Apt F  →  f"""
+        if not value:
+            return ""
+        v = value.lower().strip()
+        v = re.sub(r'^(unit|suite|apt|apartment|room|ste|#)\s*', '', v, flags=re.I)
+        v = re.sub(r'\s+', '', v)
+        return v.strip()
 
     @api.model
     def _normalize_location_number(self, value):
-        value = (value or "").strip()
-        value = re.sub(r"^#", "", value)
-        value = re.sub(r"^(STORE|LOCATION|BRANCH|WAREHOUSE)\s*#?\s*", "", value, flags=re.I)
-        return value.strip().upper()
+        """Normalize a store / branch number.
+
+        Store #678      → 678
+        Store 03290     → 03290
+        Branch DC-14    → DC14"""
+        if not value:
+            return ""
+        v = value.strip()
+        v = re.sub(r'^#', '', v)
+        v = re.sub(r'^(STORE|LOCATION|BRANCH|WAREHOUSE)\s*#?\s*', '', v, flags=re.I)
+        return re.sub(r'[\s-]+', '', v).upper()
+
+    @api.model
+    def _normalize_postal(self, value):
+        """Normalize a postal / ZIP code: strip whitespace, uppercase."""
+        if not value:
+            return ""
+        return re.sub(r'\s+', '', value).upper()
 
     @api.model
     def _normalize_text_key(self, value):
+        """Collapse whitespace and uppercase — used for free-text search keys."""
         return re.sub(r"\s+", " ", (value or "").strip().upper())
 
-    @api.depends("chain_name", "location_number", "business_name", "name", "city", "postal_code", "address", "street", "street2", "unit", "province_code", "country_id")
+    # ═══════════════════════════════════════════════════════════════════════
+    # Computed Fields
+    # ═══════════════════════════════════════════════════════════════════════
+
+    @api.depends(
+        "chain_name", "location_number", "business_name", "branch_name", "name",
+        "city", "postal_code", "address", "street", "street2", "unit",
+        "province_code", "country_id",
+    )
     def _compute_location_search_fields(self):
         for loc in self:
+            # ── Simple normalizations ──
             loc.location_number_normalized = self._normalize_location_number(loc.location_number)
-            country = loc.country_id.code or loc.country_id.name or ""
-            address_parts = [loc.street, loc.street2, loc.unit, loc.city, loc.province_code, loc.postal_code, country]
-            normalized_address = self._normalize_text_key(", ".join(p for p in address_parts if p) or loc.address)
-            loc.normalized_address = normalized_address
-            loc.normalized_address_hash = hashlib.sha256(normalized_address.encode()).hexdigest() if normalized_address else False
-            key_parts = [loc.chain_name, loc.location_number_normalized, loc.business_name, loc.name, loc.city, loc.postal_code, loc.address, normalized_address]
-            loc.location_search_key = self._normalize_text_key(" ".join(p for p in key_parts if p))
-            label_name = loc.chain_name or loc.business_name or loc.name or "Location"
-            if loc.location_number_normalized and loc.chain_name:
-                label_name = "%s #%s" % (loc.chain_name, loc.location_number_normalized)
-            loc.location_display_label = "%s%s" % (label_name, (" — " + loc.city) if loc.city else "")
+            loc.normalized_brand = self._normalize_business(loc.chain_name)
+            loc.normalized_business = self._normalize_business(loc.business_name)
+            loc.normalized_branch = self._normalize_business(loc.branch_name)
+            loc.normalized_unit = self._normalize_unit(loc.unit)
 
-    @api.constrains("chain_name", "location_number", "country_id", "active")
-    def _check_duplicate_chain_location_number(self):
-        from odoo.exceptions import ValidationError
+            # ── Normalized address (without unit) ──
+            country = loc.country_id.code or loc.country_id.name or ""
+            raw_addr = " ".join(p for p in [
+                loc.street, loc.street2, loc.city, loc.province_code,
+                self._normalize_postal(loc.postal_code), country,
+            ] if p)
+            normalized = self._normalize_address_street(raw_addr or loc.address)
+            loc.normalized_address = normalized
+            loc.normalized_address_hash = (
+                hashlib.sha256(normalized.encode()).hexdigest() if normalized else False
+            )
+
+            # ── Search key (free-text, all signals) ──
+            key_parts = [
+                loc.chain_name, loc.location_number_normalized,
+                loc.business_name, loc.branch_name, loc.name,
+                loc.city, loc.postal_code, loc.address, normalized,
+            ]
+            loc.location_search_key = self._normalize_text_key(
+                " ".join(p for p in key_parts if p)
+            )
+
+            # ── Display label ──
+            label = ""
+            if loc.chain_name:
+                if loc.location_number_normalized:
+                    label = "%s #%s" % (loc.chain_name, loc.location_number_normalized)
+                else:
+                    label = loc.chain_name
+            elif loc.business_name:
+                label = loc.business_name
+            else:
+                label = loc.name or ""
+
+            if loc.branch_name:
+                label = "%s — %s" % (label, loc.branch_name) if label else loc.branch_name
+            elif loc.city and label:
+                # Only append city when there is no branch (branch implies location)
+                label = "%s — %s" % (label, loc.city)
+
+            loc.location_display_label = label or loc.address or "Location"
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # Duplicate Detection
+    # ═══════════════════════════════════════════════════════════════════════
+
+    def _get_duplicate_candidates(self):
+        """Return a recordset of potential duplicates, using indexed fields
+        to narrow the search before detailed comparison."""
+        self.ensure_one()
+        if not self.normalized_address:
+            return self.browse()
+
+        domain_parts = []
+
+        # Most precise: same Google Place ID
+        if self.google_place_id:
+            domain_parts.append([("google_place_id", "=", self.google_place_id)])
+
+        # Same normalized address
+        domain_parts.append([("normalized_address", "=", self.normalized_address)])
+
+        # Same brand + store number (even different address)
+        if self.normalized_brand and self.location_number_normalized:
+            domain_parts.append([
+                ("normalized_brand", "=", self.normalized_brand),
+                ("location_number_normalized", "=", self.location_number_normalized),
+            ])
+
+        domain = expression.OR(domain_parts)
+        domain = expression.AND([domain, [("id", "!=", self.id), ("active", "=", True)]])
+
+        return self.search(domain, limit=50)
+
+    # ── Individual rule checks ──
+
+    def _dup_rule1(self, other):
+        """RULE 1: Same Google Place ID + Same Unit + Same Business  →  BLOCK"""
+        return (
+            self.google_place_id and other.google_place_id
+            and self.google_place_id == other.google_place_id
+            and self.normalized_unit == other.normalized_unit
+            and self.normalized_business
+            and self.normalized_business == other.normalized_business
+        )
+
+    def _dup_rule2(self, other):
+        """RULE 2: Same Google Place ID + Same Unit + Same Brand + Same Store#  →  BLOCK"""
+        return (
+            self.google_place_id and other.google_place_id
+            and self.google_place_id == other.google_place_id
+            and self.normalized_unit == other.normalized_unit
+            and self.normalized_brand
+            and self.normalized_brand == other.normalized_brand
+            and self.location_number_normalized
+            and self.location_number_normalized == other.location_number_normalized
+        )
+
+    def _dup_rule3(self, other):
+        """RULE 3: Same Address + Same Unit + Same Business  →  BLOCK"""
+        return (
+            self.normalized_address == other.normalized_address
+            and self.normalized_unit == other.normalized_unit
+            and self.normalized_business
+            and self.normalized_business == other.normalized_business
+        )
+
+    def _dup_rule4(self, other):
+        """RULE 4: Same Brand + Same Store Number  →  BLOCK  (even if address differs)"""
+        return (
+            self.normalized_brand
+            and self.normalized_brand == other.normalized_brand
+            and self.location_number_normalized
+            and self.location_number_normalized == other.location_number_normalized
+        )
+
+    def _dup_rule6(self, other):
+        """RULE 6: Same Address + Different Business  →  ALLOW but mark possible"""
+        return (
+            self.normalized_address == other.normalized_address
+            and self.normalized_business
+            and other.normalized_business
+            and self.normalized_business != other.normalized_business
+        )
+
+    def _dup_rule10(self, other):
+        """RULE 10: Same Google Place + Different Business  →  ALLOW but mark possible"""
+        return (
+            self.google_place_id and other.google_place_id
+            and self.google_place_id == other.google_place_id
+            and self.normalized_business
+            and other.normalized_business
+            and self.normalized_business != other.normalized_business
+        )
+
+    BLOCKING_RULES = ("_dup_rule1", "_dup_rule2", "_dup_rule3", "_dup_rule4")
+    POSSIBLE_RULES = ("_dup_rule6", "_dup_rule10")
+
+    def _evaluate_duplicates(self):
+        """Run all duplicate rules against candidates.
+
+        :returns: dict with ``duplicate_status``, ``duplicate_of_id``, ``is_blocking``
+        """
+        self.ensure_one()
+        result = {"duplicate_status": "clean", "duplicate_of_id": False, "is_blocking": False}
+
+        candidates = self._get_duplicate_candidates()
+        if not candidates:
+            return result
+
+        # Check blocking rules first
+        for candidate in candidates:
+            for rule_name in self.BLOCKING_RULES:
+                if getattr(self, rule_name)(candidate):
+                    result["duplicate_status"] = "possible"
+                    result["duplicate_of_id"] = candidate.id
+                    result["is_blocking"] = True
+                    return result
+
+        # Check non-blocking possible-duplicate rules
+        for candidate in candidates:
+            for rule_name in self.POSSIBLE_RULES:
+                if getattr(self, rule_name)(candidate):
+                    result["duplicate_status"] = "possible"
+                    result["duplicate_of_id"] = candidate.id
+                    return result
+
+        # RULE 7 (Same Brand, Different Store# → ALLOW) — silent pass
+        # RULE 8 (Same Business, Different Cities → ALLOW) — silent pass
+        # RULE 9 (Same Google Place, Different Units → ALLOW) — silent pass
+        return result
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # Validation
+    # ═══════════════════════════════════════════════════════════════════════
+
+    @api.constrains(
+        "google_place_id", "chain_name", "location_number", "business_name",
+        "branch_name", "unit", "address", "street", "city", "postal_code",
+        "country_id", "active",
+    )
+    def _check_blocking_duplicates(self):
+        """Raise ValidationError when a blocking duplicate rule (1–4) matches."""
         for loc in self:
-            number = loc.location_number_normalized
-            chain = self._normalize_text_key(loc.chain_name)
-            if not loc.active or not chain or not number:
+            if not loc.active:
                 continue
-            domain = [("id", "!=", loc.id), ("active", "=", True), ("location_number_normalized", "=", number), ("chain_name", "=ilike", loc.chain_name.strip())]
-            if loc.country_id:
-                domain.append(("country_id", "=", loc.country_id.id))
-            if self.search_count(domain):
-                raise ValidationError("An active saved location already exists for this chain and store/location number.")
+            result = loc.sudo()._evaluate_duplicates()
+            if result["is_blocking"]:
+                other = self.browse(result["duplicate_of_id"])
+                raise ValidationError(
+                    "A duplicate location already exists:\n\n"
+                    "%s\n\n"
+                    "This record cannot be saved because it matches an existing "
+                    "location. Please use the existing location instead, or verify "
+                    "that this is genuinely a different location." % (
+                        other.location_display_label or other.name
+                    )
+                )
+
+    @api.onchange(
+        "google_place_id", "chain_name", "location_number", "business_name",
+        "branch_name", "unit", "address", "street", "city", "postal_code",
+        "country_id",
+    )
+    def _onchange_duplicate_check(self):
+        """Live duplicate feedback in the form view — sets duplicate_status
+        and duplicate_of_id on the in-memory record so the banner shows."""
+        if not self.address:
+            return
+        # Compute normalized fields on-the-fly for a new record
+        self.location_number_normalized = self._normalize_location_number(self.location_number)
+        self.normalized_brand = self._normalize_business(self.chain_name)
+        self.normalized_business = self._normalize_business(self.business_name)
+        self.normalized_branch = self._normalize_business(self.branch_name)
+        self.normalized_unit = self._normalize_unit(self.unit)
+        raw_addr = " ".join(p for p in [
+            self.street, self.street2, self.city, self.province_code,
+            self._normalize_postal(self.postal_code),
+            (self.country_id.code or self.country_id.name or ""),
+        ] if p)
+        self.normalized_address = self._normalize_address_street(raw_addr or self.address)
+
+        result = self._evaluate_duplicates()
+        self.duplicate_status = result["duplicate_status"]
+        self.duplicate_of_id = result["duplicate_of_id"]
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # CRUD Overrides
+    # ═══════════════════════════════════════════════════════════════════════
+
+    @api.model_create_multi
+    def create(self, vals_list):
+        records = super().create(vals_list)
+        for rec in records:
+            if rec.address and not rec.address_validated:
+                rec._validate_address()
+            # Compute duplicate status (skipped if context says internal)
+            if not self.env.context.get("_location_internal_write"):
+                rec._update_duplicate_status()
+        return records
+
+    def write(self, vals):
+        # ── Detect manual address edits on Google-verified records ──
+        address_field_keys = {
+            "address", "street", "street2", "unit", "city",
+            "province_code", "postal_code", "country_id",
+        }
+        is_address_edit = bool(address_field_keys & set(vals.keys()))
+        # If the caller is explicitly setting google_place_id / google_verified,
+        # it's a Google Places selection — don't clear those flags.
+        is_google_selection = ("google_place_id" in vals or "google_verified" in vals)
+
+        # ── If this is a post-processing (internal) write, skip the overrides ──
+        if self.env.context.get("_location_internal_write"):
+            return super().write(vals)
+
+        res = super().write(vals)
+
+        for rec in self:
+            updates = {}
+            # Clear Google verification on manual address edit
+            if is_address_edit and not is_google_selection:
+                if rec.google_verified and rec.google_place_id:
+                    updates["google_place_id"] = False
+                    updates["google_verified"] = False
+
+            if updates:
+                rec.with_context(_location_internal_write=True).write(updates)
+
+        # Update duplicate status for affected records
+        for rec in self:
+            rec._update_duplicate_status()
+
+        return res
+
+    def _update_duplicate_status(self):
+        """Persist duplicate_status and duplicate_of_id after a change.
+        Called from create / write / scan.  Uses internal-write context to
+        avoid recursion."""
+        self.ensure_one()
+        result = self.sudo()._evaluate_duplicates()
+        current = {
+            "duplicate_status": self.duplicate_status,
+            "duplicate_of_id": self.duplicate_of_id.id,
+        }
+        if (result["duplicate_status"] != current["duplicate_status"]
+                or result["duplicate_of_id"] != current["duplicate_of_id"]):
+            self.with_context(_location_internal_write=True).write({
+                "duplicate_status": result["duplicate_status"],
+                "duplicate_of_id": result["duplicate_of_id"],
+            })
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # Scan Duplicates (manager action)
+    # ═══════════════════════════════════════════════════════════════════════
+
+    def action_scan_duplicates(self):
+        """Manager button: recompute normalized fields and duplicate markers
+        for all active locations.  Never merges, renames, deletes or archives."""
+        active_ids = self.search([("active", "=", True)])
+        total = len(active_ids)
+        updated = 0
+        for loc in active_ids:
+            # Recompute stored computed fields
+            loc._compute_location_search_fields()
+            # Evaluate duplicates
+            result = loc.sudo()._evaluate_duplicates()
+            if (result["duplicate_status"] != loc.duplicate_status
+                    or result["duplicate_of_id"] != loc.duplicate_of_id.id):
+                loc.with_context(_location_internal_write=True).write({
+                    "duplicate_status": result["duplicate_status"],
+                    "duplicate_of_id": result["duplicate_of_id"],
+                })
+                updated += 1
+        return {
+            "type": "ir.actions.client",
+            "tag": "display_notification",
+            "params": {
+                "title": "Duplicate Scan Complete",
+                "message": "%d of %d locations updated." % (updated, total),
+                "type": "info",
+                "sticky": False,
+            },
+        }
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # Merge (manager action, manual only)
+    # ═══════════════════════════════════════════════════════════════════════
+
+    def action_merge_duplicate(self):
+        """Merge a duplicate into its primary record (duplicate_of_id).
+        Archives the current record, transfers references, preserves notes.
+
+        Only available to Dispatch Managers.  Never overwrites populated
+        fields on the primary."""
+        self.ensure_one()
+        if not self.duplicate_of_id:
+            return {
+                "type": "ir.actions.client",
+                "tag": "display_notification",
+                "params": {
+                    "title": "Nothing to Merge",
+                    "message": "This location has no duplicate target set.",
+                    "type": "warning",
+                    "sticky": False,
+                },
+            }
+
+        primary = self.duplicate_of_id
+        dup_display = self.location_display_label or self.name
+
+        # Transfer stops (capture count before write empties self.stop_ids)
+        transferred_stop_count = len(self.stop_ids)
+        self.stop_ids.write({"saved_location_id": primary.id})
+
+        # Transfer extraction audit records
+        extractions = self.env["prema.dispatch.location.extraction"].sudo().search([
+            ("saved_location_id", "=", self.id),
+        ])
+        extraction_count = len(extractions)
+        extractions.write({"saved_location_id": primary.id})
+
+        # Transfer photos
+        photo_recs = self.env["prema.dispatch.location.photo"].sudo().search([
+            ("location_id", "=", self.id),
+        ])
+        photo_count = len(photo_recs)
+        photo_recs.write({"location_id": primary.id})
+
+        # Merge identity fields: never overwrite populated fields on primary
+        identity_fields = [
+            "google_place_id", "chain_name", "location_number",
+            "business_name", "branch_name", "unit", "partner_id",
+        ]
+        primary_updates = {}
+        for fname in identity_fields:
+            if not getattr(primary, fname) and getattr(self, fname):
+                primary_updates[fname] = getattr(self, fname)
+
+        # Merge address components: prefer more complete (longer)
+        for fname in ["address", "street", "city", "province_code", "postal_code"]:
+            primary_val = getattr(primary, fname) or ""
+            dup_val = getattr(self, fname) or ""
+            if len(dup_val) > len(primary_val):
+                primary_updates[fname] = dup_val
+
+        # Merge pin: use duplicate's pin if primary doesn't have one
+        for fname in ["pin_lat", "pin_lng"]:
+            if (not getattr(primary, fname) and getattr(self, fname)):
+                primary_updates[fname] = getattr(self, fname)
+        if not primary.pin_set and self.pin_set:
+            primary_updates["pin_set"] = True
+
+        # Merge text fields: never overwrite populated fields on primary
+        text_fields = [
+            "parking_notes", "driver_instructions", "security_notes",
+            "dock_door", "receiving_entrance", "truck_entrance", "gate_code",
+        ]
+        for fname in text_fields:
+            if not getattr(primary, fname) and getattr(self, fname):
+                primary_updates[fname] = getattr(self, fname)
+
+        # Merge access flags: True wins
+        for fname in [
+            "liftgate_required", "dock_height_available", "pump_truck_required",
+            "straight_truck_accessible", "trailer_53ft_accessible",
+        ]:
+            if not getattr(primary, fname) and getattr(self, fname):
+                primary_updates[fname] = True
+
+        # Merge location_type: duplicate's type wins if primary is default "customer"
+        if primary.location_type == "customer" and self.location_type and self.location_type != "customer":
+            primary_updates["location_type"] = self.location_type
+        if not primary.allow_cross_dock and self.allow_cross_dock:
+            primary_updates["allow_cross_dock"] = True
+
+        # Merge photos (binary): copy over only if primary doesn't have one
+        photo_fields = [
+            "entrance_photo", "dock_photo", "parking_photo", "gate_photo",
+            "receiving_office_photo", "scale_photo", "loading_area_photo",
+        ]
+        for fname in photo_fields:
+            if not getattr(primary, fname) and getattr(self, fname):
+                primary_updates[fname] = getattr(self, fname)
+
+        # Merge geofence: keep larger radius
+        if self.geofence_radius and self.geofence_radius > primary.geofence_radius:
+            primary_updates["geofence_radius"] = self.geofence_radius
+
+        # Recompute visit count from actual stops (after transfer)
+        actual_visits = self.env["prema.dispatch.stop"].sudo().search_count([
+            ("saved_location_id", "=", primary.id),
+        ])
+        primary_updates["use_count"] = actual_visits
+
+        # Preserve newest last_visited
+        primary_last = primary.last_visited or False
+        dup_last = self.last_visited or False
+        if dup_last and (not primary_last or dup_last > primary_last):
+            primary_updates["last_visited"] = dup_last
+
+        if primary_updates:
+            primary.with_context(_location_internal_write=True).write(primary_updates)
+
+        # Archive duplicate, keep duplicate_of_id pointing to primary
+        self.with_context(_location_internal_write=True).write({
+            "active": False,
+            "duplicate_status": "clean",
+            "duplicate_of_id": primary.id,
+        })
+
+        # Add chatter note on primary
+        note_body = (
+            "🔗 <strong>Merged duplicate:</strong> %s (ID #%d)<br/>"
+            "<ul>"
+            "<li>Stops transferred: %d</li>"
+            "<li>Extractions transferred: %d</li>"
+            "<li>Photos transferred: %d</li>"
+            "<li>Visits recomputed: %d</li>"
+            "</ul>"
+        ) % (dup_display, self.id,
+             transferred_stop_count,
+             extraction_count, photo_count,
+             primary.use_count)
+        primary.message_post(body=note_body, message_type="comment")
+
+        return {
+            "type": "ir.actions.client",
+            "tag": "display_notification",
+            "params": {
+                "title": "Merge Complete",
+                "message": "Merged into: %s" % (primary.location_display_label or primary.name),
+                "type": "info",
+                "sticky": False,
+            },
+        }
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # Possible Matches (smart button)
+    # ═══════════════════════════════════════════════════════════════════════
+
+    def action_find_possible_matches(self):
+        """Smart button: search for possible matches using Google Place,
+        normalized address, brand, store number, and business similarity."""
+        self.ensure_one()
+        domain_parts = []
+        if self.google_place_id:
+            domain_parts.append([("google_place_id", "=", self.google_place_id)])
+        if self.normalized_address:
+            domain_parts.append([("normalized_address", "=", self.normalized_address)])
+        if self.normalized_brand:
+            domain_parts.append([("normalized_brand", "=", self.normalized_brand)])
+        if self.location_number_normalized:
+            domain_parts.append([("location_number_normalized", "=", self.location_number_normalized)])
+        if self.normalized_business:
+            domain_parts.append([("normalized_business", "=", self.normalized_business)])
+        if not domain_parts:
+            return {
+                "type": "ir.actions.client",
+                "tag": "display_notification",
+                "params": {
+                    "title": "No Search Criteria",
+                    "message": "Fill in address, brand, or business fields first.",
+                    "type": "warning",
+                    "sticky": False,
+                },
+            }
+        domain = expression.OR(domain_parts)
+        domain = expression.AND([domain, [("id", "!=", self.id), ("active", "=", True)]])
+        return {
+            "type": "ir.actions.act_window",
+            "name": "Possible Matches",
+            "res_model": "prema.dispatch.location",
+            "view_mode": "list,form",
+            "domain": domain,
+            "target": "current",
+        }
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # Existing Methods (unchanged logic)
+    # ═══════════════════════════════════════════════════════════════════════
 
     def _driver_payload(self):
         self.ensure_one()
@@ -282,10 +897,6 @@ class PremaDispatchLocation(models.Model):
             op = "=" if field in ("google_place_id", "normalized_address") else "ilike"
             results |= self.search([(field, op, norm if field in ("normalized_address", "location_search_key") else query)], limit=limit)
         if len(results) < limit + offset and len(words) >= 2:
-            # Free-text queries like "No Frills Belleville" rarely appear as one
-            # contiguous substring (business names use separators like "–"), so
-            # fall back to requiring every query word to appear somewhere in the
-            # location's search key.
             word_domain = [("location_search_key", "ilike", word) for word in words]
             results |= self.search(word_domain, limit=limit)
         sliced = results[offset:offset + limit]
@@ -323,14 +934,6 @@ class PremaDispatchLocation(models.Model):
                 ]),
             ])
         return self.search(args, limit=limit).name_get()
-
-    @api.model_create_multi
-    def create(self, vals_list):
-        records = super().create(vals_list)
-        for rec in records:
-            if rec.address and not rec.address_validated:
-                rec._validate_address()
-        return records
 
     def _validate_address(self):
         """Check address accuracy via Google's Address Validation API — same

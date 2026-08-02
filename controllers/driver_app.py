@@ -70,7 +70,15 @@ class DriverAppController(http.Controller):
 
     @http.route("/dispatch/driver/chat/send", type="json", auth="user", methods=["POST"])
     def chat_send(self, channel_id, body, **kwargs):
-        return request.env["prema.dispatch.job"].driver_send_message(int(channel_id), body)
+        cid = int(channel_id)
+        channel = request.env["discuss.channel"].browse(cid)
+        if not channel.exists():
+            return {"error": "Channel not found"}
+        # Security: verify the sender is a member of this channel
+        partner = request.env.user.partner_id
+        if partner.id not in channel.channel_partner_ids.ids:
+            return {"error": "You are not a member of this channel"}
+        return request.env["prema.dispatch.job"].driver_send_message(cid, body)
 
     @http.route("/dispatch/driver/bus/channel", type="json", auth="user", methods=["POST"])
     def bus_channel(self, **kwargs):
@@ -84,7 +92,10 @@ class DriverAppController(http.Controller):
         channel = request.env["discuss.channel"].browse(cid)
         if not channel.exists():
             return {"messages": []}
+        # Security: verify the reader is a member of this channel
         partner = request.env.user.partner_id
+        if partner.id not in channel.channel_partner_ids.ids:
+            return {"messages": []}
         msgs = request.env["mail.message"].search(
             [("res_id", "=", cid), ("model", "=", "discuss.channel"),
              ("message_type", "in", ["comment", "email"])],

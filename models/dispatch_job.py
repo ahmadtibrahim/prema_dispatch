@@ -1,6 +1,7 @@
 import logging
 import math
 import re
+import secrets
 
 from odoo import api, exceptions, fields, models
 
@@ -66,6 +67,11 @@ class PremaDispatchJob(models.Model):
         string="Tracking #", readonly=True, copy=False, index=True,
         help="Auto-generated when booking leaves Draft. Share with customer.",
     )
+    tracking_token = fields.Char(
+        string="Tracking Token", readonly=True, copy=False, index=True,
+        default=lambda self: secrets.token_urlsafe(32),
+        help="High-entropy random token for public tracking. Prevents enumeration of sequential tracking numbers."
+    )
     tracking_url = fields.Char(
         string="Tracking URL", compute="_compute_tracking_url", readonly=True,
     )
@@ -73,9 +79,17 @@ class PremaDispatchJob(models.Model):
         string="Booking Confirmed At", readonly=True, copy=False,
     )
     template_id = fields.Many2one(
-        "prema.dispatch.booking.template", string="Booking Template",
+        "prema.dispatch.booking.template", string="Booking Template [DEPRECATED]",
         ondelete="set null", readonly=True, copy=False, index=True,
-        help="Recurring template that auto-generated this booking.",
+        help="Recurring template that auto-generated this booking. "
+             "DEPRECATED — use logistics.recurring.agreement instead.",
+    )
+
+    # ── Phase 13: Local Operations link ────────────────────────────
+    local_operation_id = fields.Many2one(
+        "logistics.daily.local.operation", string="Local Operation",
+        ondelete="set null", index=True,
+        help="The daily local operation this job belongs to (Mon/Thu local GTA ops)."
     )
 
     # ── Stage / Status ────────────────────────────────────────────

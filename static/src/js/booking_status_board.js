@@ -3,6 +3,7 @@
 import { Component, onMounted, onWillUnmount, useState } from "@odoo/owl";
 import { registry } from "@web/core/registry";
 import { useService } from "@web/core/utils/hooks";
+import { standardActionServiceProps } from "@web/webclient/actions/action_service";
 
 const STATUS_LABELS = {
     unassigned:  "Unassigned",
@@ -37,7 +38,7 @@ const FEASIBILITY_LABELS = {
 
 export class BookingStatusBoard extends Component {
     static template = "prema_dispatch.BookingStatusBoard";
-    static props = {};
+    static props = { ...standardActionServiceProps };
 
     setup() {
         this.orm = useService("orm");
