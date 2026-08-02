@@ -30,7 +30,9 @@
                 <div class="flex-grow-1" id="wwg_map" style="min-width:0"/>
             </div>
         </t>
-        <script t-attf-src="https://maps.googleapis.com/maps/api/js?key=#{google_api_key}&amp;libraries=drawing&amp;callback=initWhereWeGo"/>
+        <script><![CDATA[
+var WWG_KEY = "]]><t t-esc="google_api_key"/><![CDATA[";
+(function(){var s=document.createElement('script');s.src='https://maps.googleapis.com/maps/api/js?key='+WWG_KEY+'&libraries=drawing&callback=initWhereWeGo';document.head.appendChild(s);})();]]></script>
         <script><![CDATA[
 var D={regions:[],hubs:[],lanes:[],services:[],deps:[]},map,markers=[],lines=[],oid=null,did=null;
 function initWhereWeGo(){
