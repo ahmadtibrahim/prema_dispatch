@@ -1,15 +1,18 @@
-"""Where We Go — Interactive service map. Data served as public JSON."""
+"""Where We Go — Interactive service map."""
 import json
+from datetime import date
 from odoo import http
 from odoo.http import request
 
 
+class WhereWeGoMap(http.Controller):
 
     @http.route("/logistics/where-we-go", type="http", auth="user", website=False)
     def where_we_go_page(self, **kwargs):
-        return request.render("prema_logistics_booking.where_we_go_page", {})
-
-class WhereWeGoMap(http.Controller):
+        api_key = request.env["ir.config_parameter"].sudo().get_param("google_maps_api_key", "")
+        return request.render("prema_logistics_booking.where_we_go_page", {
+            "google_api_key": api_key or "",
+        })
 
     @http.route("/logistics/where-we-go/data", type="http", auth="public", methods=["GET"], csrf=False)
     def where_we_go_data(self, **kwargs):
@@ -18,7 +21,6 @@ class WhereWeGoMap(http.Controller):
         Hub = request.env["logistics.hub"].sudo()
         Corridor = request.env["logistics.corridor"].sudo()
         Departure = request.env["logistics.corridor.departure"].sudo()
-        from datetime import date
 
         regions = []
         for r in Region.search([("active", "=", True), ("customer_visible", "=", True)]):
@@ -26,7 +28,8 @@ class WhereWeGoMap(http.Controller):
                 "id": r.id, "code": r.code, "name": r.name,
                 "display_number": r.display_number or r.id,
                 "main_city": r.main_city or "",
-                "lat": r.marker_latitude or 44.0, "lng": r.marker_longitude or -78.0,
+                "lat": r.marker_latitude or 44.0,
+                "lng": r.marker_longitude or -78.0,
             })
 
         hubs = []
@@ -74,4 +77,5 @@ class WhereWeGoMap(http.Controller):
 
         data = {"regions": regions, "hubs": hubs, "lanes": lanes,
                 "services": services, "departures": deps}
-        return request.make_response(json.dumps(data), [("Content-Type", "application/json")])
+        return request.make_response(json.dumps(data),
+                                      [("Content-Type", "application/json")])
