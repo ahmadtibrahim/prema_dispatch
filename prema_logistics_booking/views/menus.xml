@@ -60,7 +60,7 @@
         <field name="context">{'default_x_is_driver': True}</field>
     </record>
 
-    <!-- DELETE LEGACY MENUS so they never reappear -->
-    <delete model="ir.ui.menu" search="[('name->>en_US','in',['Corridors','Daily Local Operations','Lanes','Cities','Region Destinations','FSAs','Rate Plans','Customer Contract Rates','Service Offerings','Service Levels','Equipment Profiles','Booking Templates','Saved Locations','Route Runs','FSA Zones','Departures'])]"/>
+    <!-- DELETE LEGACY MENUS by DB ID (permanent, survives renames) -->
+    <delete model="ir.ui.menu" search="[('id','in',[906,911,939,956,957,958,959,960,961,962,963,965])]"/>
 
 </odoo>
