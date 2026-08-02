@@ -33,6 +33,7 @@ class LogisticsCorridor(models.Model):
         ("local", "Local Operations"),
     ], required=True)
     equipment_type = fields.Selection([("dry", "Dry"), ("reefer", "Reefer")], default="dry", required=True)
+    customer_visible = fields.Boolean(default=True, string="Customer Visible")
     active = fields.Boolean(default=True)
 
     # ── Absorbed from logistics.route.template ──────────────────────
@@ -137,6 +138,7 @@ class LogisticsCorridorStop(models.Model):
     planned_departure_time = fields.Float()
     day_offset = fields.Integer(default=0)
     distance_from_origin_km = fields.Float()
+    customer_visible = fields.Boolean(default=True, string="Customer Visible")
     active = fields.Boolean(default=True)
 
 
@@ -176,6 +178,7 @@ class LogisticsCorridorDeparture(models.Model):
     departure_time = fields.Float(help="e.g. 1.0 = 01:00 AM")
     vehicle_id = fields.Many2one("fleet.vehicle", string="Truck")
     driver_id = fields.Many2one("res.partner", string="Driver")
+    customer_visible = fields.Boolean(default=True, string="Customer Visible")
     active = fields.Boolean(default=True)
     status = fields.Selection([
         ("scheduled", "Scheduled"), ("departed", "Departed"),
