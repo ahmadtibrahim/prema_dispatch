@@ -58,6 +58,8 @@ root for architecture notes, decisions, and phase status.
     ],
     "assets": {
         "web.assets_backend": [
+            "prema_logistics_booking/static/src/xml/where_we_go_action.xml",
+            "prema_logistics_booking/static/src/js/where_we_go_action.js",
             "prema_logistics_booking/static/src/js/where_we_go.js",
             # Weekly schedule board merged into prema_dispatch's Dispatch Planner.
             # The Owl widget files are kept on disk for reference but no longer loaded.
