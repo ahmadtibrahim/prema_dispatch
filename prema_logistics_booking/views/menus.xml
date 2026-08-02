@@ -57,11 +57,5 @@
     <menuitem id="menu_v4_geotab" name="GeoTab Settings" parent="menu_v4_fleet" sequence="40"/>
 
 
-    <record id="action_fleet_drivers" model="ir.actions.act_window">
-        <field name="name">Fleet Drivers</field>
-        <field name="res_model">res.partner</field>
-        <field name="view_mode">tree,form,kanban</field>
-        <field name="domain">[('x_is_driver', '=', True)]</field>
-        <field name="context">{'default_x_is_driver': True}</field>
-    </record>
+    
 </odoo>

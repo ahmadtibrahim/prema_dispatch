@@ -9,6 +9,19 @@ class LogisticsLane(models.Model):
     origin_region_id = fields.Many2one("logistics.region", required=True, index=True)
     destination_region_id = fields.Many2one("logistics.region", required=True, index=True)
     active = fields.Boolean(default=True)
+
+    # ── V4 Map & Routing ───────────────────────────────────────────────
+    customer_visible = fields.Boolean(default=True, string="Customer Visible")
+    direct_allowed = fields.Boolean(default=True, string="Direct Allowed")
+    via_hub_allowed = fields.Boolean(default=True, string="Via Hub Allowed")
+    default_hub_id = fields.Many2one("logistics.hub", string="Default Hub")
+    route_status = fields.Selection([
+        ("active", "Active"), ("incomplete", "Incomplete"), ("inactive", "Inactive"),
+    ], default="active", string="Route Status")
+    pricing_status = fields.Selection([
+        ("configured", "Configured"), ("pending", "Pending"), ("review", "Needs Review"),
+    ], default="configured", string="Pricing Status")
+
     ltl_capable = fields.Boolean(default=True)
     ftl_capable = fields.Boolean(default=True)
     equipment_profile_id = fields.Many2one("logistics.equipment.profile")
