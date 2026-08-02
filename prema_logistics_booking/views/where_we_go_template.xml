@@ -29,10 +29,8 @@
                 </div>
                 <div class="flex-grow-1" id="wwg_map" style="min-width:0"/>
             </div>
-            <t t-out="0"/>
         </t>
-        <t t-set="map_js" t-value="'https://maps.googleapis.com/maps/api/js?key=' + (google_api_key or '') + '&amp;libraries=drawing&amp;callback=initWhereWeGo'"/>
-        <script t-att-src="map_js" async="" defer=""/>
+        <script t-attf-src="https://maps.googleapis.com/maps/api/js?key=#{google_api_key}&amp;libraries=drawing&amp;callback=initWhereWeGo"/>
         <script><![CDATA[
 var D={regions:[],hubs:[],lanes:[],services:[],deps:[]},map,markers=[],lines=[],oid=null,did=null;
 function initWhereWeGo(){
