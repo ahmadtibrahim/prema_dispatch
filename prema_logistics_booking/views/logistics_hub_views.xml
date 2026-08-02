@@ -11,7 +11,7 @@
                 <field name="is_default"/>
                 <field name="customer_visible"/>
                 <field name="active"/>
-            </tree>
+            </list>
         </field>
     </record>
 

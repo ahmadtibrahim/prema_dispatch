@@ -92,10 +92,6 @@ class CapacityEngine:
             return CapacityResult(eligible=False, vehicle=vehicle,
                                   reason_code="invalid_pallet_count")
 
-        if pallets <= 0:
-            return CapacityResult(eligible=False, vehicle=vehicle,
-                                  reason_code="invalid_pallet_count")
-
         if pallets <= straight:
             layout = "straight"
             eligible = True

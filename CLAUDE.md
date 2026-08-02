@@ -1,5 +1,10 @@
 # Prema Dispatch — File Index
 
+> **NOTE:** This is a file-level index for code navigation. For architecture,
+> business rules, pricing, capacity, deployment procedures, and decision history,
+> see the authoritative master document:
+> **`PREMA_DISPATCH_MASTER.md`** (same directory).
+
 Purpose: let a future session find the right file in one lookup instead of
 grepping/exploring. Keep this updated when files are added/removed/renamed.
 Module: `prema_dispatch` · Path: `/opt/odoo/custom-addons/prema_dispatch` ·

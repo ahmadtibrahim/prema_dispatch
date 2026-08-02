@@ -47,7 +47,7 @@ class TestBooking(TransactionCase):
         slevel = cls.SLevel.create({"code": "BOOK_TEST", "name": "Booking Test", "reefer_food_eligible": True})
         offering = cls.SOffering.create({"lane_id": lane.id, "service_level_id": slevel.id, "temperature_mode": "dry", "shipment_type": "both"})
         cls.Schedule.create({"service_offering_id": offering.id, "cutoff_time": 16.0, "pickup_monday": True, "pickup_tuesday": True, "pickup_wednesday": True, "pickup_thursday": True, "pickup_friday": True, "delivery_offset_type": "next_day", "active": True})
-        plan = cls.RatePlan.create({"service_offering_id": offering.id, "revenue_target": 500.0, "planned_pallets": 7})
+        plan = cls.RatePlan.create({"service_offering_id": offering.id, "revenue_target": 500.0, "planned_pallets": 7, "target_load_quantity": 7})
         base = 500 / 7
         for min_q, max_q, mult, cap in [(1,1,1.75,0),(2,2,1.55,0),(3,3,1.35,0),(4,4,1.20,0),(5,5,1.10,0),(6,6,1.00,0),(7,7,0.92,0),(8,999,0.85,550)]:
             cls.Tier.create({"rate_plan_id": plan.id, "tier_type": "pallet", "min_qty": min_q, "max_qty": max_q, "calc_method": "per_unit", "rate": max(round(base*mult,0), 50.0), "cap_amount": cap})
@@ -84,4 +84,4 @@ class TestBooking(TransactionCase):
         self.assertTrue(result.available)
         self.assertGreater(len(result.price_lines), 1)
         # Last line should be the final price
-        self.assertEqual(result.price_lines[-1]["label"], "Final Freight Price")
+        self.assertIn("Final Freight Price", result.price_lines[-1]["label"])

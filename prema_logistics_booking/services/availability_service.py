@@ -177,9 +177,17 @@ class ScheduledAvailabilityService:
             dep_dest = dep.corridor_id.end_hub_id.code if dep.corridor_id.end_hub_id else ""
 
             if origin_code == dep_origin and dest_code == dep_dest:
-                options.append(self._make_dep_option("same_day_direct", today, today, dep, temp_mode))
+                options.append(self._make_dep_option(
+                    "same_day_direct", today, today, dep, temp_mode,
+                    pallets=pallets, weight_lbs=weight_lbs,
+                    origin_code=origin_code, dest_code=dest_code,
+                ))
             elif self._dep_regions_in_corridor(origin_code, dest_code, dep):
-                options.append(self._make_dep_option("same_day_en_route", today, today, dep, temp_mode))
+                options.append(self._make_dep_option(
+                    "same_day_en_route", today, today, dep, temp_mode,
+                    pallets=pallets, weight_lbs=weight_lbs,
+                    origin_code=origin_code, dest_code=dest_code,
+                ))
 
         # Legacy fallback: only if no corridor departures exist at all
         if not options and not deps:
@@ -216,7 +224,11 @@ class ScheduledAvailabilityService:
             dest_matches = (dest_code == dep_dest or dest_code == dep_via)
             if origin_code == dep_origin and dest_matches:
                 pickup_date = dep_date  # hub origins ship same day
-                options.append(self._make_dep_option("scheduled_current_week", dep_date, pickup_date, dep, temp_mode))
+                options.append(self._make_dep_option(
+                    "scheduled_current_week", dep_date, pickup_date, dep, temp_mode,
+                    pallets=pallets, weight_lbs=weight_lbs,
+                    origin_code=origin_code, dest_code=dest_code,
+                ))
 
             # Hub-connected via R1
             elif origin_code != "R1" and dest_code != "R1":
@@ -255,15 +267,16 @@ class ScheduledAvailabilityService:
 
     # ── Corridor Departure helpers ────────────────────────────────────
 
-    def _make_dep_option(self, priority, delivery_date, pickup_date, dep, temp_mode):
+    def _make_dep_option(self, priority, delivery_date, pickup_date, dep, temp_mode,
+                          pallets=1, weight_lbs=0, origin_code="", dest_code=""):
         day_name = delivery_date.strftime("%A") if delivery_date else ""
+        # Use actual shipment origin/destination region codes for pricing,
+        # falling back to corridor hub codes only if origin/dest not provided.
+        price_origin = origin_code or (dep.corridor_id.start_hub_id.code if dep.corridor_id.start_hub_id else "")
+        price_dest = dest_code or (dep.corridor_id.end_hub_id.code if dep.corridor_id.end_hub_id else "")
         return DeliveryOption(
             priority=priority, delivery_date=delivery_date, pickup_date=pickup_date,
-            price=self._estimate_price(
-                dep.corridor_id.start_hub_id.code if dep.corridor_id.start_hub_id else "",
-                dep.corridor_id.end_hub_id.code if dep.corridor_id.end_hub_id else "",
-                1, 0, temp_mode,
-            ),
+            price=self._estimate_price(price_origin, price_dest, pallets, weight_lbs, temp_mode),
             service_label=f"Scheduled LTL — {day_name} — {dep.corridor_id.name}",
             routing_strategy=priority.replace("_current_week", ""),
             departure=dep,

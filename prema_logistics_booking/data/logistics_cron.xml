@@ -13,6 +13,18 @@
         <field name="priority">10</field>
     </record>
 
+    <!-- GC expired pricing sessions every hour (20-min TTL, TransientModel vacuum is
+         too infrequent to prevent build-up under load). -->
+    <record id="ir_cron_gc_pricing_sessions" model="ir.cron">
+        <field name="name">Logistics: GC Expired Pricing Sessions</field>
+        <field name="model_id" ref="model_logistics_pricing_session"/>
+        <field name="state">code</field>
+        <field name="code">model._gc_expired_sessions()</field>
+        <field name="interval_number">1</field>
+        <field name="interval_type">hours</field>
+        <field name="active" eval="True"/>
+    </record>
+
     <!-- V4: Maintain 12-week rolling departure horizon -->
     <record id="ir_cron_maintain_departure_horizon" model="ir.cron">
         <field name="name">Prema Dispatch: Maintain Phase 1 Departure Horizon</field>

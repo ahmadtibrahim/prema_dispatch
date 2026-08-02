@@ -199,7 +199,7 @@ class RoutingService:
         ], order="departure_date, departure_time", limit=1)
         return departure
 
-    def full_resolve(self, pickup_postal, delivery_postal):
+    def full_resolve(self, pickup_postal, delivery_postal, **kwargs):
         """Complete resolution chain: Postal Code → FSA → Region → Lane → Corridor → Departure.
 
         Returns dict with all resolved entities plus estimated pickup/delivery dates.

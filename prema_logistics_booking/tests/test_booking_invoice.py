@@ -78,6 +78,7 @@ class TestBookingInvoice(TransactionCase):
         cls.plan = cls.RatePlan.create({
             "service_offering_id": cls.offering.id,
             "revenue_target": 1600.0, "planned_pallets": 8,
+            "target_load_quantity": 8,
         })
 
         # Ensure TEMP_REEFER exists
@@ -103,7 +104,7 @@ class TestBookingInvoice(TransactionCase):
         cls.env["ir.config_parameter"].sudo().set_param("logistics.product_ca_dry_ltl_id", str(product.id))
         cls.env["ir.config_parameter"].sudo().set_param("logistics.product_ca_reefer_ltl_id", str(product.id))
 
-    def _create_session_and_book(self, pallets=1, weight=800, temp="dry"):
+    def _create_session_and_book(self, pallets=1, weight=500, temp="dry"):
         """Create a pricing session and confirm booking."""
         ps = PricingService(self.env)
         result = ps.calculate(self.fsa1, self.fsa2, "ltl", temp, pallets, weight)
@@ -139,13 +140,13 @@ class TestBookingInvoice(TransactionCase):
     # ── Invoice tests ──────────────────────────────────────────────────
 
     def test_01_booking_creates_invoice(self):
-        booking = self._create_session_and_book(pallets=3, weight=2400)
+        booking = self._create_session_and_book(pallets=3, weight=1500)
         self.assertTrue(booking.invoice_id, "Booking should have an invoice")
         self.assertEqual(booking.invoice_id.move_type, "out_invoice")
         self.assertEqual(booking.invoice_id.state, "draft")
 
     def test_02_invoice_price_matches_booking(self):
-        booking = self._create_session_and_book(pallets=5, weight=4000)
+        booking = self._create_session_and_book(pallets=5, weight=2500)
         line = booking.invoice_id.invoice_line_ids[:1]
         self.assertTrue(line)
         expected = round(200.0 * 5, 2)  # $1600/8 = $200/pallet
@@ -153,7 +154,7 @@ class TestBookingInvoice(TransactionCase):
         self.assertAlmostEqual(booking.calculated_price, expected, places=2)
 
     def test_03_duplicate_confirm_returns_same_booking(self):
-        booking1 = self._create_session_and_book(pallets=1, weight=800)
+        booking1 = self._create_session_and_book(pallets=1, weight=500)
         booking2 = self.env["logistics.booking"].sudo().confirm_from_session(
             booking1.pricing_session_token,
             {"pickup_postal_code": "T1I", "pickup_address": "123 Test St, City",
@@ -162,21 +163,21 @@ class TestBookingInvoice(TransactionCase):
         self.assertEqual(booking1.id, booking2.id)
 
     def test_04_invoice_remains_draft(self):
-        booking = self._create_session_and_book(pallets=2, weight=1600)
+        booking = self._create_session_and_book(pallets=2, weight=1000)
         self.assertEqual(booking.invoice_id.state, "draft")
 
     def test_05_dispatch_job_created(self):
-        booking = self._create_session_and_book(pallets=4, weight=3200)
+        booking = self._create_session_and_book(pallets=4, weight=2000)
         self.assertTrue(booking.dispatch_job_id, "Booking should have a dispatch job")
 
     def test_06_invoice_booking_link(self):
-        booking = self._create_session_and_book(pallets=1, weight=800)
+        booking = self._create_session_and_book(pallets=1, weight=500)
         self.assertEqual(booking.invoice_id.logistics_booking_id.id, booking.id)
 
     # ── Multi-stop tests ───────────────────────────────────────────────
 
     def test_10_multi_stop_booking_stops(self):
-        booking = self._create_session_and_book(pallets=3, weight=2400)
+        booking = self._create_session_and_book(pallets=3, weight=1500)
         # Add stops
         self.env["logistics.booking.stop"].sudo().create([
             {"booking_id": booking.id, "sequence": 10, "stop_type": "pickup",
@@ -193,7 +194,7 @@ class TestBookingInvoice(TransactionCase):
         self.assertEqual(len(booking.stop_ids), 3)
 
     def test_11_multi_stop_sequence_preserved(self):
-        booking = self._create_session_and_book(pallets=4, weight=3200)
+        booking = self._create_session_and_book(pallets=4, weight=2000)
         self.env["logistics.booking.stop"].sudo().create([
             {"booking_id": booking.id, "sequence": 10, "stop_type": "pickup",
              "company_name": "Warehouse", "street": "1 Pickup Rd", "city": "CityA",
@@ -214,7 +215,7 @@ class TestBookingInvoice(TransactionCase):
         self.assertIn("Liftgate: Yes", desc)
 
     def test_12_multi_stop_dispatch_creation(self):
-        booking = self._create_session_and_book(pallets=4, weight=3200)
+        booking = self._create_session_and_book(pallets=4, weight=2000)
         self.env["logistics.booking.stop"].sudo().create([
             {"booking_id": booking.id, "sequence": 10, "stop_type": "pickup",
              "company_name": "Warehouse", "street": "1 Pickup Rd", "city": "CityA",

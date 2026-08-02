@@ -16,10 +16,6 @@ Formula (simple mode):
 import math
 from .schedule_service import ScheduleService
 
-CONDITIONAL_SURCHARGE_CODES = {
-    "TEMP_REEFER": "temp_reefer",
-}
-
 # Phase 11: Default revenue targets per corridor (Mississauga ↔ destination)
 # Rounded to nearest $25. Dispatcher may override.
 DEFAULT_TARGETS = {
@@ -133,51 +129,20 @@ class PricingService:
             "|", ("effective_to", "=", False), ("effective_to", ">=", on_date),
         ], order="version desc", limit=1)
 
-    def _compute_price(self, rate_plan, pallets, temperature_mode, weight_lbs=0.0):
-        """V4 LTL Hub Pricing formula per Booking Leg:
+    def _compute_v4_formula(self, rate_plan, pallets, weight_lbs=0.0):
+        """Canonical V4 LTL Hub Pricing formula — single source of truth.
 
         1. Base Pallet Rate = Revenue Target / Target Load Quantity
-        2. Included Weight = Pallets × 500 lb
-        3. Excess Weight = MAX(0, Shipment Weight - Included Weight)
-        4. Weight Surcharge = Excess Weight × (Revenue Target / Safe Weight Capacity)
+        2. Included Weight = Pallets × included_weight_per_pallet (default 500 lb)
+        3. Excess Weight = MAX(0, Shipment Weight − Included Weight)
+        4. Excess Weight Rate = Revenue Target / Safe Weight Capacity
         5. Leg Base Charge = Pallets × Base Pallet Rate
-        6. Leg Customer Charge = (Leg Base Charge + Weight Surcharge), rounded to nearest $5
+        6. Weight Surcharge = Excess Weight × Excess Weight Rate
+        7. Final = ROUND((Leg Base + Weight Surcharge) / 5) × 5
+
+        Returns a dict with all intermediate values. Every pricing display method
+        must derive its output from this dict — do not duplicate the formula.
         """
-        lines = []
-        tlq = max(rate_plan.target_load_quantity, 1)
-        swc = max(rate_plan.safe_weight_capacity or 11000.0, 1.0)
-        incl_per_pallet = rate_plan.included_weight_per_pallet or 500.0
-
-        base_rate = rate_plan.revenue_target / tlq
-        leg_base = pallets * base_rate
-
-        included_weight = pallets * incl_per_pallet
-        excess_weight = max(0.0, weight_lbs - included_weight)
-        excess_rate = rate_plan.revenue_target / swc
-        weight_surcharge = excess_weight * excess_rate
-
-        subtotal = leg_base + weight_surcharge
-
-        # Round to nearest $5
-        final = round(subtotal / 5.0) * 5.0
-
-        lines.append({
-            "label": f"Base ({pallets} pallet(s) × ${base_rate:,.2f})",
-            "amount": round(leg_base, 2),
-        })
-        if weight_surcharge > 0:
-            lines.append({
-                "label": f"Excess Weight ({excess_weight:,.0f} lb × ${excess_rate:,.3f}/lb)",
-                "amount": round(weight_surcharge, 2),
-            })
-        lines.append({"label": "Subtotal", "amount": round(subtotal, 2)})
-        lines.append({"label": "Final Freight Price (nearest $5)", "amount": final})
-
-        return lines, final
-
-    def calculate_leg_price(self, rate_plan, pallets, weight_lbs=0.0):
-        """Calculate price for a single Booking Leg using the V4 formula.
-        Returns dict with full breakdown."""
         tlq = max(rate_plan.target_load_quantity, 1)
         swc = max(rate_plan.safe_weight_capacity or 11000.0, 1.0)
         incl_per_pallet = rate_plan.included_weight_per_pallet or 500.0
@@ -194,21 +159,56 @@ class PricingService:
         final = round(subtotal / 5.0) * 5.0
 
         return {
+            "tlq": tlq,
+            "swc": swc,
+            "incl_per_pallet": incl_per_pallet,
+            "base_rate": base_rate,
+            "leg_base": leg_base,
+            "included_weight": included_weight,
+            "excess_weight": excess_weight,
+            "excess_rate": excess_rate,
+            "weight_surcharge": weight_surcharge,
+            "subtotal": subtotal,
+            "final": final,
+        }
+
+    def _compute_price(self, rate_plan, pallets, temperature_mode, weight_lbs=0.0):
+        """V4 LTL Hub Pricing — returns (price_lines_list, final_price)."""
+        v = self._compute_v4_formula(rate_plan, pallets, weight_lbs)
+        lines = []
+        lines.append({
+            "label": f"Base ({pallets} pallet(s) × ${v['base_rate']:,.2f})",
+            "amount": round(v["leg_base"], 2),
+        })
+        if v["weight_surcharge"] > 0:
+            lines.append({
+                "label": f"Excess Weight ({v['excess_weight']:,.0f} lb × ${v['excess_rate']:,.3f}/lb)",
+                "amount": round(v["weight_surcharge"], 2),
+            })
+        lines.append({"label": "Subtotal", "amount": round(v["subtotal"], 2)})
+        lines.append({"label": "Final Freight Price (nearest $5)", "amount": v["final"]})
+        return lines, v["final"]
+
+    def calculate_leg_price(self, rate_plan, pallets, weight_lbs=0.0):
+        """Calculate price for a single Booking Leg using the V4 formula.
+        Returns dict with full breakdown. Delegates to _compute_v4_formula."""
+        v = self._compute_v4_formula(rate_plan, pallets, weight_lbs)
+        return {
             "rate_plan_id": rate_plan.id,
             "rate_plan_name": rate_plan.name,
             "revenue_target": rate_plan.revenue_target,
-            "target_load_quantity": tlq,
-            "base_rate_per_pallet": round(base_rate, 4),
+            "target_load_quantity": v["tlq"],
+            "base_rate_per_pallet": round(v["base_rate"], 4),
             "pallets": pallets,
-            "leg_base_charge": round(leg_base, 2),
-            "included_weight_per_pallet": incl_per_pallet,
-            "included_weight_total": included_weight,
+            "leg_base_charge": round(v["leg_base"], 2),
+            "included_weight_per_pallet": v["incl_per_pallet"],
+            "included_weight_total": v["included_weight"],
             "actual_weight_lbs": weight_lbs,
-            "excess_weight_lbs": round(excess_weight, 2),
-            "excess_weight_rate": round(excess_rate, 6),
-            "weight_surcharge": round(weight_surcharge, 2),
-            "subtotal": round(subtotal, 2),
-            "final_price": final,
+            "excess_weight_lbs": round(v["excess_weight"], 2),
+            "excess_weight_rate": round(v["excess_rate"], 6),
+            "weight_surcharge": round(v["weight_surcharge"], 2),
+            "subtotal": round(v["subtotal"], 2),
+            "final_price": v["final"],
             "pricing_method": "v4_ltl_hub",
         }
 

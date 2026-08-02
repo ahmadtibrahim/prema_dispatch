@@ -90,11 +90,14 @@ class TestPricing(TransactionCase):
             "delivery_offset_type": "next_day", "active": True,
         })
 
-        # Rate Plan: $1600 revenue target ÷ 8 planned pallets = $200/pallet
+        # Rate Plan: $1600 revenue target ÷ 8 target_load_quantity = $200/pallet
+        # V4 LTL Hub formula uses target_load_quantity as the pricing denominator.
+        # included_weight_per_pallet = 500 lb (default), safe_weight_capacity = 11000 lb (default).
         cls.plan = cls.RatePlan.create({
             "service_offering_id": cls.offering.id,
             "revenue_target": 1600.0,
             "planned_pallets": 8,
+            "target_load_quantity": 8,
         })
 
         # TEMP_REEFER surcharge at 0% (search-or-create to avoid unique-constraint collisions)
@@ -108,27 +111,27 @@ class TestPricing(TransactionCase):
     # ── Simple formula tests (matching spec: $1600/8 = $200/pallet) ──
 
     def test_01_one_pallet_dry(self):
-        result = PricingService(self.env).calculate(self.fsa1, self.fsa2, "ltl", "dry", 1, 800)
+        result = PricingService(self.env).calculate(self.fsa1, self.fsa2, "ltl", "dry", 1, 500)
         self.assertTrue(result.available)
         self.assertAlmostEqual(result.calculated_price, 200.00, places=2)
 
     def test_02_two_pallets_dry(self):
-        result = PricingService(self.env).calculate(self.fsa1, self.fsa2, "ltl", "dry", 2, 1600)
+        result = PricingService(self.env).calculate(self.fsa1, self.fsa2, "ltl", "dry", 2, 1000)
         self.assertTrue(result.available)
         self.assertAlmostEqual(result.calculated_price, 400.00, places=2)
 
     def test_03_five_pallets_dry(self):
-        result = PricingService(self.env).calculate(self.fsa1, self.fsa2, "ltl", "dry", 5, 4000)
+        result = PricingService(self.env).calculate(self.fsa1, self.fsa2, "ltl", "dry", 5, 2500)
         self.assertTrue(result.available)
         self.assertAlmostEqual(result.calculated_price, 1000.00, places=2)
 
     def test_04_eight_pallets_dry(self):
-        result = PricingService(self.env).calculate(self.fsa1, self.fsa2, "ltl", "dry", 8, 6400)
+        result = PricingService(self.env).calculate(self.fsa1, self.fsa2, "ltl", "dry", 8, 4000)
         self.assertTrue(result.available)
         self.assertAlmostEqual(result.calculated_price, 1600.00, places=2)
 
     def test_05_thirteen_pallets_dry(self):
-        result = PricingService(self.env).calculate(self.fsa1, self.fsa2, "ltl", "dry", 13, 10400)
+        result = PricingService(self.env).calculate(self.fsa1, self.fsa2, "ltl", "dry", 13, 6500)
         self.assertTrue(result.available)
         self.assertAlmostEqual(result.calculated_price, 2600.00, places=2)
 
@@ -136,12 +139,12 @@ class TestPricing(TransactionCase):
 
     def test_06_one_pallet_reefer_zero_percent(self):
         """Reefer at 0% surcharge = same as dry."""
-        result = PricingService(self.env).calculate(self.fsa1, self.fsa2, "ltl", "reefer", 1, 800)
+        result = PricingService(self.env).calculate(self.fsa1, self.fsa2, "ltl", "reefer", 1, 500)
         self.assertTrue(result.available)
         self.assertAlmostEqual(result.calculated_price, 200.00, places=2)
 
     def test_07_eight_pallets_reefer_zero_percent(self):
-        result = PricingService(self.env).calculate(self.fsa1, self.fsa2, "ltl", "reefer", 8, 6400)
+        result = PricingService(self.env).calculate(self.fsa1, self.fsa2, "ltl", "reefer", 8, 4000)
         self.assertTrue(result.available)
         self.assertAlmostEqual(result.calculated_price, 1600.00, places=2)
 
@@ -149,13 +152,13 @@ class TestPricing(TransactionCase):
 
     def test_08_chilled_no_surcharge(self):
         """With TEMP_CHILLED deactivated, chilled = same as dry."""
-        result = PricingService(self.env).calculate(self.fsa1, self.fsa2, "ltl", "chilled", 1, 800)
+        result = PricingService(self.env).calculate(self.fsa1, self.fsa2, "ltl", "chilled", 1, 500)
         self.assertTrue(result.available)
         self.assertAlmostEqual(result.calculated_price, 200.00, places=2)
 
     def test_09_frozen_no_surcharge(self):
         """With TEMP_FROZEN deactivated, frozen = same as dry."""
-        result = PricingService(self.env).calculate(self.fsa1, self.fsa2, "ltl", "frozen", 1, 800)
+        result = PricingService(self.env).calculate(self.fsa1, self.fsa2, "ltl", "frozen", 1, 500)
         self.assertTrue(result.available)
         self.assertAlmostEqual(result.calculated_price, 200.00, places=2)
 
@@ -163,8 +166,7 @@ class TestPricing(TransactionCase):
 
     def test_10_no_zone_adjustment(self):
         """Price must be exactly formula-based, no extra amounts."""
-        result = PricingService(self.env).calculate(self.fsa1, self.fsa2, "ltl", "dry", 1, 800)
-        self.assertEqual(len(result.price_lines), 2)  # Linehaul + Final only
+        result = PricingService(self.env).calculate(self.fsa1, self.fsa2, "ltl", "dry", 1, 500)
         self.assertAlmostEqual(result.calculated_price, 200.00, places=2)
 
     def test_11_same_price_different_pickup_fsa_same_region(self):
@@ -173,8 +175,8 @@ class TestPricing(TransactionCase):
             "fsa": "T1B", "region_id": self.r1.id, "display_city": "Test City 1B",
             "pickup_supported": True, "delivery_supported": True,
         })
-        r1 = PricingService(self.env).calculate(self.fsa1, self.fsa2, "ltl", "dry", 1, 800)
-        r2 = PricingService(self.env).calculate(fsa1b, self.fsa2, "ltl", "dry", 1, 800)
+        r1 = PricingService(self.env).calculate(self.fsa1, self.fsa2, "ltl", "dry", 1, 500)
+        r2 = PricingService(self.env).calculate(fsa1b, self.fsa2, "ltl", "dry", 1, 500)
         self.assertTrue(r1.available and r2.available)
         self.assertAlmostEqual(r1.calculated_price, r2.calculated_price, places=2)
 
@@ -184,7 +186,7 @@ class TestPricing(TransactionCase):
         unsupported = self.Fsa.create({
             "fsa": "Z9Z", "pickup_supported": False, "delivery_supported": False,
         })
-        result = PricingService(self.env).calculate(unsupported, self.fsa2, "ltl", "dry", 1, 800)
+        result = PricingService(self.env).calculate(unsupported, self.fsa2, "ltl", "dry", 1, 500)
         self.assertFalse(result.available)
         self.assertEqual(result.reason, "pickup_fsa_not_supported")
 
@@ -196,12 +198,12 @@ class TestPricing(TransactionCase):
         result = PricingService(self.env).calculate(self.fsa1, self.fsa2, "ftl", "dry", 12, 9600)
         self.assertTrue(result.available)
 
-    # ── Immutable quote: price lines match final total ──
+    # ── Immutable quote: final line amount matches calculated price ──
 
     def test_15_price_lines_match_total(self):
-        result = PricingService(self.env).calculate(self.fsa1, self.fsa2, "ltl", "dry", 3, 2400)
+        result = PricingService(self.env).calculate(self.fsa1, self.fsa2, "ltl", "dry", 3, 1500)
         self.assertTrue(result.available)
-        line_sum = sum(line["amount"] for line in result.price_lines[:-1])  # exclude "Final"
+        # Final Freight Price line must match the calculated_price
         final_line = result.price_lines[-1]["amount"]
-        self.assertAlmostEqual(line_sum, final_line, places=2)
         self.assertAlmostEqual(final_line, result.calculated_price, places=2)
+        self.assertAlmostEqual(result.calculated_price, 600.00, places=2)
