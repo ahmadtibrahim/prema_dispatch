@@ -1,57 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <odoo>
-    <!-- V4 FINAL MENU HIERARCHY — persistent across module upgrades -->
-
-    <!-- PARENT MENUS (no group restrictions so all dispatchers see everything) -->
-    <menuitem id="menu_v4_operations" name="Dispatch Operations" parent="prema_dispatch.menu_prema_dispatch_root" sequence="10"/>
-    <menuitem id="menu_v4_bookings" name="Bookings" parent="prema_dispatch.menu_prema_dispatch_root" sequence="20"/>
-    <menuitem id="menu_v4_network" name="Network" parent="prema_dispatch.menu_prema_dispatch_root" sequence="30"/>
-    <menuitem id="menu_v4_pricing" name="Pricing" parent="prema_dispatch.menu_prema_dispatch_root" sequence="40"/>
-    <menuitem id="menu_v4_fleet" name="Fleet" parent="prema_dispatch.menu_prema_dispatch_root" sequence="50"/>
-
-    <!-- DISPATCH OPERATIONS -->
-    <menuitem id="menu_v4_live_map" name="Live Map" parent="menu_v4_operations" action="prema_dispatch.action_dispatch_live_map" sequence="1"/>
-    <menuitem id="menu_v4_booking_board" name="Booking Board" parent="menu_v4_operations" action="prema_dispatch.action_booking_status_board" sequence="10"/>
-    <menuitem id="menu_v4_weekly_operations" name="Weekly Operations" parent="menu_v4_operations" action="prema_dispatch.action_dispatch_planner_board" sequence="15"/>
-    <menuitem id="menu_v4_dispatch_planner" name="Dispatch Planner" parent="menu_v4_operations" action="prema_dispatch.action_dispatch_planner_board" sequence="20"/>
-    <menuitem id="menu_v4_load_plans" name="Load Plans" parent="menu_v4_operations" action="prema_dispatch.action_load_plan" sequence="25"/>
-    <menuitem id="menu_v4_driver_worksheets" name="Driver Worksheets" parent="menu_v4_operations" action="prema_dispatch.action_driver_worksheet_live" sequence="30"/>
-    <menuitem id="menu_v4_find_truck" name="Find Available Truck" parent="menu_v4_operations" action="prema_dispatch.action_adhoc_load_finder" sequence="35"/>
-
-    <!-- BOOKINGS -->
-    <menuitem id="menu_v4_new_booking" name="New Booking" parent="menu_v4_bookings" action="action_logistics_booking" sequence="5"/>
-    <menuitem id="menu_v4_all_bookings" name="All Bookings" parent="menu_v4_bookings" action="action_logistics_booking" sequence="10"/>
-    <menuitem id="menu_v4_phone_booking" name="Phone Booking" parent="menu_v4_bookings" action="action_logistics_phone_booking" sequence="20"/>
-    <menuitem id="menu_v4_recurring" name="Recurring Agreements" parent="menu_v4_bookings" action="action_logistics_recurring_agreement" sequence="30"/>
-    <menuitem id="menu_v4_quotes" name="Custom Quotes" parent="menu_v4_bookings" action="action_logistics_custom_quote" sequence="40"/>
-    <menuitem id="menu_v4_wa" name="WhatsApp Negotiations" parent="menu_v4_bookings" action="agent_wa.action_wa_negotiations" sequence="50"/>
-
-    <!-- NETWORK — final names, no legacy items -->
-    <menuitem id="menu_v4_where_we_go" name="Where We Go" parent="menu_v4_network" action="action_where_we_go" sequence="5"/>
-    <menuitem id="menu_v4_weekly_services" name="Weekly Services" parent="menu_v4_network" action="action_logistics_corridor" sequence="10"/>
-    <menuitem id="menu_v4_hubs" name="Hubs" parent="menu_v4_network" action="action_logistics_hub" sequence="25"/>
-    <menuitem id="menu_v4_regions" name="Regions" parent="menu_v4_network" action="action_logistics_region" sequence="40"/>
-    <menuitem id="menu_v4_postal" name="Postal Coverage" parent="menu_v4_network" action="action_logistics_fsa" sequence="50"/>
-
-    <!-- PRICING — simplified, no standalone Rate Plans -->
-    <menuitem id="menu_v4_lanes_pricing" name="Lanes and Pricing" parent="menu_v4_pricing" action="action_logistics_lane" sequence="10"/>
-    <menuitem id="menu_v4_rate_sim" name="Rate Simulator" parent="menu_v4_pricing" action="action_logistics_rate_simulator" sequence="20"/>
-    <menuitem id="menu_v4_sched_sim" name="Schedule Simulator" parent="menu_v4_pricing" action="action_logistics_schedule_simulator" sequence="30"/>
-    <menuitem id="menu_v4_price_settings" name="Pricing Settings" parent="menu_v4_pricing" sequence="70"/>
-
-    <!-- FLEET — simplified, trucks + drivers + geotab only -->
-    <menuitem id="menu_v4_trucks" name="Trucks" parent="menu_v4_fleet" action="fleet.fleet_vehicle_action" sequence="10"/>
-    <menuitem id="menu_v4_drivers" name="Drivers" parent="menu_v4_fleet" action="action_fleet_drivers" sequence="20"/>
-    <menuitem id="menu_v4_geotab" name="GeoTab Settings" parent="menu_v4_fleet" sequence="40"/>
-
-    <!-- WHERE WE GO action -->
-    <record id="action_where_we_go" model="ir.actions.act_url">
-        <field name="name">Where We Go</field>
-        <field name="url">/logistics/where-we-go</field>
-        <field name="target">self</field>
+    <!-- ACTIONS (must be defined before menus that reference them) -->
+    <record id="action_logistics_hub" model="ir.actions.act_window">
+        <field name="name">Hubs</field>
+        <field name="res_model">logistics.hub</field>
+        <field name="view_mode">tree,form</field>
     </record>
-
-    <!-- FLEET DRIVERS filtered action -->
     <record id="action_fleet_drivers" model="ir.actions.act_window">
         <field name="name">Fleet Drivers</field>
         <field name="res_model">res.partner</field>
@@ -60,7 +14,54 @@
         <field name="context">{'default_x_is_driver': True}</field>
     </record>
 
-    <!-- DELETE LEGACY MENUS by DB ID (permanent, survives renames) -->
-    <delete model="ir.ui.menu" search="[('id','in',[906,911,939,956,957,958,959,960,961,962,963,965])]"/>
+    <menuitem id="menu_v4_operations" name="Dispatch Operations" parent="prema_dispatch.menu_prema_dispatch_root" sequence="10"/>
+    <menuitem id="menu_v4_bookings" name="Bookings" parent="prema_dispatch.menu_prema_dispatch_root" sequence="20"/>
+    <menuitem id="menu_v4_network" name="Network" parent="prema_dispatch.menu_prema_dispatch_root" sequence="30"/>
+    <menuitem id="menu_v4_pricing" name="Pricing" parent="prema_dispatch.menu_prema_dispatch_root" sequence="40"/>
+    <menuitem id="menu_v4_fleet" name="Fleet" parent="prema_dispatch.menu_prema_dispatch_root" sequence="50"/>
 
+    <menuitem id="menu_v4_live_map" name="Live Map" parent="menu_v4_operations" action="prema_dispatch.action_dispatch_live_map" sequence="1"/>
+    <menuitem id="menu_v4_booking_board" name="Booking Board" parent="menu_v4_operations" action="prema_dispatch.action_booking_status_board" sequence="10"/>
+    <menuitem id="menu_v4_weekly_ops" name="Weekly Operations" parent="menu_v4_operations" action="prema_dispatch.action_dispatch_planner_board" sequence="15"/>
+    <menuitem id="menu_v4_planner" name="Dispatch Planner" parent="menu_v4_operations" action="prema_dispatch.action_dispatch_planner_board" sequence="20"/>
+    <menuitem id="menu_v4_load_plans" name="Load Plans" parent="menu_v4_operations" action="prema_dispatch.action_load_plan" sequence="25"/>
+    <menuitem id="menu_v4_worksheets" name="Driver Worksheets" parent="menu_v4_operations" action="prema_dispatch.action_driver_worksheet_live" sequence="30"/>
+    <menuitem id="menu_v4_adhoc" name="Find Available Truck" parent="menu_v4_operations" action="prema_dispatch.action_adhoc_load_finder" sequence="35"/>
+
+    <menuitem id="menu_v4_new_booking" name="New Booking" parent="menu_v4_bookings" action="action_logistics_booking" sequence="5"/>
+    <menuitem id="menu_v4_all_bookings" name="All Bookings" parent="menu_v4_bookings" action="action_logistics_booking" sequence="10"/>
+    <menuitem id="menu_v4_phone" name="Phone Booking" parent="menu_v4_bookings" action="action_logistics_phone_booking" sequence="20"/>
+    <menuitem id="menu_v4_recurring" name="Recurring Agreements" parent="menu_v4_bookings" action="action_logistics_recurring_agreement" sequence="30"/>
+    <menuitem id="menu_v4_quotes" name="Custom Quotes" parent="menu_v4_bookings" action="action_logistics_custom_quote" sequence="40"/>
+    <menuitem id="menu_v4_wa" name="WhatsApp Negotiations" parent="menu_v4_bookings" action="agent_wa.action_wa_negotiations" sequence="50"/>
+
+    <record id="action_where_we_go" model="ir.actions.act_url">
+        <field name="name">Where We Go</field>
+        <field name="url">/logistics/where-we-go</field>
+        <field name="target">self</field>
+    </record>
+
+    <menuitem id="menu_v4_where_we_go" name="Where We Go" parent="menu_v4_network" action="action_where_we_go" sequence="5"/>
+    <menuitem id="menu_v4_weekly_svcs" name="Weekly Services" parent="menu_v4_network" action="action_logistics_corridor" sequence="10"/>
+    <menuitem id="menu_v4_hubs" name="Hubs" parent="menu_v4_network" action="action_logistics_hub" sequence="25"/>
+    <menuitem id="menu_v4_regions" name="Regions" parent="menu_v4_network" action="action_logistics_region" sequence="40"/>
+    <menuitem id="menu_v4_postal" name="Postal Coverage" parent="menu_v4_network" action="action_logistics_fsa" sequence="50"/>
+
+    <menuitem id="menu_v4_lanes_pricing" name="Lanes and Pricing" parent="menu_v4_pricing" action="action_logistics_lane" sequence="10"/>
+    <menuitem id="menu_v4_rate_sim" name="Rate Simulator" parent="menu_v4_pricing" action="action_logistics_rate_simulator" sequence="20"/>
+    <menuitem id="menu_v4_sched_sim" name="Schedule Simulator" parent="menu_v4_pricing" action="action_logistics_schedule_simulator" sequence="30"/>
+    <menuitem id="menu_v4_price_cfg" name="Pricing Settings" parent="menu_v4_pricing" sequence="70"/>
+
+    <menuitem id="menu_v4_trucks" name="Trucks" parent="menu_v4_fleet" action="fleet.fleet_vehicle_action" sequence="10"/>
+    <menuitem id="menu_v4_drivers" name="Drivers" parent="menu_v4_fleet" action="action_fleet_drivers" sequence="20"/>
+    <menuitem id="menu_v4_geotab" name="GeoTab Settings" parent="menu_v4_fleet" sequence="40"/>
+
+
+    <record id="action_fleet_drivers" model="ir.actions.act_window">
+        <field name="name">Fleet Drivers</field>
+        <field name="res_model">res.partner</field>
+        <field name="view_mode">tree,form,kanban</field>
+        <field name="domain">[('x_is_driver', '=', True)]</field>
+        <field name="context">{'default_x_is_driver': True}</field>
+    </record>
 </odoo>

@@ -5,134 +5,33 @@
             <t t-set="head">
                 <title>Where We Go — Prema Dispatch</title>
                 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-                <script t-attf-src="https://maps.googleapis.com/maps/api/js?key={{request.env['ir.config_parameter'].sudo().get_param('google_maps_api_key','')}}&amp;libraries=drawing,geometry" async="1" defer="1"/>
+                <t t-set="google_api_key" t-value="request.env['ir.config_parameter'].sudo().get_param('google_maps_api_key','')"/>
+                <script t-attf-src="https://maps.googleapis.com/maps/api/js?key=#{google_api_key}&amp;libraries=drawing" async="" defer=""/>
+                <script type="text/javascript" src="/prema_logistics_booking/static/src/js/where_we_go.js"/>
             </t>
-            <div id="wwg-app" style="width:100%;height:100vh">
-                <div id="wwg-map" style="width:100%;height:100%"/>
-                <div id="wwg-panel" style="position:absolute;top:10px;left:10px;width:320px;max-height:90vh;overflow-y:auto;background:white;border-radius:8px;box-shadow:0 2px 10px rgba(0,0,0,.2);padding:16px;z-index:1000">
-                    <h3 style="margin:0 0 8px">Where We Go</h3>
-                    <p style="color:#666;font-size:13px;margin:0 0 12px">Click a region to see available destinations.</p>
-                    <div id="wwg-info">
-                        <em style="color:#999">Select a pickup region to begin.</em>
+            <div style="display:flex;height:calc(100vh - 46px)">
+                <div style="width:380px;min-width:380px;background:#fff;overflow-y:auto;border-right:1px solid #ddd">
+                    <div style="padding:16px 20px;background:#1a73e8;color:#fff">
+                        <h2 style="margin:0;font-size:20px">Where We Go</h2>
+                        <p style="margin:4px 0 0;font-size:13px;opacity:.9">Select pickup and delivery regions to view available routes and schedule.</p>
                     </div>
-                    <button id="wwg-reset" style="display:none;margin-top:10px;padding:6px 14px;background:#eee;border:1px solid #ccc;border-radius:4px;cursor:pointer">Reset Selection</button>
-                    <div id="wwg-price" style="margin-top:12px"/>
+                    <div style="padding:16px 20px">
+                        <label style="font-weight:600;font-size:13px">Pickup Region</label>
+                        <select id="wwg_origin" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:4px;margin:4px 0 12px">
+                            <option value="">— Select —</option>
+                        </select>
+                        <label style="font-weight:600;font-size:13px">Delivery Region</label>
+                        <select id="wwg_dest" style="width:100%;padding:8px;border:1px solid #ccc;border-radius:4px;margin:4px 0 12px">
+                            <option value="">— First select pickup —</option>
+                        </select>
+                        <button id="wwg_reset" style="padding:8px 16px;background:#eee;border:1px solid #ccc;border-radius:4px;cursor:pointer">Reset</button>
+                    </div>
+                    <div id="wwg_result" style="padding:16px 20px;border-top:1px solid #eee">
+                        <p style="color:#999;font-size:13px">Select origin and destination to see route details.</p>
+                    </div>
                 </div>
+                <div id="wwg_map" style="flex:1"/>
             </div>
-            <script>
-                document.addEventListener('DOMContentLoaded', function() {
-                    var map = new google.maps.Map(document.getElementById('wwg-map'), {
-                        center: {lat: 44.5, lng: -77.5}, zoom: 7,
-                        mapTypeControl: false, streetViewControl: false,
-                    });
-                    var regions = [], hubs = [], lanes = [], services = [], markers = [], polys = [];
-                    var selectedOrigin = null, infoDiv = document.getElementById('wwg-info');
-                    var priceDiv = document.getElementById('wwg-price');
-                    var resetBtn = document.getElementById('wwg-reset');
-
-                    odoo.define('prema_logistics_booking.where_we_go', function(require) {
-                        var rpc = require('web.rpc');
-                        rpc.query({route: '/logistics/where-we-go/data'}).then(function(data) {
-                            regions = data.regions; hubs = data.hubs;
-                            lanes = data.lanes; services = data.services;
-                            drawAll();
-                        });
-                    });
-
-                    // Fallback fetch if Odoo module system not loaded yet
-                    setTimeout(function() {
-                        if (regions.length === 0) {
-                            fetch('/logistics/where-we-go/data', {
-                                headers: {'Content-Type': 'application/json'},
-                                method: 'POST', body: JSON.stringify({})
-                            }).then(r => r.json()).then(function(d) {
-                                if (d.result) d = d.result;
-                                regions = d.regions||[]; hubs = d.hubs||[];
-                                lanes = d.lanes||[]; services = d.services||[];
-                                drawAll();
-                            });
-                        }
-                    }, 1000);
-
-                    function drawAll() {
-                        markers.forEach(function(m) { m.setMap(null); });
-                        polys.forEach(function(p) { p.setMap(null); });
-                        markers = []; polys = [];
-                        regions.forEach(function(r) {
-                            var pos = {lat: r.lat||44, lng: r.lng||-78};
-                            var marker = new google.maps.Marker({
-                                position: pos, map: map,
-                                label: String(r.display_number||r.id),
-                                title: r.name,
-                            });
-                            marker.addListener('click', function() { selectOrigin(r, marker); });
-                            markers.push(marker);
-                        });
-                        hubs.forEach(function(h) {
-                            var m = new google.maps.Marker({
-                                position: {lat: h.lat||43.65, lng: h.lng||-79.66},
-                                map: map, icon: {
-                                    path: google.maps.SymbolPath.CIRCLE,
-                                    scale: 8, fillColor: '#1a73e8', fillOpacity: 0.9,
-                                    strokeColor: '#fff', strokeWeight: 2,
-                                },
-                                title: h.name,
-                            });
-                            markers.push(m);
-                        });
-                    }
-
-                    function selectOrigin(region, marker) {
-                        selectedOrigin = region;
-                        infoDiv.innerHTML = '<strong>' + region.name + '</strong><br/>' +
-                            (region.main_city||'') + '<br/>' +
-                            (region.public_description||'');
-                        resetBtn.style.display = 'block';
-                        // Highlight valid destinations
-                        var destIds = new Set();
-                        lanes.forEach(function(l) {
-                            if (l.origin_id === region.id) destIds.add(l.dest_id);
-                        });
-                        markers.forEach(function(m, i) {
-                            var r = regions[i];
-                            if (r && destIds.has(r.id)) {
-                                m.setIcon({
-                                    path: google.maps.SymbolPath.CIRCLE,
-                                    scale: 6, fillColor: '#0a0', fillOpacity: 0.8,
-                                    strokeColor: '#fff', strokeWeight: 1,
-                                });
-                            }
-                        });
-                        // Draw routes to destinations
-                        hubs.forEach(function(hub) {
-                            destIds.forEach(function(did) {
-                                var dest = regions.find(function(r) { return r.id === did; });
-                                if (dest) {
-                                    var line = new google.maps.Polyline({
-                                        path: [
-                                            {lat: region.lat||44, lng: region.lng||-78},
-                                            {lat: hub.lat||43.65, lng: hub.lng||-79.66},
-                                            {lat: dest.lat||44, lng: dest.lng||-78},
-                                        ],
-                                        map: map,
-                                        strokeColor: '#1a73e8', strokeOpacity: 0.6, strokeWeight: 2,
-                                        icons: [{icon: {path: google.maps.SymbolPath.FORWARD_CLOSED_ARROW}, offset: '100%'}],
-                                    });
-                                    polys.push(line);
-                                }
-                            });
-                        });
-                    }
-
-                    resetBtn.addEventListener('click', function() {
-                        selectedOrigin = null;
-                        infoDiv.innerHTML = '<em style="color:#999">Select a pickup region to begin.</em>';
-                        priceDiv.innerHTML = '';
-                        resetBtn.style.display = 'none';
-                        drawAll();
-                    });
-                });
-            </script>
         </t>
     </template>
 </odoo>
