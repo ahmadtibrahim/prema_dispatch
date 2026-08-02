@@ -46,14 +46,20 @@
     <menuitem id="menu_v4_hubs" name="Hubs" parent="menu_v4_network" action="action_logistics_hub" sequence="25"/>
     <menuitem id="menu_v4_regions" name="Regions" parent="menu_v4_network" action="action_logistics_region" sequence="40"/>
     <menuitem id="menu_v4_postal" name="Postal Coverage" parent="menu_v4_network" action="action_logistics_fsa" sequence="50"/>
+    <menuitem id="menu_v4_saved_locations" name="Saved Locations" parent="menu_v4_network" action="prema_dispatch.action_dispatch_locations" sequence="60"/>
+    <menuitem id="menu_v4_daily_local" name="Daily Local Operations" parent="menu_v4_network" action="action_logistics_daily_local" sequence="65"/>
 
     <menuitem id="menu_v4_lanes_pricing" name="Lanes and Pricing" parent="menu_v4_pricing" action="action_logistics_lane" sequence="10"/>
     <menuitem id="menu_v4_rate_sim" name="Rate Simulator" parent="menu_v4_pricing" action="action_logistics_rate_simulator" sequence="20"/>
     <menuitem id="menu_v4_sched_sim" name="Schedule Simulator" parent="menu_v4_pricing" action="action_logistics_schedule_simulator" sequence="30"/>
+    <menuitem id="menu_v4_rate_plans" name="Rate Plans" parent="menu_v4_pricing" action="action_logistics_rate_plan" sequence="50"/>
+    <menuitem id="menu_v4_service_offerings" name="Service Offerings" parent="menu_v4_pricing" action="action_logistics_service_offering" sequence="55"/>
+    <menuitem id="menu_v4_customer_rates" name="Customer Contract Rates" parent="menu_v4_pricing" action="action_logistics_customer_rate" sequence="60"/>
     <menuitem id="menu_v4_price_cfg" name="Pricing Settings" parent="menu_v4_pricing" sequence="70"/>
 
     <menuitem id="menu_v4_trucks" name="Trucks" parent="menu_v4_fleet" action="fleet.fleet_vehicle_action" sequence="10"/>
     <menuitem id="menu_v4_drivers" name="Drivers" parent="menu_v4_fleet" action="action_fleet_drivers" sequence="20"/>
+    <menuitem id="menu_v4_equipment_profiles" name="Equipment Profiles" parent="menu_v4_fleet" action="action_logistics_equipment_profile" sequence="30"/>
     <menuitem id="menu_v4_geotab" name="GeoTab Settings" parent="menu_v4_fleet" sequence="40"/>
 
 
