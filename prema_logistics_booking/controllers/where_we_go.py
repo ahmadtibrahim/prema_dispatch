@@ -38,7 +38,7 @@ function drawRoute(){lines.forEach(function(l){l.setMap(null)});lines=[];var r=d
 if(typeof google!=='undefined'&&google.maps)init();else window.initMap=init;
 </script></body></html>'''
 
-    @http.route("/logistics/where-we-go/data", type="json", auth="public")
+    @http.route("/logistics/where-we-go/data", type="http", auth="public", methods=["POST"], csrf=False)
     def where_we_go_data(self, **kwargs):
         """Return all map data: regions, hubs, lanes, services, departures."""
         Region = request.env["logistics.region"].sudo()
@@ -116,7 +116,7 @@ if(typeof google!=='undefined'&&google.maps)init();else window.initMap=init;
                 "status": d.status,
             })
 
-        return {
-            "regions": regions, "hubs": hubs, "lanes": lanes,
-            "services": services, "departures": departures,
-        }
+        import json
+        return request.make_response(
+            json.dumps({"regions": regions, "hubs": hubs, "lanes": lanes, "services": services, "departures": departures}),
+            [("Content-Type", "application/json")])
