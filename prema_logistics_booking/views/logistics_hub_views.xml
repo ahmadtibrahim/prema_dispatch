@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_logistics_hub_tree" model="ir.ui.view">
+        <field name="name">logistics.hub.tree</field>
+        <field name="model">logistics.hub</field>
+        <field name="arch" type="xml">
+            <tree>
+                <field name="name"/>
+                <field name="public_name"/>
+                <field name="code"/>
+                <field name="is_default"/>
+                <field name="customer_visible"/>
+                <field name="active"/>
+            </tree>
+        </field>
+    </record>
+
+    <record id="view_logistics_hub_form" model="ir.ui.view">
+        <field name="name">logistics.hub.form</field>
+        <field name="model">logistics.hub</field>
+        <field name="arch" type="xml">
+            <form>
+                <sheet>
+                    <div class="oe_button_box" name="button_box"/>
+                    <group>
+                        <field name="name"/>
+                        <field name="public_name"/>
+                        <field name="code"/>
+                        <field name="is_default"/>
+                        <field name="active"/>
+                        <field name="customer_visible"/>
+                    </group>
+                    <group string="Location">
+                        <field name="saved_location_id"/>
+                        <field name="formatted_address"/>
+                        <field name="latitude"/>
+                        <field name="longitude"/>
+                        <field name="timezone"/>
+                    </group>
+                    <group string="Operations">
+                        <field name="cross_dock_enabled"/>
+                        <field name="dock_count"/>
+                        <field name="operating_hours"/>
+                        <field name="transfer_cutoff_time"/>
+                        <field name="dry_storage_available"/>
+                        <field name="chilled_storage_available"/>
+                        <field name="frozen_storage_available"/>
+                        <field name="liftgate_access"/>
+                    </group>
+                    <group string="Supported Regions">
+                        <field name="supported_region_ids" widget="many2many_tags"/>
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+</odoo>
