@@ -2,55 +2,8 @@
 <odoo>
     <template id="where_we_go_page" name="Where We Go">
         <t t-call="web.layout">
-            <t t-set="head">
-                <title>Where We Go</title>
-                <meta name="viewport" content="width=device-width,initial-scale=1"/>
-            </t>
-            <div style="display:flex;height:calc(100vh - 46px)">
-                <div style="width:380px;min-width:380px;background:#fff;overflow-y:auto;border-right:1px solid #dee2e6;padding:0">
-                    <div style="padding:16px 20px;background:#1a73e8;color:#fff">
-                        <h3 style="margin:0">Where We Go</h3>
-                        <p style="margin:4px 0 0;font-size:13px;opacity:.9">Select pickup and delivery regions.</p>
-                    </div>
-                    <div style="padding:16px 20px">
-                        <div class="mb-3">
-                            <label class="form-label fw-bold">Pickup Region</label>
-                            <select class="form-select" id="wwg_origin"><option value="">Loading...</option></select>
-                        </div>
-                        <div class="mb-3">
-                            <label class="form-label fw-bold">Delivery Region</label>
-                            <select class="form-select" id="wwg_dest"><option value="">— First select pickup —</option></select>
-                        </div>
-                        <button class="btn btn-secondary btn-sm" id="wwg_reset">Reset</button>
-                    </div>
-                    <div style="padding:16px 20px;border-top:1px solid #dee2e6" id="wwg_result">
-                        <p style="color:#999;font-size:13px">Select origin and destination.</p>
-                    </div>
-                </div>
-                <div class="flex-grow-1" id="wwg_map" style="min-width:0"/>
-            </div>
-        </t>
-        <script><![CDATA[
-var WWG_KEY = "]]><t t-esc="google_api_key"/><![CDATA[";
-(function(){var s=document.createElement('script');s.src='https://maps.googleapis.com/maps/api/js?key='+WWG_KEY+'&libraries=drawing&callback=initWhereWeGo';document.head.appendChild(s);})();]]></script>
-        <script><![CDATA[
-var D={regions:[],hubs:[],lanes:[],services:[],deps:[]},map,markers=[],lines=[],oid=null,did=null;
-function initWhereWeGo(){
-    map=new google.maps.Map(document.getElementById('wwg_map'),{center:{lat:44.8,lng:-77.0},zoom:7,mapTypeControl:false,streetViewControl:false});
-    fetch('/logistics/where-we-go/data').then(function(r){return r.json()}).then(function(j){D=j;pop();drawMarkers()});
-}
-function pop(){
-    var o=document.getElementById('wwg_origin');o.innerHTML='<option value="">-- Select Pickup --</option>';
-    D.regions.sort(function(a,b){return(a.display_number||a.id)-(b.display_number||b.id)});
-    D.regions.forEach(function(r){o.innerHTML+='<option value="'+r.id+'">'+(r.display_number||r.id)+'. '+r.name+' - '+(r.main_city||'')+'</option>'});
-    o.onchange=function(){oid=parseInt(this.value)||null;updateDests();drawRoute()};
-    document.getElementById('wwg_dest').onchange=function(){did=parseInt(this.value)||null;drawRoute()};
-    document.getElementById('wwg_reset').onclick=function(){oid=null;did=null;o.value='';document.getElementById('wwg_dest').innerHTML='<option value="">-- First select pickup --</option>';document.getElementById('wwg_result').innerHTML='<p style="color:#999">Select origin and destination.</p>';drawRoute()};
-}
-function updateDests(){var d=document.getElementById('wwg_dest');d.innerHTML='<option value="">-- Select Delivery --</option>';if(!oid)return;var ids=new Set();D.lanes.forEach(function(l){if(l.origin_id===oid)ids.add(l.dest_id)});D.regions.forEach(function(r){if(ids.has(r.id))d.innerHTML+='<option value="'+r.id+'">'+(r.display_number||r.id)+'. '+r.name+' - '+(r.main_city||'')+'</option>'})}
-function drawMarkers(){markers.forEach(function(m){m.setMap(null)});markers=[];D.regions.forEach(function(r){var m=new google.maps.Marker({position:{lat:r.lat||44,lng:r.lng||-78},map:map,label:{text:String(r.display_number||r.id),color:'#fff',fontSize:'11px',fontWeight:'bold'},title:r.name,icon:{path:google.maps.SymbolPath.CIRCLE,scale:12,fillColor:'#1a73e8',fillOpacity:.9,strokeColor:'#fff',strokeWeight:2}});m.addListener('click',function(){document.getElementById('wwg_origin').value=r.id;oid=r.id;updateDests();drawRoute()});markers.push(m)});D.hubs.forEach(function(h){var m=new google.maps.Marker({position:{lat:h.lat||43.65,lng:h.lng||-79.66},map:map,icon:{path:google.maps.SymbolPath.CIRCLE,scale:8,fillColor:'#ea4335',fillOpacity:.9,strokeColor:'#fff',strokeWeight:2},title:h.public_name||h.name,label:{text:'HUB',color:'#ea4335',fontSize:'8px',fontWeight:'bold'}});markers.push(m)})}
-function drawRoute(){lines.forEach(function(l){l.setMap(null)});lines=[];var r=document.getElementById('wwg_result');if(!oid||!did){r.innerHTML='<p style="color:#999">Select origin and destination.</p>';return}var o=D.regions.find(function(x){return x.id===oid}),d=D.regions.find(function(x){return x.id===did});if(!o||!d)return;var lane=D.lanes.find(function(l){return l.origin_id===oid&&l.dest_id===did});var direct=lane&&lane.direct_allowed,hub=D.hubs.find(function(h){return h.is_default})||D.hubs[0];var path=direct?[{lat:o.lat||44,lng:o.lng||-78},{lat:d.lat||44,lng:d.lng||-78}]:[{lat:o.lat||44,lng:o.lng||-78},{lat:hub.lat||43.65,lng:hub.lng||-79.66},{lat:d.lat||44,lng:d.lng||-78}];if(path.length>=2){var line=new google.maps.Polyline({path:path,map:map,strokeColor:direct?'#34a853':'#1a73e8',strokeOpacity:.7,strokeWeight:3,icons:[{icon:{path:google.maps.SymbolPath.FORWARD_CLOSED_ARROW,scale:3},offset:'100%'}]});lines.push(line);var b=new google.maps.LatLngBounds();path.forEach(function(p){b.extend(p)});map.fitBounds(b)}var svc=D.services.find(function(s){if(!s.stops||s.stops.length<2)return false;var ids=s.stops.map(function(st){return st.region_id});return ids.indexOf(oid)>=0&&ids.indexOf(did)>=0});var dep=svc?D.deps.find(function(dd){return dd.corridor_id===svc.id}):null;var rt=direct?'Direct Service':(hub?'Via '+hub.public_name:'Via Hub');var pd=svc?(svc.weekday||'Scheduled'):'Contact us';var dd=dep?dep.date:'Next available';r.innerHTML='<div style="background:#e8f5e9;border-left:4px solid #34a853;padding:12px;border-radius:4px;margin-bottom:8px"><strong>'+rt+'</strong></div><p><strong>Pickup:</strong> '+o.name+' - '+(o.main_city||'')+'</p><p><strong>Delivery:</strong> '+d.name+' - '+(d.main_city||'')+'</p><p><strong>Service Day:</strong> '+pd+'</p><p><strong>Earliest Delivery:</strong> '+dd+'</p>'+(svc?'<p><strong>Weekly Service:</strong> '+svc.name+'</p>':'')+'<p><strong>Frequency:</strong> Weekly</p>'+(lane?'<p><strong>Road Distance:</strong> '+lane.road_km+' km</p>':'')+'<a href="/web#action=1537" class="btn btn-primary mt-2">Check Price</a>';}
-]]></script>
+            <t t-set="head"><title>Where We Go</title></t>
+            <iframe id="wwg_frame" style="width:100%;height:calc(100vh - 46px);border:none" t-attf-src="/logistics/where-we-go/map"/>
         </t>
     </template>
 </odoo>
