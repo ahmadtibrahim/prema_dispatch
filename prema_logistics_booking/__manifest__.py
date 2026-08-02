@@ -28,6 +28,7 @@ root for architecture notes, decisions, and phase status.
         "data/logistics_fsa_zone_data.xml",
         "data/logistics_city_data.xml",
         "data/logistics_cron.xml",
+        "views/logistics_hub_views.xml",
         "views/logistics_region_views.xml",
         "views/logistics_region_destination_views.xml",
         "views/logistics_fsa_views.xml",

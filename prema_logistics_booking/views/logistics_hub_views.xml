@@ -4,7 +4,7 @@
         <field name="name">logistics.hub.tree</field>
         <field name="model">logistics.hub</field>
         <field name="arch" type="xml">
-            <tree>
+            <list>
                 <field name="name"/>
                 <field name="public_name"/>
                 <field name="code"/>
