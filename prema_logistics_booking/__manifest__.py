@@ -50,7 +50,7 @@ root for architecture notes, decisions, and phase status.
         "views/res_partner_logistics_views.xml",
         "views/rate_simulator_views.xml",
         "views/res_config_settings_views.xml",
-        "views/logistics_hub_views.xml",
+        "views/where_we_go_template.xml",
         "views/menus.xml",
         "views/portal_templates.xml",
         "views/request_quote_templates.xml",

@@ -114,7 +114,7 @@ class PricingService:
 
         offering, sched_result, rate_plan = best
         price_lines, total = self._compute_price(
-            rate_plan, pallets, temperature_mode,
+            rate_plan, pallets, temperature_mode, weight_lbs=weight_lbs,
         )
 
         return PricingResult(

@@ -40,6 +40,11 @@ class LogisticsCorridor(models.Model):
                            help="Phase 1-4. Corridor activates when fleet reaches this phase.")
     truck_slot = fields.Integer(string="Truck Slot", default=1,
                                 help="Which truck in the fleet this corridor belongs to (1-4).")
+    default_vehicle_id = fields.Many2one("fleet.vehicle", string="Default Truck",
+                                          help="Default truck assigned to this weekly service. "
+                                               "Copied to new departures on generation.")
+    default_driver_id = fields.Many2one("res.partner", string="Default Driver",
+                                         help="Default driver for this weekly service.")
     weekday = fields.Selection(WEEKDAY_SELECTION, string="Primary Operating Day",
                                help="Primary day this corridor operates. For multi-day, see departure schedule.")
     recurring_weekdays = fields.Char(string="Recurring Weekdays",
