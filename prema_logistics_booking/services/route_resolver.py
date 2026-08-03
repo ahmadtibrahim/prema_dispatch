@@ -1,8 +1,4 @@
-"""Ordered-lane route resolver.
-
-Rate Plans are the sole pricing authority. No per-km, AI, road-distance,
-or DEFAULT_TARGETS fallback. Returns request_quote for unresolvable routes.
-"""
+"""Ordered-lane route resolver — Rate Plans are the sole pricing authority."""
 import logging
 from collections import namedtuple
 from datetime import date
@@ -13,6 +9,10 @@ ResolvedRoute = namedtuple("ResolvedRoute", [
     "available", "reason", "legs", "total_pallets", "total_weight_lbs",
 ])
 
+VALID_SHIPMENT_TYPES = {"ltl", "ftl"}
+VALID_EQUIPMENT = {"dry", "reefer"}
+LEGACY_CHILLED_FROZEN = {"chilled", "frozen"}
+
 
 class RouteResolver:
     def __init__(self, env):
@@ -22,7 +22,12 @@ class RouteResolver:
             self.env = env
 
     def resolve(self, pickup_fsa, delivery_fsa, pallets, weight_lbs,
-                equipment="dry", partner=None, shipment_type="ltl"):
+                equipment="dry", partner=None, shipment_type="ltl", reference_dt=None):
+        # Validate
+        if shipment_type not in VALID_SHIPMENT_TYPES:
+            return ResolvedRoute(False, "invalid_shipment_type", [], pallets, weight_lbs)
+        if equipment not in VALID_EQUIPMENT:
+            return ResolvedRoute(False, "invalid_equipment", [], pallets, weight_lbs)
         if not pickup_fsa or not pickup_fsa.pickup_supported:
             return ResolvedRoute(False, "pickup_fsa_not_supported", [], pallets, weight_lbs)
         if not delivery_fsa or not delivery_fsa.delivery_supported:
@@ -34,32 +39,47 @@ class RouteResolver:
         if pallets > 12:
             return ResolvedRoute(False, "pallets_exceed_standard_capacity", [], pallets, weight_lbs)
 
-        today = date.today()
+        today = reference_dt.date() if reference_dt else date.today()
+
+        # Chilled/Frozen → Reefer for capability checking
+        equip_check = "reefer" if equipment in LEGACY_CHILLED_FROZEN else equipment
 
         # 1. Customer-specific
         if partner:
             cr = self._resolve_customer_route(
-                partner, pu_region, del_region, equipment, shipment_type, pallets, weight_lbs, today
+                partner, pu_region, del_region, equip_check, shipment_type, pallets, weight_lbs, today
             )
             if cr and cr.available:
                 return cr
 
         # 2. Direct ordered lane
-        direct = self._resolve_direct_lane(pu_region, del_region, equipment, shipment_type, pallets, weight_lbs, today)
+        direct = self._resolve_direct_lane(pu_region, del_region, equip_check, shipment_type, pallets, weight_lbs, today)
         if direct and direct.available:
             return direct
 
         # 3. Hub transfer
-        hub = self._resolve_hub_transfer(pu_region, del_region, equipment, shipment_type, pallets, weight_lbs, today)
+        hub = self._resolve_hub_transfer(pu_region, del_region, equip_check, shipment_type, pallets, weight_lbs, today)
         if hub and hub.available:
             return hub
 
         return ResolvedRoute(False, "request_quote", [], pallets, weight_lbs)
 
-    # ── Rate Plan lookup ──────────────────────────────────────────────
+    # ── Offering + Rate Plan resolution ───────────────────────────────
+
+    def _find_offerings(self, lane, shipment_type, today):
+        """Return list of active offerings matching lane, type, and date."""
+        domain = [
+            ("lane_id", "=", lane.id),
+            ("active", "=", True),
+            ("temperature_mode", "=", "dry"),
+        ]
+        offerings = self.env["logistics.service.offering"].search(domain)
+        # Filter by shipment type
+        return [o for o in offerings if o.shipment_type in (shipment_type, "both")]
 
     def _find_active_rate_plan(self, origin_region, dest_region, equipment, shipment_type, today):
-        """Find an active, effective Rate Plan for an exact ordered lane."""
+        """Find the active, effective Rate Plan for an exact ordered lane.
+        Returns None if zero or multiple offerings match."""
         Lane = self.env["logistics.lane"]
         lane = Lane.search([
             ("origin_region_id", "=", origin_region.id),
@@ -69,24 +89,22 @@ class RouteResolver:
         if not lane:
             return None, None
 
-        # Equipment capability
-        if equipment == "reefer" and not getattr(lane, "reefer_supported", True):
+        # Equipment capability: reefer needs reefer_supported
+        if equipment == "reefer" and not getattr(lane, "reefer_supported", False):
             return lane, None
         if shipment_type == "ltl" and not lane.ltl_capable:
             return lane, None
         if shipment_type == "ftl" and not lane.ftl_capable:
             return lane, None
 
-        # Find active offering (dry temperature only — reefer same base price)
-        Offering = self.env["logistics.service.offering"]
-        offering = Offering.search([
-            ("lane_id", "=", lane.id),
-            ("active", "=", True),
-            ("temperature_mode", "=", "dry"),
-        ], limit=1)
-        if not offering:
+        offerings = self._find_offerings(lane, shipment_type, today)
+        if not offerings:
+            return lane, None
+        if len(offerings) > 1:
+            _logger.warning("Lane %s: %d offerings match — ambiguous, returning request_quote", lane.id, len(offerings))
             return lane, None
 
+        offering = offerings[0]
         RatePlan = self.env["logistics.rate.plan"]
         rate_plan = RatePlan.search([
             ("service_offering_id", "=", offering.id),
@@ -118,21 +136,16 @@ class RouteResolver:
         cr = CustomerRate.search(domain + [("lane_id", "=", lane.id)], limit=1)
         if not cr:
             return None
-
         if cr.override_rate_plan_id:
             rp = cr.override_rate_plan_id
-            # Validate override belongs to this exact lane
             if rp.lane_id != lane or not rp.active:
-                _logger.warning("Customer rate %s override plan %s invalid for lane %s", cr.id, rp.id, lane.id)
                 return None
-            # Validate effective dates
             if rp.effective_from and rp.effective_from > today:
                 return None
             if rp.effective_to and rp.effective_to < today:
                 return None
         else:
             _, rp = self._find_active_rate_plan(pu_region, del_region, equipment, shipment_type, today)
-
         if not rp:
             return None
 
@@ -141,13 +154,7 @@ class RouteResolver:
         lines, total = svc._compute_price(rp, pallets, "dry", weight_lbs=weight_lbs)
         if cr.discount_pct:
             total = total * (1.0 - cr.discount_pct / 100.0)
-
-        return ResolvedRoute(True, None, [{
-            "lane": lane, "rate_plan": rp,
-            "origin_region": pu_region.code, "dest_region": del_region.code,
-            "price": total, "price_lines": lines,
-            "customer_rate_applied": True, "discount_pct": cr.discount_pct,
-        }], pallets, weight_lbs)
+        return ResolvedRoute(True, None, [self._leg_dict(lane, rp, pu_region.code, del_region.code, total, lines, True, cr.discount_pct)], pallets, weight_lbs)
 
     # ── Direct lane ────────────────────────────────────────────────────
 
@@ -158,12 +165,7 @@ class RouteResolver:
         from ..services.pricing_service import PricingService
         svc = PricingService(self.env)
         lines, total = svc._compute_price(rate_plan, pallets, "dry", weight_lbs=weight_lbs)
-        return ResolvedRoute(True, None, [{
-            "lane": lane, "rate_plan": rate_plan,
-            "origin_region": pu_region.code, "dest_region": del_region.code,
-            "price": total, "price_lines": lines,
-            "customer_rate_applied": False, "discount_pct": 0.0,
-        }], pallets, weight_lbs)
+        return ResolvedRoute(True, None, [self._leg_dict(lane, rate_plan, pu_region.code, del_region.code, total, lines, False, 0.0)], pallets, weight_lbs)
 
     # ── Hub transfer ───────────────────────────────────────────────────
 
@@ -172,11 +174,8 @@ class RouteResolver:
         hub = Hub.search([("is_default", "=", True), ("active", "=", True)], limit=1)
         if not hub:
             return None
-
-        # Use explicit canonical_region_id field — never guess
         hub_region = hub.canonical_region_id
         if not hub_region:
-            _logger.warning("Hub %s has no canonical_region_id — cannot route transfer", hub.code)
             return None
         if pu_region == hub_region or del_region == hub_region:
             return None
@@ -192,14 +191,16 @@ class RouteResolver:
         svc = PricingService(self.env)
         lines1, total1 = svc._compute_price(leg1_rp, pallets, "dry", weight_lbs=weight_lbs)
         lines2, total2 = svc._compute_price(leg2_rp, pallets, "dry", weight_lbs=weight_lbs)
-
         return ResolvedRoute(True, None, [
-            {"lane": leg1_lane, "rate_plan": leg1_rp,
-             "origin_region": pu_region.code, "dest_region": hub_region.code,
-             "price": total1, "price_lines": lines1,
-             "customer_rate_applied": False, "discount_pct": 0.0},
-            {"lane": leg2_lane, "rate_plan": leg2_rp,
-             "origin_region": hub_region.code, "dest_region": del_region.code,
-             "price": total2, "price_lines": lines2,
-             "customer_rate_applied": False, "discount_pct": 0.0},
+            self._leg_dict(leg1_lane, leg1_rp, pu_region.code, hub_region.code, total1, lines1, False, 0.0),
+            self._leg_dict(leg2_lane, leg2_rp, hub_region.code, del_region.code, total2, lines2, False, 0.0),
         ], pallets, weight_lbs)
+
+    @staticmethod
+    def _leg_dict(lane, rp, origin, dest, price, lines, cr_applied, discount):
+        return {
+            "lane": lane, "rate_plan": rp,
+            "origin_region": origin, "dest_region": dest,
+            "price": price, "price_lines": lines,
+            "customer_rate_applied": cr_applied, "discount_pct": discount,
+        }

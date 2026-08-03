@@ -8,3 +8,4 @@ from . import test_v3_architecture
 from . import test_v4_validation
 from . import test_feature_branch
 from . import test_ordered_lane_pricing
+from . import test_pricing_integration

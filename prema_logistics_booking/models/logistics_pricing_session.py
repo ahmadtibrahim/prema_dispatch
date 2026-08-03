@@ -39,6 +39,8 @@ class LogisticsPricingSession(models.TransientModel):
     delivery_date_estimate = fields.Date()
 
     price_snapshot = fields.Json()
+    route_snapshot = fields.Json(string="Route Snapshot",
+        help="Immutable route details: legs, rate plans, prices, origin/destination regions.")
     calculated_price = fields.Float()
 
     state = fields.Selection(

@@ -105,6 +105,8 @@ class LogisticsBooking(models.Model):
 
     calculated_price = fields.Float(readonly=True)
     price_snapshot = fields.Json(readonly=True)
+    route_snapshot = fields.Json(readonly=True, string="Route Snapshot",
+        help="Immutable route details frozen at confirmation: legs, rate plans, prices.")
     cost_snapshot = fields.Json(readonly=True, help="Frozen cost breakdown from Prema AI Estimator at confirmation time.")
     estimated_cost = fields.Float(readonly=True, help="Total estimated cost from Prema AI Estimator.")
     calculated_margin = fields.Float(readonly=True, compute="_compute_margin", store=True)

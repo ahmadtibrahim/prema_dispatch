@@ -59,12 +59,14 @@ class PricingService:
         if pallets > 12:
             return PricingResult(False, reason="pallets_exceed_standard_capacity")
 
-        # Route through the ordered-lane resolver
-        from .route_resolver import RouteResolver
+        # Normalize equipment: chilled/frozen → reefer for capability check
+        from .route_resolver import RouteResolver, LEGACY_CHILLED_FROZEN
+        equipment = "reefer" if temperature_mode in LEGACY_CHILLED_FROZEN else (temperature_mode or "dry")
         resolver = RouteResolver(self.env)
         route = resolver.resolve(
             pickup_fsa, delivery_fsa, pallets, weight_lbs,
-            equipment=temperature_mode or "dry", partner=partner,
+            equipment=equipment, partner=partner,
+            shipment_type=shipment_type, reference_dt=reference_dt,
         )
 
         if not route.available:
