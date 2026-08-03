@@ -86,6 +86,18 @@ class LogisticsBooking(models.Model):
     pickup_date = fields.Date()
     estimated_delivery_date = fields.Date()
 
+    # ── Phase 3: Canonical service selections ────────────────────────
+    service_mode = fields.Selection([
+        ("dedicated", "Dedicated"), ("expedited", "Expedited"),
+    ], default="dedicated", required=True, string="Service Mode")
+    load_type = fields.Selection([
+        ("ltl", "LTL"), ("ftl", "FTL"),
+    ], default="ltl", required=True, string="Load Type")
+    equipment_requirement = fields.Selection([
+        ("dry", "Dry"), ("reefer", "Reefer"),
+    ], default="dry", required=True, string="Equipment")
+
+    # Legacy fields — kept for migration compatibility
     shipment_type = fields.Selection(SHIPMENT_TYPE_SELECTION, required=True)
     temperature_mode = fields.Selection(TEMPERATURE_MODE_SELECTION, required=True)
     pallets = fields.Integer(required=True)
