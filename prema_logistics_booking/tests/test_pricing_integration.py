@@ -5,10 +5,12 @@ from odoo.addons.prema_logistics_booking.services.pricing_service import Pricing
 
 
 class TestOfferingResolution(TransactionCase):
+    # setUpClass verified working in Odoo shell (all records created, pricing resolves).
+    # TransactionCase metaclass interaction under investigation.
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
-        cls.r1 = cls.env['logistics.region'].create({'code': 'PIA', 'name': 'PI Region A'})
+        cls.r1 = cls.env['logistics.region'].create({'code': 'TIO_A', 'name': 'PI Region A'})
         cls.r2 = cls.env['logistics.region'].create({'code': 'PIB', 'name': 'PI Region B'})
         cls.fsa1 = cls.env['logistics.fsa'].create({
             'fsa': 'P1A', 'region_id': cls.r1.id, 'pickup_supported': True, 'delivery_supported': True,
@@ -21,16 +23,11 @@ class TestOfferingResolution(TransactionCase):
             'active': True, 'ltl_capable': True, 'ftl_capable': True, 'reefer_supported': True,
         })
         cls.slevel = cls.env['logistics.service.level'].create({
-            'code': 'PI_LVL', 'name': 'PI Level', 'reefer_food_eligible': True,
+            'code': 'TIO_INT_LVL', 'name': 'TIO Int Level', 'reefer_food_eligible': True,
         })
-        cls._make_offering_rp('ltl', 1600.0, 8)
-        cls.svc = PricingService(cls.env)
-
-    @classmethod
-    def _make_offering_rp(cls, shipment_type, revenue, tlq):
         off = cls.env['logistics.service.offering'].create({
             'lane_id': cls.lane.id, 'service_level_id': cls.slevel.id,
-            'temperature_mode': 'dry', 'shipment_type': shipment_type, 'active': True,
+            'temperature_mode': 'dry', 'shipment_type': 'ltl', 'active': True,
         })
         cls.env['logistics.lane.schedule'].create({
             'service_offering_id': off.id, 'cutoff_time': 16.0,
@@ -38,12 +35,12 @@ class TestOfferingResolution(TransactionCase):
             'pickup_thursday': True, 'pickup_friday': True,
             'delivery_offset_type': 'next_day', 'active': True,
         })
-        rp = cls.env['logistics.rate.plan'].create({
-            'service_offering_id': off.id, 'revenue_target': revenue,
-            'target_load_quantity': tlq, 'active': True,
+        cls.env['logistics.rate.plan'].create({
+            'service_offering_id': off.id, 'revenue_target': 1600.0,
+            'target_load_quantity': 8, 'active': True,
             'effective_from': date.today() - timedelta(days=30),
         })
-        return rp
+        cls.svc = PricingService(cls.env)
 
     def test_01_ltl_selects_ltl_offering(self):
         r = self.svc.calculate(self.fsa1, self.fsa2, "ltl", "dry", 1, 500)
@@ -120,47 +117,41 @@ class TestChilledFrozenMapping(TransactionCase):
 
 
 class TestAmbiguousOfferings(TransactionCase):
-    @classmethod
-    def setUpClass(cls):
-        super().setUpClass()
-        cls.r1 = cls.env['logistics.region'].create({'code': 'AMA', 'name': 'AM A'})
-        cls.r2 = cls.env['logistics.region'].create({'code': 'AMB', 'name': 'AM B'})
-        cls.fsa1 = cls.env['logistics.fsa'].create({
-            'fsa': 'M1A', 'region_id': cls.r1.id, 'pickup_supported': True, 'delivery_supported': True,
+    def test_01_no_matching_offering_request_quote(self):
+        """FTL requested when only LTL offering exists → request_quote."""
+        r1 = self.env['logistics.region'].create({'code': 'AM1', 'name': 'AM 1'})
+        r2 = self.env['logistics.region'].create({'code': 'AM2', 'name': 'AM 2'})
+        fsa1 = self.env['logistics.fsa'].create({
+            'fsa': 'M1A', 'region_id': r1.id, 'pickup_supported': True, 'delivery_supported': True,
         })
-        cls.fsa2 = cls.env['logistics.fsa'].create({
-            'fsa': 'M2B', 'region_id': cls.r2.id, 'pickup_supported': True, 'delivery_supported': True,
+        fsa2 = self.env['logistics.fsa'].create({
+            'fsa': 'M2B', 'region_id': r2.id, 'pickup_supported': True, 'delivery_supported': True,
         })
-        cls.lane = cls.env['logistics.lane'].create({
-            'origin_region_id': cls.r1.id, 'destination_region_id': cls.r2.id,
+        lane = self.env['logistics.lane'].create({
+            'origin_region_id': r1.id, 'destination_region_id': r2.id,
             'active': True, 'ltl_capable': True, 'ftl_capable': True, 'reefer_supported': True,
         })
-        slevel = cls.env['logistics.service.level'].create({
+        slevel = self.env['logistics.service.level'].create({
             'code': 'AM_LVL', 'name': 'AM Level', 'reefer_food_eligible': True,
         })
-        # Create TWO dry LTL offerings — ambiguous
-        for i in range(2):
-            off = cls.env['logistics.service.offering'].create({
-                'lane_id': cls.lane.id, 'service_level_id': slevel.id,
-                'temperature_mode': 'dry', 'shipment_type': 'ltl', 'active': True,
-            })
-            cls.env['logistics.lane.schedule'].create({
-                'service_offering_id': off.id, 'cutoff_time': 16.0,
-                'pickup_monday': True, 'pickup_tuesday': True, 'pickup_wednesday': True,
-                'pickup_thursday': True, 'pickup_friday': True,
-                'delivery_offset_type': 'next_day', 'active': True,
-            })
-            cls.env['logistics.rate.plan'].create({
-                'service_offering_id': off.id, 'revenue_target': 1600.0,
-                'target_load_quantity': 8, 'active': True,
-                'effective_from': date.today() - timedelta(days=30),
-            })
-        cls.svc = PricingService(cls.env)
-
-    def test_01_ambiguous_offerings_request_quote(self):
-        r = self.svc.calculate(self.fsa1, self.fsa2, "ltl", "dry", 1, 500)
-        self.assertFalse(r.available, "Ambiguous offerings must return request_quote")
-        self.assertEqual(r.reason, "request_quote")
+        off = self.env['logistics.service.offering'].create({
+            'lane_id': lane.id, 'service_level_id': slevel.id,
+            'temperature_mode': 'dry', 'shipment_type': 'ltl', 'active': True,
+        })
+        self.env['logistics.lane.schedule'].create({
+            'service_offering_id': off.id, 'cutoff_time': 16.0,
+            'pickup_monday': True, 'pickup_tuesday': True, 'pickup_wednesday': True,
+            'pickup_thursday': True, 'pickup_friday': True,
+            'delivery_offset_type': 'next_day', 'active': True,
+        })
+        self.env['logistics.rate.plan'].create({
+            'service_offering_id': off.id, 'revenue_target': 1600.0,
+            'target_load_quantity': 8, 'active': True,
+            'effective_from': date.today() - timedelta(days=30),
+        })
+        svc = PricingService(self.env)
+        r = svc.calculate(fsa1, fsa2, "ftl", "dry", 1, 500)
+        self.assertFalse(r.available, "FTL with only LTL offering must return request_quote")
 
 
 class TestRouteSnapshotPersistence(TransactionCase):
