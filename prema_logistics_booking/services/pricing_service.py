@@ -203,7 +203,7 @@ class PricingService:
             "rate_plan_id": rate_plan.id,
             "rate_plan_name": rate_plan.name,
             "revenue_target": rate_plan.revenue_target,
-            "target_load_quantity": v["tlq"],
+            "target_load_quantity": v["planned_pallets"],
             "base_rate_per_pallet": round(v["base_rate"], 4),
             "pallets": pallets,
             "leg_base_charge": round(v["leg_base"], 2),

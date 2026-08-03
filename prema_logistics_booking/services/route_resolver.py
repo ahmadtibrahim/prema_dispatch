@@ -36,8 +36,7 @@ class RouteResolver:
         del_region = delivery_fsa.region_id
         if not pu_region or not del_region:
             return ResolvedRoute(False, "fsa_not_mapped_to_region", [], pallets, weight_lbs)
-        if pallets > 12:
-            return ResolvedRoute(False, "pallets_exceed_standard_capacity", [], pallets, weight_lbs)
+        # Capacity evaluated against departure vehicle, not hardcoded number
 
         today = reference_dt.date() if reference_dt else date.today()
 
@@ -71,7 +70,6 @@ class RouteResolver:
         domain = [
             ("lane_id", "=", lane.id),
             ("active", "=", True),
-            ("temperature_mode", "=", "dry"),
         ]
         offerings = self.env["logistics.service.offering"].search(domain)
         # Filter by shipment type
