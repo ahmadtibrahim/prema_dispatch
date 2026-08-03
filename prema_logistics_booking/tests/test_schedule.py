@@ -21,7 +21,7 @@ class TestSchedule(TransactionCase):
         r2 = cls.Region.create({"code": "S2", "name": "Sched Region 2"})
         lane = cls.Lane.create({"origin_region_id": r1.id, "destination_region_id": r2.id, "active": True, "ltl_capable": True, "ftl_capable": True})
         slevel = cls.SLevel.create({"code": "SCHED_TEST", "name": "Schedule Test", "reefer_food_eligible": True})
-        cls.offering = cls.SOffering.create({"lane_id": lane.id, "service_level_id": slevel.id, "temperature_mode": "dry", "shipment_type": "both"})
+        cls.offering = cls.SOffering.create({"lane_id": lane.id, "service_level_id": slevel.id, "temperature_mode": "dry", "shipment_type": "ltl"})
 
     def test_01_next_weekday_pickup(self):
         """Schedule returns next available weekday pickup."""

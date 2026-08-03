@@ -58,9 +58,9 @@
                             </div>
                         </group>
                         <group>
-                            <field name="truck_capacity" readonly="1" string="Auto-Booking Max Pallets"/>
                             <div class="text-muted small">
-                                1–12: Straight | 13: Pin-wheel
+                                Physical truck capacity is resolved from the assigned vehicle
+                                at booking time — not stored on the Rate Plan.
                             </div>
                         </group>
                     </group>

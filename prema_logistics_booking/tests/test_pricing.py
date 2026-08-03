@@ -41,7 +41,7 @@ class TestPricing(TransactionCase):
             })
         # Equipment profile linked to operational vehicle
         EquipProfile = cls.env["logistics.equipment.profile"]
-        cls.equipment = EquipProfile.search([("fleet_vehicle_id", "=", cls.vehicle.id)], limit=1)
+        cls.equipment = EquipProfile.with_context(active_test=False).search([("fleet_vehicle_id", "=", cls.vehicle.id)], limit=1)
         if not cls.equipment:
             cls.equipment = EquipProfile.create({
                 "name": "TEST-V3-Equip-Profile",
@@ -80,7 +80,7 @@ class TestPricing(TransactionCase):
         # Offering
         cls.offering = cls.SOffering.create({
             "lane_id": cls.lane.id, "service_level_id": cls.slevel.id,
-            "temperature_mode": "dry", "shipment_type": "both",
+            "temperature_mode": "dry", "shipment_type": "ltl",
         })
 
         # Schedule

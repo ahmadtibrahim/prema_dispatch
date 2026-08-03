@@ -4,7 +4,7 @@ from odoo.exceptions import UserError
 from ..services.pricing_service import PricingService
 
 SHIPMENT_TYPES = [("ltl", "LTL"), ("ftl", "FTL")]
-TEMP_MODES = [("dry", "Dry"), ("chilled", "Chilled"), ("frozen", "Frozen")]
+TEMP_MODES = [("dry", "Dry"), ("reefer", "Reefer")]
 
 
 class LogisticsPhoneBooking(models.TransientModel):
@@ -26,6 +26,10 @@ class LogisticsPhoneBooking(models.TransientModel):
     pallets = fields.Integer(default=1, required=True)
     weight_lbs = fields.Float(string="Weight (lbs)", default=800.0)
     temperature_mode = fields.Selection(TEMP_MODES, default="dry", required=True)
+    required_temperature_c = fields.Float(
+        string="Required Temperature °C",
+        help="Required for Reefer bookings. 0°C is a valid value.",
+    )
     shipment_type = fields.Selection(SHIPMENT_TYPES, default="ltl")
     liftgate_pickup = fields.Boolean()
     liftgate_delivery = fields.Boolean()
@@ -54,6 +58,7 @@ class LogisticsPhoneBooking(models.TransientModel):
             pickup_fsa, delivery_fsa, self.shipment_type, self.temperature_mode,
             self.pallets, self.weight_lbs, self.liftgate_pickup, self.liftgate_delivery,
             self.appointment, self.residential, partner=self.partner_id,
+            required_temperature_c=self.required_temperature_c if self.temperature_mode == "reefer" else None,
         )
 
         if not result.available:
@@ -119,7 +124,9 @@ class LogisticsPhoneBooking(models.TransientModel):
             }],
             "pallets": self.pallets,
             "weight_lbs": self.weight_lbs,
-            "equipment_type": "reefer" if self.temperature_mode in ("reefer", "chilled", "frozen") else "dry",
+            "load_type": self.shipment_type,
+            "equipment_type": self.temperature_mode,
+            "required_temperature_c": self.required_temperature_c if self.temperature_mode == "reefer" else None,
             "pricing_method": "rate_plan",
             "liftgate_pickup": self.liftgate_pickup,
             "liftgate_delivery": self.liftgate_delivery,

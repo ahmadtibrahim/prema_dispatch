@@ -1,4 +1,4 @@
-from odoo import api, fields, models
+from odoo import _, api, fields, models
 
 QUOTE_STATE = [
     ("new", "New"),
@@ -32,8 +32,19 @@ class LogisticsCustomQuote(models.Model):
     pallets = fields.Integer(default=1)
     weight_lbs = fields.Float(string="Weight (lbs)")
     temperature_mode = fields.Selection(
-        [("dry", "Dry"), ("chilled", "Chilled"), ("frozen", "Frozen")],
+        [("dry", "Dry"), ("reefer", "Reefer")],
         default="dry",
+    )
+    required_temperature_c = fields.Float(
+        string="Required Temperature °C",
+        help="Required for Reefer quotes. 0°C is a valid value.",
+    )
+    load_type = fields.Selection([("ltl", "LTL"), ("ftl", "FTL")], default="ltl")
+    departure_id = fields.Many2one(
+        "logistics.corridor.departure", string="Assigned Departure",
+        help="Exact truck departure this quote will ride on when converted "
+             "to a booking. Required to convert — a custom quote has no "
+             "automated Rate Plan route to resolve one from.",
     )
     commodity = fields.Char(string="Commodity")
     requested_pickup_date = fields.Date(string="Requested Pickup")
@@ -90,6 +101,7 @@ class LogisticsCustomQuote(models.Model):
         BookingOrchestrationService. Idempotent — returns existing booking
         if already converted."""
         self.ensure_one()
+        from odoo.exceptions import UserError
         if not self.quoted_price:
             return
 
@@ -97,62 +109,43 @@ class LogisticsCustomQuote(models.Model):
         if self.booking_id:
             return
 
-        try:
-            from ..services.booking_orchestration_service import BookingOrchestrationService
-            svc = BookingOrchestrationService(self.env)
+        if not self.departure_id:
+            raise UserError(_(
+                "Assign an exact departure before converting this custom "
+                "quote to a booking — a custom quote has no automated route "
+                "to resolve one from, and a booking may never be confirmed "
+                "without a real, capacity-validated departure."
+            ))
 
-            norm = svc.normalize_request({
-                "partner_id": self.partner_id.id,
-                "pickup_stops": [{
-                    "postal_code": self.resolved_fsa_pickup or "",
-                    "formatted_address": self.pickup_address or "",
-                }],
-                "delivery_stops": [{
-                    "postal_code": self.resolved_fsa_delivery or "",
-                    "formatted_address": self.delivery_address or "",
-                }],
-                "pallets": self.pallets,
-                "weight_lbs": self.weight_lbs,
-                "commodity": self.commodity or "",
-                "equipment_type": "reefer" if self.temperature_mode in ("reefer", "chilled", "frozen") else "dry",
-                "pricing_method": "manual",
-                "agreed_rate": self.quoted_price,
-                "custom_quote_id": self.id,
-                "idempotency_key": f"custom_quote:{self.id}",
-            }, source_channel="custom_quote")
+        from ..services.booking_orchestration_service import BookingOrchestrationService
+        svc = BookingOrchestrationService(self.env)
 
-            booking = svc.confirm_from_internal(norm, skip_invoice=False)
-            self.booking_id = booking.id
-            self.state = "converted"
-        except ImportError:
-            # Fallback for when orchestration service is not available
-            booking = self.env["logistics.booking"].sudo().create({
-                "partner_id": self.partner_id.id,
-                "pickup_address": self.pickup_address or "",
-                "delivery_address": self.delivery_address or "",
-                "pickup_fsa_id": self.env["logistics.fsa"].search(
-                    [("fsa", "=", self.resolved_fsa_pickup)], limit=1).id or False,
-                "delivery_fsa_id": self.env["logistics.fsa"].search(
-                    [("fsa", "=", self.resolved_fsa_delivery)], limit=1).id or False,
-                "calculated_price": self.quoted_price,
-                "pallets": self.pallets,
-                "weight_lbs": self.weight_lbs,
-                "temperature_mode": self.temperature_mode,
-                "shipment_type": "ltl",
-                "state": "confirmed",
-                "source_channel": "custom_quote",
-                "idempotency_key": f"custom_quote:{self.id}",
-                "line_ids": [(0, 0, {
-                    "description": self.commodity or "Custom Quote Shipment",
-                    "pallets": self.pallets,
-                    "weight_lbs": self.weight_lbs,
-                })],
-            })
-            booking._apply_tax_decision()
-            booking._create_dispatch_job()
-            booking._create_draft_invoice()
-            self.booking_id = booking.id
-            self.state = "converted"
+        norm = svc.normalize_request({
+            "partner_id": self.partner_id.id,
+            "pickup_stops": [{
+                "postal_code": self.resolved_fsa_pickup or "",
+                "formatted_address": self.pickup_address or "",
+            }],
+            "delivery_stops": [{
+                "postal_code": self.resolved_fsa_delivery or "",
+                "formatted_address": self.delivery_address or "",
+            }],
+            "pallets": self.pallets,
+            "weight_lbs": self.weight_lbs,
+            "commodity": self.commodity or "",
+            "load_type": self.load_type,
+            "equipment_type": self.temperature_mode,
+            "required_temperature_c": self.required_temperature_c if self.temperature_mode == "reefer" else None,
+            "pricing_method": "manual",
+            "agreed_rate": self.quoted_price,
+            "departure_id": self.departure_id.id,
+            "custom_quote_id": self.id,
+            "idempotency_key": f"custom_quote:{self.id}",
+        }, source_channel="custom_quote")
+
+        booking = svc.confirm_from_internal(norm, skip_invoice=False)
+        self.booking_id = booking.id
+        self.state = "converted"
 
     def action_open_estimator(self):
         self.ensure_one()

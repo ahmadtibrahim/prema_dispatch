@@ -127,7 +127,7 @@ class LogisticsBookingPortal(http.Controller):
         result = PricingService(request.env).calculate(
             pickup_fsa, delivery_fsa, shipment_type, temperature_mode, pallets, weight_lbs,
             liftgate_pickup, liftgate_delivery, appointment, residential, same_day_requested,
-            partner=partner,
+            partner=partner, resolve_departures=True,
         )
 
         if not result.available:

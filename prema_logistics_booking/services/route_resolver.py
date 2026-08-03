@@ -3,6 +3,8 @@ import logging
 from collections import namedtuple
 from datetime import date
 
+from .temperature_compat import to_canonical_temperature_mode, DRY, REEFER
+
 _logger = logging.getLogger(__name__)
 
 ResolvedRoute = namedtuple("ResolvedRoute", [
@@ -10,7 +12,9 @@ ResolvedRoute = namedtuple("ResolvedRoute", [
 ])
 
 VALID_SHIPMENT_TYPES = {"ltl", "ftl"}
-VALID_EQUIPMENT = {"dry", "reefer"}
+VALID_EQUIPMENT = {DRY, REEFER}
+# Deprecated alias — kept only so any lingering external import doesn't
+# hard-crash. New code must use temperature_compat.to_canonical_temperature_mode.
 LEGACY_CHILLED_FROZEN = {"chilled", "frozen"}
 
 
@@ -40,8 +44,8 @@ class RouteResolver:
 
         today = reference_dt.date() if reference_dt else date.today()
 
-        # Chilled/Frozen → Reefer for capability checking
-        equip_check = "reefer" if equipment in LEGACY_CHILLED_FROZEN else equipment
+        # Chilled/Frozen → Reefer for capability checking (canonical adapter)
+        equip_check = to_canonical_temperature_mode(equipment)
 
         # 1. Customer-specific
         if partner:

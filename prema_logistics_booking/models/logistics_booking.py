@@ -223,116 +223,35 @@ class LogisticsBooking(models.Model):
     # ── Booking Legs from Route Snapshot ──────────────────────────────
     # ------------------------------------------------------------------
 
-    def _create_booking_legs_from_snapshot(self):
-        """Create stops then legs from route_snapshot. Atomic — all or nothing."""
+    def _create_stops_from_address_vals(self, address_vals):
+        """Create the real pickup/delivery stops for the portal single-pickup/
+        single-delivery flow. Never a fabricated "Pickup Location" placeholder."""
         self.ensure_one()
-        snap = self.route_snapshot
-        if not snap or not snap.get("legs"):
-            return self.env["logistics.booking.leg"]  # No snapshot — skip leg creation
-
-        # Determine currency from snapshot or rate plan
-        rp_id = snap["legs"][0].get("rate_plan_id", 0)
-        rp = self.env["logistics.rate.plan"].sudo().browse(rp_id) if rp_id else None
-        currency = rp.currency_id if rp and rp.currency_id else self.env.company.currency_id
-
-        legs = self.env["logistics.booking.leg"]
-        stops = self.stop_ids
-        Leg = self.env["logistics.booking.leg"].sudo()
-        Stop = self.env["logistics.booking.stop"].sudo()
-
-        # Find or create pickup and delivery stops
-        pickup_stop = stops.filtered(lambda s: s.stop_type == "pickup")[:1]
-        delivery_stop = stops.filtered(lambda s: s.stop_type == "delivery")[:1]
-        if not pickup_stop:
-            pickup_stop = Stop.create({
-                "booking_id": self.id, "sequence": 10, "stop_type": "pickup",
-                "company_name": "Pickup", "street": "Pickup Location",
-                "city": snap["legs"][0].get("origin_region", ""),
-            })
-        if not delivery_stop:
-            delivery_stop = Stop.create({
-                "booking_id": self.id, "sequence": 90, "stop_type": "delivery",
-                "company_name": "Delivery", "street": "Delivery Location",
-                "city": snap["legs"][-1].get("dest_region", ""),
-            })
-
-        is_multi = len(snap["legs"]) > 1
-
-        for i, leg_data in enumerate(snap["legs"]):
-            frozen_price = leg_data.get("price", 0.0)
-            if currency:
-                frozen_price = currency.round(frozen_price)
-
-            hub = False
-            if not is_multi:
-                origin = pickup_stop
-                dest = delivery_stop
-            elif i == 0:
-                # Leg 1: pickup → hub
-                hub = self.env["logistics.hub"].sudo().search([
-                    ("is_default", "=", True), ("active", "=", True),
-                ], limit=1)
-                if not hub or not hub.saved_location_id:
-                    raise UserError("Cannot create transfer legs: no hub with saved location")
-                hub_stop = Stop.create({
-                    "booking_id": self.id, "sequence": 50, "stop_type": "delivery",
-                    "company_name": hub.public_name,
-                    "street": hub.saved_location_id.street or hub.saved_location_id.address,
-                    "city": hub.saved_location_id.city or "",
-                    "saved_location_id": hub.saved_location_id.id,
-                })
-                origin = pickup_stop
-                dest = hub_stop
-            else:
-                # Leg 2: hub → delivery
-                hub_stop = stops.filtered(lambda s: s.saved_location_id == hub.saved_location_id)[:1]
-                if not hub_stop:
-                    hub_stop = Stop.create({
-                        "booking_id": self.id, "sequence": 50, "stop_type": "pickup",
-                        "company_name": hub.public_name,
-                        "street": hub.saved_location_id.street or hub.saved_location_id.address,
-                        "city": hub.saved_location_id.city or "",
-                        "saved_location_id": hub.saved_location_id.id,
-                    })
-                origin = hub_stop
-                dest = delivery_stop
-
-            origin_region = self.env["logistics.region"].sudo().search([
-                ("code", "=", leg_data.get("origin_region", "")),
-            ], limit=1)
-            dest_region = self.env["logistics.region"].sudo().search([
-                ("code", "=", leg_data.get("dest_region", "")),
-            ], limit=1)
-
-            leg = Leg.create({
-                "booking_id": self.id,
-                "sequence": (i + 1) * 10,
-                "origin_stop_id": origin.id,
-                "destination_stop_id": dest.id,
-                "pallets": snap.get("pallets", 0),
-                "weight_lbs": snap.get("weight_lbs", 0.0),
-                "lane_id": leg_data.get("lane_id", False),
-                "offering_id": leg_data.get("offering_id", False),
-                "rate_plan_id": leg_data.get("rate_plan_id", False),
-                "rate_plan_name": leg_data.get("rate_plan_name", "") or (rp.name if rp else ""),
-                "rate_plan_version": leg_data.get("rate_plan_version", 0) or (rp.version if rp else 0),
-                "currency_id": currency.id,
-                "frozen_leg_price": frozen_price,
-                "frozen_price_breakdown": leg_data.get("price_lines", []),
-                "origin_region_id": origin_region.id if origin_region else False,
-                "destination_region_id": dest_region.id if dest_region else False,
-                "transfer_hub_id": hub.id if hub else False,
-                "pickup_date": leg_data.get("pickup_date") or snap.get("pickup_date"),
-                "delivery_date": leg_data.get("delivery_date") or snap.get("delivery_date"),
-                "leg_type": "transfer" if is_multi else "direct",
-                "reservation_state": "reserved",
-                "status": "scheduled",
-            })
-            legs += leg
-
-        if is_multi:
-            self.is_multi_leg = True
-        return legs
+        from ..services.booking_orchestration_service import BookingOrchestrationService
+        svc = BookingOrchestrationService(self.env)
+        pickup_stops = [{
+            "company_name": address_vals.get("pickup_company", ""),
+            "street": address_vals.get("pickup_address", ""),
+            "postal_code": address_vals.get("pickup_postal_code", ""),
+            "contact_name": address_vals.get("pickup_contact_name", ""),
+            "phone": address_vals.get("pickup_phone", ""),
+            "instructions": address_vals.get("pickup_instructions", ""),
+            "pallet_count": self.pallets,
+            "weight_lb": self.weight_lbs,
+            "liftgate_required": self.liftgate_pickup,
+        }]
+        delivery_stops = [{
+            "company_name": address_vals.get("delivery_company", ""),
+            "street": address_vals.get("delivery_address", ""),
+            "postal_code": address_vals.get("delivery_postal_code", ""),
+            "contact_name": address_vals.get("delivery_contact_name", ""),
+            "phone": address_vals.get("delivery_phone", ""),
+            "instructions": address_vals.get("delivery_instructions", ""),
+            "pallet_count": self.pallets,
+            "weight_lb": self.weight_lbs,
+            "liftgate_required": self.liftgate_delivery,
+        }]
+        svc._create_booking_stops(self, pickup_stops, delivery_stops)
 
     # ------------------------------------------------------------------
     @api.model
@@ -414,6 +333,7 @@ class LogisticsBooking(models.Model):
             session.liftgate_pickup, session.liftgate_delivery,
             session.appointment, session.residential,
             session.same_day_requested, partner=user_partner,
+            required_temperature_c=session.required_temperature_c if session.temperature_mode == "reefer" else None,
         )
         if not verify.available:
             raise UserError(_(
@@ -457,11 +377,11 @@ class LogisticsBooking(models.Model):
             # Use session-stored values for pricing fields (immutable quote)
             "service_offering_id": session.service_offering_id.id,
             "rate_plan_id": session.rate_plan_id.id,
-            "equipment_profile_id": lane.equipment_profile_id.id or False,
             "pickup_date": session.pickup_date,
             "estimated_delivery_date": session.delivery_date_estimate,
             "shipment_type": session.shipment_type,
             "temperature_mode": session.temperature_mode,
+            "required_temperature_c": session.required_temperature_c,
             "pallets": session.pallets,
             "weight_lbs": session.weight_lbs,
             "liftgate_pickup": session.liftgate_pickup,
@@ -498,7 +418,9 @@ class LogisticsBooking(models.Model):
         try:
             with self.env.cr.savepoint():
                 booking = self.sudo().create(vals)
-                booking._create_booking_legs_from_snapshot()
+                booking._create_stops_from_address_vals(address_vals)
+                from ..services.booking_orchestration_service import BookingOrchestrationService
+                BookingOrchestrationService(self.env).create_legs_and_reserve(booking)
                 booking._apply_tax_decision()
                 booking._create_draft_invoice()
                 booking._create_dispatch_job()
@@ -565,7 +487,7 @@ class LogisticsBooking(models.Model):
         try:
             from odoo.addons.premafirm_ai_engine.services.pricing_engine import PricingEngine
             vehicle = self.env["fleet.vehicle"].sudo().search([
-                ("active", "=", True), ("equipment_profile_id", "!=", False),
+                ("active", "=", True), ("x_operational_logistics", "=", True),
             ], limit=1)
             if not vehicle:
                 return {"total_cost": 0.0, "breakdown": {"error": "no_vehicle_available"}}

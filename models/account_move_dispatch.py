@@ -467,6 +467,7 @@ class AccountMove(models.Model):
                 "po_number": self.ref or "",
                 "customer_reference": self.name or "",
                 "pricing_method": "imported_invoice",
+                "agreed_rate": self.amount_untaxed or self.amount_total,
                 "existing_invoice_id": self.id,
                 "idempotency_key": f"invoice:{self.id}",
             }, source_channel="invoice")

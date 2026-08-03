@@ -115,7 +115,9 @@ class LogisticsRequestQuote(http.Controller):
         except ValueError:
             pallets, weight_lbs = 1, 500.0
 
-        temperature_mode = kwargs.get("temperature_mode") or "dry"
+        from ..services.temperature_compat import to_canonical_temperature_mode, parse_required_temperature_c
+        temperature_mode = to_canonical_temperature_mode(kwargs.get("temperature_mode") or "dry")
+        required_temperature_c = parse_required_temperature_c(kwargs.get("required_temperature_c"))
         liftgate_pickup = bool(kwargs.get("liftgate_pickup"))
         liftgate_delivery = bool(kwargs.get("liftgate_delivery"))
         appointment = bool(kwargs.get("appointment"))
@@ -133,6 +135,7 @@ class LogisticsRequestQuote(http.Controller):
         for week_offset in range(3):  # current + next + one more
             availability = avail_svc.find_available_services(
                 pickup_fsa, delivery_fsa, pallets, weight_lbs, temperature_mode, week_offset,
+                required_temperature_c=required_temperature_c,
             )
             for opt in availability.options:
                 if opt.priority == "custom_quote":
@@ -181,6 +184,7 @@ class LogisticsRequestQuote(http.Controller):
             "pallets": pallets,
             "weight_lbs": weight_lbs,
             "temperature_mode": temperature_mode,
+            "required_temperature_c": required_temperature_c if required_temperature_c is not None else "",
             "liftgate_pickup": liftgate_pickup,
             "liftgate_delivery": liftgate_delivery,
             "appointment": appointment,
@@ -210,7 +214,9 @@ class LogisticsRequestQuote(http.Controller):
         except ValueError:
             pallets, weight_lbs = 1, 800.0
 
-        temperature_mode = kwargs.get("temperature_mode") or "dry"
+        from ..services.temperature_compat import to_canonical_temperature_mode, parse_required_temperature_c
+        temperature_mode = to_canonical_temperature_mode(kwargs.get("temperature_mode") or "dry")
+        required_temperature_c = parse_required_temperature_c(kwargs.get("required_temperature_c"))
         liftgate_pickup = bool(kwargs.get("liftgate_pickup"))
         liftgate_delivery = bool(kwargs.get("liftgate_delivery"))
         appointment = bool(kwargs.get("appointment"))
@@ -220,7 +226,8 @@ class LogisticsRequestQuote(http.Controller):
         result = PricingService(request.env).calculate(
             pickup_fsa, delivery_fsa, "ltl", temperature_mode, pallets, weight_lbs,
             liftgate_pickup, liftgate_delivery, appointment, residential,
-            partner=None,
+            partner=None, required_temperature_c=required_temperature_c,
+            resolve_departures=True,
         )
 
         if not result.available:
@@ -240,6 +247,7 @@ class LogisticsRequestQuote(http.Controller):
             "rate_plan_id": result.rate_plan.id,
             "shipment_type": "ltl",
             "temperature_mode": temperature_mode,
+            "required_temperature_c": required_temperature_c if required_temperature_c is not None else 0.0,
             "pallets": pallets,
             "weight_lbs": weight_lbs,
             "liftgate_pickup": liftgate_pickup,
@@ -249,6 +257,7 @@ class LogisticsRequestQuote(http.Controller):
             "same_day_requested": False,
             "pickup_date": result.pickup_date,
             "delivery_date_estimate": result.delivery_date_estimate,
+            "route_snapshot": result.route_snapshot,
             "price_snapshot": result.price_lines,
             "calculated_price": result.calculated_price,
             "expires_at": expires_at,

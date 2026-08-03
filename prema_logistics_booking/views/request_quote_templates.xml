@@ -98,12 +98,29 @@
 
                     <div class="mb-3">
                         <label class="form-label">Temperature</label>
-                        <select name="temperature_mode" class="form-select">
-                            <option value="dry">Ambient / No temperature control</option>
-                            <option value="chilled">Refrigerated (Chilled)</option>
-                            <option value="frozen">Frozen</option>
+                        <select name="temperature_mode" id="temperature_mode_select" class="form-select" onchange="toggleRequiredTemperature()">
+                            <option value="dry">Ambient / No temperature control (Dry)</option>
+                            <option value="reefer">Temperature Controlled (Reefer)</option>
                         </select>
                     </div>
+                    <div class="mb-3" id="required_temperature_row" style="display:none">
+                        <label class="form-label">Required Temperature (°C)</label>
+                        <input type="number" name="required_temperature_c" id="required_temperature_c_input"
+                               class="form-control" step="0.5"/>
+                        <div class="form-text">Required for Reefer shipments. 0°C is a valid setting.</div>
+                    </div>
+                    <script>
+                        function toggleRequiredTemperature() {
+                            var sel = document.getElementById('temperature_mode_select');
+                            var row = document.getElementById('required_temperature_row');
+                            var input = document.getElementById('required_temperature_c_input');
+                            if (sel &amp;&amp; row) {
+                                var isReefer = sel.value === 'reefer';
+                                row.style.display = isReefer ? '' : 'none';
+                                if (input) { input.required = isReefer; }
+                            }
+                        }
+                    </script>
 
                     <div class="row g-2 mb-3">
                         <div class="col-6">

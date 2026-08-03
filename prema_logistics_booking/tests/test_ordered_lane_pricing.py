@@ -61,7 +61,7 @@ class TestOrderedLanePricing(TransactionCase):
         def _make_rp(lane, revenue, tlq):
             offering = cls.env['logistics.service.offering'].create({
                 'lane_id': lane.id, 'service_level_id': slevel.id,
-                'temperature_mode': 'dry', 'shipment_type': 'both', 'active': True,
+                'temperature_mode': 'dry', 'shipment_type': 'ltl', 'active': True,
             })
             cls.env['logistics.lane.schedule'].create({
                 'service_offering_id': offering.id, 'cutoff_time': 16.0,

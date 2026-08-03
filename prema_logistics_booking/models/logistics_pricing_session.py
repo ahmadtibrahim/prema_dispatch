@@ -27,6 +27,10 @@ class LogisticsPricingSession(models.TransientModel):
 
     shipment_type = fields.Selection(SHIPMENT_TYPE_SELECTION, required=True, default="ltl")
     temperature_mode = fields.Selection(TEMPERATURE_MODE_SELECTION, required=True, default="dry")
+    required_temperature_c = fields.Float(
+        string="Required Temperature °C",
+        help="Numeric required temperature for Reefer quotes. 0.0 is a valid value.",
+    )
     pallets = fields.Integer(required=True)
     weight_lbs = fields.Float(required=True)
     liftgate_pickup = fields.Boolean()

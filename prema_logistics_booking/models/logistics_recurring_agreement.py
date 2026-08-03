@@ -35,7 +35,12 @@ class LogisticsRecurringAgreement(models.Model):
     pallets = fields.Integer(default=1, required=True)
     weight_lbs = fields.Float(string="Weight per Shipment (lbs)", default=500.0)
     temperature_mode = fields.Selection(
-        [("dry","Dry"),("chilled","Chilled"),("frozen","Frozen")], default="dry")
+        [("dry", "Dry"), ("reefer", "Reefer")], default="dry")
+    required_temperature_c = fields.Float(
+        string="Required Temperature °C",
+        help="Required for Reefer agreements. 0°C is a valid value.",
+    )
+    load_type = fields.Selection([("ltl", "LTL"), ("ftl", "FTL")], default="ltl")
     commodity = fields.Char()
 
     # Schedule
@@ -169,8 +174,9 @@ class LogisticsRecurringAgreement(models.Model):
         from ..services.pricing_service import PricingService
         result = PricingService(self.env).calculate(
             self.pickup_fsa_id, self.delivery_fsa_id,
-            "ltl", self.temperature_mode, self.pallets, self.weight_lbs,
+            self.load_type, self.temperature_mode, self.pallets, self.weight_lbs,
             partner=self.partner_id,
+            required_temperature_c=self.required_temperature_c if self.temperature_mode == "reefer" else None,
         )
         if result.available:
             self.rate_per_shipment = result.calculated_price
@@ -223,7 +229,12 @@ class LogisticsRecurringAgreement(models.Model):
                     }],
                     "pallets": agreement.pallets,
                     "weight_lbs": agreement.weight_lbs,
-                    "equipment_type": "reefer" if agreement.temperature_mode in ("reefer", "chilled", "frozen") else "dry",
+                    "load_type": agreement.load_type,
+                    "equipment_type": agreement.temperature_mode,
+                    "required_temperature_c": (
+                        agreement.required_temperature_c
+                        if agreement.temperature_mode == "reefer" else None
+                    ),
                     "requested_pickup_date": next_date,
                     "pricing_method": "rate_plan",
                     "recurring_agreement_id": agreement.id,

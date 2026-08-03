@@ -23,62 +23,62 @@ class LogisticsTestFixtures:
         env = cls.env
 
         # ── 1. Regions (R1-R10) ──────────────────────────────────────
-        cls.r1 = env["logistics.region"].search([("code", "=", "R1")], limit=1)
+        cls.r1 = env["logistics.region"].search([("code", "=", "ZR1")], limit=1)
         if not cls.r1:
-            cls.r1 = env["logistics.region"].create({"code": "R1", "name": "GTA Central", "hub_name": "Mississauga", "rate_per_km": 3.00})
-        cls.r6 = env["logistics.region"].search([("code", "=", "R6")], limit=1)
+            cls.r1 = env["logistics.region"].create({"code": "ZR1", "name": "GTA Central", "hub_name": "Mississauga", "rate_per_km": 3.00})
+        cls.r6 = env["logistics.region"].search([("code", "=", "ZR2")], limit=1)
         if not cls.r6:
-            cls.r6 = env["logistics.region"].create({"code": "R6", "name": "Eastern Ontario", "hub_name": "Kingston", "rate_per_km": 2.80})
-        cls.r7 = env["logistics.region"].search([("code", "=", "R7")], limit=1)
+            cls.r6 = env["logistics.region"].create({"code": "ZR2", "name": "Eastern Ontario", "hub_name": "Kingston", "rate_per_km": 2.80})
+        cls.r7 = env["logistics.region"].search([("code", "=", "ZR3")], limit=1)
         if not cls.r7:
-            cls.r7 = env["logistics.region"].create({"code": "R7", "name": "Ottawa Valley", "hub_name": "Ottawa", "rate_per_km": 2.80})
-        cls.r8 = env["logistics.region"].search([("code", "=", "R8")], limit=1)
+            cls.r7 = env["logistics.region"].create({"code": "ZR3", "name": "Ottawa Valley", "hub_name": "Ottawa", "rate_per_km": 2.80})
+        cls.r8 = env["logistics.region"].search([("code", "=", "ZR4")], limit=1)
         if not cls.r8:
-            cls.r8 = env["logistics.region"].create({"code": "R8", "name": "Greater Montreal", "hub_name": "Montreal", "rate_per_km": 2.80})
-        cls.r3 = env["logistics.region"].search([("code", "=", "R3")], limit=1)
+            cls.r8 = env["logistics.region"].create({"code": "ZR4", "name": "Greater Montreal", "hub_name": "Montreal", "rate_per_km": 2.80})
+        cls.r3 = env["logistics.region"].search([("code", "=", "ZR5")], limit=1)
         if not cls.r3:
-            cls.r3 = env["logistics.region"].create({"code": "R3", "name": "Golden Horseshoe South", "hub_name": "Hamilton", "rate_per_km": 3.00})
+            cls.r3 = env["logistics.region"].create({"code": "ZR5", "name": "Golden Horseshoe South", "hub_name": "Hamilton", "rate_per_km": 3.00})
 
         # ── 2. FSAs ──────────────────────────────────────────────────
-        cls.fsa_mississauga = env["logistics.fsa"].search([("fsa", "=", "L5M")], limit=1)
+        cls.fsa_mississauga = env["logistics.fsa"].search([("fsa", "=", "Z9Z")], limit=1)
         if not cls.fsa_mississauga:
             cls.fsa_mississauga = env["logistics.fsa"].create({
-                "fsa": "L5M", "province": "ON", "display_city": "Mississauga",
+                "fsa": "Z9Z", "province": "ON", "display_city": "Mississauga",
                 "region_id": cls.r1.id, "pickup_supported": True, "delivery_supported": True,
             })
-        cls.fsa_ottawa = env["logistics.fsa"].search([("fsa", "=", "K1G")], limit=1)
+        cls.fsa_ottawa = env["logistics.fsa"].search([("fsa", "=", "Z8Z")], limit=1)
         if not cls.fsa_ottawa:
             cls.fsa_ottawa = env["logistics.fsa"].create({
-                "fsa": "K1G", "province": "ON", "display_city": "Ottawa",
+                "fsa": "Z8Z", "province": "ON", "display_city": "Ottawa",
                 "region_id": cls.r7.id, "pickup_supported": True, "delivery_supported": True,
             })
-        cls.fsa_kingston = env["logistics.fsa"].search([("fsa", "=", "K7L")], limit=1)
+        cls.fsa_kingston = env["logistics.fsa"].search([("fsa", "=", "Z7Z")], limit=1)
         if not cls.fsa_kingston:
             cls.fsa_kingston = env["logistics.fsa"].create({
-                "fsa": "K7L", "province": "ON", "display_city": "Kingston",
+                "fsa": "Z7Z", "province": "ON", "display_city": "Kingston",
                 "region_id": cls.r6.id, "pickup_supported": True, "delivery_supported": True,
             })
-        cls.fsa_montreal = env["logistics.fsa"].search([("fsa", "=", "H1A")], limit=1)
+        cls.fsa_montreal = env["logistics.fsa"].search([("fsa", "=", "Z6Z")], limit=1)
         if not cls.fsa_montreal:
             cls.fsa_montreal = env["logistics.fsa"].create({
-                "fsa": "H1A", "province": "QC", "display_city": "Montreal",
+                "fsa": "Z6Z", "province": "QC", "display_city": "Montreal",
                 "region_id": cls.r8.id, "pickup_supported": True, "delivery_supported": True,
             })
-        cls.fsa_stcatharines = env["logistics.fsa"].search([("fsa", "=", "L2R")], limit=1)
+        cls.fsa_stcatharines = env["logistics.fsa"].search([("fsa", "=", "Z5Z")], limit=1)
         if not cls.fsa_stcatharines:
             cls.fsa_stcatharines = env["logistics.fsa"].create({
-                "fsa": "L2R", "province": "ON", "display_city": "St Catharines",
+                "fsa": "Z5Z", "province": "ON", "display_city": "St Catharines",
                 "region_id": cls.r3.id, "pickup_supported": True, "delivery_supported": True,
             })
-        cls.fsa_hamilton = env["logistics.fsa"].search([("fsa", "=", "L8P")], limit=1)
+        cls.fsa_hamilton = env["logistics.fsa"].search([("fsa", "=", "Z4Z")], limit=1)
         if not cls.fsa_hamilton:
             cls.fsa_hamilton = env["logistics.fsa"].create({
-                "fsa": "L8P", "province": "ON", "display_city": "Hamilton",
+                "fsa": "Z4Z", "province": "ON", "display_city": "Hamilton",
                 "region_id": cls.r3.id, "pickup_supported": True, "delivery_supported": True,
             })
 
         # ── 3. Equipment Profile ─────────────────────────────────────
-        cls.equipment = env["logistics.equipment.profile"].search([], limit=1)
+        cls.equipment = env["logistics.equipment.profile"].with_context(active_test=False).search([], limit=1)
         if not cls.equipment:
             cls.equipment = env["logistics.equipment.profile"].create({
                 "name": "Test 53ft Dry Van",

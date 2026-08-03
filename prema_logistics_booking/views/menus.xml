@@ -53,6 +53,7 @@
     <menuitem id="menu_v4_saved_locations" name="Saved Locations" parent="menu_v4_network" action="prema_dispatch.action_dispatch_locations" sequence="60"/>
 
     <menuitem id="menu_v4_lanes_pricing" name="Service Routes" parent="menu_v4_pricing" action="action_logistics_lane" sequence="10"/>
+    <menuitem id="menu_v4_rate_plans" name="Rate Plans" parent="menu_v4_pricing" action="action_logistics_rate_plan" sequence="15"/>
     <menuitem id="menu_v4_rate_sim" name="Rate Simulator" parent="menu_v4_pricing" action="action_logistics_rate_simulator" sequence="20"/>
     <menuitem id="menu_v4_customer_rates" name="Customer Contract Rates" parent="menu_v4_pricing" action="action_logistics_customer_rate" sequence="60"/>
 

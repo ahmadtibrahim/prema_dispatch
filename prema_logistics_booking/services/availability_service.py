@@ -19,6 +19,8 @@ import logging
 from zoneinfo import ZoneInfo
 from collections import defaultdict
 
+from .temperature_compat import to_canonical_temperature_mode, vehicle_accepts, REEFER
+
 _logger = logging.getLogger(__name__)
 
 BUSINESS_TZ = ZoneInfo("America/Toronto")
@@ -39,8 +41,8 @@ class DeliveryOption:
     """One bookable service option for a customer shipment."""
     def __init__(self, priority, delivery_date, pickup_date, price,
                  service_label="", routing_strategy="", route_run=None,
-                 departure=None, temperature_mode="dry", available_pallets=0,
-                 capacity_ok=True, reason=""):
+                 departure=None, transfer_departure=None, temperature_mode="dry",
+                 available_pallets=0, capacity_ok=True, reason=""):
         self.priority = priority
         self.delivery_date = delivery_date
         self.pickup_date = pickup_date
@@ -48,7 +50,9 @@ class DeliveryOption:
         self.service_label = service_label
         self.routing_strategy = routing_strategy
         self.route_run = route_run        # legacy — kept for request_quote controller compatibility
-        self.departure = departure        # V3 canonical
+        self.departure = departure        # V3 canonical — leg 1 (or the only leg, if direct)
+        self.transfer_departure = transfer_departure  # leg 2, only set for hub-transfer options
+        self.departure_ids = [d.id for d in (departure, transfer_departure) if d]
         self.temperature_mode = temperature_mode
         self.available_pallets = available_pallets
         self.capacity_ok = capacity_ok
@@ -68,12 +72,21 @@ class ScheduledAvailabilityService:
         self.env = env(su=True)
 
     def find_available_services(self, pickup_fsa, delivery_fsa, pallets, weight_lbs,
-                                 temperature_mode="dry", requested_week_offset=0):
+                                 temperature_mode="dry", requested_week_offset=0,
+                                 required_temperature_c=None):
         """Returns SchedulerAvailabilityResult with all bookable options."""
+        from .temperature_compat import to_canonical_temperature_mode, REEFER
+        temperature_mode = to_canonical_temperature_mode(temperature_mode)
         result = SchedulerAvailabilityResult()
+
+        if temperature_mode == REEFER and required_temperature_c is None:
+            # Reefer requires an explicit numeric temperature before any
+            # option can be considered available — same rule as PricingService.
+            return result
 
         if not pickup_fsa.region_id or not delivery_fsa.region_id:
             return result
+        self._required_temperature_c = required_temperature_c
 
         origin_code = pickup_fsa.region_id.code
         dest_code = delivery_fsa.region_id.code
@@ -176,18 +189,21 @@ class ScheduledAvailabilityService:
             dep_origin = dep.corridor_id.start_hub_id.code if dep.corridor_id.start_hub_id else ""
             dep_dest = dep.corridor_id.end_hub_id.code if dep.corridor_id.end_hub_id else ""
 
+            opt = None
             if origin_code == dep_origin and dest_code == dep_dest:
-                options.append(self._make_dep_option(
+                opt = self._make_dep_option(
                     "same_day_direct", today, today, dep, temp_mode,
                     pallets=pallets, weight_lbs=weight_lbs,
                     origin_code=origin_code, dest_code=dest_code,
-                ))
+                )
             elif self._dep_regions_in_corridor(origin_code, dest_code, dep):
-                options.append(self._make_dep_option(
+                opt = self._make_dep_option(
                     "same_day_en_route", today, today, dep, temp_mode,
                     pallets=pallets, weight_lbs=weight_lbs,
                     origin_code=origin_code, dest_code=dest_code,
-                ))
+                )
+            if opt:
+                options.append(opt)
 
         # Legacy fallback: only if no corridor departures exist at all
         if not options and not deps:
@@ -224,13 +240,16 @@ class ScheduledAvailabilityService:
             dest_matches = (dest_code == dep_dest or dest_code == dep_via)
             if origin_code == dep_origin and dest_matches:
                 pickup_date = dep_date  # hub origins ship same day
-                options.append(self._make_dep_option(
+                opt = self._make_dep_option(
                     "scheduled_current_week", dep_date, pickup_date, dep, temp_mode,
                     pallets=pallets, weight_lbs=weight_lbs,
                     origin_code=origin_code, dest_code=dest_code,
-                ))
+                )
+                if opt:
+                    options.append(opt)
 
-            # Hub-connected via R1
+            # Hub-connected via R1 — BOTH legs (out + in) must exist, have
+            # capacity, AND be priceable before this is offered as available.
             elif origin_code != "R1" and dest_code != "R1":
                 hub_dep_out = Departure.search([
                     ("departure_date", ">=", week_start), ("departure_date", "<=", week_end),
@@ -244,19 +263,31 @@ class ScheduledAvailabilityService:
                     ("corridor_id.end_hub_id.code", "=", dest_code),
                     ("status", "in", ("scheduled", "confirmed")), ("active", "=", True),
                 ], limit=1)
-                if hub_dep_out and hub_dep_in and hub_dep_out.departure_date <= hub_dep_in.departure_date:
+                if (
+                    hub_dep_out and hub_dep_in
+                    and hub_dep_out.departure_date <= hub_dep_in.departure_date
+                    and self._dep_has_capacity(hub_dep_out, pallets, weight_lbs)
+                    and self._dep_has_capacity(hub_dep_in, pallets, weight_lbs)
+                    and self._dep_temp_compatible(hub_dep_out, temp_mode)
+                    and self._dep_temp_compatible(hub_dep_in, temp_mode)
+                ):
                     already = any(o.pickup_date == hub_dep_out.departure_date and o.delivery_date == hub_dep_in.departure_date for o in options)
-                    if not already:
+                    price = self._estimate_price(origin_code, dest_code, pallets, weight_lbs, temp_mode)
+                    if not already and price is not None:
                         options.append(DeliveryOption(
                             priority="hub_connected_current_week",
                             delivery_date=hub_dep_in.departure_date,
                             pickup_date=hub_dep_out.departure_date,
-                            price=self._estimate_price(origin_code, dest_code, pallets, weight_lbs, temp_mode),
+                            price=price,
                             service_label=f"Scheduled LTL via Hub — Pickup {hub_dep_out.departure_date.strftime('%A %b %d')}, Delivery {hub_dep_in.departure_date.strftime('%A %b %d')}",
                             routing_strategy="hub_transfer",
-                            departure=hub_dep_in,
+                            departure=hub_dep_out,
+                            transfer_departure=hub_dep_in,
                             temperature_mode=temp_mode,
-                            available_pallets=hub_dep_in.max_capacity - (hub_dep_in.computed_peak_pallets or 0),
+                            available_pallets=min(
+                                hub_dep_out.max_capacity - (hub_dep_out.computed_peak_pallets or 0),
+                                hub_dep_in.max_capacity - (hub_dep_in.computed_peak_pallets or 0),
+                            ),
                         ))
 
         # Legacy fallback
@@ -269,14 +300,19 @@ class ScheduledAvailabilityService:
 
     def _make_dep_option(self, priority, delivery_date, pickup_date, dep, temp_mode,
                           pallets=1, weight_lbs=0, origin_code="", dest_code=""):
+        """Returns None (no bookable option) if the leg cannot be priced —
+        never returns a $0 placeholder as if it were a real available price."""
         day_name = delivery_date.strftime("%A") if delivery_date else ""
         # Use actual shipment origin/destination region codes for pricing,
         # falling back to corridor hub codes only if origin/dest not provided.
         price_origin = origin_code or (dep.corridor_id.start_hub_id.code if dep.corridor_id.start_hub_id else "")
         price_dest = dest_code or (dep.corridor_id.end_hub_id.code if dep.corridor_id.end_hub_id else "")
+        price = self._estimate_price(price_origin, price_dest, pallets, weight_lbs, temp_mode)
+        if price is None:
+            return None
         return DeliveryOption(
             priority=priority, delivery_date=delivery_date, pickup_date=pickup_date,
-            price=self._estimate_price(price_origin, price_dest, pallets, weight_lbs, temp_mode),
+            price=price,
             service_label=f"Scheduled LTL — {day_name} — {dep.corridor_id.name}",
             routing_strategy=priority.replace("_current_week", ""),
             departure=dep,
@@ -291,14 +327,11 @@ class ScheduledAvailabilityService:
     def _dep_temp_compatible(self, dep, temp_mode):
         if not dep.corridor_id:
             return False
-        cap = dep.corridor_id.temperature_capability or "dry"
-        if cap == "all":
-            return True
-        if cap == "dry" and temp_mode == "dry":
-            return True
-        if cap == "chilled" and temp_mode in ("dry", "chilled"):
-            return True
-        return False
+        # corridor.temperature_capability legacy values: dry / chilled / all.
+        # "chilled" and "all" both mean this corridor's assigned equipment is
+        # reefer-capable — only "dry" means reefer freight cannot be carried.
+        cap_is_reefer = (dep.corridor_id.temperature_capability or "dry") != "dry"
+        return vehicle_accepts(vehicle_is_reefer=cap_is_reefer, requested_mode=temp_mode)
 
     def _dep_regions_in_corridor(self, origin_code, dest_code, dep):
         cor = dep.corridor_id
@@ -326,12 +359,15 @@ class ScheduledAvailabilityService:
                 continue
             run_origin = run.origin_region_id.code if run.origin_region_id else ""
             run_dest = run.destination_region_id.code if run.destination_region_id else ""
+            opt = None
             if origin_code == run_origin and dest_code == run_dest:
-                options.append(self._make_option("same_day_direct", today, today, run, temp_mode, pallets, weight_lbs))
+                opt = self._make_option("same_day_direct", today, today, run, temp_mode, pallets, weight_lbs)
             elif self._regions_in_corridor(origin_code, dest_code, run):
-                options.append(self._make_option("same_day_en_route", today, today, run, temp_mode, pallets, weight_lbs))
+                opt = self._make_option("same_day_en_route", today, today, run, temp_mode, pallets, weight_lbs)
             elif self._regions_in_return_path(origin_code, dest_code, run):
-                options.append(self._make_option("same_day_return_path", today, today, run, temp_mode, pallets, weight_lbs))
+                opt = self._make_option("same_day_return_path", today, today, run, temp_mode, pallets, weight_lbs)
+            if opt:
+                options.append(opt)
         return options
 
     def _search_scheduled_runs_legacy(self, origin_code, dest_code, pallets, weight_lbs, temp_mode, week_start, week_end):
@@ -352,24 +388,30 @@ class ScheduledAvailabilityService:
             dest_matches = (dest_code == run_dest or dest_code == run_via)
             if origin_code == run_origin and dest_matches:
                 pickup_date = self._compute_pickup_date(run, run_date, origin_code, dest_code)
-                options.append(self._make_option("scheduled_current_week", run_date, pickup_date, run, temp_mode, pallets, weight_lbs))
+                opt = self._make_option("scheduled_current_week", run_date, pickup_date, run, temp_mode, pallets, weight_lbs)
+                if opt:
+                    options.append(opt)
         return options
 
     def _make_option(self, priority, delivery_date, pickup_date, run, temp_mode, pallets, weight_lbs):
-        """Build a DeliveryOption from a route run."""
+        """Build a DeliveryOption from a route run. Returns None if unpriceable —
+        callers must skip, never treat a missing price as $0-and-available."""
         day_name = delivery_date.strftime("%A") if delivery_date else ""
         pickup_day_name = pickup_date.strftime("%A %b %d") if pickup_date else ""
         delivery_day_name = delivery_date.strftime("%A %b %d") if delivery_date else ""
 
+        price = self._estimate_price(
+            run.origin_region_id.code if run.origin_region_id else "",
+            run.destination_region_id.code if run.destination_region_id else "",
+            pallets, weight_lbs, temp_mode,
+        )
+        if price is None:
+            return None
         return DeliveryOption(
             priority=priority,
             delivery_date=delivery_date,
             pickup_date=pickup_date,
-            price=self._estimate_price(
-                run.origin_region_id.code if run.origin_region_id else "",
-                run.destination_region_id.code if run.destination_region_id else "",
-                pallets, weight_lbs, temp_mode,
-            ),
+            price=price,
             service_label=f"Scheduled LTL — {day_name} — Pickup {pickup_day_name}, Delivery {delivery_day_name}",
             routing_strategy=priority.replace("_current_week", ""),
             route_run=run,
@@ -378,29 +420,34 @@ class ScheduledAvailabilityService:
         )
 
     def _estimate_price(self, origin_code, dest_code, pallets, weight_lbs, temp_mode):
-        """Get a price estimate for a lane. Returns 0 if not available."""
+        """Get a price estimate for a lane. Returns None if not available/priceable
+        — callers MUST treat None as "exclude this option", never as $0."""
         try:
             from .pricing_service import PricingService
             Fsa = self.env["logistics.fsa"]
-            Lane = self.env["logistics.lane"]
             Region = self.env["logistics.region"]
 
             origin_region = Region.search([("code", "=", origin_code)], limit=1)
             dest_region = Region.search([("code", "=", dest_code)], limit=1)
             if not origin_region or not dest_region:
-                return 0.0
+                return None
 
             pickup_fsa = Fsa.search([("region_id", "=", origin_region.id)], limit=1)
             delivery_fsa = Fsa.search([("region_id", "=", dest_region.id)], limit=1)
             if not pickup_fsa or not delivery_fsa:
-                return 0.0
+                return None
 
             result = PricingService(self.env).calculate(
                 pickup_fsa, delivery_fsa, "ltl", temp_mode, pallets, weight_lbs,
+                required_temperature_c=getattr(self, "_required_temperature_c", None),
             )
-            return result.calculated_price if result.available else 0.0
+            return result.calculated_price if result.available else None
         except Exception:
-            return 0.0
+            _logger.exception(
+                "availability_service: price estimation failed for %s -> %s",
+                origin_code, dest_code,
+            )
+            return None
 
     def _compute_pickup_date(self, run, delivery_date, origin_code, dest_code):
         """Determine the required pickup date for a delivery date."""
@@ -417,24 +464,10 @@ class ScheduledAvailabilityService:
 
     def _temp_compatible(self, run, temp_mode):
         """Check temperature compatibility based on VEHICLE capability, not run label."""
-        # "all" runs support everything (vehicle is reefer-capable)
-        if run.temperature_mode == "all":
-            return True
-        # Dry runs: check if vehicle actually supports reefing
-        if run.temperature_mode == "dry":
-            if temp_mode == "dry":
-                return True
-            # Check if the assigned vehicle is reefer-capable
-            if run.vehicle_id and run.vehicle_id.x_reefer:
-                return True  # vehicle can do reefer even if run was labeled dry
-            return False
-        # Chilled runs: can take dry, chilled, or frozen
-        if run.temperature_mode == "chilled":
-            return True
-        # Frozen runs: can take any temp (frozen needs coldest)
-        if run.temperature_mode == "frozen":
-            return True
-        return False
+        run_is_reefer = (run.temperature_mode or "dry") != "dry"
+        if not run_is_reefer and run.vehicle_id and run.vehicle_id.x_reefer:
+            run_is_reefer = True  # vehicle can do reefer even if run was labeled dry
+        return vehicle_accepts(vehicle_is_reefer=run_is_reefer, requested_mode=temp_mode)
 
     def _regions_in_corridor(self, origin_code, dest_code, run):
         """Check if both regions are on the run's corridor (for en-route)."""

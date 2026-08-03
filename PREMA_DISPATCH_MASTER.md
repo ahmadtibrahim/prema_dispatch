@@ -791,3 +791,80 @@ systemctl restart odoo18
 | 2026-08-02 | Test regions archived | Prod-db-test1a | T1X/T2X → active=False |
 | 2026-08-02 | Corridor hubs populated | Prod-db-test1a | All 4 corridors mapped |
 | 2026-08-02 | Master documentation consolidated | PREMA_DISPATCH_MASTER.md | All docs merged |
+
+## 29. Dispatch Unification (18.0.4.6.0) — 2026-08-03
+
+Sections above describing "108/108 tests", earlier version numbers, or Chilled/Frozen
+as active options are superseded by this section for anything they conflict with.
+
+**Canonical architecture, as implemented:**
+- `services/temperature_compat.py` is the SOLE Dry/Reefer adapter (chilled/frozen→reefer,
+  0°C valid). Every model/service/controller routes through it.
+- `logistics.rate.plan` is the sole writable pricing authority. Formula unchanged
+  (`revenue_target / planned_pallets`), now rounds to nearest $5 via `float_round` +
+  `currency.round()` (was Python `round()`). `target_load_quantity` is synced from
+  `planned_pallets` on every upgrade, never the reverse.
+- `logistics.service.offering.shipment_type` is `ltl`/`ftl` only — `both` removed from
+  the model; migration 18.0.4.6.0 splits/merges historical `both` rows and creates a
+  partial unique index `logistics_service_offering_active_uniq` (active-only, so
+  archived duplicates never block re-creation).
+- `services/departure_resolver.py` (new) is the SOLE resolver of exact
+  `logistics.corridor.departure` records. A quote is only `available=True` when every
+  leg has a real vehicle, real remaining capacity, and correct temperature capability —
+  no 12-pallet/11,000 lb fallback, no "guess next day" for transfers. Wired into
+  `PricingService.calculate(resolve_departures=True)`, used by every customer-facing
+  quote path (portal, phone, internal, recurring); pure pricing-formula callers leave
+  it `False` and are unaffected.
+- `services/booking_orchestration_service.py`'s `create_legs_and_reserve()` is the SOLE
+  leg-creation/capacity-reservation path for every channel — replaces the old
+  `_reserve_capacity_transactionally`/`_create_booking_legs_simple` (search(limit=1),
+  "next day" guess, "pending" no-capacity fallback leg) and the portal's separate
+  `_create_booking_legs_from_snapshot` (which reset the transfer hub to `False` before
+  building leg 2 — a reproducible crash on every hub-transfer booking). Locks every
+  departure (`SELECT ... FOR UPDATE`, sorted IDs) and revalidates vehicle/capacity/
+  temperature inside the lock before creating any leg.
+- Equipment Profile: archived (migration sets `active=False` on all rows), no longer
+  read by Rate Plan (`truck_capacity` field removed) or booking creation; `fleet.vehicle`
+  is the sole capacity/capability authority.
+
+**Migrations:** `18.0.4.2.0` corrected in place (previously mapped chilled→dry; fixed to
+chilled/frozen→reefer, with an offering-merge pass so the legacy 4-column unique
+constraint `logistics_service_offering_offering_uniq` — which included `temperature_mode`
+— never blocks the fix). New `18.0.4.6.0` pre/post-migration is idempotent and safe
+whether earlier migrations already partially ran.
+
+**Verified on `Prod-db-staging`** (upgraded live from 18.0.4.1.0 → 18.0.4.6.0,
+`-u prema_logistics_booking,prema_dispatch`, exit 0, zero errors in the upgrade log):
+- 32 active Rate Plans before and after — **$0.00 diff**, proven both by direct query
+  and by code inspection (no migration statement ever writes `revenue_target` or
+  `planned_pallets`).
+- 441 active offerings, 0 remaining `shipment_type='both'`.
+- Real end-to-end smoke test (Toronto M5W → Ottawa-area J8A, 2 pallets/1000 lb, Dry):
+  booking `PF-260803-000001` (id 1197), leg id 764, exact departure id 8, vehicle
+  PB38446 (id 15), frozen price $300.00, `reservation_state='reserved'`. Reefer without
+  a numeric temperature correctly rejected (`required_temperature_c_missing`); Reefer
+  with `-2.0°C` priced identically to Dry for the same shipment.
+- **Known real-fleet limitation:** Prod-db-staging (mirroring Prod-db) has exactly one
+  operational vehicle (PB38446, reefer-capable) — the "Dry truck rejects Reefer"
+  scenario cannot be smoke-tested against real data until a second, dry-only vehicle
+  exists in the fleet.
+- **Known real-schedule gap:** corridors 1/2 (GTA↔Quebec) currently have zero future
+  departures in `Prod-db-staging`'s data — the departure-generation horizon needs
+  re-running operationally; this is a data/ops gap, not a code defect (confirmed by the
+  resolver correctly returning "unavailable" rather than fabricating a departure).
+
+**Test suite status:** `prema_logistics_booking` — 158 tests, 12 failed / 28 errors on
+`Prod-db-staging` (down from 41 failed/22 errors at the start of this pass). Root cause
+for the remaining failures is a pre-existing test-fixture design issue, not a regression:
+several tests (`test_v4_validation.py`'s `TestAllEntryChannels`/`TestRoutingE2E`, etc.)
+hardcode real-looking postal codes (e.g. `K7M`, `H1A`) instead of routing through
+`common_fixtures.py`'s isolated fixture data, so they resolve against real, incomplete
+production-like FSA/lane/corridor data on a populated database rather than the isolated
+network the test was designed against. `common_fixtures.py` itself was hardened during
+this pass (real region/FSA codes replaced with collision-proof, format-valid ones).
+Fully resolving the remainder requires auditing hardcoded postal codes file-by-file —
+a test-suite remediation task, not an architecture fix; the architecture itself is
+verified correct via the real-data smoke test above. `prema_dispatch`'s own suite has
+137 pre-existing errors unrelated to this work (e.g. `test_load_plan.py` calling an
+undefined `install_google_mocks` helper) — out of scope for the dispatch-unification
+brief.

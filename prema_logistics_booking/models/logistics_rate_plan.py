@@ -66,10 +66,6 @@ class LogisticsRatePlan(models.Model):
              "viability. NOT a minimum order quantity, NOT truck capacity. "
              "Defaults from the lane's target_load_pallets.",
     )
-    truck_capacity = fields.Integer(
-        related="lane_id.equipment_profile_id.max_pallets",
-        help="Physical truck capacity from the lane's equipment profile.",
-    )
 
     # ── V4 LTL Hub Pricing Fields ──────────────────────────────────────
     target_load_quantity = fields.Integer(
@@ -240,7 +236,7 @@ class LogisticsRatePlan(models.Model):
         self.tier_ids.filtered(lambda t: t.tier_type == "pallet").unlink()
 
         Tier = self.env["logistics.rate.tier"]
-        truck_cap = self.truck_capacity or 13
+        truck_cap = 13
         for qty in range(1, truck_cap + 1):
             Tier.create({
                 "rate_plan_id": self.id,

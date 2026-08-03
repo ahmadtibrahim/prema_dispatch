@@ -25,7 +25,7 @@ class TestSecurity(TransactionCase):
         r2 = Region.create({"code": "SEC2", "name": "Security R2"})
         lane = Lane.create({"origin_region_id": r1.id, "destination_region_id": r2.id, "active": True, "ltl_capable": True})
         slevel = SLevel.create({"code": "SEC_TEST", "name": "Security Test"})
-        offering = SOffering.create({"lane_id": lane.id, "service_level_id": slevel.id, "temperature_mode": "dry", "shipment_type": "both"})
+        offering = SOffering.create({"lane_id": lane.id, "service_level_id": slevel.id, "temperature_mode": "dry", "shipment_type": "ltl"})
 
         plan1 = RatePlan.create({"service_offering_id": offering.id})
         self.assertEqual(plan1.version, 1)

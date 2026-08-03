@@ -38,7 +38,7 @@ class TestBookingInvoice(TransactionCase):
                 "pin_wheel_pallet_capacity": 13,
                 "turned_pallet_capacity": 14,
             })
-        cls.equipment = cls.Equip.search([("fleet_vehicle_id", "=", cls.vehicle.id)], limit=1)
+        cls.equipment = cls.Equip.with_context(active_test=False).search([("fleet_vehicle_id", "=", cls.vehicle.id)], limit=1)
         if not cls.equipment:
             cls.equipment = cls.Equip.create({
                 "name": "TEST-V3-INV-Equip",
@@ -67,7 +67,7 @@ class TestBookingInvoice(TransactionCase):
         })
         cls.offering = cls.SOffering.create({
             "lane_id": cls.lane.id, "service_level_id": cls.slevel.id,
-            "temperature_mode": "dry", "shipment_type": "both",
+            "temperature_mode": "dry", "shipment_type": "ltl",
         })
         cls.Schedule.create({
             "service_offering_id": cls.offering.id, "cutoff_time": 16.0,

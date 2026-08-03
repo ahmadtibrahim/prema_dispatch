@@ -84,7 +84,7 @@ class TestCanonicalSelections(TransactionCase):
         slevel = self.env['logistics.service.level'].create({'code': 'RFLVL', 'name': 'RF Level', 'reefer_food_eligible': True})
         off = self.env['logistics.service.offering'].create({
             'lane_id': lane.id, 'service_level_id': slevel.id,
-            'temperature_mode': 'dry', 'shipment_type': 'both', 'active': True,
+            'temperature_mode': 'dry', 'shipment_type': 'ltl', 'active': True,
         })
         self.env['logistics.lane.schedule'].create({
             'service_offering_id': off.id, 'cutoff_time': 16.0,
@@ -112,7 +112,7 @@ class TestCanonicalSelections(TransactionCase):
         slevel = self.env['logistics.service.level'].create({'code': 'CHLVL', 'name': 'CH Level', 'reefer_food_eligible': True})
         off = self.env['logistics.service.offering'].create({
             'lane_id': lane.id, 'service_level_id': slevel.id,
-            'temperature_mode': 'dry', 'shipment_type': 'both', 'active': True,
+            'temperature_mode': 'dry', 'shipment_type': 'ltl', 'active': True,
         })
         self.env['logistics.lane.schedule'].create({
             'service_offering_id': off.id, 'cutoff_time': 16.0,
@@ -143,7 +143,7 @@ class TestSnapshotPersistence(TransactionCase):
         slevel = self.env['logistics.service.level'].create({'code': 'SNLVL', 'name': 'SN Level', 'reefer_food_eligible': True})
         off = self.env['logistics.service.offering'].create({
             'lane_id': lane.id, 'service_level_id': slevel.id,
-            'temperature_mode': 'dry', 'shipment_type': 'both', 'active': True,
+            'temperature_mode': 'dry', 'shipment_type': 'ltl', 'active': True,
         })
         self.env['logistics.lane.schedule'].create({
             'service_offering_id': off.id, 'cutoff_time': 16.0,
@@ -193,7 +193,7 @@ class TestSnapshotPersistence(TransactionCase):
         slevel = self.env['logistics.service.level'].create({'code': 'NRLVL', 'name': 'NR Level', 'reefer_food_eligible': True})
         off = self.env['logistics.service.offering'].create({
             'lane_id': lane.id, 'service_level_id': slevel.id,
-            'temperature_mode': 'dry', 'shipment_type': 'both', 'active': True,
+            'temperature_mode': 'dry', 'shipment_type': 'ltl', 'active': True,
         })
         self.env['logistics.lane.schedule'].create({
             'service_offering_id': off.id, 'cutoff_time': 16.0,
@@ -223,7 +223,7 @@ class TestSnapshotPersistence(TransactionCase):
         slevel = self.env['logistics.service.level'].create({'code': 'PKLVL', 'name': 'PK Level', 'reefer_food_eligible': True})
         off = self.env['logistics.service.offering'].create({
             'lane_id': lane.id, 'service_level_id': slevel.id,
-            'temperature_mode': 'dry', 'shipment_type': 'both', 'active': True,
+            'temperature_mode': 'dry', 'shipment_type': 'ltl', 'active': True,
         })
         self.env['logistics.lane.schedule'].create({
             'service_offering_id': off.id, 'cutoff_time': 16.0,

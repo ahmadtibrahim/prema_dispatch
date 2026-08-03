@@ -43,11 +43,21 @@ class PricingService:
     def calculate(self, pickup_fsa, delivery_fsa, shipment_type, temperature_mode,
                    pallets, weight_lbs, liftgate_pickup=False, liftgate_delivery=False,
                    appointment=False, residential=False, same_day_requested=False,
-                   partner=None, reference_dt=None):
+                   partner=None, reference_dt=None, required_temperature_c=None,
+                   resolve_departures=False):
         """Resolve pricing through the ordered-lane RouteResolver.
 
         Rate Plans are the sole pricing authority. No per-km, AI, road-distance,
         or DEFAULT_TARGETS fallback. Returns PricingResult.
+
+        resolve_departures=True additionally resolves the EXACT corridor
+        departure for every leg (see DepartureResolver) and makes the result
+        unavailable if any leg has no real, capacity-validated departure.
+        Set this True only where a CUSTOMER-FACING QUOTE is being produced
+        (prepare_quote / confirm_from_internal / portal quote controller) —
+        pure pricing-formula callers (rate simulators, internal previews,
+        tests of the Rate Plan formula itself) must leave it False, since a
+        lane may be commercially priced before its physical schedule exists.
         """
         # Validate inputs
         if not pickup_fsa or not pickup_fsa.pickup_supported:
@@ -60,8 +70,15 @@ class PricingService:
         # RouteResolver handles pallet validation via vehicle pinwheel/straight capacity.
 
         # Normalize equipment: chilled/frozen → reefer for capability check
-        from .route_resolver import RouteResolver, LEGACY_CHILLED_FROZEN
-        equipment = "reefer" if temperature_mode in LEGACY_CHILLED_FROZEN else (temperature_mode or "dry")
+        # (single shared adapter — see temperature_compat.py)
+        from .route_resolver import RouteResolver
+        from .temperature_compat import to_canonical_temperature_mode, REEFER
+        equipment = to_canonical_temperature_mode(temperature_mode)
+        # Reefer requires an explicit numeric temperature. 0.0 IS valid — only
+        # None (never supplied) is rejected. Applies to every booking channel,
+        # since every channel prices through this one method.
+        if equipment == REEFER and required_temperature_c is None:
+            return PricingResult(False, reason="required_temperature_c_missing")
         resolver = RouteResolver(self.env)
         route = resolver.resolve(
             pickup_fsa, delivery_fsa, pallets, weight_lbs,
@@ -103,14 +120,79 @@ class PricingService:
         pickup_date = sched_result.pickup_date if sched_result.available else None
         delivery_date = sched_result.delivery_date if sched_result.available else None
 
+        # ── Resolve the EXACT departure(s) for every leg. A CUSTOMER-FACING
+        # quote is never available unless every leg has a real, capacity-
+        # validated departure with an assigned vehicle — no theoretical-
+        # schedule-only quotes. Skipped for pure pricing-formula callers.
+        transfer_hub_id = False
+        if resolve_departures:
+            from .departure_resolver import DepartureResolver
+            Region = self.env["logistics.region"]
+            dep_resolver = DepartureResolver(self.env)
+            earliest_date = pickup_date or (reference_dt.date() if reference_dt else __import__("datetime").date.today())
+            resolved_pickup_date = None
+            resolved_delivery_date = None
+            for i, leg_snap in enumerate(leg_snapshots):
+                origin_region = Region.search([("code", "=", leg_snap["origin_region"])], limit=1)
+                dest_region = Region.search([("code", "=", leg_snap["dest_region"])], limit=1)
+                if not origin_region or not dest_region:
+                    return PricingResult(False, reason="leg_region_not_resolvable")
+
+                dep_result = dep_resolver.resolve_single_leg(
+                    origin_region, dest_region, equipment, pallets, weight_lbs,
+                    earliest_pickup_date=earliest_date,
+                )
+                if not dep_result.available:
+                    return PricingResult(False, reason=f"no_departure_leg_{i+1}_{dep_result.reason}")
+
+                resolved = dep_result.legs[0]
+                dep, vehicle = resolved.departure, resolved.vehicle
+                leg_snap.update({
+                    "departure_id": dep.id,
+                    "vehicle_id": vehicle.id,
+                    "vehicle_name": vehicle.name or vehicle.license_plate or "",
+                    "departure_date": str(dep.departure_date),
+                    "departure_time": dep.departure_time,
+                    "corridor_id": dep.corridor_id.id,
+                })
+                if i == 0:
+                    resolved_pickup_date = dep.departure_date
+                resolved_delivery_date = dep.departure_date
+                if i == 0 and len(leg_snapshots) > 1:
+                    earliest_date = dep_resolver.earliest_connecting_date(dep)
+
+            # The exact resolved departure dates are authoritative — they
+            # supersede the Layer-1 theoretical schedule estimate above.
+            pickup_date = resolved_pickup_date or pickup_date
+            delivery_date = resolved_delivery_date or delivery_date
+
+            # For a 2-leg route, the frozen hub is the ACTUAL hub whose region
+            # matches leg1's destination / leg2's origin — never re-derived by
+            # a fresh "is_default hub" search at confirmation time.
+            if len(leg_snapshots) > 1:
+                Hub = self.env["logistics.hub"]
+                hub_region_code = leg_snapshots[0]["dest_region"]
+                hub_region = Region.search([("code", "=", hub_region_code)], limit=1)
+                hub = Hub.search([("canonical_region_id", "=", hub_region.id)], limit=1) if hub_region else Hub
+                if hub:
+                    transfer_hub_id = hub.id
+                    leg_snapshots[0]["hub_id"] = hub.id
+                    leg_snapshots[0]["hub_name"] = hub.public_name
+                    leg_snapshots[0]["hub_location_id"] = hub.saved_location_id.id if hub.saved_location_id else False
+                    leg_snapshots[-1]["hub_id"] = hub.id
+                    leg_snapshots[-1]["hub_name"] = hub.public_name
+                    leg_snapshots[-1]["hub_location_id"] = hub.saved_location_id.id if hub.saved_location_id else False
+
         route_snapshot = {
             "legs": leg_snapshots,
             "leg_count": len(leg_snapshots),
             "calculated_price": total,
             "pallets": pallets,
             "weight_lbs": weight_lbs,
-            "temperature_mode": temperature_mode,
+            "temperature_mode": equipment,
+            "required_temperature_c": required_temperature_c,
             "shipment_type": shipment_type,
+            "transfer_hub_id": transfer_hub_id,
         }
 
         return PricingResult(
@@ -162,7 +244,12 @@ class PricingService:
         weight_surcharge = excess_weight * excess_rate
 
         subtotal = leg_base + weight_surcharge
-        final = round(subtotal / 5.0) * 5.0
+        # Nearest-$5, then currency-rounded — never Python round() on money.
+        from odoo.tools import float_round
+        final = float_round(subtotal / 5.0, precision_digits=0) * 5.0
+        currency = rate_plan.currency_id
+        if currency:
+            final = currency.round(final)
 
         return {
             "planned_pallets": pp,

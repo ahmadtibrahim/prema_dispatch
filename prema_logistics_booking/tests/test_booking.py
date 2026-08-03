@@ -34,7 +34,7 @@ class TestBooking(TransactionCase):
                 "turned_pallet_capacity": 14,
             })
         Equip = cls.env["logistics.equipment.profile"]
-        equip = Equip.search([("fleet_vehicle_id", "=", vehicle.id)], limit=1)
+        equip = Equip.with_context(active_test=False).search([("fleet_vehicle_id", "=", vehicle.id)], limit=1)
         if not equip:
             equip = Equip.create({"name": "TEST-Booking-Equip", "fleet_vehicle_id": vehicle.id, "max_pallets": 14})
 
@@ -45,7 +45,7 @@ class TestBooking(TransactionCase):
 
         lane = cls.Lane.create({"origin_region_id": r1.id, "destination_region_id": r2.id, "active": True, "ltl_capable": True, "ftl_capable": True, "max_pallets": 12, "revenue_target": 500.0, "equipment_profile_id": equip.id})
         slevel = cls.SLevel.create({"code": "BOOK_TEST", "name": "Booking Test", "reefer_food_eligible": True})
-        offering = cls.SOffering.create({"lane_id": lane.id, "service_level_id": slevel.id, "temperature_mode": "dry", "shipment_type": "both"})
+        offering = cls.SOffering.create({"lane_id": lane.id, "service_level_id": slevel.id, "temperature_mode": "dry", "shipment_type": "ltl"})
         cls.Schedule.create({"service_offering_id": offering.id, "cutoff_time": 16.0, "pickup_monday": True, "pickup_tuesday": True, "pickup_wednesday": True, "pickup_thursday": True, "pickup_friday": True, "delivery_offset_type": "next_day", "active": True})
         plan = cls.RatePlan.create({"service_offering_id": offering.id, "revenue_target": 500.0, "planned_pallets": 7, "target_load_quantity": 7})
         base = 500 / 7
