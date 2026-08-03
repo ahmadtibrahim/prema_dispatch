@@ -222,59 +222,114 @@ class LogisticsBooking(models.Model):
     # ------------------------------------------------------------------
 
     def _create_booking_legs_from_snapshot(self):
-        """Create exactly one logistics.booking.leg per route_snapshot leg.
-        Copies frozen pricing, lane, offering, and Rate Plan from snapshot.
-        Never recalculates route topology or price during confirmation.
-        """
+        """Create stops then legs from route_snapshot. Atomic — all or nothing."""
         self.ensure_one()
         snap = self.route_snapshot
         if not snap or not snap.get("legs"):
-            return self.env["logistics.booking.leg"]
+            return self.env["logistics.booking.leg"]  # No snapshot — skip leg creation
 
-        currency = self.env.company.currency_id
-        Leg = self.env["logistics.booking.leg"].sudo()
+        # Determine currency from snapshot or rate plan
+        rp_id = snap["legs"][0].get("rate_plan_id", 0)
+        rp = self.env["logistics.rate.plan"].sudo().browse(rp_id) if rp_id else None
+        currency = rp.currency_id if rp and rp.currency_id else self.env.company.currency_id
+
         legs = self.env["logistics.booking.leg"]
+        stops = self.stop_ids
+        Leg = self.env["logistics.booking.leg"].sudo()
+        Stop = self.env["logistics.booking.stop"].sudo()
+
+        # Find or create pickup and delivery stops
+        pickup_stop = stops.filtered(lambda s: s.stop_type == "pickup")[:1]
+        delivery_stop = stops.filtered(lambda s: s.stop_type == "delivery")[:1]
+        if not pickup_stop:
+            pickup_stop = Stop.create({
+                "booking_id": self.id, "sequence": 10, "stop_type": "pickup",
+                "company_name": "Pickup", "street": "Pickup Location",
+                "city": snap["legs"][0].get("origin_region", ""),
+            })
+        if not delivery_stop:
+            delivery_stop = Stop.create({
+                "booking_id": self.id, "sequence": 90, "stop_type": "delivery",
+                "company_name": "Delivery", "street": "Delivery Location",
+                "city": snap["legs"][-1].get("dest_region", ""),
+            })
+
+        is_multi = len(snap["legs"]) > 1
 
         for i, leg_data in enumerate(snap["legs"]):
-            lane = self.env["logistics.lane"].sudo().browse(leg_data.get("lane_id", 0))
-            rp = self.env["logistics.rate.plan"].sudo().browse(leg_data.get("rate_plan_id", 0))
-            offering = self.env["logistics.service.offering"].sudo().browse(
-                rp.service_offering_id.id if rp else 0
-            )
-
-            # Apply Odoo currency rounding to stored monetary values
             frozen_price = leg_data.get("price", 0.0)
             if currency:
                 frozen_price = currency.round(frozen_price)
 
-            vals = {
+            hub = False
+            if not is_multi:
+                origin = pickup_stop
+                dest = delivery_stop
+            elif i == 0:
+                # Leg 1: pickup → hub
+                hub = self.env["logistics.hub"].sudo().search([
+                    ("is_default", "=", True), ("active", "=", True),
+                ], limit=1)
+                if not hub or not hub.saved_location_id:
+                    raise UserError("Cannot create transfer legs: no hub with saved location")
+                hub_stop = Stop.create({
+                    "booking_id": self.id, "sequence": 50, "stop_type": "delivery",
+                    "company_name": hub.public_name,
+                    "street": hub.saved_location_id.street or hub.saved_location_id.address,
+                    "city": hub.saved_location_id.city or "",
+                    "saved_location_id": hub.saved_location_id.id,
+                })
+                origin = pickup_stop
+                dest = hub_stop
+            else:
+                # Leg 2: hub → delivery
+                hub_stop = stops.filtered(lambda s: s.saved_location_id == hub.saved_location_id)[:1]
+                if not hub_stop:
+                    hub_stop = Stop.create({
+                        "booking_id": self.id, "sequence": 50, "stop_type": "pickup",
+                        "company_name": hub.public_name,
+                        "street": hub.saved_location_id.street or hub.saved_location_id.address,
+                        "city": hub.saved_location_id.city or "",
+                        "saved_location_id": hub.saved_location_id.id,
+                    })
+                origin = hub_stop
+                dest = delivery_stop
+
+            origin_region = self.env["logistics.region"].sudo().search([
+                ("code", "=", leg_data.get("origin_region", "")),
+            ], limit=1)
+            dest_region = self.env["logistics.region"].sudo().search([
+                ("code", "=", leg_data.get("dest_region", "")),
+            ], limit=1)
+
+            leg = Leg.create({
                 "booking_id": self.id,
                 "sequence": (i + 1) * 10,
+                "origin_stop_id": origin.id,
+                "destination_stop_id": dest.id,
                 "pallets": snap.get("pallets", 0),
                 "weight_lbs": snap.get("weight_lbs", 0.0),
-                "lane_id": lane.id if lane else False,
-                "offering_id": offering.id if offering else False,
-                "rate_plan_id": rp.id if rp else False,
-                "rate_plan_name": rp.name if rp else "",
-                "rate_plan_version": rp.version if rp else 0,
-                "currency_id": currency.id if currency else False,
+                "lane_id": leg_data.get("lane_id", False),
+                "offering_id": leg_data.get("offering_id", False),
+                "rate_plan_id": leg_data.get("rate_plan_id", False),
+                "rate_plan_name": leg_data.get("rate_plan_name", "") or (rp.name if rp else ""),
+                "rate_plan_version": leg_data.get("rate_plan_version", 0) or (rp.version if rp else 0),
+                "currency_id": currency.id,
                 "frozen_leg_price": frozen_price,
                 "frozen_price_breakdown": leg_data.get("price_lines", []),
-                "origin_region_id": self.env["logistics.region"].sudo().search([
-                    ("code", "=", leg_data.get("origin_region", "")),
-                ], limit=1).id or False,
-                "destination_region_id": self.env["logistics.region"].sudo().search([
-                    ("code", "=", leg_data.get("dest_region", "")),
-                ], limit=1).id or False,
-                "pickup_date": snap.get("pickup_date") or leg_data.get("pickup_date"),
-                "delivery_date": snap.get("delivery_date") or leg_data.get("delivery_date"),
-                "leg_type": "direct" if len(snap["legs"]) == 1 else "transfer",
+                "origin_region_id": origin_region.id if origin_region else False,
+                "destination_region_id": dest_region.id if dest_region else False,
+                "transfer_hub_id": hub.id if hub else False,
+                "pickup_date": leg_data.get("pickup_date") or snap.get("pickup_date"),
+                "delivery_date": leg_data.get("delivery_date") or snap.get("delivery_date"),
+                "leg_type": "transfer" if is_multi else "direct",
                 "reservation_state": "reserved",
                 "status": "scheduled",
-            }
-            leg = Leg.create(vals)
+            })
             legs += leg
 
+        if is_multi:
+            self.is_multi_leg = True
         return legs
 
     # ------------------------------------------------------------------

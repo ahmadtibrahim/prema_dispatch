@@ -198,8 +198,19 @@ class RouteResolver:
 
     @staticmethod
     def _leg_dict(lane, rp, origin, dest, price, lines, cr_applied, discount):
+        offering = rp.service_offering_id
+        currency = rp.currency_id
         return {
             "lane": lane, "rate_plan": rp,
+            "lane_id": lane.id,
+            "lane_name": lane.name,
+            "offering_id": offering.id if offering else False,
+            "offering_name": offering.name if offering else "",
+            "rate_plan_id": rp.id,
+            "rate_plan_name": rp.name,
+            "rate_plan_version": rp.version,
+            "currency_id": currency.id if currency else False,
+            "currency_code": currency.name if currency else "",
             "origin_region": origin, "dest_region": dest,
             "price": price, "price_lines": lines,
             "customer_rate_applied": cr_applied, "discount_pct": discount,
