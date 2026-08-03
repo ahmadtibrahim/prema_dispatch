@@ -216,7 +216,7 @@ class PricingService:
 
     def calculate_leg_per_km(self, distance_km, rate_per_km, target_pallets,
                               booked_pallets, included_weight_per_pallet,
-                              actual_weight_lbs):
+                              actual_weight_lbs, currency=None):
         """Canonical per-km pricing formula for one booking leg.
 
         D = chargeable road distance in km
@@ -234,11 +234,24 @@ class PricingService:
         Extra weight charge = Extra weight × D × Weight rate per lb/km
         Leg subtotal = Base leg charge + Extra weight charge
 
+        Uses Odoo currency rounding if currency is provided, otherwise
+        falls back to 2-decimal Python rounding.
+
         Returns dict with all intermediate values.
         """
-        T = max(target_pallets, 1)
-        I = max(included_weight_per_pallet, 1.0)
-        D = max(distance_km, 0.0)
+        # Reject invalid configuration — do not silently default
+        if target_pallets <= 0:
+            raise ValueError("target_pallets must be positive")
+        if included_weight_per_pallet <= 0:
+            raise ValueError("included_weight_per_pallet must be positive")
+        if distance_km < 0:
+            raise ValueError("distance_km must be non-negative")
+        if rate_per_km < 0:
+            raise ValueError("rate_per_km must be non-negative")
+
+        T = target_pallets
+        I = included_weight_per_pallet
+        D = distance_km
         P = max(booked_pallets, 0)
         W = max(actual_weight_lbs, 0.0)
 
@@ -252,6 +265,16 @@ class PricingService:
 
         subtotal = base_leg_charge + extra_weight_charge
 
+        # Use Odoo currency rounding when available, fall back to Python round
+        if currency:
+            base_leg_charge = currency.round(base_leg_charge)
+            extra_weight_charge = currency.round(extra_weight_charge)
+            subtotal = currency.round(subtotal)
+        else:
+            base_leg_charge = round(base_leg_charge, 2)
+            extra_weight_charge = round(extra_weight_charge, 2)
+            subtotal = round(subtotal, 2)
+
         return {
             "distance_km": D,
             "rate_per_km": rate_per_km,
@@ -260,12 +283,12 @@ class PricingService:
             "included_weight_per_pallet": I,
             "actual_weight_lbs": W,
             "pallet_rate_per_km": round(pallet_rate_per_km, 6),
-            "base_leg_charge": round(base_leg_charge, 2),
+            "base_leg_charge": base_leg_charge,
             "weight_rate_per_lb_km": round(weight_rate_per_lb_km, 8),
             "shipment_included_weight": shipment_included_weight,
             "extra_weight_lbs": round(extra_weight, 2),
-            "extra_weight_charge": round(extra_weight_charge, 2),
-            "subtotal": round(subtotal, 2),
+            "extra_weight_charge": extra_weight_charge,
+            "subtotal": subtotal,
             "pricing_method": "per_km_distance",
         }
 

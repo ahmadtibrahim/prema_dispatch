@@ -29,8 +29,8 @@ class LogisticsCorridor(models.Model):
     direction = fields.Selection([
         ("eastbound", "Eastbound"), ("westbound", "Westbound"),
         ("northbound", "Northbound"), ("southbound", "Southbound"),
-        ("bidirectional", "Bidirectional"), ("local_loop", "Local Loop"),
-        ("round_trip", "Round Trip"),
+        ("bidirectional", "Bidirectional"), ("local", "Local Operations"),
+        ("local_loop", "Local Loop"), ("round_trip", "Round Trip"),
     ], required=True)
     equipment_type = fields.Selection([("dry", "Dry"), ("reefer", "Reefer")], default="dry", required=True)
     active = fields.Boolean(default=True)

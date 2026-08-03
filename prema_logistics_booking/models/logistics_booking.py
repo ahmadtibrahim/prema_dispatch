@@ -8,6 +8,7 @@ from odoo import _, api, fields, models
 from odoo.exceptions import AccessError, UserError
 
 from ..services.availability_bridge import AvailabilityBridge
+from ..constants import SERVICE_MODE, LOAD_TYPE, EQUIPMENT_REQUIREMENT
 from ..services.pricing_service import PricingService
 
 _logger = logging.getLogger(__name__)
@@ -87,15 +88,9 @@ class LogisticsBooking(models.Model):
     estimated_delivery_date = fields.Date()
 
     # ── Phase 3: Canonical service selections ────────────────────────
-    service_mode = fields.Selection([
-        ("dedicated", "Dedicated"), ("expedited", "Expedited"),
-    ], default="dedicated", required=True, string="Service Mode")
-    load_type = fields.Selection([
-        ("ltl", "LTL"), ("ftl", "FTL"),
-    ], default="ltl", required=True, string="Load Type")
-    equipment_requirement = fields.Selection([
-        ("dry", "Dry"), ("reefer", "Reefer"),
-    ], default="dry", required=True, string="Equipment")
+    service_mode = fields.Selection(SERVICE_MODE, default="dedicated", required=True)
+    load_type = fields.Selection(LOAD_TYPE, default="ltl", required=True)
+    equipment_requirement = fields.Selection(EQUIPMENT_REQUIREMENT, default="dry", required=True)
 
     # Legacy fields — kept for migration compatibility
     shipment_type = fields.Selection(SHIPMENT_TYPE_SELECTION, required=True)
