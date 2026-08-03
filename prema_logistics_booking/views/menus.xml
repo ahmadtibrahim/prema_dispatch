@@ -27,6 +27,13 @@
     <menuitem id="menu_v4_worksheets" name="Driver Worksheets" parent="menu_v4_operations" action="prema_dispatch.action_driver_worksheet_live" sequence="30"/>
     <menuitem id="menu_v4_adhoc" name="Find Available Truck" parent="menu_v4_operations" action="prema_dispatch.action_adhoc_load_finder" sequence="35"/>
 
+    <record id="action_new_booking" model="ir.actions.act_window">
+        <field name="name">New Booking</field>
+        <field name="res_model">logistics.booking</field>
+        <field name="view_mode">form</field>
+        <field name="target">current</field>
+    </record>
+    <menuitem id="menu_v4_new_booking" name="New Booking" parent="menu_v4_bookings" action="action_new_booking" sequence="5"/>
     <menuitem id="menu_v4_all_bookings" name="All Bookings" parent="menu_v4_bookings" action="action_logistics_booking" sequence="10"/>
     <menuitem id="menu_v4_phone" name="Phone Booking" parent="menu_v4_bookings" action="action_logistics_phone_booking" sequence="20"/>
     <menuitem id="menu_v4_recurring" name="Recurring Agreements" parent="menu_v4_bookings" action="action_logistics_recurring_agreement" sequence="30"/>

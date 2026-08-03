@@ -14,7 +14,9 @@ from ..services.pricing_service import PricingService
 _logger = logging.getLogger(__name__)
 
 SHIPMENT_TYPE_SELECTION = [("ltl", "LTL"), ("ftl", "FTL")]
-TEMPERATURE_MODE_SELECTION = [("dry", "Dry"), ("chilled", "Chilled"), ("frozen", "Frozen")]
+TEMPERATURE_MODE_SELECTION = [("dry", "Dry"), ("reefer", "Reefer")]
+# Legacy values preserved for historical compatibility
+LEGACY_TEMPERATURE_MODE = [("dry", "Dry"), ("chilled", "Chilled"), ("frozen", "Frozen")]
 BILLING_RELATIONSHIP_SELECTION = [
     ("direct", "Direct Shipper / Consignee"),
     ("interlining", "Interlining Carrier / Subcontract Customer"),

@@ -3,7 +3,7 @@ import uuid
 from odoo import api, fields, models
 
 SHIPMENT_TYPE_SELECTION = [("ltl", "LTL"), ("ftl", "FTL")]
-TEMPERATURE_MODE_SELECTION = [("dry", "Dry"), ("chilled", "Chilled"), ("frozen", "Frozen")]
+TEMPERATURE_MODE_SELECTION = [("dry", "Dry"), ("reefer", "Reefer")]
 
 
 class LogisticsPricingSession(models.TransientModel):

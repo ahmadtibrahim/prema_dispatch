@@ -2,8 +2,7 @@ from odoo import api, fields, models
 
 TEMPERATURE_MODE_SELECTION = [
     ("dry", "Dry"),
-    ("chilled", "Chilled"),
-    ("frozen", "Frozen"),
+    ("reefer", "Reefer"),
 ]
 
 SHIPMENT_TYPE_SELECTION = [
