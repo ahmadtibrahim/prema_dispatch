@@ -75,8 +75,11 @@
                         </page>
                         <page string="Shipment">
                             <group>
-                                <field name="shipment_type" readonly="1"/>
-                                <field name="temperature_mode" readonly="1"/>
+                                <field name="service_mode" readonly="1"/>
+                                <field name="load_type" readonly="1"/>
+                                <field name="equipment_requirement" readonly="1"/>
+                                <field name="shipment_type" readonly="1" string="Type (Legacy)"/>
+                                <field name="temperature_mode" readonly="1" string="Temp (Legacy)"/>
                                 <field name="pallets" readonly="1"/>
                                 <field name="weight_lbs" readonly="1"/>
                                 <field name="liftgate_pickup" readonly="1"/>

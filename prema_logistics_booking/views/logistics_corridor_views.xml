@@ -37,10 +37,21 @@
                             <field name="truck_slot"/>
                             <field name="weekday"/>
                         </group>
+                        <group string="Hub Assignment">
+                            <field name="origin_hub_id" string="Origin Hub" widget="many2one" options="{'no_create': True}"/>
+                            <field name="destination_hub_id" string="Destination Hub" widget="many2one" options="{'no_create': True}"/>
+                            <field name="transfer_hub_id" string="Transfer Hub" widget="many2one" options="{'no_create': True}"/>
+                            <field name="same_day_return"/>
+                            <field name="paired_return_service_id"/>
+                        </group>
+                    </group>
+                    <group string="Legacy Hub References (read-only)">
                         <group>
-                            <field name="start_hub_id"/>
-                            <field name="end_hub_id"/>
-                            <field name="via_hub_id"/>
+                            <field name="start_hub_id" string="Start Region (deprecated)" readonly="1"/>
+                            <field name="end_hub_id" string="End Region (deprecated)" readonly="1"/>
+                            <field name="via_hub_id" string="Via Region (deprecated)" readonly="1"/>
+                        </group>
+                        <group>
                             <field name="start_time"/>
                             <field name="overnight"/>
                             <field name="temperature_capability"/>
