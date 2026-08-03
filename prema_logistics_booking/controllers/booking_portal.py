@@ -154,6 +154,7 @@ class LogisticsBookingPortal(http.Controller):
             "pickup_date": result.pickup_date,
             "delivery_date_estimate": result.delivery_date_estimate,
             "price_snapshot": result.price_lines,
+            "route_snapshot": result.route_snapshot,
             "calculated_price": result.calculated_price,
             "expires_at": expires_at,
         })

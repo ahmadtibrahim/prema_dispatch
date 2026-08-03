@@ -218,6 +218,66 @@ class LogisticsBooking(models.Model):
     # ------------------------------------------------------------------
     # The atomic confirmation transaction (steps mirror the approved plan).
     # ------------------------------------------------------------------
+    # ── Booking Legs from Route Snapshot ──────────────────────────────
+    # ------------------------------------------------------------------
+
+    def _create_booking_legs_from_snapshot(self):
+        """Create exactly one logistics.booking.leg per route_snapshot leg.
+        Copies frozen pricing, lane, offering, and Rate Plan from snapshot.
+        Never recalculates route topology or price during confirmation.
+        """
+        self.ensure_one()
+        snap = self.route_snapshot
+        if not snap or not snap.get("legs"):
+            return self.env["logistics.booking.leg"]
+
+        currency = self.env.company.currency_id
+        Leg = self.env["logistics.booking.leg"].sudo()
+        legs = self.env["logistics.booking.leg"]
+
+        for i, leg_data in enumerate(snap["legs"]):
+            lane = self.env["logistics.lane"].sudo().browse(leg_data.get("lane_id", 0))
+            rp = self.env["logistics.rate.plan"].sudo().browse(leg_data.get("rate_plan_id", 0))
+            offering = self.env["logistics.service.offering"].sudo().browse(
+                rp.service_offering_id.id if rp else 0
+            )
+
+            # Apply Odoo currency rounding to stored monetary values
+            frozen_price = leg_data.get("price", 0.0)
+            if currency:
+                frozen_price = currency.round(frozen_price)
+
+            vals = {
+                "booking_id": self.id,
+                "sequence": (i + 1) * 10,
+                "pallets": snap.get("pallets", 0),
+                "weight_lbs": snap.get("weight_lbs", 0.0),
+                "lane_id": lane.id if lane else False,
+                "offering_id": offering.id if offering else False,
+                "rate_plan_id": rp.id if rp else False,
+                "rate_plan_name": rp.name if rp else "",
+                "rate_plan_version": rp.version if rp else 0,
+                "currency_id": currency.id if currency else False,
+                "frozen_leg_price": frozen_price,
+                "frozen_price_breakdown": leg_data.get("price_lines", []),
+                "origin_region_id": self.env["logistics.region"].sudo().search([
+                    ("code", "=", leg_data.get("origin_region", "")),
+                ], limit=1).id or False,
+                "destination_region_id": self.env["logistics.region"].sudo().search([
+                    ("code", "=", leg_data.get("dest_region", "")),
+                ], limit=1).id or False,
+                "pickup_date": snap.get("pickup_date") or leg_data.get("pickup_date"),
+                "delivery_date": snap.get("delivery_date") or leg_data.get("delivery_date"),
+                "leg_type": "direct" if len(snap["legs"]) == 1 else "transfer",
+                "reservation_state": "reserved",
+                "status": "scheduled",
+            }
+            leg = Leg.create(vals)
+            legs += leg
+
+        return legs
+
+    # ------------------------------------------------------------------
     @api.model
     def confirm_from_session(self, token, address_vals):
         """address_vals keys: pickup_company, pickup_postal_code, pickup_address,
@@ -373,13 +433,15 @@ class LogisticsBooking(models.Model):
         vals["cost_snapshot"] = cost_info.get("breakdown", {})
         vals["estimated_cost"] = cost_info.get("total_cost", 0.0)
 
-        # 15-18. Single savepoint: booking + tax + invoice + dispatch
+        # Copy frozen route snapshot from session — never recalculate price
+        vals["route_snapshot"] = session.route_snapshot
+
+        # 15-18. Single savepoint: booking + legs + tax + invoice + dispatch
         # ALL must succeed or ALL roll back — no orphan bookings.
-        # ORDER MATTERS: tax before invoice (so tax line is on the invoice),
-        # invoice before dispatch (so job.invoice_id is populated at creation).
         try:
             with self.env.cr.savepoint():
                 booking = self.sudo().create(vals)
+                booking._create_booking_legs_from_snapshot()
                 booking._apply_tax_decision()
                 booking._create_draft_invoice()
                 booking._create_dispatch_job()

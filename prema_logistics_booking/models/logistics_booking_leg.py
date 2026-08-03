@@ -72,6 +72,19 @@ class LogisticsBookingLeg(models.Model):
     origin_region_id = fields.Many2one("logistics.region", string="Origin Region")
     destination_region_id = fields.Many2one("logistics.region", string="Destination Region")
 
+    # ── Frozen pricing from route snapshot ──────────────────────────────
+    lane_id = fields.Many2one("logistics.lane", string="Ordered Lane")
+    offering_id = fields.Many2one("logistics.service.offering", string="Service Offering")
+    rate_plan_id = fields.Many2one("logistics.rate.plan", string="Rate Plan")
+    rate_plan_name = fields.Char(string="Rate Plan Name", readonly=True)
+    rate_plan_version = fields.Integer(string="Rate Plan Version", readonly=True)
+    currency_id = fields.Many2one("res.currency", string="Currency")
+    frozen_leg_price = fields.Float(string="Frozen Leg Price", readonly=True)
+    frozen_price_breakdown = fields.Json(string="Frozen Price Breakdown", readonly=True)
+
+    # ── Hub transfer ────────────────────────────────────────────────────
+    transfer_hub_id = fields.Many2one("logistics.hub", string="Transfer Hub")
+
     # ── Customer visibility ─────────────────────────────────────────────
     customer_visible = fields.Boolean(default=True, string="Customer Visible",
                                       help="Whether this leg is shown to the customer.")
