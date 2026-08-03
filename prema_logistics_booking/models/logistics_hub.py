@@ -47,6 +47,12 @@ class LogisticsHub(models.Model):
     contact_email = fields.Char()
 
     # ── Regions ───────────────────────────────────────────────────────
+    canonical_region_id = fields.Many2one(
+        "logistics.region", string="Canonical Region",
+        index=True,
+        help="The single physical region this hub is located in. "
+             "Used by RouteResolver for hub-transfer routing. "
+             "Only YYZ-HUB → R1 is currently confirmed.")
     supported_region_ids = fields.Many2many(
         "logistics.region", "logistics_hub_region_rel",
         "hub_id", "region_id", string="Supported Regions",

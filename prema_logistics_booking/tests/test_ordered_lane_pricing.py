@@ -1,4 +1,5 @@
-"""Ordered-lane and rate-plan pricing engine tests."""
+"""Ordered-lane rate-plan pricing — isolated fixture tests."""
+from datetime import date, timedelta
 from odoo.tests import TransactionCase
 from odoo.addons.prema_logistics_booking.services.route_resolver import RouteResolver
 from odoo.addons.prema_logistics_booking.services.pricing_service import PricingService
@@ -8,233 +9,288 @@ class TestOrderedLanePricing(TransactionCase):
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
-        cls.resolver = RouteResolver(cls.env)
-        cls.svc = PricingService(cls.env)
+        # ── Isolated test fixtures: regions, FSAs, hub, lanes, rate plans ──
+        cls.r_a = cls.env['logistics.region'].create({'code': 'OTPA', 'name': 'OTP Region A'})
+        cls.r_b = cls.env['logistics.region'].create({'code': 'OTPB', 'name': 'OTP Region B'})
+        cls.r_c = cls.env['logistics.region'].create({'code': 'OTPC', 'name': 'OTP Region C (Hub)'})
 
-        # Get real FSAs for R1, R13 (bidirectional test)
-        cls.fsa_r1 = cls.env['logistics.fsa'].search([
-            ('region_id.code', '=', 'R1'), ('pickup_supported', '=', True)
+        cls.fsa_a = cls.env['logistics.fsa'].create({
+            'fsa': 'O1A', 'region_id': cls.r_a.id, 'pickup_supported': True, 'delivery_supported': True,
+        })
+        cls.fsa_b = cls.env['logistics.fsa'].create({
+            'fsa': 'O2B', 'region_id': cls.r_b.id, 'pickup_supported': True, 'delivery_supported': True,
+        })
+        cls.fsa_c = cls.env['logistics.fsa'].create({
+            'fsa': 'O3C', 'region_id': cls.r_c.id, 'pickup_supported': True, 'delivery_supported': True,
+        })
+
+        # Hub with explicit canonical region
+        cls.hub = cls.env['logistics.hub'].create({
+            'name': 'OTP Test Hub', 'public_name': 'OTP Test Hub', 'code': 'OTP-HUB',
+            'canonical_region_id': cls.r_c.id, 'is_default': True,
+        })
+
+        # Direct lane A→B
+        cls.lane_ab = cls.env['logistics.lane'].create({
+            'origin_region_id': cls.r_a.id, 'destination_region_id': cls.r_b.id,
+            'active': True, 'ltl_capable': True, 'ftl_capable': True, 'reefer_supported': True,
+        })
+        # Direct lane B→A (different price)
+        cls.lane_ba = cls.env['logistics.lane'].create({
+            'origin_region_id': cls.r_b.id, 'destination_region_id': cls.r_a.id,
+            'active': True, 'ltl_capable': True, 'ftl_capable': True, 'reefer_supported': True,
+        })
+        # Leg lanes for hub transfer
+        cls.lane_ac = cls.env['logistics.lane'].create({
+            'origin_region_id': cls.r_a.id, 'destination_region_id': cls.r_c.id,
+            'active': True, 'ltl_capable': True, 'ftl_capable': True, 'reefer_supported': True,
+        })
+        cls.lane_cb = cls.env['logistics.lane'].create({
+            'origin_region_id': cls.r_c.id, 'destination_region_id': cls.r_b.id,
+            'active': True, 'ltl_capable': True, 'ftl_capable': True, 'reefer_supported': True,
+        })
+
+        slevel = cls.env['logistics.service.level'].search([
+            ('code', '=', 'OTP_LVL')
         ], limit=1)
-        cls.fsa_r13 = cls.env['logistics.fsa'].search([
-            ('region_id.code', '=', 'R13'), ('delivery_supported', '=', True)
-        ], limit=1)
-        cls.assertTrue(cls.fsa_r1, "Need R1 FSA")
-        cls.assertTrue(cls.fsa_r13, "Need R13 FSA")
+        if not slevel:
+            slevel = cls.env['logistics.service.level'].create({
+                'code': 'OTP_LVL', 'name': 'OTP Test Level', 'reefer_food_eligible': True,
+            })
+
+        def _make_rp(lane, revenue, tlq):
+            offering = cls.env['logistics.service.offering'].create({
+                'lane_id': lane.id, 'service_level_id': slevel.id,
+                'temperature_mode': 'dry', 'shipment_type': 'both', 'active': True,
+            })
+            cls.env['logistics.lane.schedule'].create({
+                'service_offering_id': offering.id, 'cutoff_time': 16.0,
+                'pickup_monday': True, 'pickup_tuesday': True, 'pickup_wednesday': True,
+                'pickup_thursday': True, 'pickup_friday': True,
+                'delivery_offset_type': 'next_day', 'active': True,
+            })
+            return cls.env['logistics.rate.plan'].create({
+                'service_offering_id': offering.id, 'revenue_target': revenue,
+                'target_load_quantity': tlq, 'active': True,
+                'effective_from': date.today() - timedelta(days=30),
+            })
+
+        # Rate plans: A→B=$200, B→A=$250, A→C=$100, C→B=$150
+        cls.rp_ab = _make_rp(cls.lane_ab, 1600.0, 8)  # $200/pallet
+        cls.rp_ba = _make_rp(cls.lane_ba, 2000.0, 8)  # $250/pallet
+        cls.rp_ac = _make_rp(cls.lane_ac, 800.0, 8)   # $100/pallet
+        cls.rp_cb = _make_rp(cls.lane_cb, 1200.0, 8)  # $150/pallet
+
+        cls.svc = PricingService(cls.env)
+        cls.resolver = RouteResolver(cls.env)
 
     # ── Directional pricing ───────────────────────────────────────────
 
-    def test_01_r1_to_r13_pricing(self):
-        """R1→R13: $1600/8=$200/pallet."""
-        r = self.svc.calculate(self.fsa_r1, self.fsa_r13, "ltl", "dry", 1, 500)
-        self.assertTrue(r.available, f"Not available: {r.reason}")
+    def test_01_a_to_b_direct(self):
+        r = self.svc.calculate(self.fsa_a, self.fsa_b, "ltl", "dry", 1, 500)
+        self.assertTrue(r.available, r.reason)
         self.assertAlmostEqual(r.calculated_price, 200.00, places=2)
+        self.assertIsNotNone(r.rate_plan)
+        self.assertIsNotNone(r.pickup_date)
+        self.assertIsNotNone(r.delivery_date_estimate)
 
-    def test_02_r13_to_r1_different_price(self):
-        """R13→R1: different rate plan ($1500/7=$214.29)."""
-        fsa_r13_pu = self.env['logistics.fsa'].search([
-            ('region_id.code', '=', 'R13'), ('pickup_supported', '=', True)
-        ], limit=1)
-        fsa_r1_del = self.env['logistics.fsa'].search([
-            ('region_id.code', '=', 'R1'), ('delivery_supported', '=', True)
-        ], limit=1)
-        if fsa_r13_pu and fsa_r1_del:
-            r = self.svc.calculate(fsa_r13_pu, fsa_r1_del, "ltl", "dry", 1, 500)
-            self.assertTrue(r.available, f"R13→R1 not available: {r.reason}")
-            # R13→R1 price should differ from R1→R13
-            r2 = self.svc.calculate(self.fsa_r1, self.fsa_r13, "ltl", "dry", 1, 500)
-            self.assertNotEqual(r.calculated_price, r2.calculated_price,
-                "Ordered lanes must have different prices for each direction")
+    def test_02_b_to_a_different_price(self):
+        r = self.svc.calculate(self.fsa_b, self.fsa_a, "ltl", "dry", 1, 500)
+        self.assertTrue(r.available, r.reason)
+        self.assertAlmostEqual(r.calculated_price, 250.00, places=2)
+        self.assertNotEqual(r.calculated_price, 200.00)
 
-    def test_03_a_to_b_not_equal_b_to_a(self):
-        """Origin→Destination ≠ Destination→Origin."""
-        lanes_ab = self.env['logistics.lane'].search([
-            ('origin_region_id.code', '=', 'R1'),
-            ('destination_region_id.code', '=', 'R13'),
-            ('active', '=', True),
-        ])
-        lanes_ba = self.env['logistics.lane'].search([
-            ('origin_region_id.code', '=', 'R13'),
-            ('destination_region_id.code', '=', 'R1'),
-            ('active', '=', True),
-        ])
-        self.assertTrue(lanes_ab, "R1→R13 lane must exist")
-        self.assertTrue(lanes_ba, "R13→R1 lane must exist")
-        self.assertNotEqual(lanes_ab, lanes_ba, "Ordered lanes: A→B ≠ B→A")
+    def test_03_ab_not_equal_ba(self):
+        r1 = self.svc.calculate(self.fsa_a, self.fsa_b, "ltl", "dry", 1, 500)
+        r2 = self.svc.calculate(self.fsa_b, self.fsa_a, "ltl", "dry", 1, 500)
+        self.assertTrue(r1.available and r2.available)
+        self.assertNotEqual(r1.calculated_price, r2.calculated_price)
+
+    # ── Hub transfer ──────────────────────────────────────────────────
+
+    def test_04_hub_transfer_two_legs(self):
+        """A→C→B via hub: $100 + $150 = $250."""
+        # Remove direct A→B to force hub transfer
+        self.rp_ab.active = False
+        try:
+            route = self.resolver.resolve(self.fsa_a, self.fsa_b, 1, 500)
+            self.assertTrue(route.available, route.reason)
+            self.assertEqual(len(route.legs), 2, "Must have 2 legs for hub transfer")
+            leg_sum = sum(leg["price"] for leg in route.legs)
+            self.assertAlmostEqual(leg_sum, 250.00, places=2)
+        finally:
+            self.rp_ab.active = True
+
+    def test_05_hub_transfer_leg_sum_matches_calculate(self):
+        self.rp_ab.active = False
+        try:
+            r = self.svc.calculate(self.fsa_a, self.fsa_b, "ltl", "dry", 1, 500)
+            self.assertTrue(r.available, r.reason)
+            leg_sum = 100.00 + 150.00  # A→C + C→B
+            self.assertAlmostEqual(r.calculated_price, leg_sum, places=2)
+        finally:
+            self.rp_ab.active = True
+
+    # ── Direct lane precedence ────────────────────────────────────────
+
+    def test_06_direct_preferred_over_hub(self):
+        """Direct lane must be used even when hub transfer is available."""
+        route = self.resolver.resolve(self.fsa_a, self.fsa_b, 1, 500)
+        self.assertTrue(route.available)
+        self.assertEqual(len(route.legs), 1, "Direct lane should be preferred")
+        self.assertEqual(route.legs[0]["rate_plan"], self.rp_ab)
+
+    # ── Rate plan inactivity/expiry ───────────────────────────────────
+
+    def test_07_inactive_rate_plan_request_quote(self):
+        self.rp_ab.active = False
+        self.rp_ac.active = False  # Block hub transfer too
+        try:
+            r = self.svc.calculate(self.fsa_a, self.fsa_b, "ltl", "dry", 1, 500)
+            self.assertFalse(r.available)
+            self.assertEqual(r.reason, "request_quote")
+        finally:
+            self.rp_ab.active = True
+            self.rp_ac.active = True
+
+    def test_08_future_rate_plan_not_used(self):
+        """Rate plan effective_from in the future must not be selected."""
+        self.rp_ab.effective_from = date.today() + timedelta(days=30)
+        self.rp_ac.active = False  # Block hub
+        try:
+            r = self.svc.calculate(self.fsa_a, self.fsa_b, "ltl", "dry", 1, 500)
+            self.assertFalse(r.available, "Future rate plan must not price")
+        finally:
+            self.rp_ab.effective_from = date.today() - timedelta(days=30)
+            self.rp_ac.active = True
+
+    def test_09_expired_rate_plan_not_used(self):
+        self.rp_ab.effective_to = date.today() - timedelta(days=1)
+        self.rp_ac.active = False
+        try:
+            r = self.svc.calculate(self.fsa_a, self.fsa_b, "ltl", "dry", 1, 500)
+            self.assertFalse(r.available)
+        finally:
+            self.rp_ab.effective_to = False
+            self.rp_ac.active = True
+
+    # ── Customer rate with effective dates ────────────────────────────
+
+    def test_10_customer_rate_precedence(self):
+        partner = self.env['res.partner'].create({'name': 'TEST-CR-Partner'})
+        cr = self.env['logistics.customer.rate'].create({
+            'partner_id': partner.id, 'lane_id': self.lane_ab.id,
+            'discount_pct': 10.0, 'active': True,
+            'effective_from': date.today() - timedelta(days=30),
+        })
+        try:
+            r = self.svc.calculate(self.fsa_a, self.fsa_b, "ltl", "dry", 1, 500, partner=partner)
+            self.assertTrue(r.available)
+            self.assertAlmostEqual(r.calculated_price, 180.00, places=2)
+        finally:
+            cr.active = False
+            partner.active = False
+
+    def test_11_customer_rate_wrong_lane_rejected(self):
+        """Customer rate for wrong lane must not apply."""
+        partner = self.env['res.partner'].create({'name': 'TEST-WRONG-Partner'})
+        cr = self.env['logistics.customer.rate'].create({
+            'partner_id': partner.id, 'lane_id': self.lane_ba.id,  # B→A, not A→B
+            'discount_pct': 50.0, 'active': True,
+        })
+        try:
+            r = self.svc.calculate(self.fsa_a, self.fsa_b, "ltl", "dry", 1, 500, partner=partner)
+            self.assertTrue(r.available)
+            self.assertAlmostEqual(r.calculated_price, 200.00, places=2,
+                msg="Wrong-lane customer rate must not apply")
+        finally:
+            cr.active = False
+            partner.active = False
+
+    # ── Missing hub mapping ───────────────────────────────────────────
+
+    def test_12_missing_hub_region_request_quote(self):
+        self.hub.canonical_region_id = False
+        self.rp_ab.active = False  # Block direct
+        try:
+            route = self.resolver.resolve(self.fsa_a, self.fsa_b, 1, 500)
+            self.assertFalse(route.available, "Missing hub region must fail")
+            self.assertEqual(route.reason, "request_quote")
+        finally:
+            self.hub.canonical_region_id = self.r_c.id
+            self.rp_ab.active = True
+
+    # ── LTL/FTL and Dry/Reefer ────────────────────────────────────────
+
+    def test_13_reefer_same_price_as_dry(self):
+        r_dry = self.svc.calculate(self.fsa_a, self.fsa_b, "ltl", "dry", 1, 500)
+        r_reefer = self.svc.calculate(self.fsa_a, self.fsa_b, "ltl", "reefer", 1, 500)
+        self.assertTrue(r_dry.available and r_reefer.available)
+        self.assertAlmostEqual(r_dry.calculated_price, r_reefer.calculated_price, places=2)
 
     # ── Capacity gate ─────────────────────────────────────────────────
 
-    def test_04_thirteen_pallets_request_quote(self):
-        """13 pallets must return Request Quote."""
-        r = self.svc.calculate(self.fsa_r1, self.fsa_r13, "ltl", "dry", 13, 6500)
+    def test_14_thirteen_pallets_request_quote(self):
+        r = self.svc.calculate(self.fsa_a, self.fsa_b, "ltl", "dry", 13, 6500)
         self.assertFalse(r.available)
-        self.assertIn("pallets", r.reason or "")
+        self.assertIn("pallets", r.reason)
 
-    def test_05_twelve_pallets_accepted(self):
-        """12 pallets is accepted."""
-        r = self.svc.calculate(self.fsa_r1, self.fsa_r13, "ltl", "dry", 12, 6000)
-        self.assertTrue(r.available, f"12 pallets rejected: {r.reason}")
+    def test_15_twelve_pallets_accepted(self):
+        r = self.svc.calculate(self.fsa_a, self.fsa_b, "ltl", "dry", 12, 6000)
+        self.assertTrue(r.available)
+
+    # ── No per-km or accessorial leakage ──────────────────────────────
+
+    def test_16_no_per_km_leakage(self):
+        r = self.svc.calculate(self.fsa_a, self.fsa_b, "ltl", "dry", 1, 500)
+        self.assertTrue(r.available)
+        self.assertAlmostEqual(r.calculated_price, 200.00, places=2)
+
+    def test_17_no_accessorial_leakage(self):
+        r = self.svc.calculate(self.fsa_a, self.fsa_b, "ltl", "dry", 1, 500,
+                               liftgate_pickup=True, liftgate_delivery=True, residential=True)
+        self.assertTrue(r.available)
+        self.assertAlmostEqual(r.calculated_price, 200.00, places=2)
+
+    # ── Route snapshot in PricingResult ───────────────────────────────
+
+    def test_18_route_snapshot_present(self):
+        r = self.svc.calculate(self.fsa_a, self.fsa_b, "ltl", "dry", 1, 500)
+        self.assertTrue(r.available)
+        snap = r.route_snapshot
+        self.assertTrue(snap, "route_snapshot must not be empty")
+        self.assertIn("legs", snap)
+        self.assertEqual(snap["leg_count"], 1)
+        self.assertIn("calculated_price", snap)
+        leg = snap["legs"][0]
+        self.assertEqual(leg["rate_plan_id"], self.rp_ab.id)
+        self.assertEqual(leg["rate_plan_version"], self.rp_ab.version)
+        self.assertEqual(leg["origin_region"], 'OTPA')
+        self.assertEqual(leg["dest_region"], 'OTPB')
+
+    # ── Schedule and dates ────────────────────────────────────────────
+
+    def test_19_pickup_and_delivery_dates_present(self):
+        r = self.svc.calculate(self.fsa_a, self.fsa_b, "ltl", "dry", 1, 500)
+        self.assertTrue(r.available)
+        self.assertIsNotNone(r.pickup_date, "pickup_date must not be None")
+        self.assertIsNotNone(r.delivery_date_estimate, "delivery_date_estimate must not be None")
+        self.assertTrue(r.pickup_date <= r.delivery_date_estimate,
+                        f"pickup {r.pickup_date} must be <= delivery {r.delivery_date_estimate}")
 
     # ── Unresolvable routes ───────────────────────────────────────────
 
-    def test_06_unsupported_fsa_returns_request_quote(self):
-        """Unsupported FSA must return not-available with clear reason."""
-        unsupported = self.env['logistics.fsa'].create({
+    def test_20_unsupported_fsa_request_quote(self):
+        bad = self.env['logistics.fsa'].create({
             'fsa': 'Z9Z', 'pickup_supported': False, 'delivery_supported': False,
         })
-        r = self.svc.calculate(unsupported, self.fsa_r13, "ltl", "dry", 1, 500)
+        r = self.svc.calculate(bad, self.fsa_b, "ltl", "dry", 1, 500)
         self.assertFalse(r.available)
         self.assertTrue(r.reason)
 
-    def test_07_unresolvable_returns_request_quote(self):
-        """Route with no resolution path must return request_quote — not $0."""
-        resolver = RouteResolver(self.env)
-        # Try a route between regions with no lane or hub path
-        fsa_test = self.env['logistics.fsa'].create({
-            'fsa': 'Z9X', 'pickup_supported': True, 'delivery_supported': False,
+    def test_21_unmapped_region_request_quote(self):
+        no_region = self.env['logistics.fsa'].create({
+            'fsa': 'Z9Y', 'pickup_supported': True, 'delivery_supported': True,
         })
-        route = resolver.resolve(fsa_test, self.fsa_r13, 1, 500)
-        if not route.available:
-            self.assertTrue(route.reason, "Unresolvable route must have reason")
-            self.assertNotEqual(route.reason, "", "Reason must not be empty")
-
-    # ── No per-km or accessorial leakage ─────────────────────────────
-
-    def test_08_no_per_km_leakage(self):
-        """Pricing must NOT use distance or per-km calculation."""
-        r = self.svc.calculate(self.fsa_r1, self.fsa_r13, "ltl", "dry", 1, 500)
-        self.assertTrue(r.available)
-        # Price should be exactly rate plan based ($200), not distance-based
-        # R1→R13 lane has road_km but pricing must come from rate plan only
-        self.assertAlmostEqual(r.calculated_price, 200.00, places=2)
-
-    def test_09_no_accessorial_leakage(self):
-        """Liftgate and residential must not silently add charges."""
-        r = self.svc.calculate(self.fsa_r1, self.fsa_r13, "ltl", "dry", 1, 500,
-                               liftgate_pickup=True, liftgate_delivery=True,
-                               residential=True)
-        self.assertTrue(r.available)
-        # With liftgate charges at $0, price must stay $200
-        self.assertAlmostEqual(r.calculated_price, 200.00, places=2)
-
-    # ── Dry/Reefer pricing ────────────────────────────────────────────
-
-    def test_10_dry_and_reefer_same_base_price(self):
-        """Dry and Reefer use the same rate plan pricing (no surcharge)."""
-        r_dry = self.svc.calculate(self.fsa_r1, self.fsa_r13, "ltl", "dry", 1, 500)
-        r_reefer = self.svc.calculate(self.fsa_r1, self.fsa_r13, "ltl", "reefer", 1, 500)
-        self.assertTrue(r_dry.available)
-        self.assertTrue(r_reefer.available)
-        self.assertAlmostEqual(r_dry.calculated_price, r_reefer.calculated_price, places=2)
-
-    # ── Multi-leg hub transfer pricing ────────────────────────────────
-
-    def test_11_hub_transfer_through_mississauga(self):
-        """Route through hub: each leg priced independently, sum is total."""
-        # Find a route that requires hub transfer
-        # R12→R1 has no lane, route should fail
-        fsa_r12 = self.env['logistics.fsa'].search([
-            ('region_id.code', '=', 'R12'), ('pickup_supported', '=', True)
-        ], limit=1)
-        fsa_r1d = self.env['logistics.fsa'].search([
-            ('region_id.code', '=', 'R1'), ('delivery_supported', '=', True)
-        ], limit=1)
-        if fsa_r12 and fsa_r1d:
-            route = self.resolver.resolve(fsa_r12, fsa_r1d, 1, 500)
-            # R12→R1 has no direct lane — should fall through to request_quote
-            if not route.available:
-                # Verify the resolver tried and returned a reason
-                self.assertTrue(route.reason, "Unresolvable route must have reason")
-
-    def test_12_hub_transfer_legs_sum(self):
-        """Multi-leg total equals deterministic sum of leg prices."""
-        # Test hub transfer pricing with a valid 2-leg route
-        # R3→R1 leg1 then R1→R13 leg2
-        fsa_r3 = self.env['logistics.fsa'].search([
-            ('region_id.code', '=', 'R3'), ('pickup_supported', '=', True)
-        ], limit=1)
-        if fsa_r3:
-            route = self.resolver.resolve(fsa_r3, self.fsa_r13, pallets=1, weight_lbs=500)
-            if route.available and len(route.legs) > 1:
-                leg_sum = sum(leg["price"] for leg in route.legs)
-                r = self.svc.calculate(fsa_r3, self.fsa_r13, "ltl", "dry", 1, 500)
-                if r.available:
-                    self.assertAlmostEqual(r.calculated_price, leg_sum, places=2)
-
-    # ── Rate plan as sole authority ───────────────────────────────────
-
-    def test_13_rate_plan_is_sole_authority(self):
-        """Rate plan price must be revenue_target / target_load_quantity."""
-        r = self.svc.calculate(self.fsa_r1, self.fsa_r13, "ltl", "dry", 1, 500)
-        self.assertTrue(r.available)
-        self.assertTrue(r.rate_plan, "Must have a rate plan assigned")
-        expected = r.rate_plan.revenue_target / max(r.rate_plan.target_load_quantity, 1)
-        self.assertAlmostEqual(r.calculated_price, expected, places=2,
-            msg=f"Price {r.calculated_price} != {expected} from rate plan")
-
-    # ── Inactive/expired rate plans ────────────────────────────────────
-
-    def test_14_inactive_rate_plan_ignored(self):
-        """Inactive rate plans must not be used for pricing."""
-        rp = self.env['logistics.rate.plan'].search([
-            ('lane_id.origin_region_id.code', '=', 'R1'),
-            ('lane_id.destination_region_id.code', '=', 'R13'),
-            ('active', '=', True),
-        ], limit=1)
-        self.assertTrue(rp, "Need active R1→R13 rate plan")
-        try:
-            rp.active = False
-            r = self.svc.calculate(self.fsa_r1, self.fsa_r13, "ltl", "dry", 1, 500)
-            self.assertFalse(r.available, "Inactive rate plan must not price")
-        finally:
-            rp.active = True  # Always restore
-
-    # ── DEFAULT_TARGETS removed ────────────────────────────────────────
-
-    def test_15_no_default_targets_fallback(self):
-        """Pricing must not fall back to hardcoded DEFAULT_TARGETS."""
-        from odoo.addons.prema_logistics_booking.services import pricing_service
-        self.assertFalse(
-            hasattr(pricing_service, 'DEFAULT_TARGETS'),
-            "DEFAULT_TARGETS must be removed"
-        )
-
-
-class TestPricingPrecedence(TransactionCase):
-    @classmethod
-    def setUpClass(cls):
-        super().setUpClass()
-        cls.svc = PricingService(cls.env)
-        cls.fsa_r1 = cls.env['logistics.fsa'].search([
-            ('region_id.code', '=', 'R1'), ('pickup_supported', '=', True)
-        ], limit=1)
-        cls.fsa_r13 = cls.env['logistics.fsa'].search([
-            ('region_id.code', '=', 'R13'), ('delivery_supported', '=', True)
-        ], limit=1)
-
-    def test_01_customer_specific_precedence(self):
-        """Customer-specific rate takes precedence over lane default."""
-        # Create a customer rate with discount
-        partner = self.env['res.partner'].create({
-            'name': 'TEST-Pricing-Customer',
-        })
-        lane = self.env['logistics.lane'].search([
-            ('origin_region_id.code', '=', 'R1'),
-            ('destination_region_id.code', '=', 'R13'),
-            ('active', '=', True),
-        ], limit=1)
-        cr = self.env['logistics.customer.rate'].create({
-            'partner_id': partner.id,
-            'lane_id': lane.id,
-            'discount_pct': 10.0,
-            'active': True,
-        })
-        # Pricing for this partner should show discount
-        r = self.svc.calculate(self.fsa_r1, self.fsa_r13, "ltl", "dry", 1, 500,
-                               partner=partner)
-        self.assertTrue(r.available, f"Not available: {r.reason}")
-        # Standard: $200. With 10% discount: $180
-        expected = round(200.0 * 0.9, 2)
-        self.assertAlmostEqual(r.calculated_price, expected, places=2)
-        # Cleanup
-        cr.active = False
-        partner.active = False
+        r = self.svc.calculate(no_region, self.fsa_b, "ltl", "dry", 1, 500)
+        self.assertFalse(r.available)

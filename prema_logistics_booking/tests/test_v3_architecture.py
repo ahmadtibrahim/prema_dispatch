@@ -198,18 +198,14 @@ class TestV3Architecture(common.TransactionCase):
         """Region has rate_per_km for auto-suggest pricing."""
         self.assertIn("rate_per_km", self.Region._fields)
 
-    def test_34_suggest_revenue_target(self):
-        """suggest_revenue_target returns reasonable suggestions."""
+    def test_34_rate_plan_is_pricing_authority(self):
+        """Rate Plans are the sole pricing authority; no suggest/calculate_simple."""
         from odoo.addons.prema_logistics_booking.services.pricing_service import PricingService
         svc = PricingService(self.env)
-        lane = self.Lane.search([("road_km", ">", 0)], limit=1)
-        if lane:
-            suggestion = svc.suggest_revenue_target(lane)
-            self.assertIsNotNone(suggestion)
-            self.assertIn("suggested_target", suggestion)
-            self.assertGreater(suggestion["suggested_target"], 0)
-            # Check rounding to nearest 25
-            self.assertEqual(suggestion["suggested_target"] % 25, 0)
+        self.assertFalse(hasattr(svc, 'calculate_simple'),
+                         "calculate_simple must be removed")
+        self.assertFalse(hasattr(svc, 'suggest_revenue_target'),
+                         "suggest_revenue_target must be removed")
 
     # ── ROUND-TRIP PROFIT TESTS ────────────────────────────────────
 

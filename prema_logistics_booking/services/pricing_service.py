@@ -32,6 +32,7 @@ class PricingResult:
         self.delivery_date_estimate = kwargs.get("delivery_date_estimate")
         self.price_lines = kwargs.get("price_lines", [])
         self.calculated_price = kwargs.get("calculated_price", 0.0)
+        self.route_snapshot = kwargs.get("route_snapshot", {})  # immutable at confirm
 
 
 class PricingService:
@@ -69,9 +70,10 @@ class PricingService:
         if not route.available:
             return PricingResult(False, reason=route.reason)
 
-        # Sum leg prices
+        # Sum leg prices and build route snapshot
         total = sum(leg["price"] for leg in route.legs)
         all_lines = []
+        leg_snapshots = []
         for i, leg in enumerate(route.legs):
             if len(route.legs) > 1:
                 all_lines.append({
@@ -79,18 +81,47 @@ class PricingService:
                     "amount": leg["price"],
                 })
             all_lines.extend(leg["price_lines"])
+            leg_snapshots.append({
+                "sequence": i + 1,
+                "origin_region": leg["origin_region"],
+                "dest_region": leg["dest_region"],
+                "rate_plan_id": leg["rate_plan"].id,
+                "rate_plan_version": leg["rate_plan"].version,
+                "lane_id": leg["lane"].id,
+                "price": leg["price"],
+                "price_lines": leg["price_lines"],
+                "pallets": pallets,
+                "weight_lbs": weight_lbs,
+            })
 
+        # Resolve schedule through the primary leg's offering
         primary_leg = route.legs[0]
+        offering = primary_leg["rate_plan"].service_offering_id
+        sched_result = self.schedule_service.next_pickup_and_delivery(offering, reference_dt)
+        pickup_date = sched_result.pickup_date if sched_result.available else None
+        delivery_date = sched_result.delivery_date if sched_result.available else None
+
+        route_snapshot = {
+            "legs": leg_snapshots,
+            "leg_count": len(leg_snapshots),
+            "calculated_price": total,
+            "pallets": pallets,
+            "weight_lbs": weight_lbs,
+            "temperature_mode": temperature_mode,
+            "shipment_type": shipment_type,
+        }
+
         return PricingResult(
             True,
             lane=primary_leg["lane"],
-            service_offering=primary_leg["rate_plan"].service_offering_id,
+            service_offering=offering,
             rate_plan=primary_leg["rate_plan"],
-            schedule=None,
-            pickup_date=None,
-            delivery_date_estimate=None,
+            schedule=sched_result.schedule if sched_result.available else None,
+            pickup_date=pickup_date,
+            delivery_date_estimate=delivery_date,
             price_lines=all_lines,
             calculated_price=total,
+            route_snapshot=route_snapshot,
         )
 
     def _active_rate_plan(self, offering, on_date):
@@ -286,71 +317,5 @@ class PricingService:
             "total_subtotal": round(total, 2),
         }
 
-    # ── Phase 9: Explicit Simple Mode ─────────────────────────────────
-
-    def calculate_simple(self, lane, pallets, reference_dt=None):
-        """Simple pricing: Revenue Target / Planned Pallets = Price per Pallet.
-
-        No tiers, no temperature surcharge, no liftgate, no FSA adjustments.
-        Returns dict: {price_per_pallet, total, revenue_target, planned_pallets}
-        """
-        revenue_target = lane.revenue_target or lane.preferred_revenue_target or 0.0
-        if not revenue_target:
-            # Try default targets
-            origin_code = lane.origin_region_id.code
-            dest_code = lane.destination_region_id.code
-            revenue_target = DEFAULT_TARGETS.get((origin_code, dest_code), 0.0)
-
-        planned_pallets = lane.target_load_pallets or 8
-        if planned_pallets <= 0:
-            planned_pallets = 8
-
-        price_per_pallet = round(revenue_target / planned_pallets, 2)
-        total = round(price_per_pallet * pallets, 2)
-
-        return {
-            "price_per_pallet": price_per_pallet,
-            "total": total,
-            "revenue_target": revenue_target,
-            "planned_pallets": planned_pallets,
-            "formula": f"${revenue_target:,.2f} / {planned_pallets} pallets = ${price_per_pallet:,.2f}/pallet",
-        }
-
-    # ── Phase 10: Revenue Target Suggestion ───────────────────────────
-
-    def suggest_revenue_target(self, lane):
-        """Auto-suggest revenue target based on: distance × regional rate.
-
-        Formula: road_km × avg(origin.rate_per_km, dest.rate_per_km)
-        Rounded to nearest 25. Operator may override.
-        """
-        if not lane.road_km or lane.road_km <= 0:
-            return None
-
-        origin_rate = lane.origin_region_id.rate_per_km or 3.00
-        dest_rate = lane.destination_region_id.rate_per_km or 2.80
-        avg_rate = (origin_rate + dest_rate) / 2.0
-
-        suggested = lane.road_km * avg_rate
-        # Round to nearest 25
-        rounded = round(suggested / 25) * 25
-        # Minimum floor
-        if rounded < 350:
-            rounded = 350
-
-        return {
-            "suggested_target": float(rounded),
-            "raw": round(suggested, 2),
-            "distance_km": lane.road_km,
-            "rate_per_km": round(avg_rate, 2),
-            "origin_rate": origin_rate,
-            "dest_rate": dest_rate,
-        }
-
-    def apply_suggested_target(self, lane):
-        """Apply the suggested revenue target to the lane."""
-        suggestion = self.suggest_revenue_target(lane)
-        if suggestion:
-            lane.write({"revenue_target": suggestion["suggested_target"]})
-            return suggestion
-        return None
+    # calculate_simple() and suggest_revenue_target() removed.
+    # Rate Plans are the sole pricing authority — no DEFAULT_TARGETS fallback.

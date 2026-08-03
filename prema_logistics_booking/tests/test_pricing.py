@@ -67,6 +67,7 @@ class TestPricing(TransactionCase):
         cls.lane = cls.Lane.create({
             "origin_region_id": cls.r1.id, "destination_region_id": cls.r2.id,
             "active": True, "ltl_capable": True, "ftl_capable": True,
+            "reefer_supported": True,
             "max_pallets": 12, "equipment_profile_id": cls.equipment.id,
         })
 
