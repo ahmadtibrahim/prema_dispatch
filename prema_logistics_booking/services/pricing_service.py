@@ -16,18 +16,8 @@ Formula (simple mode):
 import math
 from .schedule_service import ScheduleService
 
-# Phase 11: Default revenue targets per corridor (Mississauga ↔ destination)
-# Rounded to nearest $25. Dispatcher may override.
-DEFAULT_TARGETS = {
-    ("R1", "R8"):  1600.00,   # Mississauga ↔ Montreal
-    ("R1", "R10"): 2300.00,   # Mississauga ↔ Quebec City
-    ("R1", "R7"):  1200.00,   # Mississauga ↔ Ottawa
-    ("R1", "R4"):  1200.00,   # Mississauga ↔ Sudbury (via R4 Central ON)
-    ("R1", "R3"):   350.00,   # Mississauga ↔ Niagara (minimum)
-    ("R8", "R1"):  1600.00,   # Montreal ↔ Mississauga (return)
-    ("R10", "R1"): 2300.00,   # Quebec City ↔ Mississauga (return)
-    ("R7", "R1"):  1200.00,   # Ottawa ↔ Mississauga (return)
-}
+# DEFAULT_TARGETS removed — pricing authority is Rate Plans only.
+# Use RouteResolver + Rate Plans for all price resolution.
 
 
 class PricingResult:
@@ -53,71 +43,54 @@ class PricingService:
                    pallets, weight_lbs, liftgate_pickup=False, liftgate_delivery=False,
                    appointment=False, residential=False, same_day_requested=False,
                    partner=None, reference_dt=None):
-        """Returns a PricingResult."""
+        """Resolve pricing through the ordered-lane RouteResolver.
 
+        Rate Plans are the sole pricing authority. No per-km, AI, road-distance,
+        or DEFAULT_TARGETS fallback. Returns PricingResult.
+        """
+        # Validate inputs
         if not pickup_fsa or not pickup_fsa.pickup_supported:
             return PricingResult(False, reason="pickup_fsa_not_supported")
         if not delivery_fsa or not delivery_fsa.delivery_supported:
             return PricingResult(False, reason="delivery_fsa_not_supported")
         if not pickup_fsa.region_id or not delivery_fsa.region_id:
             return PricingResult(False, reason="fsa_not_mapped_to_region")
+        if pallets > 12:
+            return PricingResult(False, reason="pallets_exceed_standard_capacity")
 
-        Lane = self.env["logistics.lane"]
-        lane = Lane.search([
-            ("origin_region_id", "=", pickup_fsa.region_id.id),
-            ("destination_region_id", "=", delivery_fsa.region_id.id),
-            ("active", "=", True),
-        ], limit=1)
-        if not lane:
-            return PricingResult(False, reason="lane_not_supported")
-        if shipment_type == "ltl" and not lane.ltl_capable:
-            return PricingResult(False, reason="lane_ltl_not_capable")
-        if shipment_type == "ftl" and not lane.ftl_capable:
-            return PricingResult(False, reason="lane_ftl_not_capable")
-
-        from .capacity_engine import CapacityEngine
-        cap_engine = CapacityEngine(self.env)
-        equipment = lane.equipment_profile_id
-        vehicle = equipment.fleet_vehicle_id if equipment else None
-        cap = cap_engine.evaluate(pallets, weight_lbs, vehicle=vehicle)
-        if not cap.eligible:
-            return PricingResult(False, reason=cap.reason_code or "pallet_capacity_exceeded", lane=lane)
-
-        # Only DRY offerings — temperature is a surcharge, not a separate plan
-        Offering = self.env["logistics.service.offering"]
-        candidates = Offering.search([
-            ("lane_id", "=", lane.id),
-            ("active", "=", True),
-            ("temperature_mode", "=", "dry"),
-            "|", ("shipment_type", "=", shipment_type), ("shipment_type", "=", "both"),
-        ])
-        if not candidates:
-            return PricingResult(False, reason="no_service_offering")
-
-        best = None
-        for offering in candidates:
-            sched_result = self.schedule_service.next_pickup_and_delivery(offering, reference_dt)
-            if not sched_result.available:
-                continue
-            rate_plan = self._active_rate_plan(offering, sched_result.pickup_date)
-            if not rate_plan:
-                continue
-            if best is None or sched_result.pickup_date < best[1].pickup_date:
-                best = (offering, sched_result, rate_plan)
-
-        if not best:
-            return PricingResult(False, reason="not_configured", lane=lane)
-
-        offering, sched_result, rate_plan = best
-        price_lines, total = self._compute_price(
-            rate_plan, pallets, temperature_mode, weight_lbs=weight_lbs,
+        # Route through the ordered-lane resolver
+        from .route_resolver import RouteResolver
+        resolver = RouteResolver(self.env)
+        route = resolver.resolve(
+            pickup_fsa, delivery_fsa, pallets, weight_lbs,
+            equipment=temperature_mode or "dry", partner=partner,
         )
 
+        if not route.available:
+            return PricingResult(False, reason=route.reason)
+
+        # Sum leg prices
+        total = sum(leg["price"] for leg in route.legs)
+        all_lines = []
+        for i, leg in enumerate(route.legs):
+            if len(route.legs) > 1:
+                all_lines.append({
+                    "label": f"Leg {i+1}: {leg['origin_region']} → {leg['dest_region']}",
+                    "amount": leg["price"],
+                })
+            all_lines.extend(leg["price_lines"])
+
+        primary_leg = route.legs[0]
         return PricingResult(
-            True, lane=lane, service_offering=offering, rate_plan=rate_plan,
-            schedule=sched_result.schedule, pickup_date=sched_result.pickup_date,
-            delivery_date_estimate=sched_result.delivery_date,
-            price_lines=price_lines, calculated_price=total,
+            True,
+            lane=primary_leg["lane"],
+            service_offering=primary_leg["rate_plan"].service_offering_id,
+            rate_plan=primary_leg["rate_plan"],
+            schedule=None,
+            pickup_date=None,
+            delivery_date_estimate=None,
+            price_lines=all_lines,
+            calculated_price=total,
         )
 
     def _active_rate_plan(self, offering, on_date):

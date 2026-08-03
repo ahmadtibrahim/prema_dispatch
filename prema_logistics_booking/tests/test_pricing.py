@@ -131,9 +131,10 @@ class TestPricing(TransactionCase):
         self.assertAlmostEqual(result.calculated_price, 1600.00, places=2)
 
     def test_05_thirteen_pallets_dry(self):
+        """13+ pallets must return Request Quote — above standard capacity."""
         result = PricingService(self.env).calculate(self.fsa1, self.fsa2, "ltl", "dry", 13, 6500)
-        self.assertTrue(result.available)
-        self.assertAlmostEqual(result.calculated_price, 2600.00, places=2)
+        self.assertFalse(result.available, "13 pallets must not be auto-priced")
+        self.assertIn("pallets", result.reason or "")
 
     # ── Reefer tests ──
 

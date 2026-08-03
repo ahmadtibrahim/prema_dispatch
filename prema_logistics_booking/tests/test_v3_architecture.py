@@ -173,27 +173,22 @@ class TestV3Architecture(common.TransactionCase):
     # ── PRICING TESTS ──────────────────────────────────────────────
 
     def test_30_pricing_formula_exists(self):
-        """Simple pricing formula: Revenue Target / Planned Pallets."""
-        from odoo.addons.prema_logistics_booking.services.pricing_service import (
-            PricingService, DEFAULT_TARGETS,
-        )
-        self.assertIn(("R1", "R8"), DEFAULT_TARGETS)
-        self.assertEqual(DEFAULT_TARGETS[("R1", "R8")], 1600.00)
-        self.assertEqual(DEFAULT_TARGETS[("R1", "R10")], 2300.00)
-        self.assertEqual(DEFAULT_TARGETS[("R1", "R7")], 1200.00)
-        self.assertEqual(DEFAULT_TARGETS[("R1", "R3")], 350.00)
+        """Rate Plans are the sole pricing authority."""
+        RatePlan = self.env["logistics.rate.plan"]
+        self.assertTrue(RatePlan.search_count([("active", "=", True)]) > 0,
+                        "Must have at least one active rate plan")
 
-    def test_31_pricing_simple_mode(self):
-        """calculate_simple returns correct formula."""
-        from odoo.addons.prema_logistics_booking.services.pricing_service import PricingService
-        svc = PricingService(self.env)
-        # Test with a lane that has revenue_target set
-        lane = self.Lane.search([], limit=1)
-        if lane:
-            result = svc.calculate_simple(lane, 3)
-            self.assertIn("price_per_pallet", result)
-            self.assertIn("total", result)
-            self.assertIn("formula", result)
+    def test_31_pricing_route_resolver(self):
+        """RouteResolver returns available or reason for any FSA pair."""
+        from odoo.addons.prema_logistics_booking.services.route_resolver import RouteResolver
+        resolver = RouteResolver(self.env)
+        fsa = self.Fsa.search([("pickup_supported", "=", True)], limit=1)
+        fsa2 = self.Fsa.search([("delivery_supported", "=", True)], limit=1)
+        if fsa and fsa2:
+            route = resolver.resolve(fsa, fsa2, 1, 500)
+            # Must have either available=True or a reason string
+            self.assertTrue(route.available or bool(route.reason),
+                            "Route must be available or return a reason")
 
     def test_32_rate_plan_pricing_mode(self):
         """Rate plan has pricing_mode field (simple vs tiered)."""
