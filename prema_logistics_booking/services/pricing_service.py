@@ -212,6 +212,84 @@ class PricingService:
             "pricing_method": "v4_ltl_hub",
         }
 
+    # ── PHASE 6: Canonical Per-Kilometre Pricing ─────────────────────
+
+    def calculate_leg_per_km(self, distance_km, rate_per_km, target_pallets,
+                              booked_pallets, included_weight_per_pallet,
+                              actual_weight_lbs):
+        """Canonical per-km pricing formula for one booking leg.
+
+        D = chargeable road distance in km
+        R = configured truck target rate in $/km
+        T = target pallets (default 8)
+        P = booked pallets
+        I = included weight per pallet (default 500 lb)
+        W = actual shipment weight
+
+        Pallet rate per km = R / T
+        Base leg charge = D × P × R / T
+        Weight rate per lb/km = R / (T × I)
+        Shipment included weight = P × I
+        Extra weight = MAX(0, W − P × I)
+        Extra weight charge = Extra weight × D × Weight rate per lb/km
+        Leg subtotal = Base leg charge + Extra weight charge
+
+        Returns dict with all intermediate values.
+        """
+        T = max(target_pallets, 1)
+        I = max(included_weight_per_pallet, 1.0)
+        D = max(distance_km, 0.0)
+        P = max(booked_pallets, 0)
+        W = max(actual_weight_lbs, 0.0)
+
+        pallet_rate_per_km = rate_per_km / T
+        base_leg_charge = D * P * pallet_rate_per_km
+
+        weight_rate_per_lb_km = rate_per_km / (T * I)
+        shipment_included_weight = P * I
+        extra_weight = max(0.0, W - shipment_included_weight)
+        extra_weight_charge = extra_weight * D * weight_rate_per_lb_km
+
+        subtotal = base_leg_charge + extra_weight_charge
+
+        return {
+            "distance_km": D,
+            "rate_per_km": rate_per_km,
+            "target_pallets": T,
+            "booked_pallets": P,
+            "included_weight_per_pallet": I,
+            "actual_weight_lbs": W,
+            "pallet_rate_per_km": round(pallet_rate_per_km, 6),
+            "base_leg_charge": round(base_leg_charge, 2),
+            "weight_rate_per_lb_km": round(weight_rate_per_lb_km, 8),
+            "shipment_included_weight": shipment_included_weight,
+            "extra_weight_lbs": round(extra_weight, 2),
+            "extra_weight_charge": round(extra_weight_charge, 2),
+            "subtotal": round(subtotal, 2),
+            "pricing_method": "per_km_distance",
+        }
+
+    def calculate_itinerary_price(self, legs_data):
+        """Sum per-km leg charges for a multi-leg itinerary.
+
+        legs_data: list of dicts, each with keys:
+            distance_km, rate_per_km, target_pallets, booked_pallets,
+            included_weight_per_pallet, actual_weight_lbs
+
+        Returns total subtotal across all legs.
+        """
+        total = 0.0
+        leg_results = []
+        for leg in legs_data:
+            result = self.calculate_leg_per_km(**leg)
+            leg_results.append(result)
+            total += result["subtotal"]
+        return {
+            "legs": leg_results,
+            "leg_count": len(leg_results),
+            "total_subtotal": round(total, 2),
+        }
+
     # ── Phase 9: Explicit Simple Mode ─────────────────────────────────
 
     def calculate_simple(self, lane, pallets, reference_dt=None):

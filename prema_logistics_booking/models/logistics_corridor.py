@@ -29,8 +29,8 @@ class LogisticsCorridor(models.Model):
     direction = fields.Selection([
         ("eastbound", "Eastbound"), ("westbound", "Westbound"),
         ("northbound", "Northbound"), ("southbound", "Southbound"),
-        ("bidirectional", "Bidirectional"), ("loop", "Loop"),
-        ("local", "Local Operations"),
+        ("bidirectional", "Bidirectional"), ("local_loop", "Local Loop"),
+        ("round_trip", "Round Trip"),
     ], required=True)
     equipment_type = fields.Selection([("dry", "Dry"), ("reefer", "Reefer")], default="dry", required=True)
     active = fields.Boolean(default=True)
@@ -59,10 +59,34 @@ class LogisticsCorridor(models.Model):
         ("dry", "Dry Only"), ("chilled", "Dry + Chilled"), ("all", "Dry + Chilled + Frozen"),
     ], default="all")
 
-    # ── Hub linkage (absorbed from route.template) ──────────────────
-    start_hub_id = fields.Many2one("logistics.region", string="Start Hub", index=True)
-    end_hub_id = fields.Many2one("logistics.region", string="End Hub")
-    via_hub_id = fields.Many2one("logistics.region", string="Via Hub")
+    # ── Hub linkage ──────────────────────────────────────────────────
+    # NEW: canonical hub references (M2o logistics.hub)
+    origin_hub_id = fields.Many2one(
+        "logistics.hub", string="Origin Hub", index=True,
+        help="Departure hub for this weekly service. Replaces start_hub_id."
+    )
+    destination_hub_id = fields.Many2one(
+        "logistics.hub", string="Destination Hub",
+        help="Arrival hub for this weekly service. Replaces end_hub_id."
+    )
+    transfer_hub_id = fields.Many2one(
+        "logistics.hub", string="Transfer Hub",
+        help="Intermediate transfer hub. Replaces via_hub_id."
+    )
+    same_day_return = fields.Boolean(
+        string="Same-Day Return",
+        help="Vehicle returns to origin hub on the same operating day."
+    )
+    paired_return_service_id = fields.Many2one(
+        "logistics.corridor", string="Paired Return Service",
+        help="The return-direction weekly service paired with this outbound service."
+    )
+
+    # DEPRECATED: legacy region-valued hub references — kept for migration,
+    # superseded by origin_hub_id / destination_hub_id / transfer_hub_id.
+    start_hub_id = fields.Many2one("logistics.region", string="Start Region (deprecated)", index=True)
+    end_hub_id = fields.Many2one("logistics.region", string="End Region (deprecated)")
+    via_hub_id = fields.Many2one("logistics.region", string="Via Region (deprecated)")
 
     # ── Lane linkage (Phase 2) ──────────────────────────────────────
     lane_ids = fields.Many2many("logistics.lane", "corridor_lane_rel",
