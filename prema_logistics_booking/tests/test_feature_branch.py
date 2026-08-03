@@ -87,10 +87,13 @@ class TestPerKmPricing(TransactionCase):
 
 class TestDirectionPreservation(TransactionCase):
     def test_01_local_value_preserved(self):
-        """Corridor 3 has direction='local' — must survive feature branch."""
-        cor = self.env['logistics.corridor'].browse(3)
-        self.assertIn(cor.direction, ['local', 'local_loop'],
-                      f"Corridor 3 direction={cor.direction} must be valid")
+        """Corridor with direction='local' must survive feature branch."""
+        local_cor = self.env['logistics.corridor'].search([
+            ('direction', 'in', ['local', 'local_loop']),
+        ], limit=1)
+        self.assertTrue(local_cor, "No corridor with direction='local' found")
+        self.assertIn(local_cor.direction, ['local', 'local_loop'],
+                      f"Direction={local_cor.direction} must be valid")
 
 
 class TestSharedConstants(TransactionCase):
@@ -126,25 +129,33 @@ class TestHubMigration(TransactionCase):
 
     def test_03_r1_corridor_has_origin_hub(self):
         """Corridor with R1 start should have Mississauga Hub as origin."""
-        hub = self.env['logistics.hub'].search([('code', '=', 'YYZ-HUB')], limit=1)
-        # Corridors 1, 3, 4 have R1 as start — check origin_hub_id is set
-        for cid in [1, 3, 4]:
-            cor = self.env['logistics.corridor'].browse(cid)
-            if cor.start_hub_id and cor.start_hub_id.code == 'R1':
-                self.assertIsNotNone(
-                    cor.origin_hub_id,
-                    f"Corridor {cid} ({cor.name}) has R1 start but no origin_hub_id"
-                )
-
-    def test_04_ambiguous_corridors_logged(self):
-        """Corridors without hub records have NULL canonical hub fields."""
-        # Corridor 2 has R15→R1 — R15 has no hub record
-        cor = self.env['logistics.corridor'].browse(2)
-        if cor.start_hub_id and cor.start_hub_id.code == 'R15':
-            self.assertFalse(
+        r1_region = self.env['logistics.region'].search([('code', '=', 'R1')], limit=1)
+        self.assertTrue(r1_region, "Region R1 not found")
+        yyz_hub = self.env['logistics.hub'].search([('code', '=', 'YYZ-HUB')], limit=1)
+        self.assertTrue(yyz_hub, "Mississauga Hub (YYZ-HUB) not found")
+        r1_corridors = self.env['logistics.corridor'].search([
+            ('start_hub_id', '=', r1_region.id),
+        ])
+        self.assertTrue(r1_corridors, "No corridors with R1 start found")
+        for cor in r1_corridors:
+            self.assertTrue(
                 cor.origin_hub_id,
-                "R15 should not have a hub assigned (no hub record exists)"
+                f"Corridor {cor.name} has R1 start but no origin_hub_id"
             )
+
+    def test_04_ambiguous_corridors_unset(self):
+        """Corridors without hub records have NULL canonical hub fields."""
+        r15_region = self.env['logistics.region'].search([('code', '=', 'R15')], limit=1)
+        self.assertTrue(r15_region, "Region R15 not found")
+        r15_corridors = self.env['logistics.corridor'].search([
+            ('start_hub_id', '=', r15_region.id),
+        ])
+        if r15_corridors:
+            for cor in r15_corridors:
+                self.assertFalse(
+                    cor.origin_hub_id,
+                    f"R15 corridor {cor.name} has origin_hub_id but no hub record exists for R15"
+                )
 
 
 class TestBookingSelectionViews(TransactionCase):
@@ -165,19 +176,15 @@ class TestBookingSelectionViews(TransactionCase):
 
 class TestMigrationScripts(TransactionCase):
     def test_01_migration_files_present(self):
-        """Migration scripts exist in the module."""
+        """Migration scripts exist in the module at correct version path."""
         import os
         mig_dir = os.path.join(
-            os.path.dirname(__file__), '..', 'migrations', '18.0.3.0'
+            os.path.dirname(__file__), '..', 'migrations', '18.0.3.1.0'
         )
-        self.assertTrue(
-            os.path.exists(os.path.join(mig_dir, 'pre-migrate.py')),
-            "pre-migrate.py missing"
-        )
-        self.assertTrue(
-            os.path.exists(os.path.join(mig_dir, 'post-migrate.py')),
-            "post-migrate.py missing"
-        )
+        pre = os.path.join(mig_dir, 'pre-migrate.py')
+        post = os.path.join(mig_dir, 'post-migrate.py')
+        self.assertTrue(os.path.exists(pre), f"pre-migrate.py missing at {pre}")
+        self.assertTrue(os.path.exists(post), f"post-migrate.py missing at {post}")
 
     def test_02_module_version_bumped(self):
         """Module version reflects migration."""
