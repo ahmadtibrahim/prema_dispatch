@@ -6,3 +6,4 @@ from . import test_security
 from . import test_booking_invoice
 from . import test_v3_architecture
 from . import test_v4_validation
+from . import test_feature_branch
