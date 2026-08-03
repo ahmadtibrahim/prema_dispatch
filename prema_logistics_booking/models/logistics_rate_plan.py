@@ -167,14 +167,13 @@ class LogisticsRatePlan(models.Model):
             base = rec.service_offering_id.name or "?"
             rec.name = f"{base} v{rec.version}"
 
-    @api.depends("revenue_target", "planned_pallets", "target_load_quantity",
-                 "safe_weight_capacity")
+    @api.depends("revenue_target", "planned_pallets", "safe_weight_capacity")
     def _compute_targets(self):
         for rec in self:
-            tlq = max(rec.target_load_quantity, 1)
+            pp = max(rec.planned_pallets, 1)
             swc = max(rec.safe_weight_capacity, 1.0)
-            rec.customer_price_per_pallet = rec.revenue_target / tlq
-            rec.base_price_per_pallet = rec.revenue_target / tlq
+            rec.customer_price_per_pallet = rec.revenue_target / pp
+            rec.base_price_per_pallet = rec.revenue_target / pp
             rec.excess_weight_rate = rec.revenue_target / swc
 
     # ── CRUD ──────────────────────────────────────────────────────────

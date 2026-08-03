@@ -27,13 +27,13 @@ class LogisticsServiceOffering(models.Model):
     _sql_constraints = [
         (
             "offering_uniq",
-            "unique(lane_id, service_level_id, temperature_mode, shipment_type)",
-            "This exact lane/service-level/temperature/shipment-type offering already exists.",
+            "unique(lane_id, service_level_id, shipment_type)",
+            "An offering for this lane, service level and shipment type already exists.",
         ),
     ]
 
-    @api.depends("lane_id.name", "service_level_id.name", "temperature_mode", "shipment_type")
+    @api.depends("lane_id.name", "service_level_id.name", "shipment_type")
     def _compute_name(self):
         for rec in self:
-            temp = dict(TEMPERATURE_MODE_SELECTION).get(rec.temperature_mode, "")
-            rec.name = f"{rec.lane_id.name or '?'} {rec.service_level_id.name or '?'} ({temp})"
+            st = dict(SHIPMENT_TYPE_SELECTION).get(rec.shipment_type, rec.shipment_type)
+            rec.name = f"{rec.lane_id.name or '?'} — {rec.service_level_id.name or '?'} — {st}"

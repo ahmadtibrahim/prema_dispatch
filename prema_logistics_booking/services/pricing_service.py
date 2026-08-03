@@ -56,8 +56,8 @@ class PricingService:
             return PricingResult(False, reason="delivery_fsa_not_supported")
         if not pickup_fsa.region_id or not delivery_fsa.region_id:
             return PricingResult(False, reason="fsa_not_mapped_to_region")
-        if pallets > 12:
-            return PricingResult(False, reason="pallets_exceed_standard_capacity")
+        # Capacity gate: evaluated against departure vehicle, not a hardcoded number.
+        # RouteResolver handles pallet validation via vehicle pinwheel/straight capacity.
 
         # Normalize equipment: chilled/frozen → reefer for capability check
         from .route_resolver import RouteResolver, LEGACY_CHILLED_FROZEN
@@ -149,11 +149,11 @@ class PricingService:
         Returns a dict with all intermediate values. Every pricing display method
         must derive its output from this dict — do not duplicate the formula.
         """
-        tlq = max(rate_plan.target_load_quantity, 1)
+        pp = max(rate_plan.planned_pallets, 1)
         swc = max(rate_plan.safe_weight_capacity or 11000.0, 1.0)
         incl_per_pallet = rate_plan.included_weight_per_pallet or 500.0
 
-        base_rate = rate_plan.revenue_target / tlq
+        base_rate = rate_plan.revenue_target / pp
         leg_base = pallets * base_rate
 
         included_weight = pallets * incl_per_pallet
@@ -165,7 +165,7 @@ class PricingService:
         final = round(subtotal / 5.0) * 5.0
 
         return {
-            "tlq": tlq,
+            "planned_pallets": pp,
             "swc": swc,
             "incl_per_pallet": incl_per_pallet,
             "base_rate": base_rate,
