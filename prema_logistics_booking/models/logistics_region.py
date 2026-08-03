@@ -26,6 +26,19 @@ class LogisticsRegion(models.Model):
     phase = fields.Integer(default=1)
     display_sequence = fields.Integer(default=10)
     active = fields.Boolean(default=True)
+
+    # ── Postal Coverage ──────────────────────────────────────────────
+    fsa_ids = fields.One2many("logistics.fsa", "region_id", string="FSAs")
+    active_fsa_count = fields.Integer(compute="_compute_fsa_counts", store=True)
+    pickup_fsa_count = fields.Integer(compute="_compute_fsa_counts", store=True)
+    delivery_fsa_count = fields.Integer(compute="_compute_fsa_counts", store=True)
+
+    @api.depends("fsa_ids.active", "fsa_ids.pickup_supported", "fsa_ids.delivery_supported")
+    def _compute_fsa_counts(self):
+        for rec in self:
+            rec.active_fsa_count = len(rec.fsa_ids.filtered("active"))
+            rec.pickup_fsa_count = len(rec.fsa_ids.filtered(lambda f: f.active and f.pickup_supported))
+            rec.delivery_fsa_count = len(rec.fsa_ids.filtered(lambda f: f.active and f.delivery_supported))
     map_color = fields.Char(string="Map Color")
 
     _sql_constraints = [
