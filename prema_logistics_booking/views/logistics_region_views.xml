@@ -7,8 +7,11 @@
             <list>
                 <field name="code"/>
                 <field name="name"/>
-                <field name="hub_name"/>
-                <field name="phase"/>
+                <field name="main_city"/>
+                <field name="active_fsa_count" string="FSAs"/>
+                <field name="pickup_fsa_count" string="Pickup FSAs"/>
+                <field name="delivery_fsa_count" string="Delivery FSAs"/>
+                <field name="customer_visible"/>
                 <field name="active"/>
             </list>
         </field>
@@ -18,15 +21,49 @@
         <field name="model">logistics.region</field>
         <field name="arch" type="xml">
             <form>
+                <header>
+                    <button name="action_apply_fsa_coverage" string="Apply FSA Coverage"
+                            type="object" class="btn-primary"
+                            groups="prema_dispatch.group_dispatch_manager"/>
+                </header>
                 <sheet>
                     <group>
-                        <field name="code"/>
-                        <field name="name"/>
-                        <field name="hub_name"/>
-                        <field name="phase"/>
-                        <field name="map_color"/>
-                        <field name="active"/>
+                        <group string="Region">
+                            <field name="code"/>
+                            <field name="name"/>
+                            <field name="main_city"/>
+                            <field name="default_hub_id"/>
+                            <field name="customer_visible"/>
+                            <field name="is_official_ltl_region" readonly="1"/>
+                            <field name="active"/>
+                        </group>
+                        <group string="Map Anchor">
+                            <field name="map_anchor_address" widget="google_places"/>
+                            <field name="map_anchor_place_id" readonly="1"/>
+                            <field name="marker_latitude" readonly="1"/>
+                            <field name="marker_longitude" readonly="1"/>
+                            <field name="map_color"/>
+                        </group>
                     </group>
+                    <notebook>
+                        <page string="Postal Coverage">
+                            <div class="alert alert-info" role="alert">
+                                Paste only reviewed Canadian FSA prefixes. The app creates missing prefixes,
+                                assigns existing ones, and blocks conflicts with another Region.
+                            </div>
+                            <field name="coverage_fsa_prefixes" placeholder="L5M, L5N, L5P"/>
+                            <field name="fsa_ids" readonly="1">
+                                <list>
+                                    <field name="fsa"/>
+                                    <field name="province"/>
+                                    <field name="display_city"/>
+                                    <field name="pickup_supported"/>
+                                    <field name="delivery_supported"/>
+                                    <field name="active"/>
+                                </list>
+                            </field>
+                        </page>
+                    </notebook>
                 </sheet>
             </form>
         </field>
@@ -35,5 +72,6 @@
         <field name="name">Regions</field>
         <field name="res_model">logistics.region</field>
         <field name="view_mode">list,form</field>
+        <field name="domain">[('is_official_ltl_region', '=', True)]</field>
     </record>
 </odoo>

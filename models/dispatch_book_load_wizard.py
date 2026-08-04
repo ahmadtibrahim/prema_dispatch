@@ -1,4 +1,4 @@
-from odoo import api, fields, models
+from odoo import _, api, fields, models
 from odoo.exceptions import UserError
 
 
@@ -8,27 +8,27 @@ class PremaDispatchBookLoadWizard(models.TransientModel):
 
     move_id = fields.Many2one("account.move", required=True, ondelete="cascade")
     partner_id = fields.Many2one("res.partner")
+    booking_mode = fields.Selection([
+        ("scheduled_ltl", "Scheduled LTL Network"),
+        ("custom", "Custom / Expedited"),
+    ], default="scheduled_ltl", required=True)
     service_type = fields.Selection([("local", "Local"), ("ltl", "LTL"), ("ftl", "FTL"), ("dedicated", "Dedicated"), ("other", "Other")], default="ltl")
     equipment_type = fields.Selection([("dry", "Dry Van"), ("reefer", "Reefer"), ("flatbed", "Flatbed"), ("other", "Other")], default="dry")
-    requires_reefer = fields.Boolean()
     requires_liftgate = fields.Boolean()
     commodity = fields.Char()
-    temperature_requirement = fields.Char()
     expected_skids = fields.Integer()
     total_weight_lbs = fields.Float()
     scheduled_pickup = fields.Datetime()
-    pickup_window_type = fields.Selection([("flexible", "Flexible — Any Time"), ("window", "Time Window"), ("exact", "Exact Appointment")], default="flexible")
-    pickup_earliest = fields.Datetime()
-    pickup_latest = fields.Datetime()
-    pickup_exact_time = fields.Datetime()
-    route_definition_mode = fields.Selection([("exact_stops", "Exact Stops Known"), ("stops_pending", "Stops Pending")], default="exact_stops", required=True)
-    planned_route_name = fields.Char()
-    planned_route_corridor = fields.Selection([("EAST", "East"), ("WEST", "West"), ("NORTH", "North"), ("SOUTH", "South"), ("LOCAL", "Local / GTA"), ("CUSTOM", "Custom")])
-    planned_delivery_area = fields.Char()
-    pickup_saved_location_id = fields.Many2one("prema.dispatch.location")
-    reserve_capacity = fields.Boolean()
-    vehicle_id = fields.Many2one("fleet.vehicle")
-    driver_id = fields.Many2one("res.partner", domain="[('x_is_driver','=',True)]")
+    pickup_saved_location_id = fields.Many2one(
+        "prema.dispatch.location",
+        domain="[('active','=',True), '|', ('partner_id','=',partner_id), ('partner_id','=',False)]",
+    )
+    delivery_saved_location_id = fields.Many2one(
+        "prema.dispatch.location",
+        domain="[('active','=',True), '|', ('partner_id','=',partner_id), ('partner_id','=',False)]",
+    )
+    required_temperature_c = fields.Float(string="Required Temperature °C")
+    temperature_confirmed = fields.Boolean(string="Temperature Confirmed")
     customer_reference = fields.Char()
     purchase_order = fields.Char()
     bol_reference = fields.Char(string="BOL / Reference")
@@ -45,40 +45,77 @@ class PremaDispatchBookLoadWizard(models.TransientModel):
     def action_confirm(self):
         self.ensure_one()
         move = self.move_id
-        if move.dispatch_job_ids:
-            job = move.dispatch_job_ids[:1]
-            return {"type": "ir.actions.act_window", "name": "Dispatch Job", "res_model": "prema.dispatch.job", "res_id": job.id, "view_mode": "form"}
-        if self.route_definition_mode == "stops_pending":
-            if not self.pickup_saved_location_id:
-                raise UserError("Pickup Saved Location is required for Stops Pending bookings.")
-            if self.expected_skids <= 0:
-                raise UserError("Expected skids must be greater than zero for Stops Pending bookings.")
-            if not self.scheduled_pickup:
-                raise UserError("Pickup date/time is required for Stops Pending bookings.")
-            if not (self.planned_route_name or self.planned_route_corridor):
-                raise UserError("Planned Route Name or Planned Corridor is required for Stops Pending bookings.")
-        draft_stage = self.env["prema.dispatch.stage"].search([("stage_type", "=", "draft")], limit=1)
-        job = self.env["prema.dispatch.job"].create({
-            "invoice_id": move.id, "partner_id": self.partner_id.id, "ref": self.customer_reference or move.ref or move.name,
-            "stage_id": draft_stage.id if draft_stage else False, "company_id": move.company_id.id, "dispatcher_id": self.env.uid,
-            "source_model": "account.move", "source_res_id": move.id, "service_type": self.service_type, "equipment_type": self.equipment_type,
-            "requires_reefer": self.requires_reefer, "requires_liftgate": self.requires_liftgate, "commodity": self.commodity,
-            "temp_requirement": self.temperature_requirement, "approximate_skids": self.expected_skids, "scheduled_pickup": self.scheduled_pickup,
-            "pickup_window_type": self.pickup_window_type, "pickup_earliest": self.pickup_earliest, "pickup_latest": self.pickup_latest,
-            "pickup_exact_time": self.pickup_exact_time, "route_definition_mode": self.route_definition_mode,
-            "stops_confirmation_state": "pending" if self.route_definition_mode == "stops_pending" else "confirmed",
-            "planned_route_name": self.planned_route_name, "planned_route_corridor": self.planned_route_corridor,
-            "planned_delivery_area": self.planned_delivery_area, "pickup_saved_location_id": self.pickup_saved_location_id.id,
-            "reserve_capacity": self.reserve_capacity, "vehicle_id": self.vehicle_id.id, "driver_id": self.driver_id.id,
-            "bol_number": self.bol_reference, "po_number": self.purchase_order, "internal_notes": self.general_notes,
-        })
-        if self.pickup_saved_location_id and not job.stop_ids.filtered(lambda s: s.stop_type == "pickup"):
-            self.env["prema.dispatch.stop"].create({"job_id": job.id, "sequence": 10, "stop_type": "pickup", "scheduled_time": self.scheduled_pickup, "saved_location_id": self.pickup_saved_location_id.id, "pallets_in": self.expected_skids})
-        if self.vehicle_id and self.scheduled_pickup and self.reserve_capacity:
-            plan = self.env["prema.dispatch.load.plan"].get_or_create_for_vehicle_date(self.vehicle_id.id, self.scheduled_pickup.date().isoformat(), self.driver_id.id if self.driver_id else None)
-            lp = self.env["prema.dispatch.load.plan"].browse(plan["id"] if isinstance(plan, dict) else plan.id)
-            link = self.env["prema.dispatch.load.plan.job"].search([("load_plan_id", "=", lp.id), ("job_id", "=", job.id)], limit=1)
-            if not link:
-                link = self.env["prema.dispatch.load.plan.job"].create({"load_plan_id": lp.id, "job_id": job.id})
-            link.write({"reserve_capacity": True, "reserved_floor_positions": self.expected_skids, "reservation_source": "booking_estimate"})
-        return {"type": "ir.actions.act_window", "name": "Dispatch Job", "res_model": "prema.dispatch.job", "res_id": job.id, "view_mode": "form"}
+        if move.logistics_booking_id:
+            return {
+                "type": "ir.actions.act_window", "name": _("Booking"),
+                "res_model": "logistics.booking", "res_id": move.logistics_booking_id.id,
+                "view_mode": "form", "target": "current",
+            }
+        if self.expected_skids <= 0 or self.total_weight_lbs < 0:
+            raise UserError(_("Pallets must be at least 1 and weight cannot be negative."))
+        if not self.pickup_saved_location_id or not self.delivery_saved_location_id:
+            raise UserError(_("Choose both Pickup and Delivery Saved Locations."))
+        for label, location in ((_("Pickup"), self.pickup_saved_location_id), (_("Delivery"), self.delivery_saved_location_id)):
+            if not location.google_verified or not location.google_place_id:
+                raise UserError(_("%s address must be selected and verified through Google Places.") % label)
+        if not self.scheduled_pickup:
+            raise UserError(_("Requested pickup date/time is required."))
+        if self.booking_mode == "scheduled_ltl" and self.service_type != "ltl":
+            raise UserError(_("Scheduled Network booking must use LTL. Choose Custom / Expedited for FTL."))
+        if self.equipment_type == "reefer" and not self.temperature_confirmed:
+            raise UserError(_("Enter and confirm the numeric Reefer temperature; 0°C is valid."))
+
+        try:
+            from odoo.addons.prema_logistics_booking.services.booking_orchestration_service import BookingOrchestrationService
+        except ImportError as exc:
+            raise UserError(_("Prema Logistics Booking is required before an invoice load can be booked.")) from exc
+
+        def location_values(location, pickup):
+            return {
+                "saved_location_id": location.id,
+                "company_name": location.business_name or location.name,
+                "formatted_address": location.normalized_address or location.address,
+                "street": location.street or location.address,
+                "city": location.city or "",
+                "province_state": location.province_code or "",
+                "postal_code": location.postal_code or "",
+                "google_place_id": location.google_place_id,
+                "latitude": location.pin_lat,
+                "longitude": location.pin_lng,
+                "pallet_count": self.expected_skids if pickup else 0,
+                "weight_lbs": self.total_weight_lbs if pickup else 0.0,
+                "liftgate_required": self.requires_liftgate,
+                "instructions": self.general_notes or "",
+            }
+
+        service = BookingOrchestrationService(self.env)
+        request = service.normalize_request({
+            "partner_id": self.partner_id.id,
+            "source_model": "account.move",
+            "source_res_id": move.id,
+            "source_reference": move.name or move.ref or "",
+            "pickup_stops": [location_values(self.pickup_saved_location_id, True)],
+            "delivery_stops": [location_values(self.delivery_saved_location_id, False)],
+            "pallets": self.expected_skids,
+            "weight_lbs": self.total_weight_lbs,
+            "load_type": "ltl" if self.service_type == "ltl" else "ftl",
+            "equipment_type": "reefer" if self.equipment_type == "reefer" else "dry",
+            "required_temperature_c": self.required_temperature_c if self.equipment_type == "reefer" else None,
+            "commodity": self.commodity or "",
+            "po_number": self.purchase_order or "",
+            "bol_number": self.bol_reference or "",
+            "customer_reference": self.customer_reference or move.ref or move.name or "",
+            "instructions": self.general_notes or "",
+            "requested_pickup_date": self.scheduled_pickup.date(),
+            "pricing_method": "corridor" if self.booking_mode == "scheduled_ltl" else "imported_invoice",
+            "agreed_rate": 0.0 if self.booking_mode == "scheduled_ltl" else (move.amount_untaxed or move.amount_total),
+            "existing_invoice_id": move.id,
+            "idempotency_key": f"invoice:{move.id}:{self.booking_mode}",
+        }, source_channel="invoice")
+        booking = service.confirm_from_internal(request, existing_invoice=move, skip_invoice=False)
+        move.write({"logistics_booking_id": booking.id})
+        return {
+            "type": "ir.actions.act_window", "name": _("Booking"),
+            "res_model": "logistics.booking", "res_id": booking.id,
+            "view_mode": "form", "target": "current",
+        }

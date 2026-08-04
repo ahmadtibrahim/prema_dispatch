@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data noupdate="1">
+        <!-- Ahmad's approved LTL Dedicated region names. Map anchors and FSA
+             coverage are intentionally blank until reviewed in Network → Regions. -->
+        <record id="region_official_niagara" model="logistics.region">
+            <field name="code">ON-NIAGARA</field><field name="name">Niagara Region</field>
+            <field name="display_sequence">10</field><field name="is_official_ltl_region">True</field>
+            <field name="customer_visible">False</field>
+        </record>
+        <record id="region_official_hamilton_halton_brant" model="logistics.region">
+            <field name="code">ON-HHB</field><field name="name">Hamilton, Halton and Brant</field>
+            <field name="display_sequence">20</field><field name="is_official_ltl_region">True</field>
+            <field name="customer_visible">False</field>
+        </record>
+        <record id="region_official_gta" model="logistics.region">
+            <field name="code">ON-GTA</field><field name="name">Greater Toronto Area</field>
+            <field name="display_sequence">30</field><field name="is_official_ltl_region">True</field>
+            <field name="customer_visible">False</field>
+        </record>
+        <record id="region_official_york" model="logistics.region">
+            <field name="code">ON-YORK</field><field name="name">York</field>
+            <field name="display_sequence">40</field><field name="is_official_ltl_region">True</field>
+            <field name="customer_visible">False</field>
+        </record>
+        <record id="region_official_durham" model="logistics.region">
+            <field name="code">ON-DURHAM</field><field name="name">Durham</field>
+            <field name="display_sequence">50</field><field name="is_official_ltl_region">True</field>
+            <field name="customer_visible">False</field>
+        </record>
+        <record id="region_official_headwaters" model="logistics.region">
+            <field name="code">ON-HEADWATERS</field><field name="name">Headwaters</field>
+            <field name="display_sequence">60</field><field name="is_official_ltl_region">True</field>
+            <field name="customer_visible">False</field>
+        </record>
+        <record id="region_official_waterloo_wellington" model="logistics.region">
+            <field name="code">ON-WATERLOO-WELLINGTON</field><field name="name">Waterloo and Wellington regions</field>
+            <field name="display_sequence">70</field><field name="is_official_ltl_region">True</field>
+            <field name="customer_visible">False</field>
+        </record>
+        <record id="region_official_northumberland" model="logistics.region">
+            <field name="code">ON-NORTHUMBERLAND</field><field name="name">Northumberland</field>
+            <field name="display_sequence">80</field><field name="is_official_ltl_region">True</field>
+            <field name="customer_visible">False</field>
+        </record>
+        <record id="region_official_southeastern_ontario" model="logistics.region">
+            <field name="code">ON-SOUTHEASTERN</field><field name="name">Southeastern Ontario</field>
+            <field name="display_sequence">90</field><field name="is_official_ltl_region">True</field>
+            <field name="customer_visible">False</field>
+        </record>
+        <record id="region_official_monteregie" model="logistics.region">
+            <field name="code">QC-MONTEREGIE</field><field name="name">Montérégie</field>
+            <field name="display_sequence">100</field><field name="is_official_ltl_region">True</field>
+            <field name="customer_visible">False</field>
+        </record>
+        <record id="region_official_laval" model="logistics.region">
+            <field name="code">QC-LAVAL</field><field name="name">Laval</field>
+            <field name="display_sequence">110</field><field name="is_official_ltl_region">True</field>
+            <field name="customer_visible">False</field>
+        </record>
+        <record id="region_official_centre_du_quebec" model="logistics.region">
+            <field name="code">QC-CENTRE</field><field name="name">Centre-du-Québec</field>
+            <field name="display_sequence">120</field><field name="is_official_ltl_region">True</field>
+            <field name="customer_visible">False</field>
+        </record>
+        <record id="region_official_quebec_city" model="logistics.region">
+            <field name="code">QC-QUEBEC-CITY</field><field name="name">Québec, city and area</field>
+            <field name="display_sequence">130</field><field name="is_official_ltl_region">True</field>
+            <field name="customer_visible">False</field>
+        </record>
+        <record id="region_official_chaudiere_appalaches" model="logistics.region">
+            <field name="code">QC-CHAUDIERE</field><field name="name">Chaudière-Appalaches</field>
+            <field name="display_sequence">140</field><field name="is_official_ltl_region">True</field>
+            <field name="customer_visible">False</field>
+        </record>
+        <record id="region_official_bas_saint_laurent" model="logistics.region">
+            <field name="code">QC-BAS-SAINT-LAURENT</field><field name="name">Bas-Saint-Laurent</field>
+            <field name="display_sequence">150</field><field name="is_official_ltl_region">True</field>
+            <field name="customer_visible">False</field>
+        </record>
+        <record id="region_official_ottawa" model="logistics.region">
+            <field name="code">ON-OTTAWA</field><field name="name">Ottawa Region</field>
+            <field name="display_sequence">160</field><field name="is_official_ltl_region">True</field>
+            <field name="customer_visible">False</field>
+        </record>
+        <record id="region_official_haliburton_ottawa_valley" model="logistics.region">
+            <field name="code">ON-HALIBURTON-OTTAWA-VALLEY</field><field name="name">Haliburton Highlands to the Ottawa Valley</field>
+            <field name="display_sequence">170</field><field name="is_official_ltl_region">True</field>
+            <field name="customer_visible">False</field>
+        </record>
+        <record id="region_official_kawarthas" model="logistics.region">
+            <field name="code">ON-KAWARTHAS</field><field name="name">Kawarthas</field>
+            <field name="display_sequence">180</field><field name="is_official_ltl_region">True</field>
+            <field name="customer_visible">False</field>
+        </record>
+    </data>
+</odoo>

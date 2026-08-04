@@ -131,10 +131,4 @@
               action="action_dispatch_stage"
               sequence="10"/>
 
-    <menuitem id="menu_booking_templates"
-              name="Booking Templates"
-              parent="menu_dispatch_settings_parent"
-              action="prema_dispatch.action_booking_templates"
-              sequence="20"/>
-
 </odoo>

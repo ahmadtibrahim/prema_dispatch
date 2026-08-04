@@ -1,7 +1,5 @@
-from odoo import _, fields, models
+from odoo import _, api, fields, models
 from odoo.exceptions import UserError
-
-from ..services.pricing_service import PricingService
 
 SHIPMENT_TYPES = [("ltl", "LTL"), ("ftl", "FTL")]
 TEMP_MODES = [("dry", "Dry"), ("reefer", "Reefer")]
@@ -30,50 +28,108 @@ class LogisticsPhoneBooking(models.TransientModel):
         string="Required Temperature °C",
         help="Required for Reefer bookings. 0°C is a valid value.",
     )
+    temperature_confirmed = fields.Boolean(
+        string="Temperature Confirmed",
+        help="Confirms that the numeric Reefer temperature was intentionally entered; 0°C is valid.",
+    )
     shipment_type = fields.Selection(SHIPMENT_TYPES, default="ltl")
     liftgate_pickup = fields.Boolean()
     liftgate_delivery = fields.Boolean()
     appointment = fields.Boolean()
     residential = fields.Boolean()
+    same_day_requested = fields.Boolean(string="Same-Day Requested")
 
     # Results
     result_text = fields.Text(readonly=True)
     price = fields.Float(readonly=True)
     pickup_date = fields.Date(readonly=True)
     delivery_date = fields.Date(readonly=True)
+    quote_token = fields.Char(readonly=True, copy=False)
     booking_id = fields.Many2one("logistics.booking", readonly=True, string="Created Booking")
+
+    @api.onchange(
+        "partner_id", "pickup_postal_code", "pickup_address",
+        "delivery_postal_code", "delivery_address", "pallets", "weight_lbs",
+        "temperature_mode", "required_temperature_c", "temperature_confirmed",
+        "shipment_type", "liftgate_pickup", "liftgate_delivery", "appointment",
+        "residential", "same_day_requested",
+    )
+    def _onchange_quote_inputs(self):
+        """A displayed price is valid only for the unchanged request."""
+        if not self.booking_id:
+            self.quote_token = False
+            self.price = 0.0
+            self.pickup_date = False
+            self.delivery_date = False
+            self.result_text = False
+
+    def _normalized_request(self, service):
+        self.ensure_one()
+        return service.normalize_request({
+            "partner_id": self.partner_id.id,
+            "source_model": self._name,
+            "source_res_id": self.id,
+            "pickup_stops": [{
+                "street": self.pickup_address or "",
+                "formatted_address": self.pickup_address or "",
+                "postal_code": self.pickup_postal_code,
+                "instructions": self.pickup_instructions or "",
+                "pallet_count": self.pallets,
+                "weight_lb": self.weight_lbs,
+                "liftgate_required": self.liftgate_pickup,
+            }],
+            "delivery_stops": [{
+                "street": self.delivery_address or "",
+                "formatted_address": self.delivery_address or "",
+                "postal_code": self.delivery_postal_code,
+                "instructions": self.delivery_instructions or "",
+                "pallet_count": self.pallets,
+                "weight_lb": self.weight_lbs,
+                "liftgate_required": self.liftgate_delivery,
+            }],
+            "pallets": self.pallets,
+            "weight_lbs": self.weight_lbs,
+            "load_type": self.shipment_type,
+            "equipment_type": self.temperature_mode,
+            "required_temperature_c": (
+                self.required_temperature_c
+                if self.temperature_mode == "reefer"
+                else None
+            ),
+            "pricing_method": "corridor",
+            "liftgate_pickup": self.liftgate_pickup,
+            "liftgate_delivery": self.liftgate_delivery,
+            "appointment": self.appointment,
+            "residential": self.residential,
+            "same_day_requested": self.same_day_requested,
+            "idempotency_key": f"phone:{self.id}",
+        }, source_channel="phone")
 
     def action_get_price(self):
         self.ensure_one()
-        Fsa = self.env["logistics.fsa"]
-        pickup_fsa = Fsa.resolve_from_postal(self.pickup_postal_code)
-        delivery_fsa = Fsa.resolve_from_postal(self.delivery_postal_code)
+        if self.temperature_mode == "reefer" and not self.temperature_confirmed:
+            raise UserError(_("Enter and confirm the numeric Reefer temperature; 0°C is valid."))
+        from ..services.booking_orchestration_service import BookingOrchestrationService
 
-        if not pickup_fsa or not pickup_fsa.pickup_supported:
-            raise UserError(_("Pickup postal code not recognized or not in service area."))
-        if not delivery_fsa or not delivery_fsa.delivery_supported:
-            raise UserError(_("Delivery postal code not recognized or not in service area."))
+        service = BookingOrchestrationService(self.env)
+        quote = service.prepare_quote(self._normalized_request(service))
+        session = self.env["logistics.pricing.session"].sudo().search([
+            ("token", "=", quote["quote_token"]),
+        ], limit=1)
+        if not session:
+            raise UserError(_("The price session could not be created. Please try again."))
 
-        result = PricingService(self.env).calculate(
-            pickup_fsa, delivery_fsa, self.shipment_type, self.temperature_mode,
-            self.pallets, self.weight_lbs, self.liftgate_pickup, self.liftgate_delivery,
-            self.appointment, self.residential, partner=self.partner_id,
-            required_temperature_c=self.required_temperature_c if self.temperature_mode == "reefer" else None,
-        )
-
-        if not result.available:
-            raise UserError(_("Pricing not available: %s") % result.reason)
-
-        self.price = result.calculated_price
-        self.pickup_date = result.pickup_date
-        self.delivery_date = result.delivery_date_estimate
+        self.quote_token = session.token
+        self.price = session.calculated_price
+        self.pickup_date = session.pickup_date
+        self.delivery_date = session.delivery_date_estimate
 
         lines = []
-        lines.append(f"Lane: {result.lane.name}")
-        lines.append(f"Service: {result.service_offering.name}")
-        lines.append(f"Pickup: {result.pickup_date} | Delivery: {result.delivery_date_estimate}")
+        lines.append(f"Corridor: {quote['lane_name']}")
+        lines.append("Service: Scheduled LTL")
+        lines.append(f"Pickup: {session.pickup_date} | Delivery: {session.delivery_date_estimate}")
         lines.append("")
-        for line in result.price_lines:
+        for line in quote["price_lines"]:
             lines.append(f"  {line['label']:<35s} ${line['amount']:>10.2f}")
         self.result_text = "\n".join(lines)
         return {
@@ -86,7 +142,9 @@ class LogisticsPhoneBooking(models.TransientModel):
 
     def action_confirm_booking(self):
         self.ensure_one()
-        if not self.price:
+        if self.temperature_mode == "reefer" and not self.temperature_confirmed:
+            raise UserError(_("Enter and confirm the numeric Reefer temperature; 0°C is valid."))
+        if not self.price or not self.quote_token:
             raise UserError(_("Get a price first."))
 
         # Idempotency: return existing booking if already created
@@ -103,39 +161,17 @@ class LogisticsPhoneBooking(models.TransientModel):
         from ..services.booking_orchestration_service import BookingOrchestrationService
 
         svc = BookingOrchestrationService(self.env)
+        session = self.env["logistics.pricing.session"].sudo().search([
+            ("token", "=", self.quote_token),
+        ], limit=1)
+        if not session:
+            raise UserError(_("This price is no longer available. Please get a new price."))
 
-        wizard_uuid = getattr(self, '_phone_booking_uuid', None)
-        if not wizard_uuid:
-            import uuid
-            wizard_uuid = uuid.uuid4().hex[:12]
-            self._phone_booking_uuid = wizard_uuid
-
-        norm = svc.normalize_request({
-            "partner_id": self.partner_id.id,
-            "pickup_stops": [{
-                "postal_code": self.pickup_postal_code,
-                "formatted_address": self.pickup_address or "",
-                "instructions": self.pickup_instructions or "",
-            }],
-            "delivery_stops": [{
-                "postal_code": self.delivery_postal_code,
-                "formatted_address": self.delivery_address or "",
-                "instructions": self.delivery_instructions or "",
-            }],
-            "pallets": self.pallets,
-            "weight_lbs": self.weight_lbs,
-            "load_type": self.shipment_type,
-            "equipment_type": self.temperature_mode,
-            "required_temperature_c": self.required_temperature_c if self.temperature_mode == "reefer" else None,
-            "pricing_method": "rate_plan",
-            "liftgate_pickup": self.liftgate_pickup,
-            "liftgate_delivery": self.liftgate_delivery,
-            "appointment": self.appointment,
-            "residential": self.residential,
-            "idempotency_key": f"phone:{wizard_uuid}",
-        }, source_channel="phone")
-
-        booking = svc.confirm_from_internal(norm, skip_invoice=False)
+        booking = svc.confirm_from_internal(
+            self._normalized_request(svc),
+            skip_invoice=False,
+            pricing_session=session,
+        )
         self.booking_id = booking.id
 
         return {

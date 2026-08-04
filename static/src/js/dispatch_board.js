@@ -942,6 +942,10 @@ export class DispatchBoard extends Component {
             if (r.success) {
                 this.notification.add(`${r.job_name} returned to unassigned queue.`, { type: "info" });
                 await this.loadData();
+            } else {
+                this.notification.add(r.error || "This job cannot be unassigned.", {
+                    type: "danger", sticky: true,
+                });
             }
         } catch (e) { this.notification.add(`Error: ${e.message}`, { type: "danger" }); }
     }
@@ -994,11 +998,20 @@ export class DispatchBoard extends Component {
     async optimizeTruckRoute(truck) {
         const jobs = this.primaryJobs(truck);
         if (!jobs.length) { this.notification.add("No jobs to optimize.", { type: "warning" }); return; }
-        for (const job of jobs) {
-            try { await this.orm.call("prema.dispatch.job", "action_optimize_route", [job.job_id]); } catch (e) {}
+        if (jobs.length > 1) {
+            const result = await this.orm.call(
+                "prema.dispatch.job", "optimize_truck_day_live",
+                [truck.truck_id, this.state.selectedDate]
+            );
+            if (!result.success) {
+                this.notification.add(result.error || "Route could not be optimized.", { type: "warning" });
+                return;
+            }
+        } else {
+            await this.orm.call("prema.dispatch.job", "action_optimize_route", [jobs[0].job_id]);
         }
         await this.loadData();
-        this.notification.add(`Route optimized for ${truck.name}.`, { type: "success" });
+        this.notification.add(`Live route optimized for ${truck.name}; completed and en-route stops stayed locked.`, { type: "success" });
     }
 
     async consolidateTruckRoute(truck) {

@@ -8,7 +8,7 @@
                 <field name="fsa"/>
                 <field name="province"/>
                 <field name="display_city"/>
-                <field name="region_id"/>
+                <field name="region_id" domain="[('is_official_ltl_region','=',True)]"/>
                 <field name="zone_id"/>
                 <field name="pickup_supported"/>
                 <field name="delivery_supported"/>
@@ -27,7 +27,7 @@
                         <field name="fsa"/>
                         <field name="province"/>
                         <field name="display_city"/>
-                        <field name="region_id"/>
+                        <field name="region_id" domain="[('is_official_ltl_region','=',True)]"/>
                         <field name="pickup_supported"/>
                         <field name="delivery_supported"/>
                         <field name="remote"/>

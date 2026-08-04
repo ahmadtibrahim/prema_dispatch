@@ -45,7 +45,6 @@ access_custody_report_wizard_dispatcher,custody.report.wizard.dispatcher,model_p
 access_driver_worksheet_manager,driver.worksheet.manager,model_prema_dispatch_driver_worksheet,group_dispatch_manager,1,1,1,1
 access_driver_worksheet_dispatcher,driver.worksheet.dispatcher,model_prema_dispatch_driver_worksheet,group_dispatcher,1,1,1,0
 access_driver_worksheet_driver,driver.worksheet.driver,model_prema_dispatch_driver_worksheet,group_dispatch_driver,1,0,0,0
-access_duplicate_job_wizard_user,duplicate.job.wizard.user,model_prema_dispatch_duplicate_job_wizard,base.group_user,1,1,1,1
 access_consolidation_wizard_user,consolidation.wizard.user,model_prema_dispatch_consolidation_wizard,base.group_user,1,1,1,1
 access_consolidation_line_user,consolidation.line.user,model_prema_dispatch_consolidation_line,base.group_user,1,1,1,1
 access_chat_invite_wizard_dispatcher,chat.invite.wizard.dispatcher,model_prema_dispatch_chat_invite_wizard,group_dispatcher,1,1,1,1

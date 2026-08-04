@@ -45,8 +45,8 @@
                             <field name="booking_channel" readonly="1"/>
                         </group>
                         <group>
-                            <field name="service_offering_id" readonly="1"/>
-                            <field name="rate_plan_id" readonly="1"/>
+                            <field name="corridor_id" readonly="1"/>
+                            <field name="departure_id" readonly="1"/>
                             <field name="pickup_date" readonly="1"/>
                             <field name="estimated_delivery_date" readonly="1"/>
                             <field name="calculated_price" readonly="1"/>
@@ -85,8 +85,38 @@
                                 <field name="liftgate_pickup" readonly="1"/>
                                 <field name="liftgate_delivery" readonly="1"/>
                                 <field name="appointment" readonly="1"/>
-                                <field name="equipment_profile_id" readonly="1"/>
                             </group>
+                        </page>
+                        <page string="Route &amp; Dispatch Planner">
+                            <group>
+                                <field name="is_multi_leg" readonly="1"/>
+                                <field name="corridor_id" readonly="1"/>
+                                <field name="departure_id" readonly="1"/>
+                            </group>
+                            <field name="leg_ids" readonly="1">
+                                <list>
+                                    <field name="sequence"/>
+                                    <field name="leg_type"/>
+                                    <field name="origin_region_id"/>
+                                    <field name="destination_region_id"/>
+                                    <field name="departure_id"/>
+                                    <field name="pickup_date"/>
+                                    <field name="delivery_date"/>
+                                    <field name="reservation_state"/>
+                                    <field name="frozen_leg_price"/>
+                                </list>
+                            </field>
+                            <separator string="Planner Day Cards"/>
+                            <field name="dispatch_job_ids" readonly="1">
+                                <list>
+                                    <field name="name"/>
+                                    <field name="operation_role"/>
+                                    <field name="operation_date"/>
+                                    <field name="vehicle_id"/>
+                                    <field name="corridor_departure_id"/>
+                                    <field name="stage_id"/>
+                                </list>
+                            </field>
                         </page>
                         <page string="Tax &amp; Invoice">
                             <group>

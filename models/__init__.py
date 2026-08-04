@@ -6,7 +6,6 @@ from . import dispatch_job
 from . import fleet_vehicle
 from . import dispatch_feasibility
 from . import dispatch_adhoc_wizard
-from . import dispatch_duplicate_job_wizard
 from . import dispatch_consolidation_wizard
 from . import dispatch_chat_invite_wizard
 from . import voip_call_extension

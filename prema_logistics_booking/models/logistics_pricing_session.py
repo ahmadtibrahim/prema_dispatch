@@ -22,6 +22,10 @@ class LogisticsPricingSession(models.TransientModel):
     partner_id = fields.Many2one("res.partner", required=True, index=True)
     pickup_fsa_id = fields.Many2one("logistics.fsa", required=True)
     delivery_fsa_id = fields.Many2one("logistics.fsa", required=True)
+    corridor_id = fields.Many2one(
+        "logistics.corridor", string="Priced Corridor", readonly=True,
+        help="Primary operational corridor frozen by the active quote.",
+    )
     service_offering_id = fields.Many2one("logistics.service.offering")
     rate_plan_id = fields.Many2one("logistics.rate.plan")
 
@@ -44,7 +48,7 @@ class LogisticsPricingSession(models.TransientModel):
 
     price_snapshot = fields.Json()
     route_snapshot = fields.Json(string="Route Snapshot",
-        help="Immutable route details: legs, rate plans, prices, origin/destination regions.")
+        help="Immutable corridor legs, exact departures, trucks, distance and frozen prices.")
     calculated_price = fields.Float()
 
     state = fields.Selection(

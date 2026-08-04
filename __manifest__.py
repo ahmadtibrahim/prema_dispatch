@@ -1,6 +1,6 @@
 {
     "name": "Prema Dispatch",
-    "version": "18.0.2.1.0",
+    "version": "18.0.2.2.0",
     "summary": "Booking, planning, live GPS tracking, driver mobile app, interactive truck Load Plans, warehouse loading mode, AI document extraction, VoIP calling and reporting for PremaFirm dispatch operations",
     "category": "Logistics",
     "description": """
@@ -19,8 +19,8 @@ Booking
 * "Generate from Text" on the Sales Order: paste a customer WhatsApp/SMS/
   email and AI extracts pickup/delivery stops, pallet counts, route, dates
   and reefer/liftgate requirements into a new booking.
-* Booking Templates for recurring lanes, an ad-hoc "Find Available Truck"
-  mid-day load finder, and LTL Consolidation tools for combining loads.
+* Recurring Agreements (provided by Prema Logistics Booking), an ad-hoc
+  "Find Available Truck" mid-day load finder, and LTL consolidation tools.
 
 Dispatch Planner
 ----------------
@@ -126,13 +126,11 @@ A full in-app user manual is available from the Prema Dispatch app menu.
         "views/dispatch_job_views.xml",
         "views/dispatch_feasibility_views.xml",
         "views/account_move_dispatch_views.xml",
-        "views/dispatch_duplicate_job_wizard_views.xml",
         "views/dispatch_consolidation_wizard_views.xml",
         "views/dispatch_chat_invite_wizard_views.xml",
         "views/voip_call_views.xml",
         "views/sale_order_dispatch_views.xml",
         "views/booking_board_views.xml",
-        "views/booking_template_views.xml",
         "views/dispatch_adhoc_wizard_views.xml",
         "views/consolidation_views.xml",
         "views/dispatch_live_map_views.xml",

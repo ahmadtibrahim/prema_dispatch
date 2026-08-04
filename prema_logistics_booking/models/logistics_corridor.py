@@ -12,7 +12,7 @@ stop sequence, recurrence rules, and scheduled departures in ONE place.
 import logging as _logging
 import datetime
 from odoo import _, api, fields, models
-from odoo.exceptions import AccessError
+from odoo.exceptions import ValidationError
 
 WEEKDAY_SELECTION = [
     ("0", "Monday"), ("1", "Tuesday"), ("2", "Wednesday"),
@@ -43,13 +43,33 @@ class LogisticsCorridor(models.Model):
     default_vehicle_id = fields.Many2one("fleet.vehicle", string="Default Truck",
                                           help="Default truck assigned to this weekly service. "
                                                "Copied to new departures on generation.")
-    default_driver_id = fields.Many2one("res.partner", string="Default Driver",
-                                         help="Default driver for this weekly service.")
-    weekday = fields.Selection(WEEKDAY_SELECTION, string="Primary Operating Day",
-                               help="Primary day this corridor operates. For multi-day, see departure schedule.")
-    recurring_weekdays = fields.Char(string="Recurring Weekdays",
-                                     help="Comma-separated weekday numbers (0=Mon...6=Sun) for recurring operation.")
+    default_driver_id = fields.Many2one("res.partner", string="Default Driver [DEPRECATED]")
+    weekday = fields.Selection(WEEKDAY_SELECTION, string="Primary Operating Day [DEPRECATED]")
+    recurring_weekdays = fields.Char(string="Recurring Weekdays [DEPRECATED]")
     start_time = fields.Float(string="Start Time", default=7.0, help="24h float, e.g. 7.0 = 7:00 AM")
+    destination_hub_arrival_time = fields.Float(
+        string="Hub Arrival Time",
+        help="Expected arrival back at the Hub or at the Destination Hub. Used to validate same-day transfers.",
+    )
+    operate_monday = fields.Boolean(string="Monday")
+    operate_tuesday = fields.Boolean(string="Tuesday")
+    operate_wednesday = fields.Boolean(string="Wednesday")
+    operate_thursday = fields.Boolean(string="Thursday")
+    operate_friday = fields.Boolean(string="Friday")
+    operate_saturday = fields.Boolean(string="Saturday")
+    operate_sunday = fields.Boolean(string="Sunday")
+    operating_days_display = fields.Char(
+        string="Every Week", compute="_compute_operating_days_display",
+        help="The weekly days used to generate exact departures.",
+    )
+    departure_horizon_weeks = fields.Integer(
+        string="Customer Booking Horizon (weeks)", default=8,
+        help="Exactly this many weekly occurrences are maintained. The maximum is eight weeks.",
+    )
+    holiday_calendar_ids = fields.Many2many(
+        "logistics.holiday.calendar", "logistics_corridor_holiday_rel",
+        "corridor_id", "calendar_id", string="Holiday / Blackout Calendars",
+    )
     overnight = fields.Boolean(string="Overnight", help="Driver rests overnight before return.")
     conditional = fields.Boolean(string="Conditional",
                                  help="Only dispatched if minimum revenue or bookings met.")
@@ -90,19 +110,44 @@ class LogisticsCorridor(models.Model):
 
     # ── Lane linkage (Phase 2) ──────────────────────────────────────
     lane_ids = fields.Many2many("logistics.lane", "corridor_lane_rel",
-                                "corridor_id", "lane_id", string="Lanes Served")
+                                "corridor_id", "lane_id", string="Lanes Served [DEPRECATED]")
 
     # ── Round-trip pairing (Phase 12) ───────────────────────────────
-    return_corridor_id = fields.Many2one("logistics.corridor", string="Return Corridor",
-                                          help="The return/backhaul corridor paired with this outbound corridor.")
-    feeds_corridor_id = fields.Many2one("logistics.corridor", string="Feeds Corridor",
-                                         help="Local ops corridor that feeds freight into this corridor (Phase 13).")
+    return_corridor_id = fields.Many2one("logistics.corridor", string="Return Corridor [DEPRECATED]")
+    feeds_corridor_id = fields.Many2one("logistics.corridor", string="Feeds Corridor [DEPRECATED]")
 
-    # ── Distance & revenue ──────────────────────────────────────────
-    full_distance_km = fields.Float(string="Full Corridor Distance (km)")
-    full_revenue_target = fields.Float(string="Full-Corridor Revenue Target")
+    # ── Distance & customer pricing authority ──────────────────────
+    rate_per_km = fields.Float(
+        string="$ / km", default=4.0,
+        help="Truck revenue target per kilometre for this corridor.",
+    )
     planned_pallets = fields.Integer(string="Planned Pallets", default=8)
-    truck_capacity = fields.Integer(string="Truck Capacity", default=12)
+    included_weight_per_pallet = fields.Float(
+        string="Included Weight per Pallet (lb)", default=500.0,
+    )
+    minimum_booking_charge = fields.Monetary(
+        string="Minimum Booking Charge", default=150.0,
+        help="Applied once to the complete booking, never once per transfer leg.",
+    )
+    currency_id = fields.Many2one(
+        "res.currency", default=lambda self: self.env.company.currency_id,
+    )
+    pallet_rate_per_km = fields.Float(
+        string="$ / km per Pallet", compute="_compute_corridor_pricing", store=True,
+        digits=(12, 6),
+    )
+    full_distance_km = fields.Float(
+        string="Full Corridor Distance (km)", compute="_compute_corridor_pricing", store=True,
+        help="Farthest configured stop distance; doubled for a same-day return.",
+    )
+    destination_hub_distance_km = fields.Float(
+        string="Destination Hub Distance (km)", readonly=True, copy=False,
+        help="Cumulative road distance to the Destination Hub, calculated with the ordered route.",
+    )
+    full_revenue_target = fields.Monetary(
+        string="Full-Corridor Revenue Target", compute="_compute_corridor_pricing", store=True,
+    )
+    truck_capacity = fields.Integer(string="Truck Capacity [DEPRECATED]", default=12)
 
     # ── Equipment (absorbed from route.template) ────────────────────
     equipment_profile_id = fields.Many2one(
@@ -123,20 +168,19 @@ class LogisticsCorridor(models.Model):
     )
     effective_rate_plan_ids = fields.Many2many(
         "logistics.rate.plan", compute="_compute_effective_rate_plans",
-        string="Effective Rate Plans",
-        help="Read-only. The active Rate Plan(s) RouteResolver would actually "
-             "select for each pickup-to-delivery pair this corridor serves. "
-             "Not stored — compute on the form view only, never in a list "
-             "view column (one call to RouteResolver per stop pair).",
+        string="Effective Rate Plans [DEPRECATED]",
+        help="Historical compatibility only. Corridor $/km is the active pricing authority.",
     )
 
     @api.depends(
-        "return_corridor_id", "stop_ids.sequence", "stop_ids.region_id",
+        "paired_return_service_id", "return_corridor_id",
+        "stop_ids.sequence", "stop_ids.region_id",
+        "paired_return_service_id.stop_ids.sequence", "paired_return_service_id.stop_ids.region_id",
         "return_corridor_id.stop_ids.sequence", "return_corridor_id.stop_ids.region_id",
     )
     def _compute_is_two_way(self):
         for rec in self:
-            paired = rec.return_corridor_id
+            paired = rec.paired_return_service_id or rec.return_corridor_id
             if not paired:
                 rec.is_two_way = False
                 continue
@@ -151,51 +195,446 @@ class LogisticsCorridor(models.Model):
 
     @api.depends("stop_ids.sequence", "stop_ids.region_id", "stop_ids.pickup_allowed", "stop_ids.delivery_allowed")
     def _compute_effective_rate_plans(self):
-        from ..services.route_resolver import RouteResolver
-        resolver = RouteResolver(self.env)
         for rec in self:
-            stops = rec.stop_ids.sorted("sequence")
-            rate_plans = self.env["logistics.rate.plan"]
-            for i, orig in enumerate(stops):
-                if not orig.region_id or not orig.pickup_allowed:
-                    continue
-                for j, dest in enumerate(stops):
-                    if j <= i or not dest.region_id or not dest.delivery_allowed:
-                        continue
-                    rate_plan = resolver.find_rate_plan_for_regions(orig.region_id, dest.region_id)
-                    if rate_plan:
-                        rate_plans |= rate_plan
-            rec.effective_rate_plan_ids = rate_plans
+            rec.effective_rate_plan_ids = self.env["logistics.rate.plan"]
 
-    @api.model
-    def generate_segment_rates(self, corridor_id, preview=True):
-        corridor = self.browse(corridor_id)
-        if not corridor.exists():
-            return {"error": "Corridor not found"}
-        stops = corridor.stop_ids.sorted("sequence")
-        segments = []
-        for i, orig in enumerate(stops):
-            if not orig.pickup_allowed:
+    @api.depends(
+        "operate_monday", "operate_tuesday", "operate_wednesday",
+        "operate_thursday", "operate_friday", "operate_saturday", "operate_sunday",
+    )
+    def _compute_operating_days_display(self):
+        labels = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+        fields_by_day = (
+            "operate_monday", "operate_tuesday", "operate_wednesday",
+            "operate_thursday", "operate_friday", "operate_saturday", "operate_sunday",
+        )
+        for rec in self:
+            rec.operating_days_display = ", ".join(
+                label for label, field_name in zip(labels, fields_by_day) if rec[field_name]
+            ) or "Not scheduled"
+
+    @api.depends(
+        "rate_per_km", "planned_pallets", "same_day_return",
+        "stop_ids.distance_from_origin_km", "stop_ids.active",
+        "destination_hub_distance_km",
+    )
+    def _compute_corridor_pricing(self):
+        for rec in self:
+            farthest = max(
+                (rec.stop_ids.filtered("active").mapped("distance_from_origin_km") or [0.0])
+                + [rec.destination_hub_distance_km or 0.0]
+            )
+            rec.full_distance_km = farthest * (2.0 if rec.same_day_return else 1.0)
+            rec.pallet_rate_per_km = (
+                rec.rate_per_km / rec.planned_pallets if rec.planned_pallets > 0 else 0.0
+            )
+            rec.full_revenue_target = rec.full_distance_km * rec.rate_per_km
+
+    @api.constrains("planned_pallets", "rate_per_km", "included_weight_per_pallet", "departure_horizon_weeks")
+    def _check_corridor_pricing_and_horizon(self):
+        for rec in self:
+            if rec.planned_pallets <= 0:
+                raise ValidationError(_("Planned Pallets must be greater than zero."))
+            if rec.rate_per_km < 0:
+                raise ValidationError(_("$ / km cannot be negative."))
+            if rec.included_weight_per_pallet <= 0:
+                raise ValidationError(_("Included weight per pallet must be greater than zero."))
+            if not 1 <= (rec.departure_horizon_weeks or 0) <= 8:
+                raise ValidationError(_("Customer booking horizon must be between 1 and 8 weeks."))
+
+    def _operating_weekdays(self):
+        self.ensure_one()
+        names = (
+            "operate_monday", "operate_tuesday", "operate_wednesday",
+            "operate_thursday", "operate_friday", "operate_saturday", "operate_sunday",
+        )
+        # Legacy weekday/recurring_weekdays columns are historical only. The
+        # visible Every Week checkboxes are the sole scheduling authority.
+        return {idx for idx, field_name in enumerate(names) if self[field_name]}
+
+    def _excluded_departure_dates(self):
+        self.ensure_one()
+        return set(self.holiday_calendar_ids.mapped("line_ids.date"))
+
+    def _vehicle_capacity(self, vehicle=None):
+        self.ensure_one()
+        vehicle = vehicle or self.default_vehicle_id
+        if not vehicle:
+            return 0
+        if hasattr(vehicle, "get_layout_capacity"):
+            return vehicle.get_layout_capacity() or 0
+        return vehicle.pin_wheel_pallet_capacity or vehicle.straight_pallet_capacity or vehicle.x_max_pallets or 0
+
+    def _default_vehicle_for_date(self, departure_date, exclude_departure=None):
+        """Return the default truck only when that truck/day is still free.
+
+        A schedule row is still created when the truck is occupied, but it is
+        deliberately left unassigned and therefore cannot accept bookings.
+        The daily reconciliation assigns the default automatically once the
+        conflict is removed.
+        """
+        self.ensure_one()
+        vehicle = self.default_vehicle_id
+        if not vehicle:
+            return vehicle
+        departure_domain = [
+            ("vehicle_id", "=", vehicle.id),
+            ("departure_date", "=", departure_date),
+            ("active", "=", True),
+            ("status", "not in", ("cancelled", "completed")),
+        ]
+        if exclude_departure:
+            departure_domain.append(("id", "!=", exclude_departure.id))
+        if self.env["logistics.corridor.departure"].sudo().search_count(departure_domain):
+            return self.env["fleet.vehicle"]
+        planner_jobs = self.env["prema.dispatch.job"].sudo().search([
+            ("vehicle_id", "=", vehicle.id),
+            ("operation_date", "=", departure_date),
+            ("stage_id.stage_type", "not in", ("cancelled", "completed")),
+        ])
+        for job in planner_jobs:
+            if exclude_departure and job.corridor_departure_id == exclude_departure:
                 continue
-            for j, dest in enumerate(stops):
-                if j <= i or not dest.delivery_allowed:
-                    continue
-                d = dest.distance_from_origin_km - orig.distance_from_origin_km
-                if d <= 0:
-                    continue
-                ratio = d / max(corridor.full_distance_km or 1, 1)
-                target = round(corridor.full_revenue_target * ratio, 2)
-                pp = corridor.planned_pallets or 8
-                segments.append({
-                    "origin_region": orig.region_id.name or str(orig.sequence),
-                    "dest_region": dest.region_id.name or str(dest.sequence),
-                    "origin_seq": orig.sequence, "dest_seq": dest.sequence,
-                    "distance_km": d, "revenue_target": target,
-                    "planned_pallets": pp, "price_per_pallet": round(target / pp, 2),
-                })
-        return {"corridor": corridor.name, "full_distance": corridor.full_distance_km,
-                "full_target": corridor.full_revenue_target, "segments": segments, "count": len(segments)}
+            # A delivery-day card from yesterday's LTL departure reserves the
+            # physical truck today. Pairing two corridors never makes that
+            # truck available for a second job or departure on the same day.
+            return self.env["fleet.vehicle"]
+        return vehicle
 
+    def resolve_region_segment(self, origin_region, destination_region):
+        """Return the usable ordered segment between two served regions.
+
+        A normal one-way corridor only permits travel in stop order.  A
+        same-day-return corridor has a second (return) visit to every stop,
+        so a pickup made later on the outbound route can still be delivered
+        to an earlier stop on the way back without forcing a hub transfer.
+        The returned distance is the distance the truck actually travels
+        after pickup, not a straight-line estimate.
+        """
+        self.ensure_one()
+        stops = self.stop_ids.filtered(lambda stop: stop.active and stop.region_id).sorted("sequence")
+        route_end = max(
+            (stops.mapped("distance_from_origin_km") or [0.0])
+            + [self.destination_hub_distance_km or 0.0]
+        )
+        last_day = max(stops.mapped("day_offset") or [0])
+
+        def visits_for(region, pickup):
+            visits = []
+            permission = "pickup_allowed" if pickup else "delivery_allowed"
+            for stop in stops.filtered(lambda item: item.region_id == region and item[permission]):
+                visits.append({
+                    "position": stop.distance_from_origin_km,
+                    "day": stop.day_offset or 0,
+                    "direction": "outbound",
+                    "stop": stop,
+                    "sequence": stop.sequence,
+                    "arrival_time": stop.planned_arrival_time,
+                    "departure_time": stop.planned_departure_time,
+                })
+                if self.same_day_return and route_end:
+                    visits.append({
+                        "position": 2.0 * route_end - stop.distance_from_origin_km,
+                        "day": last_day,
+                        "direction": "return",
+                        "stop": stop,
+                        "sequence": 100000 - stop.sequence,
+                        "arrival_time": stop.planned_arrival_time,
+                        "departure_time": stop.planned_departure_time,
+                    })
+
+            origin_hub_region = self.origin_hub_id.canonical_region_id
+            if origin_hub_region and region == origin_hub_region:
+                visits.append({
+                    "position": 0.0,
+                    "day": 0,
+                    "direction": "outbound",
+                    "stop": False,
+                    "sequence": 0,
+                    "arrival_time": self.start_time,
+                    "departure_time": self.start_time,
+                })
+                if self.same_day_return and route_end:
+                    visits.append({
+                        "position": 2.0 * route_end,
+                        "day": last_day,
+                        "direction": "return",
+                        "stop": False,
+                        "sequence": 100000,
+                        "arrival_time": self.destination_hub_arrival_time or False,
+                        "departure_time": False,
+                    })
+
+            destination_hub_region = self.destination_hub_id.canonical_region_id
+            if (
+                destination_hub_region
+                and region == destination_hub_region
+                and self.destination_hub_distance_km > 0
+            ):
+                visits.append({
+                    "position": self.destination_hub_distance_km,
+                    "day": last_day,
+                    "direction": "outbound",
+                    "stop": False,
+                    "sequence": 99999,
+                    "arrival_time": self.destination_hub_arrival_time or False,
+                    "departure_time": False,
+                })
+            return visits
+
+        candidates = []
+        for origin_visit in visits_for(origin_region, pickup=True):
+            for destination_visit in visits_for(destination_region, pickup=False):
+                if destination_visit["day"] < origin_visit["day"] or (
+                    destination_visit["day"] == origin_visit["day"]
+                    and destination_visit["position"] <= origin_visit["position"]
+                ):
+                    continue
+                candidates.append({
+                    "corridor": self,
+                    "origin_stop": origin_visit["stop"],
+                    "destination_stop": destination_visit["stop"],
+                    "origin_region": origin_region,
+                    "destination_region": destination_region,
+                    "distance_km": destination_visit["position"] - origin_visit["position"],
+                    "pickup_day_offset": origin_visit["day"],
+                    "delivery_day_offset": destination_visit["day"],
+                    "origin_direction": origin_visit["direction"],
+                    "destination_direction": destination_visit["direction"],
+                    "origin_departure_time": origin_visit["departure_time"],
+                    "destination_arrival_time": destination_visit["arrival_time"],
+                    "destination_sequence": destination_visit["sequence"],
+                })
+        if not candidates:
+            return False
+        return min(candidates, key=lambda segment: (
+            segment["delivery_day_offset"] - segment["pickup_day_offset"],
+            segment["distance_km"],
+            segment["destination_sequence"],
+        ))
+
+    def action_refresh_departures(self):
+        summary = {"created": 0, "updated": 0, "removed": 0, "preserved_booked": 0}
+        for corridor in self:
+            result = corridor._reconcile_departure_horizon()
+            for key in summary:
+                summary[key] += result.get(key, 0)
+        return {
+            "type": "ir.actions.client",
+            "tag": "display_notification",
+            "params": {
+                "title": _("Departure schedule refreshed"),
+                "message": _(
+                    "Created %(created)s, updated %(updated)s, removed %(removed)s; "
+                    "preserved %(preserved_booked)s booked departure(s).",
+                    **summary,
+                ),
+                "type": "success",
+                "sticky": False,
+            },
+        }
+
+    def action_recalculate_route_distance(self):
+        """Fill cumulative road distance for ordered regions using Google Routes."""
+        from odoo.addons.prema_dispatch.services.route_service import DispatchRouteService
+
+        for corridor in self:
+            ordered = corridor.stop_ids.filtered("active").sorted("sequence")
+            if not ordered:
+                raise ValidationError(_("Add ordered regions before calculating distance."))
+
+            def stop_location(record):
+                saved = record.saved_location_id
+                if saved:
+                    if saved.pin_lat and saved.pin_lng:
+                        return (saved.pin_lat, saved.pin_lng)
+                    return saved.normalized_address or saved.address
+                region = record.region_id
+                if region and region.marker_latitude and region.marker_longitude:
+                    return (region.marker_latitude, region.marker_longitude)
+                return region.main_city if region else ""
+
+            def hub_location(hub):
+                if not hub:
+                    return False
+                if hub.saved_location_id and hub.saved_location_id.pin_lat and hub.saved_location_id.pin_lng:
+                    return (hub.saved_location_id.pin_lat, hub.saved_location_id.pin_lng)
+                if hub.latitude and hub.longitude:
+                    return (hub.latitude, hub.longitude)
+                return hub.formatted_address or (
+                    hub.saved_location_id.address if hub.saved_location_id else ""
+                )
+
+            origin_hub = corridor.origin_hub_id
+            origin_location = hub_location(origin_hub)
+            if origin_hub and not origin_location:
+                raise ValidationError(_(
+                    "The Origin Hub needs a verified Saved Location, coordinates, or address."
+                ))
+            remaining_stops = ordered
+            locations = []
+            targets = []
+            if origin_location:
+                locations.append(origin_location)
+                # A first stop representing the hub itself starts at 0 km.
+                if ordered[0].region_id == origin_hub.canonical_region_id:
+                    ordered[0].distance_from_origin_km = 0.0
+                    remaining_stops = ordered[1:]
+            else:
+                ordered[0].distance_from_origin_km = 0.0
+                locations.append(stop_location(ordered[0]))
+                remaining_stops = ordered[1:]
+
+            for stop in remaining_stops:
+                locations.append(stop_location(stop))
+                targets.append(("stop", stop))
+
+            destination_hub = corridor.destination_hub_id
+            destination_is_last_region = bool(
+                destination_hub
+                and destination_hub.canonical_region_id
+                and ordered[-1].region_id == destination_hub.canonical_region_id
+            )
+            if destination_hub and not destination_is_last_region:
+                locations.append(hub_location(destination_hub))
+                targets.append(("destination_hub", destination_hub))
+
+            if any(not value for value in locations):
+                raise ValidationError(_(
+                    "Every ordered region needs a map marker or Saved Location, and each configured Hub needs coordinates."
+                ))
+            legs = DispatchRouteService(self.env).get_sequential_travel(locations)
+            if len(legs) != len(targets):
+                raise ValidationError(_("Google Routes did not return every corridor leg."))
+            cumulative = 0.0
+            destination_hub_distance = 0.0
+            for (target_type, target), leg in zip(targets, legs):
+                cumulative += leg.get("distance_km") or 0.0
+                if target_type == "stop":
+                    target.distance_from_origin_km = round(cumulative, 1)
+                else:
+                    destination_hub_distance = round(cumulative, 1)
+            if destination_is_last_region:
+                destination_hub_distance = ordered[-1].distance_from_origin_km
+            corridor.destination_hub_distance_km = destination_hub_distance
+        return {
+            "type": "ir.actions.client", "tag": "display_notification",
+            "params": {
+                "title": _("Corridor distance updated"),
+                "message": _("Ordered road distances and the revenue target were recalculated."),
+                "type": "success", "sticky": False,
+            },
+        }
+
+    def _reconcile_departure_horizon(self, today=None):
+        """Maintain the next eight weekly occurrences for this corridor.
+
+        Future unbooked Scheduled rows that no longer match the weekly pattern
+        are removed. Completed/in-progress rows and any booked future departure
+        are preserved. Manual truck overrides are never overwritten.
+        """
+        self.ensure_one()
+        today = today or fields.Date.context_today(self)
+        weekdays = self._operating_weekdays()
+        weeks = min(max(self.departure_horizon_weeks or 8, 1), 8)
+        excluded = self._excluded_departure_dates()
+        target_dates = set()
+        cursor = today
+        horizon_end = today + datetime.timedelta(weeks=weeks) - datetime.timedelta(days=1)
+        local_now = fields.Datetime.context_timestamp(self, fields.Datetime.now())
+        while weekdays and cursor <= horizon_end:
+            weekday = cursor.weekday()
+            departure_has_passed = (
+                cursor == local_now.date()
+                and (self.start_time or 0.0)
+                <= (local_now.hour + local_now.minute / 60.0)
+            )
+            if weekday in weekdays and cursor not in excluded and not departure_has_passed:
+                target_dates.add(cursor)
+            cursor += datetime.timedelta(days=1)
+
+        Departure = self.env["logistics.corridor.departure"].sudo()
+        Leg = self.env["logistics.booking.leg"].sudo()
+        future = Departure.search([
+            ("corridor_id", "=", self.id),
+            ("departure_date", ">=", today),
+            ("status", "=", "scheduled"),
+            ("active", "=", True),
+        ])
+        summary = {"created": 0, "updated": 0, "removed": 0, "preserved_booked": 0}
+        for departure in future:
+            booked = bool(Leg.search_count([
+                ("departure_id", "=", departure.id),
+                ("reservation_state", "in", ("pending", "reserved", "consumed")),
+                ("booking_id.state", "!=", "cancelled"),
+            ]))
+            if departure.departure_date not in target_dates:
+                if booked:
+                    summary["preserved_booked"] += 1
+                else:
+                    departure.unlink()
+                    summary["removed"] += 1
+                continue
+            if booked:
+                # An already-sold exact departure is frozen. Schedule/default
+                # changes apply to new or still-empty rows; dispatchers may
+                # deliberately override this row from Open: Departure.
+                summary["preserved_booked"] += 1
+                continue
+            vals = {}
+            if departure.departure_time != self.start_time:
+                vals["departure_time"] = self.start_time
+            available_default = self._default_vehicle_for_date(
+                departure.departure_date, exclude_departure=departure,
+            )
+            if departure.vehicle_assignment_source != "manual_override" and departure.vehicle_id != available_default:
+                vals.update({
+                    "vehicle_id": available_default.id or False,
+                    "vehicle_assignment_source": "corridor_default",
+                    "max_capacity": self._vehicle_capacity(available_default),
+                })
+            if vals:
+                departure.with_context(corridor_default_sync=True).write(vals)
+                summary["updated"] += 1
+
+        existing_dates = set(future.filtered(lambda d: d.exists()).mapped("departure_date"))
+        for departure_date in sorted(target_dates - existing_dates):
+            available_default = self._default_vehicle_for_date(departure_date)
+            Departure.with_context(corridor_default_sync=True).create({
+                "corridor_id": self.id,
+                "departure_date": departure_date,
+                "departure_time": self.start_time,
+                "vehicle_id": available_default.id or False,
+                "vehicle_assignment_source": "corridor_default",
+                "status": "scheduled",
+                "max_capacity": self._vehicle_capacity(available_default),
+            })
+            summary["created"] += 1
+        return summary
+
+    @api.model_create_multi
+    def create(self, vals_list):
+        records = super().create(vals_list)
+        if not self.env.context.get("skip_departure_reconcile"):
+            for record in records.filtered(lambda r: r.active and r._operating_weekdays()):
+                record._reconcile_departure_horizon()
+        return records
+
+    def write(self, vals):
+        vals = dict(vals)
+        if "destination_hub_id" in vals:
+            vals.setdefault("destination_hub_distance_km", 0.0)
+        result = super().write(vals)
+        schedule_fields = {
+            "operate_monday", "operate_tuesday", "operate_wednesday",
+            "operate_thursday", "operate_friday", "operate_saturday", "operate_sunday",
+            "start_time", "default_vehicle_id",
+            "departure_horizon_weeks", "holiday_calendar_ids", "active",
+        }
+        if schedule_fields.intersection(vals) and not self.env.context.get("skip_departure_reconcile"):
+            for record in self.filtered("active"):
+                record._reconcile_departure_horizon()
+        return result
 
 class LogisticsCorridorStop(models.Model):
     _name = "logistics.corridor.stop"
@@ -223,7 +662,7 @@ class LogisticsCorridorDeparture(models.Model):
 
     @api.model
     def _maintain_departure_horizon(self):
-        """Daily cron: maintain a 12-week rolling departure horizon.
+        """Daily cron: maintain an eight-week rolling departure horizon.
         Idempotent — uses (corridor_id, departure_date) as business key.
         """
         try:
@@ -237,7 +676,7 @@ class LogisticsCorridorDeparture(models.Model):
 
         _logger = _logging.getLogger(__name__)
         try:
-            result = generate_phase1_departures(self.env, weeks=12)
+            result = generate_phase1_departures(self.env, weeks=8)
             _logger.info(
                 "Departure horizon: created=%d skipped=%d over %d weeks",
                 result["created"], result["skipped"], result["weeks"],
@@ -251,6 +690,10 @@ class LogisticsCorridorDeparture(models.Model):
     departure_date = fields.Date(required=True)
     departure_time = fields.Float(help="e.g. 1.0 = 01:00 AM")
     vehicle_id = fields.Many2one("fleet.vehicle", string="Truck")
+    vehicle_assignment_source = fields.Selection([
+        ("corridor_default", "Corridor Default"),
+        ("manual_override", "Manual Override"),
+    ], default="corridor_default", required=True, copy=False)
     driver_id = fields.Many2one("res.partner", string="Driver")
     active = fields.Boolean(default=True)
     status = fields.Selection([
@@ -279,6 +722,93 @@ class LogisticsCorridorDeparture(models.Model):
     service_offering_id = fields.Many2one("logistics.service.offering")
     cutoff_time = fields.Float()
 
+    @api.model_create_multi
+    def create(self, vals_list):
+        for vals in vals_list:
+            corridor = self.env["logistics.corridor"].browse(vals.get("corridor_id"))
+            if corridor:
+                departure_date = fields.Date.to_date(vals.get("departure_date"))
+                vals.setdefault("departure_time", corridor.start_time)
+                if "vehicle_id" not in vals:
+                    default_vehicle = corridor._default_vehicle_for_date(departure_date)
+                    vals["vehicle_id"] = default_vehicle.id or False
+                if "vehicle_assignment_source" not in vals:
+                    vals["vehicle_assignment_source"] = (
+                        "corridor_default" if self.env.context.get("corridor_default_sync")
+                        else "manual_override" if vals.get("vehicle_id") else "corridor_default"
+                    )
+                selected_vehicle = (
+                    self.env["fleet.vehicle"].browse(vals["vehicle_id"]).exists()
+                    if vals.get("vehicle_id")
+                    else self.env["fleet.vehicle"]
+                )
+                vals.setdefault(
+                    "max_capacity",
+                    corridor._vehicle_capacity(selected_vehicle) if selected_vehicle else 0,
+                )
+        records = super().create(vals_list)
+        records._check_vehicle_day_conflicts()
+        return records
+
+    def write(self, vals):
+        vals = dict(vals)
+        if "vehicle_id" in vals and not self.env.context.get("corridor_default_sync"):
+            vals["vehicle_assignment_source"] = "manual_override"
+            vehicle = self.env["fleet.vehicle"].browse(vals.get("vehicle_id"))
+            corridor = self[:1].corridor_id if self else self.env["logistics.corridor"]
+            vals["max_capacity"] = corridor._vehicle_capacity(vehicle) if corridor else 0
+        result = super().write(vals)
+        if {"vehicle_id", "departure_date", "active", "status"}.intersection(vals):
+            self._check_vehicle_day_conflicts()
+        return result
+
+    def _check_vehicle_day_conflicts(self):
+        vehicle_ids = sorted(set(self.filtered("vehicle_id").mapped("vehicle_id").ids))
+        if vehicle_ids:
+            # Serialize assignments per physical vehicle so two concurrent
+            # confirmations cannot both pass the Python conflict search.
+            self.env.cr.execute(
+                "SELECT id FROM fleet_vehicle WHERE id IN %s ORDER BY id FOR UPDATE",
+                [tuple(vehicle_ids)],
+            )
+        for departure in self.filtered(
+            lambda d: d.active and d.vehicle_id and d.status not in ("cancelled", "completed")
+        ):
+            conflict = self.search([
+                ("id", "!=", departure.id),
+                ("vehicle_id", "=", departure.vehicle_id.id),
+                ("departure_date", "=", departure.departure_date),
+                ("active", "=", True),
+                ("status", "not in", ("cancelled", "completed")),
+            ], limit=1)
+            if conflict:
+                raise ValidationError(_(
+                    "Truck %(truck)s is already booked for %(route)s on %(date)s. "
+                    "Reassign one of the departures before accepting another route.",
+                    truck=departure.vehicle_id.display_name,
+                    route=conflict.corridor_id.display_name,
+                    date=departure.departure_date,
+                ))
+            planner_jobs = self.env["prema.dispatch.job"].sudo().search([
+                ("vehicle_id", "=", departure.vehicle_id.id),
+                ("operation_date", "=", departure.departure_date),
+                ("stage_id.stage_type", "not in", ("cancelled", "completed")),
+            ])
+            blocking_job = self.env["prema.dispatch.job"]
+            for job in planner_jobs:
+                if job.corridor_departure_id == departure:
+                    continue
+                blocking_job = job
+                break
+            if blocking_job:
+                raise ValidationError(_(
+                    "Truck %(truck)s already has job %(job)s on %(date)s. "
+                    "Move that job or choose another truck before scheduling this departure.",
+                    truck=departure.vehicle_id.display_name,
+                    job=blocking_job.display_name,
+                    date=departure.departure_date,
+                ))
+
     def _compute_leg_capacity(self):
         """Compute leg-segment peak capacity for each departure."""
         for dep in self:
@@ -300,175 +830,3 @@ class LogisticsCorridorDeparture(models.Model):
             cn = r.corridor_id.name if r.corridor_id else ""
             d = r.departure_date.strftime("%a %b %d") if r.departure_date else ""
             r.name = f"{cn} — {d}" if cn else d
-
-    @api.model
-    def get_available_trucks(self):
-        """Return list of active operational trucks for the truck selector.
-        Excludes non-operational vehicles like DEMO-01."""
-        vehicles = self.env["fleet.vehicle"].sudo().search([
-            ("active", "=", True),
-            ("x_operational_logistics", "=", True),
-        ])
-        return [{"id": v.id, "name": v.name or v.license_plate or f"Truck {v.id}"} for v in vehicles]
-
-    @api.model
-    def get_available_corridors(self):
-        """Return list of active corridors for the + lane picker."""
-        corridors = self.env["logistics.corridor"].sudo().search([("active", "=", True)])
-        return [{"id": c.id, "name": c.name, "direction": c.direction, "equipment_type": c.equipment_type} for c in corridors]
-
-    @api.model
-    def add_departure(self, corridor_id, departure_date, vehicle_id, departure_time=1.0, cutoff_time=16.0):
-        """Add a new scheduled departure. Returns the created record.
-        Requires Dispatcher or Logistics Manager group."""
-        if not self.env.user.has_group("prema_dispatch.group_dispatcher") and \
-           not self.env.user.has_group("prema_dispatch.group_dispatch_manager"):
-            raise AccessError(_("Only dispatchers and logistics managers can manage departures."))
-        dep = self.sudo().create({
-            "corridor_id": corridor_id,
-            "departure_date": departure_date,
-            "departure_time": departure_time,
-            "vehicle_id": vehicle_id,
-            "cutoff_time": cutoff_time,
-            "status": "scheduled",
-            "max_capacity": 13,
-        })
-        return {"id": dep.id, "name": dep.name}
-
-    @api.model
-    def remove_departure(self, departure_id):
-        """Remove a scheduled departure.
-        Requires Dispatcher or Logistics Manager group."""
-        if not self.env.user.has_group("prema_dispatch.group_dispatcher") and \
-           not self.env.user.has_group("prema_dispatch.group_dispatch_manager"):
-            raise AccessError(_("Only dispatchers and logistics managers can manage departures."))
-        dep = self.sudo().browse(departure_id)
-        if dep.exists():
-            dep.write({"active": False})
-            return {"success": True}
-        return {"success": False, "error": "Not found"}
-
-    @api.model
-    def get_weekly_board_data(self, vehicle_id=None):
-        """RPC for the weekly schedule board. Filter by vehicle if provided."""
-        today = datetime.date.today()
-        monday = today - datetime.timedelta(days=today.weekday())
-        sunday = monday + datetime.timedelta(days=6)
-        dn = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"]
-        wd = [{"date": (monday + datetime.timedelta(days=i)).isoformat(), "label": dn[i]} for i in range(7)]
-        domain = [("active","=",True),("departure_date",">=",monday),("departure_date","<=",sunday)]
-        if vehicle_id:
-            domain.append(("vehicle_id","=",int(vehicle_id)))
-        deps = self.search(domain)
-
-        # Batch-fetch booking data for all departures in this week
-        departure_ids = deps.ids
-        bookings = self.env["logistics.booking"].sudo().search([
-            ("departure_id", "in", departure_ids),
-            ("state", "not in", ["cancelled"]),
-        ]) if departure_ids else self.env["logistics.booking"].sudo().browse()
-
-        # Index bookings by departure_id for O(1) lookup
-        bookings_by_dep = {}
-        for bk in bookings:
-            dep_id = bk.departure_id.id
-            if dep_id not in bookings_by_dep:
-                bookings_by_dep[dep_id] = []
-            bookings_by_dep[dep_id].append(bk)
-
-        dc = {str(i): [] for i in range(7)}
-        for dep in deps:
-            di = (dep.departure_date - monday).days
-            if di < 0 or di > 6:
-                continue
-            dd = dep.departure_date
-            s, sl = "scheduled", "SCHEDULED"
-            if dd < today: s, sl = "completed", "COMPLETED"
-            elif dd == today: s, sl = "ontime", "ON TIME"
-            if dep.status == "cancelled": s, sl = "cancelled", "CANCELLED"
-            elif dep.status == "delayed": s, sl = "delayed", "DELAYED"
-            cor = dep.corridor_id
-            cutoff = f"{int(dep.cutoff_time):02d}:{int((dep.cutoff_time%1)*60):02d}" if dep.cutoff_time else ""
-            dep_str = f"{dn[di]} {int(dep.departure_time):02d}:{int((dep.departure_time%1)*60):02d}" if dep.departure_time else ""
-            cd = ""
-            if dd == today and dep.departure_time:
-                now = datetime.datetime.now()
-                dt = now.replace(hour=int(dep.departure_time), minute=int((dep.departure_time%1)*60), second=0)
-                diff = (dt - now).total_seconds()
-                if diff > 0: cd = f"{int(diff//3600)}h {int((diff%3600)//60)}m"
-
-            # Compute real data from bookings (no more placeholders)
-            dep_bookings = bookings_by_dep.get(dep.id, [])
-            dep_booking_count = len(dep_bookings)
-            outbound_revenue = sum(bk.calculated_price for bk in dep_bookings)
-            outbound_cost = sum(bk.estimated_cost or 0.0 for bk in dep_bookings)
-            departure_net_profit = outbound_revenue - outbound_cost
-
-            # ── Round-Trip / Cycle Profit ────────────────────────────────
-            backhaul_revenue = 0.0
-            backhaul_cost = 0.0
-            return_cor = cor.return_corridor_id
-            if return_cor:
-                # Find the return departure in the same week (e.g. Wed return for Tue outbound)
-                return_dep = self.search([
-                    ("corridor_id", "=", return_cor.id),
-                    ("departure_date", ">=", dd),
-                    ("departure_date", "<=", sunday),
-                    ("active", "=", True),
-                ], limit=1)
-                if return_dep:
-                    return_bookings = bookings_by_dep.get(return_dep.id, [])
-                    backhaul_revenue = sum(bk.calculated_price for bk in return_bookings)
-                    backhaul_cost = sum(bk.estimated_cost or 0.0 for bk in return_bookings)
-
-            # Use lane round-trip targets for cost estimation when no bookings
-            lane = cor.lane_ids[:1] if cor.lane_ids else None
-            if not backhaul_cost and lane:
-                backhaul_cost = lane.return_estimated_cost or 0.0
-            if not outbound_cost and lane:
-                outbound_cost = lane.estimated_one_way_cost or 0.0
-
-            gross_revenue = outbound_revenue + backhaul_revenue
-            cycle_cost = outbound_cost + backhaul_cost
-            cycle_net_profit = gross_revenue - cycle_cost
-            departure_margin_pct = (departure_net_profit / outbound_revenue * 100) if outbound_revenue > 0 else 0.0
-            cycle_margin_pct = (cycle_net_profit / gross_revenue * 100) if gross_revenue > 0 else 0.0
-
-            # Use computed peak (CapacityEngine) or fall back to stored field
-            try:
-                from ..services.capacity_engine import CapacityEngine
-                peak = CapacityEngine(self.env).compute_departure_peak(dep)
-            except Exception:
-                peak = {"peak_pallets": dep.peak_pallets or 0, "total_handled": dep.total_handled_pallets or 0}
-
-            dc[str(di)].append({
-                "id": cor.id, "departure_id": dep.id, "route": cor.name or "", "is_corridor": True,
-                "status": s, "status_label": sl,
-                "truck": dep.vehicle_id.name or "", "driver": dep.driver_id.name or "",
-                "equipment": cor.equipment_type.upper(),
-                "max_pallets": cor.truck_capacity or 12,
-                "booked_pallets": peak.get("peak_pallets", dep.peak_pallets or 0),
-                "total_handled": peak.get("total_handled", dep.total_handled_pallets or 0),
-                "peak_weight": peak.get("peak_weight", 0.0),
-                "revenue_target": cor.full_revenue_target or 0,
-                # Outbound / Departure metrics
-                "outbound_revenue": round(outbound_revenue, 2),
-                "booked_revenue": round(outbound_revenue, 2),
-                "estimated_cost": round(outbound_cost, 2),
-                "departure_net_profit": round(departure_net_profit, 2),
-                "departure_margin_pct": round(departure_margin_pct, 1),
-                # Cycle / Round-trip metrics
-                "gross_revenue": round(gross_revenue, 2),
-                "backhaul_revenue": round(backhaul_revenue, 2),
-                "cycle_cost": round(cycle_cost, 2),
-                "cycle_net_profit": round(cycle_net_profit, 2),
-                "cycle_margin_pct": round(cycle_margin_pct, 1),
-                # Meta
-                "cutoff": cutoff, "departure": dep_str, "countdown": cd,
-                "booking_count": dep_booking_count,
-                "stop_count": len(cor.stop_ids),
-                "return_corridor_id": return_cor.id if return_cor else None,
-            })
-        return {"week_days": wd, "day_cards": dc,
-                "date_range": f"{monday.strftime('%B %d')} — {sunday.strftime('%B %d, %Y')}",
-                "today": today.isoformat()}

@@ -17,7 +17,6 @@
     <menuitem id="menu_v4_operations" name="Dispatch Operations" parent="prema_dispatch.menu_prema_dispatch_root" sequence="10"/>
     <menuitem id="menu_v4_bookings" name="Bookings" parent="prema_dispatch.menu_prema_dispatch_root" sequence="20"/>
     <menuitem id="menu_v4_network" name="Network" parent="prema_dispatch.menu_prema_dispatch_root" sequence="30"/>
-    <menuitem id="menu_v4_pricing" name="Pricing" parent="prema_dispatch.menu_prema_dispatch_root" sequence="40"/>
     <menuitem id="menu_v4_fleet" name="Fleet" parent="prema_dispatch.menu_prema_dispatch_root" sequence="50"/>
 
     <menuitem id="menu_v4_live_map" name="Live Map" parent="menu_v4_operations" action="prema_dispatch.action_dispatch_live_map" sequence="1"/>
@@ -27,13 +26,6 @@
     <menuitem id="menu_v4_worksheets" name="Driver Worksheets" parent="menu_v4_operations" action="prema_dispatch.action_driver_worksheet_live" sequence="30"/>
     <menuitem id="menu_v4_adhoc" name="Find Available Truck" parent="menu_v4_operations" action="prema_dispatch.action_adhoc_load_finder" sequence="35"/>
 
-    <record id="action_new_booking" model="ir.actions.act_window">
-        <field name="name">New Booking</field>
-        <field name="res_model">logistics.booking</field>
-        <field name="view_mode">form</field>
-        <field name="target">current</field>
-    </record>
-    <menuitem id="menu_v4_new_booking" name="New Booking" parent="menu_v4_bookings" action="action_new_booking" sequence="5"/>
     <menuitem id="menu_v4_all_bookings" name="All Bookings" parent="menu_v4_bookings" action="action_logistics_booking" sequence="10"/>
     <menuitem id="menu_v4_phone" name="Phone Booking" parent="menu_v4_bookings" action="action_logistics_phone_booking" sequence="20"/>
     <menuitem id="menu_v4_recurring" name="Recurring Agreements" parent="menu_v4_bookings" action="action_logistics_recurring_agreement" sequence="30"/>
@@ -49,6 +41,7 @@
     <menuitem id="menu_v4_weekly_svcs" name="Service Routes" parent="menu_v4_network" action="action_logistics_corridor" sequence="10"/>
     <menuitem id="menu_v4_hubs" name="Hubs" parent="menu_v4_network" action="action_logistics_hub" sequence="25"/>
     <menuitem id="menu_v4_regions" name="Regions" parent="menu_v4_network" action="action_logistics_region" sequence="40"/>
+    <menuitem id="menu_v4_schedule_exceptions" name="Schedule Exceptions" parent="menu_v4_network" action="action_logistics_holiday_calendar" sequence="50"/>
     <menuitem id="menu_v4_saved_locations" name="Saved Locations" parent="menu_v4_network" action="prema_dispatch.action_dispatch_locations" sequence="60"/>
 
     <!-- menu_v4_lanes_pricing (Pricing -> "Service Routes" -> logistics.lane)
@@ -56,10 +49,6 @@
          data now, not a customer-pricing surface. Deletion+cleanup handled by
          migrations/18.0.4.7.0/post-migrate.py for already-migrated databases
          where the ir.ui.menu record already exists. -->
-    <menuitem id="menu_v4_rate_plans" name="Rate Plans" parent="menu_v4_pricing" action="action_logistics_rate_plan" sequence="15"/>
-    <menuitem id="menu_v4_rate_sim" name="Rate Simulator" parent="menu_v4_pricing" action="action_logistics_rate_simulator" sequence="20"/>
-    <menuitem id="menu_v4_customer_rates" name="Customer Contract Rates" parent="menu_v4_pricing" action="action_logistics_customer_rate" sequence="60"/>
-
     <menuitem id="menu_v4_trucks" name="Trucks" parent="menu_v4_fleet" action="fleet.fleet_vehicle_action" sequence="10"/>
     <menuitem id="menu_v4_drivers" name="Drivers" parent="menu_v4_fleet" action="action_fleet_drivers" sequence="20"/>
 

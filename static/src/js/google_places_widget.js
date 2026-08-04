@@ -77,7 +77,7 @@ export class GooglePlacesChar extends CharField {
     }
 
     _isAddressAutocompleteField() {
-        return this.props.name === "address";
+        return ["address", "map_anchor_address"].includes(this.props.name);
     }
 
     _autocompleteOptions() {
@@ -87,6 +87,8 @@ export class GooglePlacesChar extends CharField {
         };
         if (this._isBusinessAutocompleteField()) {
             options.types = ["establishment"];
+        } else if (this.props.name === "map_anchor_address") {
+            options.types = ["geocode"];
         } else if (this._isAddressAutocompleteField()) {
             options.types = ["address"];
         }
@@ -105,6 +107,11 @@ export class GooglePlacesChar extends CharField {
         const canSyncName = !currentName || currentName === currentBusinessName || currentName === rec.data?.address;
 
         if ("address" in fieldNames && parsed.address) updates.address = parsed.address;
+        if ("map_anchor_address" in fieldNames && parsed.address) updates.map_anchor_address = parsed.address;
+        if ("map_anchor_place_id" in fieldNames && parsed.googlePlaceId) updates.map_anchor_place_id = parsed.googlePlaceId;
+        if ("marker_latitude" in fieldNames && Number.isFinite(parsed.lat)) updates.marker_latitude = parsed.lat;
+        if ("marker_longitude" in fieldNames && Number.isFinite(parsed.lng)) updates.marker_longitude = parsed.lng;
+        if ("main_city" in fieldNames && parsed.city && !rec.data?.main_city) updates.main_city = parsed.city;
         if ("hub_location_address" in fieldNames && parsed.address) updates.hub_location_address = parsed.address;
         if ("address_formatted" in fieldNames && parsed.address) updates.address_formatted = parsed.address;
         if ("address_validated" in fieldNames) updates.address_validated = Boolean(parsed.address);

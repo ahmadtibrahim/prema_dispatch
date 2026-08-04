@@ -2,12 +2,13 @@ import datetime
 import logging
 import secrets
 
+import pytz
+
 from psycopg2.errors import UniqueViolation
 
 from odoo import _, api, fields, models
 from odoo.exceptions import AccessError, UserError
 
-from ..services.availability_bridge import AvailabilityBridge
 from ..constants import SERVICE_MODE, LOAD_TYPE, EQUIPMENT_REQUIREMENT
 from ..services.pricing_service import PricingService
 
@@ -108,7 +109,7 @@ class LogisticsBooking(models.Model):
     calculated_price = fields.Float(readonly=True)
     price_snapshot = fields.Json(readonly=True)
     route_snapshot = fields.Json(readonly=True, string="Route Snapshot",
-        help="Immutable route details frozen at confirmation: legs, rate plans, prices.")
+        help="Immutable route details frozen at confirmation: corridors, departures, trucks, distances, and prices.")
     cost_snapshot = fields.Json(readonly=True, help="Frozen cost breakdown from Prema AI Estimator at confirmation time.")
     estimated_cost = fields.Float(readonly=True, help="Total estimated cost from Prema AI Estimator.")
     calculated_margin = fields.Float(readonly=True, compute="_compute_margin", store=True)
@@ -132,6 +133,9 @@ class LogisticsBooking(models.Model):
     )
 
     dispatch_job_id = fields.Many2one("prema.dispatch.job", readonly=True, copy=False)
+    dispatch_job_ids = fields.One2many(
+        "prema.dispatch.job", "logistics_booking_id", string="Dispatch Planner Jobs", readonly=True,
+    )
     invoice_id = fields.Many2one("account.move", readonly=True, copy=False, string="Draft Invoice")
     wa_negotiation_id = fields.Many2one("premafirm.wa.negotiation", readonly=True, copy=False, string="WA Negotiation")
     sale_order_id = fields.Many2one("sale.order", readonly=True, copy=False, string="Sale Order")
@@ -151,6 +155,9 @@ class LogisticsBooking(models.Model):
     leg_ids = fields.One2many("logistics.booking.leg", "booking_id", string="Legs")
 
     recurring_agreement_id = fields.Many2one("logistics.recurring.agreement", readonly=True, copy=False, string="Recurring Agreement")
+    recurring_job_id = fields.Many2one(
+        "logistics.recurring.job", readonly=True, copy=False, string="Recurring Job", index=True,
+    )
     confirmed_at = fields.Datetime(readonly=True, default=fields.Datetime.now)
 
     booking_channel = fields.Selection(BOOKING_CHANNEL_SELECTION, default="customer_portal", string="Booking Channel")
@@ -223,44 +230,9 @@ class LogisticsBooking(models.Model):
     # ── Booking Legs from Route Snapshot ──────────────────────────────
     # ------------------------------------------------------------------
 
-    def _create_stops_from_address_vals(self, address_vals):
-        """Create the real pickup/delivery stops for the portal single-pickup/
-        single-delivery flow. Never a fabricated "Pickup Location" placeholder."""
-        self.ensure_one()
-        from ..services.booking_orchestration_service import BookingOrchestrationService
-        svc = BookingOrchestrationService(self.env)
-        pickup_stops = [{
-            "company_name": address_vals.get("pickup_company", ""),
-            "street": address_vals.get("pickup_address", ""),
-            "postal_code": address_vals.get("pickup_postal_code", ""),
-            "contact_name": address_vals.get("pickup_contact_name", ""),
-            "phone": address_vals.get("pickup_phone", ""),
-            "instructions": address_vals.get("pickup_instructions", ""),
-            "pallet_count": self.pallets,
-            "weight_lb": self.weight_lbs,
-            "liftgate_required": self.liftgate_pickup,
-        }]
-        delivery_stops = [{
-            "company_name": address_vals.get("delivery_company", ""),
-            "street": address_vals.get("delivery_address", ""),
-            "postal_code": address_vals.get("delivery_postal_code", ""),
-            "contact_name": address_vals.get("delivery_contact_name", ""),
-            "phone": address_vals.get("delivery_phone", ""),
-            "instructions": address_vals.get("delivery_instructions", ""),
-            "pallet_count": self.pallets,
-            "weight_lb": self.weight_lbs,
-            "liftgate_required": self.liftgate_delivery,
-        }]
-        svc._create_booking_stops(self, pickup_stops, delivery_stops)
-
-    # ------------------------------------------------------------------
     @api.model
     def confirm_from_session(self, token, address_vals):
-        """address_vals keys: pickup_company, pickup_postal_code, pickup_address,
-        pickup_contact_name, pickup_phone, pickup_instructions, and the
-        delivery_* equivalents. Returns the confirmed logistics.booking.
-        Raises UserError/AccessError with a customer-safe message otherwise.
-        """
+        """Confirm a portal quote through the canonical orchestration service."""
         user_partner = self.env.user.partner_id
         commercial = user_partner.commercial_partner_id
 
@@ -279,8 +251,8 @@ class LogisticsBooking(models.Model):
         if session.partner_id.commercial_partner_id.id != commercial.id:
             raise AccessError(_("This pricing result does not belong to your account."))
 
-        # 4. idempotency pre-check -- a repeat/duplicate confirm for the same
-        # session must return the SAME booking, never create a second one.
+        # A repeat/duplicate confirm for the same session must return the
+        # same booking, never create a second one.
         existing = self.sudo().search([("pricing_session_token", "=", token)], limit=1)
         if existing:
             return existing
@@ -288,6 +260,10 @@ class LogisticsBooking(models.Model):
         # 5. expiry
         if session.is_expired():
             raise UserError(_("This price has expired. Please get a new price."))
+        if (session.route_snapshot or {}).get("pricing_authority") != "corridor_per_km":
+            raise UserError(_(
+                "This quote used the retired pricing setup. Please get a new corridor-based price."
+            ))
 
         # 6. re-resolve FSA from the FINAL entered addresses -- must match
         # what was quoted, or the customer must be forced to re-price.
@@ -301,87 +277,45 @@ class LogisticsBooking(models.Model):
         if not delivery_fsa or delivery_fsa.id != session.delivery_fsa_id.id:
             raise UserError(_("Your delivery address doesn't match the quoted area. Please get a new price."))
 
-        # 7/8/9. Price integrity: use the STORED quote price, not a fresh
-        # recalculation. In the Scheduled Shared LTL model, pricing is
-        # calculated ONCE at quote time and stored immutably in the session.
-        # Step 3 (quote) and Step 4 (confirm) MUST display the same price.
-        #
-        # Belt-and-suspenders: verify the rate plan from the session still
-        # exists and is active. If it's been superseded by a newer version,
-        # we still honor the quoted price — the version was valid at quote
-        # time and customers are entitled to the price they were shown.
-        if not session.rate_plan_id or not session.rate_plan_id.active:
-            raise UserError(_(
-                "The rate plan for this quote is no longer active. "
-                "Please get a new price."
-            ))
-        if not session.service_offering_id:
-            raise UserError(_("This quote is incomplete. Please get a new price."))
+        if not (session.route_snapshot or {}).get("legs"):
+            raise UserError(_("This quote has no scheduled departure. Please get a new price."))
 
-        # Build a lightweight result-like object from the session for the
-        # remaining steps (capacity check, cost estimate, booking fields).
-        # We do NOT re-run PricingService.calculate() — the price shown at
-        # Step 3 IS the price charged at Step 4.
-        lane = session.rate_plan_id.lane_id
+        from ..services.booking_orchestration_service import BookingOrchestrationService
 
-        # Re-verify schedule/service is still available (operational check
-        # only — this does NOT recalculate price).
-        pricing = PricingService(self.env)
-        verify = pricing.calculate(
-            pickup_fsa, delivery_fsa, session.shipment_type,
-            session.temperature_mode, session.pallets, session.weight_lbs,
-            session.liftgate_pickup, session.liftgate_delivery,
-            session.appointment, session.residential,
-            session.same_day_requested, partner=user_partner,
-            required_temperature_c=session.required_temperature_c if session.temperature_mode == "reefer" else None,
-        )
-        if not verify.available:
-            raise UserError(_(
-                "This service is no longer available. "
-                "Please get a new price."
-            ))
-
-        # 10. real operational capacity check (Layer 2)
-        bridge = AvailabilityBridge(self.env)
-        capacity = bridge.check_real_capacity(
-            address_vals.get("pickup_address"), address_vals.get("delivery_address"),
-            verify.pickup_date, session.pallets, session.weight_lbs,
-            session.temperature_mode != "dry",
-            session.liftgate_pickup or session.liftgate_delivery,
-        )
-        if not capacity["feasible"]:
-            raise UserError(_(
-                "The selected pickup date is no longer available. "
-                "Please get a new price to see the next available date."
-            ))
-
-        # 11/12/13. idempotent create — DB unique constraint is the real
-        # guard against a concurrent duplicate submit racing past the
-        # pre-check above.
-        booking_number = self._generate_booking_number()
-        vals = {
-            "booking_number": booking_number,
+        svc = BookingOrchestrationService(self.env)
+        normalized = svc.normalize_request({
             "partner_id": user_partner.id,
-            "pickup_fsa_id": pickup_fsa.id,
-            "delivery_fsa_id": delivery_fsa.id,
-            "pickup_company": address_vals.get("pickup_company"),
-            "pickup_address": address_vals.get("pickup_address"),
-            "pickup_contact_name": address_vals.get("pickup_contact_name"),
-            "pickup_phone": address_vals.get("pickup_phone"),
-            "pickup_instructions": address_vals.get("pickup_instructions"),
-            "delivery_company": address_vals.get("delivery_company"),
-            "delivery_address": address_vals.get("delivery_address"),
-            "delivery_contact_name": address_vals.get("delivery_contact_name"),
-            "delivery_phone": address_vals.get("delivery_phone"),
-            "delivery_instructions": address_vals.get("delivery_instructions"),
-            # Use session-stored values for pricing fields (immutable quote)
-            "service_offering_id": session.service_offering_id.id,
-            "rate_plan_id": session.rate_plan_id.id,
-            "pickup_date": session.pickup_date,
-            "estimated_delivery_date": session.delivery_date_estimate,
-            "shipment_type": session.shipment_type,
-            "temperature_mode": session.temperature_mode,
-            "required_temperature_c": session.required_temperature_c,
+            "pickup_stops": [{
+                "company_name": address_vals.get("pickup_company") or "",
+                "street": address_vals.get("pickup_address") or "",
+                "formatted_address": address_vals.get("pickup_address") or "",
+                "postal_code": address_vals.get("pickup_postal_code") or "",
+                "contact_name": address_vals.get("pickup_contact_name") or "",
+                "phone": address_vals.get("pickup_phone") or "",
+                "instructions": address_vals.get("pickup_instructions") or "",
+                "pallet_count": session.pallets,
+                "weight_lb": session.weight_lbs,
+                "liftgate_required": session.liftgate_pickup,
+            }],
+            "delivery_stops": [{
+                "company_name": address_vals.get("delivery_company") or "",
+                "street": address_vals.get("delivery_address") or "",
+                "formatted_address": address_vals.get("delivery_address") or "",
+                "postal_code": address_vals.get("delivery_postal_code") or "",
+                "contact_name": address_vals.get("delivery_contact_name") or "",
+                "phone": address_vals.get("delivery_phone") or "",
+                "instructions": address_vals.get("delivery_instructions") or "",
+                "pallet_count": session.pallets,
+                "weight_lb": session.weight_lbs,
+                "liftgate_required": session.liftgate_delivery,
+            }],
+            "load_type": session.shipment_type,
+            "equipment_type": session.temperature_mode,
+            "required_temperature_c": (
+                session.required_temperature_c
+                if session.temperature_mode == "reefer"
+                else None
+            ),
             "pallets": session.pallets,
             "weight_lbs": session.weight_lbs,
             "liftgate_pickup": session.liftgate_pickup,
@@ -389,49 +323,17 @@ class LogisticsBooking(models.Model):
             "appointment": session.appointment,
             "residential": session.residential,
             "same_day_requested": session.same_day_requested,
-            # THE KEY FIX: use session's stored price, not a recalculated one
-            "calculated_price": session.calculated_price,
-            "price_snapshot": session.price_snapshot,
-            "pricing_session_token": token,
-            "line_ids": [(0, 0, {
-                "description": (
-                    "LTL Shipment"
-                    if session.shipment_type == "ltl"
-                    else "FTL Shipment"
-                ),
-                "pallets": session.pallets,
-                "weight_lbs": session.weight_lbs,
-            })],
-        }
+            "pricing_method": "corridor",
+            "idempotency_key": f"portal:{token}",
+        }, source_channel="portal")
 
-        # Compute cost estimate via Prema AI Estimator (internal margin
-        # tracking only — NEVER shown to customer)
-        cost_info = self._estimate_cost(lane, address_vals, session)
-        vals["cost_snapshot"] = cost_info.get("breakdown", {})
-        vals["estimated_cost"] = cost_info.get("total_cost", 0.0)
-
-        # Copy frozen route snapshot from session — never recalculate price
-        vals["route_snapshot"] = session.route_snapshot
-
-        # 15-18. Single savepoint: booking + legs + tax + invoice + dispatch
-        # ALL must succeed or ALL roll back — no orphan bookings.
         try:
-            with self.env.cr.savepoint():
-                booking = self.sudo().create(vals)
-                booking._create_stops_from_address_vals(address_vals)
-                from ..services.booking_orchestration_service import BookingOrchestrationService
-                BookingOrchestrationService(self.env).create_legs_and_reserve(booking)
-                booking._apply_tax_decision()
-                booking._create_draft_invoice()
-                booking._create_dispatch_job()
-                session.write({"state": "converted"})
+            return svc.confirm_from_internal(normalized, pricing_session=session)
         except UniqueViolation:
             existing = self.sudo().search([("pricing_session_token", "=", token)], limit=1)
             if existing:
                 return existing
             raise
-
-        return booking
 
     def _generate_booking_number(self):
         seq = self.env["ir.sequence"].sudo().next_by_code("logistics.booking") or "0"
@@ -450,15 +352,15 @@ class LogisticsBooking(models.Model):
             if not vehicle:
                 return {"total_cost": 0.0, "breakdown": {"error": "no_vehicle_available"}}
 
-            # Estimate distance from lane or fallback
+            # Estimate from the same corridor topology used by booking.
             distance_km = 200.0
             if pickup_fsa and delivery_fsa:
-                lane = self.env["logistics.lane"].sudo().search([
-                    ("origin_region_id", "=", pickup_fsa.region_id.id),
-                    ("destination_region_id", "=", delivery_fsa.region_id.id),
-                ], limit=1)
-                if lane:
-                    distance_km = lane.road_km or 200.0
+                from ..services.route_resolver import RouteResolver
+                route = RouteResolver(self.env).resolve_regions(
+                    pickup_fsa.region_id, delivery_fsa.region_id,
+                )
+                if route.available:
+                    distance_km = sum(leg["distance_km"] for leg in route.legs) or distance_km
 
             duration_hrs = distance_km / 80.0
             engine = PricingEngine(self.env)
@@ -514,98 +416,221 @@ class LogisticsBooking(models.Model):
         except Exception:
             return {"total_cost": 0.0, "breakdown": {"error": "estimator_unavailable"}}
 
-    def _create_dispatch_job(self):
+    def _dispatch_datetime(self, date_value, hour_value=8.0):
+        """Convert a corridor-local date/float hour to Odoo's naive UTC."""
         self.ensure_one()
-        # Idempotency: never create a duplicate dispatch job
-        if self.dispatch_job_id:
-            return self.dispatch_job_id
+        date_value = fields.Date.to_date(date_value)
+        hours = int(hour_value or 0.0)
+        minutes = int(round(((hour_value or 0.0) - hours) * 60))
+        local_naive = datetime.datetime.combine(date_value, datetime.time.min) + datetime.timedelta(
+            hours=hours, minutes=minutes,
+        )
+        tz_name = self.env.company.partner_id.tz or self.env.user.tz or "America/Toronto"
+        timezone = pytz.timezone(tz_name)
+        return timezone.localize(local_naive).astimezone(pytz.UTC).replace(tzinfo=None)
+
+    @staticmethod
+    def _booking_stop_address(stop):
+        return stop.formatted_address or ", ".join(
+            value for value in (
+                stop.street, stop.city, stop.province_state, stop.postal_zip,
+            ) if value
+        )
+
+    def _operation_time(self, leg, booking_stop, operation_date, pickup=True):
+        departure = leg.departure_id
+        base_hour = departure.departure_time if departure else 8.0
+        region = leg.origin_region_id if pickup else leg.destination_region_id
+        if departure and region:
+            corridor_stops = departure.corridor_id.stop_ids.filtered(
+                lambda stop: stop.active and stop.region_id == region
+            ).sorted("sequence")
+            if corridor_stops:
+                configured = (
+                    corridor_stops[0].planned_departure_time if pickup
+                    else corridor_stops[0].planned_arrival_time
+                )
+                if configured:
+                    base_hour = configured
+        return self._dispatch_datetime(operation_date, base_hour)
+
+    def _create_dispatch_operation(self, leg, role, operation_date, origin_stop=None,
+                                   destination_stop=None, sequence=1):
+        self.ensure_one()
         Job = self.env["prema.dispatch.job"].sudo()
-        existing = Job.search([("source_model", "=", "logistics.booking"), ("source_res_id", "=", self.id)], limit=1)
+        Stop = self.env["prema.dispatch.stop"].sudo()
+        Item = self.env["prema.dispatch.item"].sudo()
+        departure = leg.departure_id if leg else self.env["logistics.corridor.departure"]
+        key_suffix = f"leg:{leg.id}:{role}" if leg else "custom"
+        operation_key = f"booking:{self.id}:{key_suffix}"
+        existing = Job.search([("ltl_operation_key", "=", operation_key)], limit=1)
         if existing:
-            self.dispatch_job_id = existing.id
             return existing
-        draft_stage = self.env["prema.dispatch.stage"].sudo().search([("stage_type", "=", "draft")], limit=1)
+
+        anchor_stop = origin_stop or destination_stop
+        scheduled_at = self._operation_time(
+            leg, anchor_stop, operation_date, pickup=bool(origin_stop),
+        ) if leg else self._dispatch_datetime(operation_date, 8.0)
+        delivery_at = scheduled_at
+        if destination_stop and leg:
+            delivery_at = self._operation_time(
+                leg, destination_stop, leg.delivery_date or operation_date, pickup=False,
+            )
+            if delivery_at <= scheduled_at and fields.Date.to_date(leg.delivery_date or operation_date) == fields.Date.to_date(operation_date):
+                delivery_at = scheduled_at + datetime.timedelta(hours=4)
+
+        assigned_stage = self.env.ref("prema_dispatch.stage_assigned", raise_if_not_found=False)
+        draft_stage = self.env["prema.dispatch.stage"].sudo().search(
+            [("stage_type", "=", "draft")], limit=1,
+        )
+        vehicle = departure.vehicle_id if departure else self.env["fleet.vehicle"]
+        corridor = departure.corridor_id if departure else self.env["logistics.corridor"]
         job = Job.create({
             "partner_id": self.partner_id.id,
             "source_model": "logistics.booking",
             "source_res_id": self.id,
-            "tracking_number": self.booking_number,
-            "stage_id": draft_stage.id if draft_stage else False,
+            "logistics_booking_id": self.id,
+            "booking_leg_id": leg.id if leg else False,
+            "corridor_departure_id": departure.id if departure else False,
+            "ltl_operation_key": operation_key,
+            "operation_date": operation_date,
+            "operation_role": role,
+            "auto_scheduled_ltl": bool(departure),
+            "tracking_number": f"{self.booking_number}-{sequence:02d}",
+            "stage_id": (
+                assigned_stage.id if vehicle and assigned_stage else draft_stage.id if draft_stage else False
+            ),
             "company_id": self.env.company.id,
             "invoice_id": self.invoice_id.id if self.invoice_id else False,
+            "vehicle_id": vehicle.id if vehicle else False,
+            "assignment_locked": bool(vehicle),
+            "scheduled_pickup": scheduled_at,
+            "planned_delivery_date": fields.Date.to_date(operation_date),
+            "requested_delivery_date": self.estimated_delivery_date or fields.Date.to_date(operation_date),
+            "pickup_window_type": "exact" if origin_stop else "flexible",
+            "pickup_exact_time": scheduled_at if origin_stop else False,
+            "delivery_window_type": "exact" if destination_stop else "flexible",
+            "delivery_exact_time": delivery_at if destination_stop else False,
+            "service_type": "ltl" if self.shipment_type == "ltl" else "ftl",
+            "equipment_type": self.temperature_mode,
+            "requires_reefer": self.temperature_mode == "reefer",
+            "temp_requirement": self.required_temperature or (
+                f"{self.required_temperature_c:g} °C" if self.temperature_mode == "reefer" else ""
+            ),
             "approximate_skids": self.pallets,
+            "commodity": self.commodity or "",
+            "po_number": self.po_number or "",
+            "ref": self.customer_reference or self.booking_number,
+            "route_definition_mode": "exact_stops",
+            "stops_confirmation_state": "confirmed",
+            "planned_route_name": corridor.name if corridor else "Custom / Expedited",
         })
 
-        Stop = self.env["prema.dispatch.stop"].sudo()
-        Item = self.env["prema.dispatch.item"].sudo()
-
-        if self.stop_ids:
-            # Multi-stop: create dispatch stops from booking stops in sequence
-            created_stops = {}
-            for bstop in self.stop_ids.sorted("sequence"):
-                dispatch_stop_type = "pickup" if bstop.stop_type == "pickup" else "dropoff"
-                addr = bstop.formatted_address or ", ".join(
-                    p for p in [bstop.street, bstop.city, bstop.province_state] if p
-                ) or ""
-                dstop = Stop.create({
-                    "job_id": job.id,
-                    "stop_type": dispatch_stop_type,
-                    "sequence": bstop.sequence,
-                    "address": addr,
-                    "contact_name": bstop.contact_name or "",
-                    "contact_phone": bstop.phone or "",
-                    "dispatcher_notes": bstop.instructions or "",
-                })
-                created_stops[bstop.id] = dstop
-
-            # Create items linking pickup→delivery pairs
-            pickups = [s for s in self.stop_ids if s.stop_type == "pickup"]
-            deliveries = [s for s in self.stop_ids if s.stop_type == "delivery"]
-            for line in self.line_ids:
-                pu_stop = created_stops.get(pickups[0].id) if pickups else False
-                del_stop = created_stops.get(deliveries[-1].id) if deliveries else False
-                Item.create({
-                    "job_id": job.id,
-                    "name": line.description or "Skid",
-                    "description": line.commodity or self.commodity or "",
-                    "pallet_count": line.pallets,
-                    "weight_lbs": line.weight_lbs,
-                    "pickup_stop_id": pu_stop.id if pu_stop else False,
-                    "delivery_stop_id": del_stop.id if del_stop else False,
-                })
-        else:
-            # Legacy: single pickup + single delivery
-            pickup_stop = Stop.create({
+        created_origin = created_destination = False
+        if origin_stop:
+            created_origin = Stop.create({
                 "job_id": job.id,
                 "stop_type": "pickup",
-                "address": self.pickup_address,
                 "sequence": 10,
-                "contact_name": self.pickup_contact_name or "",
-                "contact_phone": self.pickup_phone or "",
-                "dispatcher_notes": self.pickup_instructions or "",
+                "partner_id": self.partner_id.id,
+                "saved_location_id": origin_stop.saved_location_id.id or False,
+                "address": self._booking_stop_address(origin_stop),
+                "contact_name": origin_stop.contact_name or "",
+                "contact_phone": origin_stop.phone or "",
+                "latitude": origin_stop.latitude,
+                "longitude": origin_stop.longitude,
+                "scheduled_time": scheduled_at,
+                "time_window_type": "exact",
+                "exact_time": scheduled_at,
+                "pallets_in": self.pallets,
+                "weight_in_lbs": self.weight_lbs,
+                "dispatcher_notes": origin_stop.instructions or "",
             })
-            delivery_stop = Stop.create({
+        if destination_stop:
+            created_destination = Stop.create({
                 "job_id": job.id,
                 "stop_type": "dropoff",
-                "address": self.delivery_address,
                 "sequence": 20,
-                "contact_name": self.delivery_contact_name or "",
-                "contact_phone": self.delivery_phone or "",
-                "dispatcher_notes": self.delivery_instructions or "",
+                "partner_id": self.partner_id.id,
+                "saved_location_id": destination_stop.saved_location_id.id or False,
+                "address": self._booking_stop_address(destination_stop),
+                "contact_name": destination_stop.contact_name or "",
+                "contact_phone": destination_stop.phone or "",
+                "latitude": destination_stop.latitude,
+                "longitude": destination_stop.longitude,
+                "scheduled_time": delivery_at,
+                "time_window_type": "exact",
+                "exact_time": delivery_at,
+                "pallets_out": self.pallets,
+                "weight_out_lbs": self.weight_lbs,
+                "dispatcher_notes": destination_stop.instructions or "",
             })
-            for line in self.line_ids:
-                Item.create({
-                    "job_id": job.id,
-                    "name": line.description or "Skid",
-                    "description": line.commodity or self.commodity or "",
-                    "pallet_count": line.pallets,
-                    "weight_lbs": line.weight_lbs,
-                    "pickup_stop_id": pickup_stop.id,
-                    "delivery_stop_id": delivery_stop.id,
-                })
-
-        self.dispatch_job_id = job.id
+        for line in self.line_ids:
+            Item.create({
+                "job_id": job.id,
+                "name": line.description or "Skid",
+                "description": line.commodity or self.commodity or "",
+                "pallet_count": line.pallets,
+                "weight_lbs": line.weight_lbs,
+                "pickup_stop_id": created_origin.id if created_origin else False,
+                "delivery_stop_id": created_destination.id if created_destination else False,
+                "available_after_stop_id": created_origin.id if created_origin else False,
+                "temperature_zone": "chilled" if self.temperature_mode == "reefer" else "ambient",
+            })
         return job
+
+    def _create_dispatch_job(self):
+        """Create one Planner card per physical truck/day operation.
+
+        A leg that picks up and delivers on different dates is intentionally
+        split into two cards.  Multiple LTL bookings on one exact departure
+        remain separate cards but share the departure truck and capacity.
+        """
+        self.ensure_one()
+        existing = self.env["prema.dispatch.job"].sudo().search([
+            ("logistics_booking_id", "=", self.id),
+        ], order="operation_date, id")
+        if existing:
+            if self.dispatch_job_id != existing[0]:
+                self.dispatch_job_id = existing[0].id
+            return existing
+
+        jobs = self.env["prema.dispatch.job"]
+        sequence = 1
+        for leg in self.leg_ids.sorted("sequence"):
+            pickup_date = leg.pickup_date or leg.departure_id.departure_date or self.pickup_date
+            delivery_date = leg.delivery_date or pickup_date or self.estimated_delivery_date
+            if pickup_date and delivery_date and pickup_date != delivery_date:
+                jobs |= self._create_dispatch_operation(
+                    leg, "pickup", pickup_date, origin_stop=leg.origin_stop_id, sequence=sequence,
+                )
+                sequence += 1
+                jobs |= self._create_dispatch_operation(
+                    leg, "delivery", delivery_date,
+                    destination_stop=leg.destination_stop_id, sequence=sequence,
+                )
+                sequence += 1
+            else:
+                role = leg.leg_type if leg.leg_type in ("feeder", "linehaul", "final_delivery") else "combined"
+                jobs |= self._create_dispatch_operation(
+                    leg, role, pickup_date or delivery_date,
+                    origin_stop=leg.origin_stop_id,
+                    destination_stop=leg.destination_stop_id,
+                    sequence=sequence,
+                )
+                sequence += 1
+
+        if not jobs:
+            pickups = self.stop_ids.filtered(lambda stop: stop.stop_type == "pickup").sorted("sequence")
+            deliveries = self.stop_ids.filtered(lambda stop: stop.stop_type == "delivery").sorted("sequence")
+            operation_date = self.pickup_date or fields.Date.context_today(self)
+            jobs |= self._create_dispatch_operation(
+                False, "custom", operation_date,
+                origin_stop=pickups[:1], destination_stop=deliveries[-1:], sequence=sequence,
+            )
+
+        self.dispatch_job_id = jobs[0].id
+        return jobs
 
     # ═══════════════════════════════════════════════════════════════════
     # Freight Tax Decision Engine
@@ -771,13 +796,12 @@ class LogisticsBooking(models.Model):
         self.ensure_one()
         ICP = self.env["ir.config_parameter"].sudo()
 
-        # Determine country from pickup/delivery FSA regions
-        lane = self.rate_plan_id.lane_id
-        origin_region = lane.origin_region_id
-        # Default to CA; flag as US if origin region indicates US
+        # Determine country from the real pickup stop. Rate Plans are
+        # historical only and must never be required to select a product.
         country = "CA"
-        if origin_region and hasattr(origin_region, "country_id") and origin_region.country_id:
-            country = origin_region.country_id.code or "CA"
+        pickup = self.stop_ids.filtered(lambda stop: stop.stop_type == "pickup").sorted("sequence")[:1]
+        if pickup and pickup.country_id:
+            country = pickup.country_id.code or "CA"
 
         is_reefer = self.temperature_mode in ("reefer", "chilled", "frozen")
 

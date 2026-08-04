@@ -1830,6 +1830,7 @@ class PremaDispatchJob(models.Model):
                 "corridor_tag":            job.corridor_tag or "",
                 "service_type":            job.service_type or "",
                 "source_document_name":    job.source_document_name or "",
+                **avail_svc._operation_metadata(job),
             })
 
         # Summary per window day (for calendar popup)

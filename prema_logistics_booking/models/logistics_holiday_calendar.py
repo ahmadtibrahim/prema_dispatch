@@ -3,7 +3,7 @@ from odoo import fields, models
 
 class LogisticsHolidayCalendar(models.Model):
     _name = "logistics.holiday.calendar"
-    _description = "Shared holiday/blackout-date calendar referenced by lane schedules"
+    _description = "Shared holiday/blackout-date calendar referenced by Corridors"
     _order = "name"
 
     name = fields.Char(required=True)

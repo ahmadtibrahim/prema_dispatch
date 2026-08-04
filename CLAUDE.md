@@ -8,7 +8,7 @@
 Purpose: let a future session find the right file in one lookup instead of
 grepping/exploring. Keep this updated when files are added/removed/renamed.
 Module: `prema_dispatch` · Path: `/opt/odoo/custom-addons/prema_dispatch` ·
-DB: `Prod-db` · Config: `/etc/odoo18.conf` · Version: `18.0.2.0.0`
+DB: `Prod-db` · Config: `/etc/odoo18.conf` · Version: `18.0.2.2.0`
 
 **Upgrade command:** `cd /opt/odoo/odoo18 && python3 odoo-bin -c /etc/odoo18.conf -d Prod-db --stop-after-init -u prema_dispatch --no-http`
 **Always follow `-u` with `systemctl restart odoo18`** — stale workers is a recurring gotcha in this project.
@@ -29,10 +29,9 @@ DB: `Prod-db` · Config: `/etc/odoo18.conf` · Version: `18.0.2.0.0`
 | `dispatch_consolidation_wizard.py` | `.consolidation.line`, `.consolidation.wizard` | UI wizard for accepting a suggested consolidated route. |
 | `dispatch_adhoc_wizard.py` | `.adhoc.wizard`, `.adhoc.result` | "Find Available Truck" mid-day load finder wizard. |
 | `dispatch_feasibility.py` | `.feasibility.wizard` | "Can we do this today?" real-time feasibility check wizard. |
-| `dispatch_duplicate_job_wizard.py` | `.duplicate.job.wizard` | "Job already exists" dedup prompt when Book Load is clicked twice. |
 | `dispatch_chat_invite_wizard.py` | `.chat.invite.wizard` | Add/remove members on a driver↔dispatch chat channel. |
 | `dispatch_timeline.py` | `.timeline.event` | Full event-history timeline per job (separate from Load Plan's own event log). |
-| `booking_template.py` | `.booking.template` | Recurring booking templates + daily cron to auto-create bookings. |
+| `booking_template.py` | `.booking.template` | Historical compatibility model only; active recurring work uses `logistics.recurring.agreement`. |
 | `dispatch_reports.py` | 9 report wizard models + `.driver.worksheet` | All reporting-suite wizards (On-Time %, Stop-Time-by-Location, Performance, Lane Profitability, Fuel Efficiency, Late-Stop, POD Aging) + the live/historical Driver Worksheet. |
 | `account_move_dispatch.py` | *(inherits `account.move`)* | Invoice-side dispatch integration (Book Load button, AI extraction hookup). |
 | `sale_order_dispatch.py` | *(inherits `sale.order`)* | Sales-order-side dispatch integration. |
@@ -43,7 +42,7 @@ DB: `Prod-db` · Config: `/etc/odoo18.conf` · Version: `18.0.2.0.0`
 | **`dispatch_pallet_allocation.py`** | `.pallet.stop.allocation` | Many-to-many join: one physical pallet → many delivery stops (shared skids). `unique(dispatch_item_id, stop_id)`. |
 | **`dispatch_load_plan_event.py`** | `.load.plan.event` | Load Plan audit log (created/assigned/moved/locked/handed_off/etc. — see `EVENT_TYPES` list in file). |
 | **`dispatch_document.py`** | `.document` | Thin metadata wrapper around `ir.attachment` for Load Plan documents (route_sheet/pod/pop/damage_photo/etc.) — does not duplicate binary storage. |
-| **`dispatch_book_load_wizard.py`** (2026-07-20, Stops Pending) | `.book.load.wizard` (Transient) | Book Load wizard: `exact_stops` vs `stops_pending` mode. Idempotent — `action_confirm()` reuses `move.dispatch_job_ids` instead of creating a duplicate job on repeated clicks. For `stops_pending`, creates exactly one pickup stop from `pickup_saved_location_id` and reserves capacity via `load.plan.job.reserved_floor_positions` — never creates fake pallet items. |
+| **`dispatch_book_load_wizard.py`** | `.book.load.wizard` (Transient) | Canonical Invoice Book Load wizard: Scheduled Network uses Corridor pricing/exact departures; Custom/Expedited uses an explicit agreed rate. Reuses the existing draft invoice and never falls back to direct dispatch. |
 | **`dispatch_location_photo.py`** | `.location.photo` | Photo history per Saved Location (entrance/dock/parking/etc.), separate from the location's single legacy `entrance_photo` field. Read via `dispatch_location.py`'s `_driver_payload()`. |
 | **`dispatch_location_extraction.py`** | `.location.extraction` | Audit trail for AI photo→location extraction calls (Ship To vs Invoice To), keyed by image SHA-256 so a re-scanned photo doesn't re-call the AI provider. Populated by `services/location_extraction_service.py`. |
 | **`dispatch_route_visit.py`** | `.route.visit`, `.route.visit.stop` | Combines 2+ delivery stops (from *different, financially separate* jobs on the same Load Plan) that share one physical address into one visit/map-marker/arrival-event, while each stop keeps its own job/invoice/completion state. Created via `dispatch_load_plan.py`'s `combine_physical_visit()`. |
