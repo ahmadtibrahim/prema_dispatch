@@ -1,23 +1,11 @@
-"""Freight pricing engine — simplified Scheduled Shared LTL pricing.
+"""Corridor-distance pricing for the scheduled LTL network.
 
-Phase 9-11: Two pricing modes supported:
-    simple  → Revenue Target / Planned Pallets = Price per Pallet
-              No tiers, no surcharges, no FSA adjustments.
-    tiered  → Full legacy pipeline (tier tables, surcharges, discounts).
-
-Phase 10: Revenue targets can be auto-suggested from region rate_per_km × road_km.
-Phase 11: Default revenue targets seeded for major corridors.
-
-Formula (simple mode):
-    Customer Price per Pallet = Revenue Target ÷ Planned Pallets
-    Total = Customer Price per Pallet × Pallets
+The operational Corridor is the single active authority for route topology,
+distance, $/km, planned pallets and the booking minimum.  Rate Plans remain
+readable only for historical bookings.
 """
 
-import math
-from .schedule_service import ScheduleService
-
-# DEFAULT_TARGETS removed — pricing authority is Rate Plans only.
-# Use RouteResolver + Rate Plans for all price resolution.
+import datetime
 
 
 class PricingResult:
@@ -28,6 +16,7 @@ class PricingResult:
         self.service_offering = kwargs.get("service_offering")
         self.rate_plan = kwargs.get("rate_plan")
         self.schedule = kwargs.get("schedule")
+        self.corridor = kwargs.get("corridor")
         self.pickup_date = kwargs.get("pickup_date")
         self.delivery_date_estimate = kwargs.get("delivery_date_estimate")
         self.price_lines = kwargs.get("price_lines", [])
@@ -38,27 +27,13 @@ class PricingResult:
 class PricingService:
     def __init__(self, env):
         self.env = env(su=True)
-        self.schedule_service = ScheduleService(env)
 
     def calculate(self, pickup_fsa, delivery_fsa, shipment_type, temperature_mode,
                    pallets, weight_lbs, liftgate_pickup=False, liftgate_delivery=False,
                    appointment=False, residential=False, same_day_requested=False,
                    partner=None, reference_dt=None, required_temperature_c=None,
                    resolve_departures=False):
-        """Resolve pricing through the ordered-lane RouteResolver.
-
-        Rate Plans are the sole pricing authority. No per-km, AI, road-distance,
-        or DEFAULT_TARGETS fallback. Returns PricingResult.
-
-        resolve_departures=True additionally resolves the EXACT corridor
-        departure for every leg (see DepartureResolver) and makes the result
-        unavailable if any leg has no real, capacity-validated departure.
-        Set this True only where a CUSTOMER-FACING QUOTE is being produced
-        (prepare_quote / confirm_from_internal / portal quote controller) —
-        pure pricing-formula callers (rate simulators, internal previews,
-        tests of the Rate Plan formula itself) must leave it False, since a
-        lane may be commercially priced before its physical schedule exists.
-        """
+        """Price a configured corridor itinerary and optionally freeze departures."""
         # Validate inputs
         if not pickup_fsa or not pickup_fsa.pickup_supported:
             return PricingResult(False, reason="pickup_fsa_not_supported")
@@ -66,122 +41,107 @@ class PricingService:
             return PricingResult(False, reason="delivery_fsa_not_supported")
         if not pickup_fsa.region_id or not delivery_fsa.region_id:
             return PricingResult(False, reason="fsa_not_mapped_to_region")
-        # Capacity gate: evaluated against departure vehicle, not a hardcoded number.
-        # RouteResolver handles pallet validation via vehicle pinwheel/straight capacity.
+        if pallets < 1:
+            return PricingResult(False, reason="invalid_pallet_count")
+        if weight_lbs < 0:
+            return PricingResult(False, reason="invalid_weight")
 
-        # Normalize equipment: chilled/frozen → reefer for capability check
-        # (single shared adapter — see temperature_compat.py)
-        from .route_resolver import RouteResolver
         from .temperature_compat import to_canonical_temperature_mode, REEFER
         equipment = to_canonical_temperature_mode(temperature_mode)
-        # Reefer requires an explicit numeric temperature. 0.0 IS valid — only
-        # None (never supplied) is rejected. Applies to every booking channel,
-        # since every channel prices through this one method.
         if equipment == REEFER and required_temperature_c is None:
             return PricingResult(False, reason="required_temperature_c_missing")
-        resolver = RouteResolver(self.env)
-        route = resolver.resolve(
-            pickup_fsa, delivery_fsa, pallets, weight_lbs,
-            equipment=equipment, partner=partner,
-            shipment_type=shipment_type, reference_dt=reference_dt,
-        )
+        origin_region = pickup_fsa.region_id
+        destination_region = delivery_fsa.region_id
+        topology_legs = []
+        pickup_date = delivery_date = None
+        if resolve_departures:
+            from .departure_resolver import DepartureResolver
+            dep_resolver = DepartureResolver(self.env)
+            earliest = (
+                reference_dt.date() if hasattr(reference_dt, "date")
+                else reference_dt or datetime.date.today()
+            )
+            resolution = dep_resolver.resolve(
+                origin_region, destination_region, equipment, pallets, weight_lbs,
+                earliest_pickup_date=earliest,
+            )
+            if not resolution.available:
+                return PricingResult(False, reason=resolution.reason)
+            for resolved in resolution.legs:
+                segment = resolved.departure.corridor_id.resolve_region_segment(
+                    resolved.origin_region, resolved.dest_region,
+                )
+                if not segment:
+                    return PricingResult(False, reason="departure_corridor_topology_changed")
+                topology_legs.append(self._priced_leg_source(
+                    segment, hub=resolved.hub,
+                    departure=resolved.departure, vehicle=resolved.vehicle,
+                ))
+        else:
+            from .route_resolver import RouteResolver
+            route = RouteResolver(self.env).resolve(
+                pickup_fsa, delivery_fsa, pallets, weight_lbs,
+                equipment=equipment, partner=partner,
+                shipment_type=shipment_type, reference_dt=reference_dt,
+            )
+            if not route.available:
+                return PricingResult(False, reason=route.reason)
+            topology_legs = route.legs
 
-        if not route.available:
-            return PricingResult(False, reason=route.reason)
-
-        # Sum leg prices and build route snapshot
-        total = sum(leg["price"] for leg in route.legs)
-        all_lines = []
         leg_snapshots = []
-        for i, leg in enumerate(route.legs):
-            if len(route.legs) > 1:
-                all_lines.append({
-                    "label": f"Leg {i+1}: {leg['origin_region']} → {leg['dest_region']}",
-                    "amount": leg["price"],
-                })
-            all_lines.extend(leg["price_lines"])
-            leg_snapshots.append({
-                "sequence": i + 1,
-                "origin_region": leg["origin_region"],
-                "dest_region": leg["dest_region"],
-                "rate_plan_id": leg["rate_plan"].id,
-                "rate_plan_version": leg["rate_plan"].version,
-                "lane_id": leg["lane"].id,
-                "price": leg["price"],
-                "price_lines": leg["price_lines"],
+        all_lines = []
+        minimum_charge = max((leg["minimum_booking_charge"] for leg in topology_legs), default=0.0)
+        currency = self.env["res.currency"].browse(
+            topology_legs[0]["currency_id"]
+        ).exists() or self.env.company.currency_id
+        for index, leg in enumerate(topology_legs):
+            breakdown = self.calculate_leg_per_km(
+                leg["distance_km"], leg["rate_per_km"], leg["planned_pallets"],
+                pallets, leg["included_weight_per_pallet"], weight_lbs, currency=currency,
+            )
+            lines = [{
+                "label": (
+                    f"{leg['distance_km']:.1f} km × {pallets} pallet(s) × "
+                    f"${breakdown['pallet_rate_per_km']:.4f}/pallet-km"
+                ),
+                "amount": breakdown["base_leg_charge"],
+            }]
+            if breakdown["extra_weight_charge"]:
+                lines.append({"label": "Excess weight", "amount": breakdown["extra_weight_charge"]})
+            snapshot = dict(leg)
+            for non_json_key in ("corridor", "hub", "lane", "rate_plan"):
+                snapshot.pop(non_json_key, None)
+            snapshot.update({
+                "sequence": index + 1,
+                "price": breakdown["subtotal"],
+                "price_lines": lines,
+                "pricing_formula": breakdown,
                 "pallets": pallets,
                 "weight_lbs": weight_lbs,
             })
-
-        # Resolve schedule through the primary leg's offering
-        primary_leg = route.legs[0]
-        offering = primary_leg["rate_plan"].service_offering_id
-        sched_result = self.schedule_service.next_pickup_and_delivery(offering, reference_dt)
-        pickup_date = sched_result.pickup_date if sched_result.available else None
-        delivery_date = sched_result.delivery_date if sched_result.available else None
-
-        # ── Resolve the EXACT departure(s) for every leg. A CUSTOMER-FACING
-        # quote is never available unless every leg has a real, capacity-
-        # validated departure with an assigned vehicle — no theoretical-
-        # schedule-only quotes. Skipped for pure pricing-formula callers.
-        transfer_hub_id = False
-        if resolve_departures:
-            from .departure_resolver import DepartureResolver
-            Region = self.env["logistics.region"]
-            dep_resolver = DepartureResolver(self.env)
-            earliest_date = pickup_date or (reference_dt.date() if reference_dt else __import__("datetime").date.today())
-            resolved_pickup_date = None
-            resolved_delivery_date = None
-            for i, leg_snap in enumerate(leg_snapshots):
-                origin_region = Region.search([("code", "=", leg_snap["origin_region"])], limit=1)
-                dest_region = Region.search([("code", "=", leg_snap["dest_region"])], limit=1)
-                if not origin_region or not dest_region:
-                    return PricingResult(False, reason="leg_region_not_resolvable")
-
-                dep_result = dep_resolver.resolve_single_leg(
-                    origin_region, dest_region, equipment, pallets, weight_lbs,
-                    earliest_pickup_date=earliest_date,
-                )
-                if not dep_result.available:
-                    return PricingResult(False, reason=f"no_departure_leg_{i+1}_{dep_result.reason}")
-
-                resolved = dep_result.legs[0]
-                dep, vehicle = resolved.departure, resolved.vehicle
-                leg_snap.update({
-                    "departure_id": dep.id,
-                    "vehicle_id": vehicle.id,
-                    "vehicle_name": vehicle.name or vehicle.license_plate or "",
-                    "departure_date": str(dep.departure_date),
-                    "departure_time": dep.departure_time,
-                    "corridor_id": dep.corridor_id.id,
+            leg_snapshots.append(snapshot)
+            if len(topology_legs) > 1:
+                all_lines.append({
+                    "label": f"Leg {index + 1}: {leg['origin_region']} → {leg['dest_region']}",
+                    "amount": breakdown["subtotal"],
                 })
-                if i == 0:
-                    resolved_pickup_date = dep.departure_date
-                resolved_delivery_date = dep.departure_date
-                if i == 0 and len(leg_snapshots) > 1:
-                    earliest_date = dep_resolver.earliest_connecting_date(dep)
+            all_lines.extend(lines)
 
-            # The exact resolved departure dates are authoritative — they
-            # supersede the Layer-1 theoretical schedule estimate above.
-            pickup_date = resolved_pickup_date or pickup_date
-            delivery_date = resolved_delivery_date or delivery_date
+        subtotal = currency.round(sum(leg["price"] for leg in leg_snapshots))
+        minimum_top_up = currency.round(max(0.0, minimum_charge - subtotal))
+        if minimum_top_up:
+            leg_snapshots[-1]["price"] = currency.round(leg_snapshots[-1]["price"] + minimum_top_up)
+            leg_snapshots[-1]["price_lines"].append({
+                "label": "Booking minimum adjustment", "amount": minimum_top_up,
+            })
+            all_lines.append({"label": "Minimum booking charge", "amount": minimum_top_up})
+        total = currency.round(subtotal + minimum_top_up)
 
-            # For a 2-leg route, the frozen hub is the ACTUAL hub whose region
-            # matches leg1's destination / leg2's origin — never re-derived by
-            # a fresh "is_default hub" search at confirmation time.
-            if len(leg_snapshots) > 1:
-                Hub = self.env["logistics.hub"]
-                hub_region_code = leg_snapshots[0]["dest_region"]
-                hub_region = Region.search([("code", "=", hub_region_code)], limit=1)
-                hub = Hub.search([("canonical_region_id", "=", hub_region.id)], limit=1) if hub_region else Hub
-                if hub:
-                    transfer_hub_id = hub.id
-                    leg_snapshots[0]["hub_id"] = hub.id
-                    leg_snapshots[0]["hub_name"] = hub.public_name
-                    leg_snapshots[0]["hub_location_id"] = hub.saved_location_id.id if hub.saved_location_id else False
-                    leg_snapshots[-1]["hub_id"] = hub.id
-                    leg_snapshots[-1]["hub_name"] = hub.public_name
-                    leg_snapshots[-1]["hub_location_id"] = hub.saved_location_id.id if hub.saved_location_id else False
+        if leg_snapshots and leg_snapshots[0].get("departure_date"):
+            pickup_date = datetime.date.fromisoformat(leg_snapshots[0]["pickup_date"])
+            delivery_date = datetime.date.fromisoformat(leg_snapshots[-1]["delivery_date"])
+
+        transfer_hub_id = next((leg.get("hub_id") for leg in leg_snapshots if leg.get("hub_id")), False)
 
         route_snapshot = {
             "legs": leg_snapshots,
@@ -193,14 +153,18 @@ class PricingService:
             "required_temperature_c": required_temperature_c,
             "shipment_type": shipment_type,
             "transfer_hub_id": transfer_hub_id,
+            "minimum_booking_charge": minimum_charge,
+            "pricing_authority": "corridor_per_km",
         }
 
+        primary_corridor = topology_legs[0]["corridor"]
         return PricingResult(
             True,
-            lane=primary_leg["lane"],
-            service_offering=offering,
-            rate_plan=primary_leg["rate_plan"],
-            schedule=sched_result.schedule if sched_result.available else None,
+            corridor=primary_corridor,
+            lane=False,
+            service_offering=False,
+            rate_plan=False,
+            schedule=False,
             pickup_date=pickup_date,
             delivery_date_estimate=delivery_date,
             price_lines=all_lines,
@@ -208,104 +172,53 @@ class PricingService:
             route_snapshot=route_snapshot,
         )
 
-    def _active_rate_plan(self, offering, on_date):
-        RatePlan = self.env["logistics.rate.plan"]
-        return RatePlan.search([
-            ("service_offering_id", "=", offering.id),
-            ("active", "=", True),
-            "|", ("effective_from", "=", False), ("effective_from", "<=", on_date),
-            "|", ("effective_to", "=", False), ("effective_to", ">=", on_date),
-        ], order="version desc", limit=1)
-
-    def _compute_v4_formula(self, rate_plan, pallets, weight_lbs=0.0):
-        """Canonical V4 LTL Hub Pricing formula — single source of truth.
-
-        1. Base Pallet Rate = Revenue Target / Target Load Quantity
-        2. Included Weight = Pallets × included_weight_per_pallet (default 500 lb)
-        3. Excess Weight = MAX(0, Shipment Weight − Included Weight)
-        4. Excess Weight Rate = Revenue Target / Safe Weight Capacity
-        5. Leg Base Charge = Pallets × Base Pallet Rate
-        6. Weight Surcharge = Excess Weight × Excess Weight Rate
-        7. Final = ROUND((Leg Base + Weight Surcharge) / 5) × 5
-
-        Returns a dict with all intermediate values. Every pricing display method
-        must derive its output from this dict — do not duplicate the formula.
-        """
-        pp = max(rate_plan.planned_pallets, 1)
-        swc = max(rate_plan.safe_weight_capacity or 11000.0, 1.0)
-        incl_per_pallet = rate_plan.included_weight_per_pallet or 500.0
-
-        base_rate = rate_plan.revenue_target / pp
-        leg_base = pallets * base_rate
-
-        included_weight = pallets * incl_per_pallet
-        excess_weight = max(0.0, weight_lbs - included_weight)
-        excess_rate = rate_plan.revenue_target / swc
-        weight_surcharge = excess_weight * excess_rate
-
-        subtotal = leg_base + weight_surcharge
-        # Nearest-$5, then currency-rounded — never Python round() on money.
-        from odoo.tools import float_round
-        final = float_round(subtotal / 5.0, precision_digits=0) * 5.0
-        currency = rate_plan.currency_id
-        if currency:
-            final = currency.round(final)
-
+    @staticmethod
+    def _priced_leg_source(segment, hub=None, departure=None, vehicle=None):
+        corridor = segment["corridor"]
+        origin = segment["origin_region"]
+        destination = segment["destination_region"]
+        departure_date = departure.departure_date if departure else None
+        pickup_date = (
+            departure_date + datetime.timedelta(days=segment["pickup_day_offset"])
+            if departure_date else None
+        )
+        delivery_date = (
+            departure_date + datetime.timedelta(days=segment["delivery_day_offset"])
+            if departure_date else None
+        )
         return {
-            "planned_pallets": pp,
-            "swc": swc,
-            "incl_per_pallet": incl_per_pallet,
-            "base_rate": base_rate,
-            "leg_base": leg_base,
-            "included_weight": included_weight,
-            "excess_weight": excess_weight,
-            "excess_rate": excess_rate,
-            "weight_surcharge": weight_surcharge,
-            "subtotal": subtotal,
-            "final": final,
+            "corridor": corridor,
+            "corridor_id": corridor.id,
+            "corridor_name": corridor.name,
+            "origin_region": origin.code,
+            "origin_region_id": origin.id,
+            "dest_region": destination.code,
+            "dest_region_id": destination.id,
+            "distance_km": segment["distance_km"],
+            "pickup_day_offset": segment["pickup_day_offset"],
+            "delivery_day_offset": segment["delivery_day_offset"],
+            "rate_per_km": corridor.rate_per_km,
+            "planned_pallets": corridor.planned_pallets,
+            "included_weight_per_pallet": corridor.included_weight_per_pallet,
+            "minimum_booking_charge": corridor.minimum_booking_charge,
+            "currency_id": corridor.currency_id.id,
+            "currency_code": corridor.currency_id.name,
+            "departure_id": departure.id if departure else False,
+            "departure_date": str(departure_date) if departure_date else False,
+            "departure_time": departure.departure_time if departure else False,
+            "pickup_date": str(pickup_date) if pickup_date else False,
+            "delivery_date": str(delivery_date) if delivery_date else False,
+            "vehicle_id": vehicle.id if vehicle else False,
+            "vehicle_name": (vehicle.name or vehicle.license_plate or "") if vehicle else "",
+            "hub_id": hub.id if hub else False,
+            "hub_name": hub.public_name if hub else "",
+            "hub_location_id": hub.saved_location_id.id if hub and hub.saved_location_id else False,
+            "lane_id": False,
+            "offering_id": False,
+            "rate_plan_id": False,
+            "rate_plan_name": "",
+            "rate_plan_version": 0,
         }
-
-    def _compute_price(self, rate_plan, pallets, temperature_mode, weight_lbs=0.0):
-        """V4 LTL Hub Pricing — returns (price_lines_list, final_price)."""
-        v = self._compute_v4_formula(rate_plan, pallets, weight_lbs)
-        lines = []
-        lines.append({
-            "label": f"Base ({pallets} pallet(s) × ${v['base_rate']:,.2f})",
-            "amount": round(v["leg_base"], 2),
-        })
-        if v["weight_surcharge"] > 0:
-            lines.append({
-                "label": f"Excess Weight ({v['excess_weight']:,.0f} lb × ${v['excess_rate']:,.3f}/lb)",
-                "amount": round(v["weight_surcharge"], 2),
-            })
-        lines.append({"label": "Subtotal", "amount": round(v["subtotal"], 2)})
-        lines.append({"label": "Final Freight Price (nearest $5)", "amount": v["final"]})
-        return lines, v["final"]
-
-    def calculate_leg_price(self, rate_plan, pallets, weight_lbs=0.0):
-        """Calculate price for a single Booking Leg using the V4 formula.
-        Returns dict with full breakdown. Delegates to _compute_v4_formula."""
-        v = self._compute_v4_formula(rate_plan, pallets, weight_lbs)
-        return {
-            "rate_plan_id": rate_plan.id,
-            "rate_plan_name": rate_plan.name,
-            "revenue_target": rate_plan.revenue_target,
-            "target_load_quantity": v["planned_pallets"],
-            "base_rate_per_pallet": round(v["base_rate"], 4),
-            "pallets": pallets,
-            "leg_base_charge": round(v["leg_base"], 2),
-            "included_weight_per_pallet": v["incl_per_pallet"],
-            "included_weight_total": v["included_weight"],
-            "actual_weight_lbs": weight_lbs,
-            "excess_weight_lbs": round(v["excess_weight"], 2),
-            "excess_weight_rate": round(v["excess_rate"], 6),
-            "weight_surcharge": round(v["weight_surcharge"], 2),
-            "subtotal": round(v["subtotal"], 2),
-            "final_price": v["final"],
-            "pricing_method": "v4_ltl_hub",
-        }
-
-    # ── PHASE 6: Canonical Per-Kilometre Pricing ─────────────────────
 
     def calculate_leg_per_km(self, distance_km, rate_per_km, target_pallets,
                               booked_pallets, included_weight_per_pallet,
@@ -406,5 +319,5 @@ class PricingService:
             "total_subtotal": round(total, 2),
         }
 
-    # calculate_simple() and suggest_revenue_target() removed.
-    # Rate Plans are the sole pricing authority — no DEFAULT_TARGETS fallback.
+    # calculate_simple() and suggest_revenue_target() were removed. Corridors
+    # are the sole active pricing authority; no legacy DEFAULT_TARGETS fallback.

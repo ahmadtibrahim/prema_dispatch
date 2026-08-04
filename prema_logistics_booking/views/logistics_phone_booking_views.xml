@@ -33,6 +33,8 @@
                         </group>
                         <group>
                             <field name="temperature_mode"/>
+                            <field name="required_temperature_c" invisible="temperature_mode != 'reefer'"/>
+                            <field name="temperature_confirmed" invisible="temperature_mode != 'reefer'"/>
                             <field name="shipment_type"/>
                         </group>
                     </group>
@@ -41,6 +43,7 @@
                         <field name="liftgate_delivery"/>
                         <field name="appointment"/>
                         <field name="residential"/>
+                        <field name="same_day_requested"/>
                     </group>
                     <group string="Results" invisible="price == 0">
                         <field name="price"/>
@@ -51,6 +54,7 @@
                            invisible="not result_text"/>
                     <field name="booking_id" readonly="1"
                            invisible="not booking_id"/>
+                    <field name="quote_token" invisible="1"/>
                 </sheet>
             </form>
         </field>

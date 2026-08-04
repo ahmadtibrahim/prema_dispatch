@@ -32,7 +32,7 @@ from .temperature_compat import to_canonical_temperature_mode, REEFER
 
 _logger = logging.getLogger(__name__)
 
-MAX_LOOKAHEAD_DAYS = 45
+MAX_LOOKAHEAD_DAYS = 56
 
 
 class ResolvedLeg:
@@ -121,91 +121,124 @@ class DepartureResolver:
 
     def _resolve_transfer(self, origin_region, dest_region, equipment, pallets, weight_lbs,
                            earliest_pickup_date, allow_pinwheel_override):
-        Hub = self.env["logistics.hub"]
-        hub = Hub.search([("is_default", "=", True), ("active", "=", True)], limit=1)
-        if not hub or not hub.canonical_region_id:
-            return DepartureResolution(False, reason="no_default_hub_configured")
+        hubs = self.env["logistics.hub"].search([
+            ("active", "=", True), ("canonical_region_id", "!=", False),
+        ], order="is_default desc, id asc")
+        if not hubs:
+            return DepartureResolution(False, reason="no_hub_configured")
+
+        candidates = []
+        last_reason = "no_complete_hub_connection"
+        for hub in hubs:
+            hub_region = hub.canonical_region_id
+            if origin_region == hub_region or dest_region == hub_region:
+                continue
+            leg1_corridors = self._candidate_corridors(origin_region, hub_region)
+            leg2_corridors = self._candidate_corridors(hub_region, dest_region)
+            if not leg1_corridors or not leg2_corridors:
+                continue
+
+            for dep1, vehicle1 in self._eligible_departures(
+                leg1_corridors, earliest_pickup_date, equipment, pallets,
+                weight_lbs, allow_pinwheel_override,
+            ):
+                # The connection date is based on this corridor segment's
+                # configured arrival day/time at the hub, not merely the
+                # departure's start time.
+                leg2_earliest = self._earliest_connecting_date(
+                    dep1, hub, origin_region=origin_region, dest_region=hub_region,
+                )
+                dep2, vehicle2, reason2 = self._find_eligible_departure(
+                    leg2_corridors, leg2_earliest, equipment, pallets,
+                    weight_lbs, allow_pinwheel_override,
+                )
+                if not dep2:
+                    last_reason = reason2 or last_reason
+                    continue
+                candidates.append((
+                    dep2.departure_date,
+                    dep1.departure_date,
+                    not hub.is_default,
+                    hub.id,
+                    dep1.id,
+                    dep2.id,
+                    hub,
+                    dep1,
+                    vehicle1,
+                    dep2,
+                    vehicle2,
+                ))
+                # Later first-leg departures for this hub cannot produce an
+                # earlier complete itinerary than its first valid connection.
+                break
+
+        if not candidates:
+            return DepartureResolution(False, reason=last_reason)
+
+        (_delivery_date, _pickup_date, _non_default, _hub_id, _dep1_id, _dep2_id,
+         hub, dep1, vehicle1, dep2, vehicle2) = min(candidates)
         hub_region = hub.canonical_region_id
-        if origin_region == hub_region or dest_region == hub_region:
-            # Not a transfer case — direct resolution already covers travel
-            # through/ending at the hub region itself.
-            return DepartureResolution(False, reason="not_a_transfer_case")
-
-        leg1_corridors = self._candidate_corridors(origin_region, hub_region)
-        if not leg1_corridors:
-            return DepartureResolution(False, reason="no_corridor_to_hub")
-
-        dep1, vehicle1, reason1 = self._find_eligible_departure(
-            leg1_corridors, earliest_pickup_date, equipment, pallets, weight_lbs, allow_pinwheel_override,
-        )
-        if not dep1:
-            return DepartureResolution(False, reason=reason1)
-
-        # Leg 2 must depart no earlier than leg 1's arrival at the hub, plus
-        # the hub's configured connection time — computed from the ACTUAL
-        # scheduled leg-1 departure, never a hardcoded "+1 day".
-        leg2_earliest = self._earliest_connecting_date(dep1, hub)
-
-        leg2_corridors = self._candidate_corridors(hub_region, dest_region)
-        if not leg2_corridors:
-            return DepartureResolution(False, reason="no_corridor_from_hub")
-
-        dep2, vehicle2, reason2 = self._find_eligible_departure(
-            leg2_corridors, leg2_earliest, equipment, pallets, weight_lbs, allow_pinwheel_override,
-        )
-        if not dep2:
-            return DepartureResolution(False, reason=reason2)
-
         return DepartureResolution(True, legs=[
             ResolvedLeg(dep1, vehicle1, origin_region, hub_region, hub=hub),
             ResolvedLeg(dep2, vehicle2, hub_region, dest_region, hub=hub),
         ])
 
-    def earliest_connecting_date(self, dep1, hub=None):
+    def earliest_connecting_date(self, dep1, hub=None, origin_region=None, dest_region=None):
         """Public wrapper: earliest date a second leg may depart, given the
         actual first-leg departure. Looks up the default hub if none given."""
         if hub is None:
             hub = self.env["logistics.hub"].search([("is_default", "=", True), ("active", "=", True)], limit=1)
-        return self._earliest_connecting_date(dep1, hub)
+        return self._earliest_connecting_date(
+            dep1, hub, origin_region=origin_region, dest_region=dest_region,
+        )
 
-    def _earliest_connecting_date(self, dep1, hub):
+    def _earliest_connecting_date(self, dep1, hub, origin_region=None, dest_region=None):
         """The earliest calendar date leg 2 may depart, given leg 1's actual
         scheduled arrival and the hub's transfer cutoff. If leg 1 arrives at
         or before cutoff, a same-day connection is allowed; otherwise the
         connection is only valid from the next day onward."""
         cutoff = hub.transfer_cutoff_time or 16.0
-        # Departure records only carry a departure_time (not a distinct
-        # arrival_time); treat departure_time as the hub-arrival proxy for
-        # single-day corridor runs, which matches how corridor.departure is
-        # actually populated (no separate arrival column exists yet).
-        if (dep1.departure_time or 0.0) <= cutoff:
-            return dep1.departure_date
-        return dep1.departure_date + datetime.timedelta(days=1)
+        arrival_date = dep1.departure_date
+        arrival_hour = dep1.departure_time or 0.0
+        if origin_region and dest_region:
+            segment = dep1.corridor_id.resolve_region_segment(origin_region, dest_region)
+            if segment:
+                arrival_date += datetime.timedelta(days=segment["delivery_day_offset"] or 0)
+                configured_hour = segment.get("destination_arrival_time")
+                if configured_hour is not False and configured_hour is not None:
+                    arrival_hour = configured_hour or 0.0
+                elif not segment.get("destination_stop"):
+                    # A Hub endpoint without a reviewed arrival time must not
+                    # invent a same-day connection from the departure time.
+                    return arrival_date + datetime.timedelta(days=1)
+        if arrival_hour <= cutoff:
+            return arrival_date
+        return arrival_date + datetime.timedelta(days=1)
 
     # ── Corridor + departure search ──────────────────────────────────
 
     def _candidate_corridors(self, origin_region, dest_region):
         """Corridors whose stop sequence visits origin before destination,
-        with pickup/delivery allowed at those exact stops."""
+        or whose same-day return loop reaches destination after pickup."""
         Corridor = self.env["logistics.corridor"]
-        candidates = []
-        for corridor in Corridor.search([("active", "=", True)]):
-            stops = corridor.stop_ids.sorted("sequence")
-            origin_idx = dest_idx = None
-            for i, stop in enumerate(stops):
-                if stop.region_id == origin_region and stop.pickup_allowed and origin_idx is None:
-                    origin_idx = i
-                if stop.region_id == dest_region and stop.delivery_allowed:
-                    dest_idx = i
-            if origin_idx is not None and dest_idx is not None and dest_idx > origin_idx:
-                candidates.append(corridor)
-        return candidates
+        return [
+            corridor for corridor in Corridor.search([("active", "=", True)])
+            if corridor.resolve_region_segment(origin_region, dest_region)
+        ]
 
     def _find_eligible_departure(self, corridors, earliest_date, equipment, pallets, weight_lbs,
                                   allow_pinwheel_override):
         """Deterministic search: earliest eligible departure_date, then
         lowest id, across all candidate corridors. Never limit(1) without
         this explicit ordering + eligibility filter."""
+        last_reason = "no_scheduled_departure_in_window"
+        for dep, vehicle in self._eligible_departures(
+            corridors, earliest_date, equipment, pallets, weight_lbs,
+            allow_pinwheel_override,
+        ):
+            return dep, vehicle, None
+
+        # Re-run only to preserve the most useful rejection reason for the UI.
         Departure = self.env["logistics.corridor.departure"]
         horizon_end = earliest_date + datetime.timedelta(days=MAX_LOOKAHEAD_DAYS)
         deps = Departure.search([
@@ -216,15 +249,33 @@ class DepartureResolver:
             ("active", "=", True),
         ], order="departure_date asc, id asc")
 
-        last_reason = "no_scheduled_departure_in_window"
         for dep in deps:
-            eligible, reason, vehicle = self._eligible_departure(
+            eligible, reason, _vehicle = self._eligible_departure(
                 dep, equipment, pallets, weight_lbs, allow_pinwheel_override,
             )
-            if eligible:
-                return dep, vehicle, None
-            last_reason = reason
+            if not eligible:
+                last_reason = reason
         return None, None, last_reason
+
+    def _eligible_departures(self, corridors, earliest_date, equipment, pallets,
+                             weight_lbs, allow_pinwheel_override):
+        """Yield all eligible departures in deterministic chronological order."""
+        if not corridors:
+            return
+        horizon_end = earliest_date + datetime.timedelta(days=MAX_LOOKAHEAD_DAYS)
+        departures = self.env["logistics.corridor.departure"].search([
+            ("corridor_id", "in", [corridor.id for corridor in corridors]),
+            ("departure_date", ">=", earliest_date),
+            ("departure_date", "<=", horizon_end),
+            ("status", "=", "scheduled"),
+            ("active", "=", True),
+        ], order="departure_date asc, id asc")
+        for departure in departures:
+            eligible, _reason, vehicle = self._eligible_departure(
+                departure, equipment, pallets, weight_lbs, allow_pinwheel_override,
+            )
+            if eligible:
+                yield departure, vehicle
 
     def _eligible_departure(self, departure, equipment, pallets, weight_lbs, allow_pinwheel_override):
         """A departure is eligible ONLY with a real, capable, sufficiently

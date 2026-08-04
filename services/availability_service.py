@@ -26,6 +26,26 @@ class DispatchAvailabilityService:
         local_dt = utc_dt.astimezone(self._user_tz)
         return local_dt.strftime("%H:%M")
 
+    @staticmethod
+    def _operation_metadata(job):
+        role = getattr(job, "operation_role", False) or ""
+        labels = {
+            "combined": "Pickup & Delivery",
+            "pickup": "Pickup",
+            "delivery": "Delivery",
+            "feeder": "Feeder",
+            "linehaul": "Linehaul",
+            "final_delivery": "Final Delivery",
+            "custom": "Custom / Expedited",
+        }
+        departure = getattr(job, "corridor_departure_id", False)
+        return {
+            "operation_role": role,
+            "operation_label": labels.get(role, ""),
+            "scheduled_ltl": bool(departure),
+            "departure_name": departure.display_name if departure else "",
+        }
+
     def _job_active_in_range(self, job, day_start, day_end):
         """True if job's pickup..delivery window overlaps [day_start, day_end]
         (both UTC-naive, matching how Datetime fields are stored). Falls back
@@ -283,6 +303,7 @@ class DispatchAvailabilityService:
                     "partner":     j.partner_id.name or "",
                     "stops":       stops_data,
                     "leg_kind":    "primary",
+                    **self._operation_metadata(j),
                 })
 
             # Other legs of a split job touching this truck: "past" (already
@@ -317,6 +338,7 @@ class DispatchAvailabilityService:
                     "partner":     job.partner_id.name or "",
                     "stops":       hist_stops,
                     "leg_kind":    leg_kind,
+                    **self._operation_metadata(job),
                 })
 
             self.env["prema.dispatch.job"]._apply_truck_onboard_counts(truck_stop_payloads)

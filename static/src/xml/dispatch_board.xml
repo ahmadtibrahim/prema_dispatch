@@ -204,6 +204,9 @@
                                         <span class="drag-handle text-muted" title="Drag to assign">⠿</span>
                                         <div class="flex-grow-1">
                                             <div class="job-name"><t t-esc="job.name"/></div>
+                                            <div t-if="job.operation_label" class="small fw-bold text-primary">
+                                                <t t-esc="job.operation_label"/>
+                                            </div>
                                             <div class="job-partner text-muted" style="font-size:10px"><t t-esc="job.partner"/></div>
                                         </div>
                                     </div>
@@ -444,6 +447,9 @@
                                                         t-on-click.stop="() => this.unassignJob(job.job_id)">×</button>
                                             </div>
                                             <div class="block-action" t-esc="jobActionLabel(job)"/>
+                                            <div t-if="job.operation_label" class="block-action">
+                                                <t t-esc="job.operation_label"/>
+                                            </div>
                                             <div class="block-action-detail" t-esc="jobActionDetail(job)"/>
                                             <div class="block-route" t-esc="job.route"/>
                                             <div class="block-time" t-esc="getJobTimeLabel(job)"/>

@@ -3,34 +3,38 @@
         <field name="name">prema.dispatch.book.load.wizard.form</field>
         <field name="model">prema.dispatch.book.load.wizard</field>
         <field name="arch" type="xml">
-            <form string="Book Load">
-                <group>
+            <form string="Book Load from Invoice">
+                <sheet>
                     <field name="move_id" invisible="1"/>
-                    <field name="partner_id"/>
-                    <field name="route_definition_mode" widget="radio"/>
-                    <field name="pickup_saved_location_id"/>
-                    <field name="scheduled_pickup"/>
-                    <field name="expected_skids"/>
-                    <field name="planned_route_name"/>
-                    <field name="planned_route_corridor"/>
-                    <field name="planned_delivery_area"/>
-                    <field name="reserve_capacity"/>
-                    <field name="vehicle_id"/>
-                    <field name="driver_id"/>
-                </group>
-                <group>
-                    <field name="service_type"/>
-                    <field name="equipment_type"/>
-                    <field name="requires_reefer"/>
-                    <field name="requires_liftgate"/>
-                    <field name="commodity"/>
-                    <field name="temperature_requirement"/>
-                    <field name="total_weight_lbs"/>
-                    <field name="customer_reference"/>
-                    <field name="purchase_order"/>
-                    <field name="bol_reference"/>
-                    <field name="general_notes"/>
-                </group>
+                    <group>
+                        <group>
+                            <field name="booking_mode" widget="radio"/>
+                            <field name="partner_id"/>
+                            <field name="pickup_saved_location_id"/>
+                            <field name="delivery_saved_location_id"/>
+                            <field name="scheduled_pickup"/>
+                        </group>
+                        <group string="Freight">
+                            <field name="service_type"/>
+                            <field name="equipment_type"/>
+                            <field name="required_temperature_c" invisible="equipment_type != 'reefer'"/>
+                            <field name="temperature_confirmed" invisible="equipment_type != 'reefer'"/>
+                            <field name="requires_liftgate"/>
+                            <field name="expected_skids"/>
+                            <field name="total_weight_lbs"/>
+                            <field name="commodity"/>
+                        </group>
+                    </group>
+                    <group string="References">
+                        <field name="customer_reference"/>
+                        <field name="purchase_order"/>
+                        <field name="bol_reference"/>
+                        <field name="general_notes"/>
+                    </group>
+                    <div class="alert alert-info" role="alert" invisible="booking_mode != 'scheduled_ltl'">
+                        Scheduled LTL uses Corridor pricing, reserves exact departure capacity and assigns Planner jobs to that departure's Truck.
+                    </div>
+                </sheet>
                 <footer>
                     <button name="action_confirm" type="object" string="Confirm Booking" class="btn-primary"/>
                     <button string="Cancel" special="cancel"/>

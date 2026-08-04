@@ -41,7 +41,7 @@
 <div class="dm-wrap">
 
 <h1 class="dm-title">Prema Dispatch — User Manual</h1>
-<p class="dm-subtitle">Version 4.1 - Updated August 2026 - PremaFirm Logistics</p>
+<p class="dm-subtitle">Version 5.0 - Updated August 4, 2026 - PremaFirm Logistics</p>
 
 <div class="dm-toc">
     <h2>Table of Contents</h2>
@@ -52,8 +52,8 @@
         <li><a href="#locations">Saved Locations</a></li>
         <li><a href="#geography">Geography: FSAs, Regions, Cities</a></li>
         <li><a href="#network">Network: Corridors &amp; Departures</a></li>
-        <li><a href="#network-map">Network Availability Map</a></li>
-        <li><a href="#pricing">Pricing: Rate Plans &amp; Lanes</a></li>
+        <li><a href="#network-map">Where We Go</a></li>
+        <li><a href="#pricing">Corridor Pricing</a></li>
         <li><a href="#booking-flows">Booking Flows (All 7 Channels)</a></li>
         <li><a href="#portal">Portal Booking</a></li>
         <li><a href="#phone">Phone Booking</a></li>
@@ -65,7 +65,7 @@
         <li><a href="#capacity">Capacity &amp; 13-Pallet Override</a></li>
         <li><a href="#tax">Freight Tax</a></li>
         <li><a href="#booking-board">Booking Board</a></li>
-        <li><a href="#weekly-schedule">Weekly Schedule Board</a></li>
+        <li><a href="#weekly-schedule">Departure Schedule</a></li>
         <li><a href="#dispatch-planner">Dispatch Planner</a></li>
         <li><a href="#live-map">Live Fleet Map</a></li>
         <li><a href="#load-plans">Load Plans</a></li>
@@ -113,16 +113,15 @@
     <h3>Navigation</h3>
     <p>Click <b>Prema Dispatch</b> in the top navigation bar. The default page is the <b>Live Fleet Map</b> showing all operational trucks with GPS positions. The sidebar menu is organized into:</p>
     <ul>
-        <li><b>Dispatch Operations</b> — Live Map, Booking Board, Weekly Schedule, Dispatch Planner, Load Plans, Driver Worksheets, Find Available Truck</li>
+        <li><b>Dispatch Operations</b> — Live Map, Booking Board, Dispatch Planner, Load Plans, Driver Worksheets, Find Available Truck</li>
         <li><b>Bookings</b> — All Bookings, Phone Booking, Internal Booking, Recurring Agreements, Custom Quotes, WhatsApp Negotiations</li>
-        <li><b>Network</b> — Corridors, Departures, Daily Local Operations, Lanes, Regions, FSAs, Cities, Region Destinations, Saved Locations</li>
-        <li><b>Pricing</b> — Rate Plans, Customer Contract Rates, Service Offerings, Service Levels, Rate Simulator, Schedule Simulator</li>
+        <li><b>Network</b> — Where We Go, Service Routes (Corridors), Departures, Regions, FSAs, Cities, Saved Locations</li>
         <li><b>Fleet</b> — Trucks, Drivers, Equipment Profiles, GeoTab Settings</li>
         <li><b>Reports</b> — All Jobs, Completed, Stops, Freight Items, LTL Consolidations, On-Time %, Lane Profitability, Fuel Efficiency, POD Aging</li>
         <li><b>User Manual</b> — This page</li>
-        <li><b>Settings</b> — Stages, Booking Templates</li>
+        <li><b>Settings</b> — Stages and system configuration</li>
     </ul>
-    <div class="dm-info">The top navigation shows <b>8 parent menus</b> under Prema Dispatch. All 7 Dispatch Operations items, 6 Bookings items, and all Network/Pricing/Fleet submenus are visible when you have the correct permissions.</div>
+    <div class="dm-info">Rate Plans, technical lanes, route runs, duplicate weekly boards, and Booking Templates are historical only and are removed from normal navigation.</div>
 </div>
 
 <!-- ================================================================ -->
@@ -171,11 +170,11 @@
         <tr><th>Layer</th><th>What it does</th><th>Example</th></tr>
         <tr><td>Postal Code</td><td>Customer's address</td><td>K7M 3E5</td></tr>
         <tr><td>FSA</td><td>First 3 chars → determines eligibility</td><td>K7M → Kingston area</td></tr>
-        <tr><td>Region</td><td>Pricing &amp; network zone</td><td>R6 = Eastern Ontario</td></tr>
+        <tr><td>Region</td><td>Approved service area used by Corridors</td><td>Southeastern Ontario</td></tr>
         <tr><td>City</td><td>Display label only (not used for pricing)</td><td>Kingston</td></tr>
-        <tr><td>Lane</td><td>Region-pair commercial capability</td><td>R6→R8 (Kingston→Montreal)</td></tr>
+        <tr><td>Corridor Stop</td><td>Ordered region on a weekly truck route</td><td>Durham → Northumberland</td></tr>
     </table>
-    <div class="dm-warn">Cities are display-only. Pricing is determined by <b>Region pairs</b>, not city names. Small towns (Minden, Bobcaygeon) do not need their own corridors or special pricing.</div>
+    <div class="dm-warn">Cities are display-only. Region names must come from the approved LTL catalogue. New regions remain customer-hidden until their FSA coverage and map anchor are reviewed.</div>
 </div>
 
 <!-- ================================================================ -->
@@ -183,42 +182,33 @@
     <h2>6. Network: Corridors &amp; Departures</h2>
     <p>Navigate: <b>Network → Corridors / Departures / Daily Local Operations</b></p>
     <h3>Corridors</h3>
-    <p>A Corridor is a <b>directional operational route</b> with ordered stops. Each corridor represents one direction — reverse direction requires a separate corridor.</p>
+    <p>A Corridor is the single authority for a scheduled route: ordered regions, weekly days, start time, default truck, road distance, customer $/km, planned pallets, and future departures. Reverse direction requires a separate paired corridor unless the route is explicitly a same-day return.</p>
     <table class="dm-table">
-        <tr><th>Corridor</th><th>Direction</th><th>Stops (in order)</th></tr>
-        <tr><td>Quebec Eastbound</td><td>East</td><td>Transit Mississauga → Belleville → Kingston → Brockville → Cornwall → Montreal → Drummondville → Quebec City</td></tr>
-        <tr><td>Quebec Westbound</td><td>West</td><td>Quebec City → Drummondville → Montreal → Cornwall → Brockville → Kingston → Belleville → Transit Mississauga</td></tr>
-        <tr><td>Local &amp; Regional</td><td>Local</td><td>GTA-area pickups/deliveries</td></tr>
-        <tr><td>Ottawa Corridor</td><td>East</td><td>Transit Mississauga → Ottawa</td></tr>
+        <tr><th>Day</th><th>Service</th></tr>
+        <tr><td>Monday and Thursday</td><td>Hub → Niagara Region → Hamilton, Halton and Brant → Greater Toronto Area → York → Durham → Headwaters → Waterloo and Wellington regions → Hub</td></tr>
+        <tr><td>Tuesday 12:00 AM, overnight</td><td>Hub → Durham → Northumberland → Southeastern Ontario → Montérégie → Laval → Centre-du-Québec → Québec, city and area → Chaudière-Appalaches → Bas-Saint-Laurent</td></tr>
+        <tr><td>Wednesday</td><td>Tuesday regions in reverse travel order → Hub</td></tr>
+        <tr><td>Friday</td><td>Hub → Northumberland → Southeastern Ontario → Ottawa Region → Haliburton Highlands to the Ottawa Valley → Kawarthas → Hub</td></tr>
+        <tr><td>Saturday</td><td>Half-day Friday-pickup delivery or Monday-route carryover when assigned</td></tr>
+        <tr><td>Sunday</td><td>Off</td></tr>
     </table>
     <h3>Corridor Stops</h3>
     <p>Each stop on a corridor has: sequence, region, pickup/delivery/transfer permission, planned arrival/departure offsets, service duration, distance from origin, customer-visibility flag.</p>
     <h3>Departures</h3>
-    <p>A Departure is <b>one scheduled execution</b> of a corridor on a specific date. It has: vehicle, driver, status (scheduled/departed/in_transit/completed/cancelled/delayed), cutoff time, max capacity.</p>
-    <h3>Phase 1 Weekly Schedule</h3>
-    <table class="dm-table">
-        <tr><th>Day</th><th>Operation</th><th>Revenue Target</th></tr>
-        <tr><td>Monday</td><td>Local &amp; Regional Ops + Quebec staging</td><td>$1,200</td></tr>
-        <tr><td>Tuesday</td><td>Quebec Eastbound (~00:00-01:00)</td><td>$2,300 full / $1,600 Montreal</td></tr>
-        <tr><td>Wednesday</td><td>Quebec Westbound Return</td><td>—</td></tr>
-        <tr><td>Thursday</td><td>Local &amp; Regional Ops + Ottawa staging</td><td>$1,200</td></tr>
-        <tr><td>Friday</td><td>Ottawa Corridor</td><td>$1,200</td></tr>
-        <tr><td>Saturday</td><td>No default operation</td><td>Carryover only</td></tr>
-        <tr><td>Sunday</td><td>No default operation</td><td>—</td></tr>
-    </table>
+    <p>A Departure is <b>one exact execution</b> of a Corridor. The system maintains an eight-week rolling horizon. The Corridor's start time and default truck populate each new departure. Open one Departure only when a specific date needs a different truck. Changing weekly days removes/rebuilds only future unbooked Scheduled rows; booked or completed history is preserved.</p>
 </div>
 
 <!-- ================================================================ -->
 <div class="dm-section" id="network-map">
-    <h2>6b. Network Availability Map</h2>
-    <p>Navigate: <b>Network → Network Availability Map</b></p>
+    <h2>6b. Where We Go</h2>
+    <p>Navigate: <b>Network → Where We Go</b></p>
     <h3>What It Shows</h3>
-    <p>The Network Availability Map gives you a <b>real-time visual overview</b> of corridor capacity across the entire Ontario–Quebec network. It replaces the previous "Where We Go" tool with a more powerful, data-driven availability engine.</p>
+    <p>Where We Go is the authenticated network map. It shows configured direct and Hub-transfer destinations without exposing customer prices.</p>
     <ul>
-        <li><b>Corridor-level status:</b> Each corridor/departure shows remaining pallet capacity and weight headroom</li>
-        <li><b>Region-to-region lookup:</b> Select any origin/destination region pair to see available departures</li>
-        <li><b>Temperature filtering:</b> Filter by Dry or Reefer capability per departure</li>
-        <li><b>Date range:</b> View availability across the departure horizon (up to 12 weeks)</li>
+        <li>Select a pickup point to draw lines to every reachable region marker</li>
+        <li>Select a destination to highlight its direct path or Pickup → YYZ-HUB → Destination transfer</li>
+        <li>Show the nearest exact departure; configured routes without one say “No bookable departure currently scheduled”</li>
+        <li>Never display price</li>
     </ul>
     <h3>Capacity Status Labels</h3>
     <table class="dm-table">
@@ -235,31 +225,25 @@
         <li>Temperature compatibility (Dry vs Reefer vehicle assignment)</li>
         <li>Corridor stop sequences and region coverage</li>
     </ul>
-    <div class="dm-info"><b>Pro tip:</b> Use the Network Availability Map before making phone bookings — it shows you at a glance which departures still have space, so you can set accurate customer expectations for pickup/delivery dates.</div>
+    <div class="dm-info">Map reachability, booking route resolution, pricing, and departure selection use the same Corridor topology.</div>
 </div>
 
 <!-- ================================================================ -->
 <div class="dm-section" id="pricing">
-    <h2>7. Pricing: Rate Plans &amp; Lanes</h2>
-    <p>Navigate: <b>Pricing → Rate Plans / Lanes / Service Offerings / Rate Simulator</b></p>
+    <h2>7. Corridor Pricing</h2>
+    <p>Navigate: <b>Network → Service Routes (Corridors)</b></p>
     <h3>How Pricing Works</h3>
-    <p><b>Customer Price per Pallet = Revenue Target ÷ Planned Pallets</b></p>
-    <p><b>Booking Total = Customer Price per Pallet × Booked Pallets</b></p>
-    <h3>Rate Plan</h3>
-    <p>A Rate Plan is the <b>customer-price authority</b>. Each lane segment (e.g., Kingston → Montreal) gets its own rate plan. Plans use Simple mode (one revenue target ÷ planned pallets).</p>
-    <h3>Default Lane Targets</h3>
+    <p><b>Customer $/km per pallet = Corridor $/km ÷ Planned Pallets</b></p>
+    <p><b>Booking price = Pallets × travelled road km × Customer $/km per pallet</b></p>
+    <p><b>Full-Corridor Revenue Target = Full Corridor Distance × Corridor $/km</b></p>
+    <p>The minimum booking charge is applied once to the complete booking, never once per transfer leg. Hub transfers add the priced pickup-to-Hub leg and Hub-to-delivery leg before applying the minimum.</p>
+    <h3>Example</h3>
     <table class="dm-table">
-        <tr><th>Lane</th><th>Revenue Target</th><th>Planned Pallets</th><th>Price/Pallet</th></tr>
-        <tr><td>Mississauga ↔ Montreal</td><td>$1,600</td><td>8</td><td>$200.00</td></tr>
-        <tr><td>Mississauga ↔ Quebec City</td><td>$2,300</td><td>8</td><td>$287.50</td></tr>
-        <tr><td>Mississauga ↔ Ottawa</td><td>$1,200</td><td>8</td><td>$150.00</td></tr>
-        <tr><td>Mississauga ↔ Sudbury</td><td>$1,200</td><td>8</td><td>$150.00</td></tr>
-        <tr><td>Mississauga ↔ Niagara Falls</td><td>$350</td><td>8</td><td>$43.75</td></tr>
+        <tr><th>Corridor $/km</th><th>Planned Pallets</th><th>Customer $/km per Pallet</th><th>110 km × 1 Pallet</th></tr>
+        <tr><td>$4.00</td><td>6</td><td>$0.666667</td><td>$73.33 → $150 minimum</td></tr>
     </table>
     <h3>Price vs Cost</h3>
-    <p><b>Rate Plan</b> = what the customer pays (PricingService). <b>Prema AI Estimator</b> = what it costs us internally (fuel + maintenance + insurance + driver). These are NEVER mixed. The Estimator's cost is internal only — never shown to customers.</p>
-    <h3>Rate Simulator</h3>
-    <p>Navigate: <b>Pricing → Rate Simulator</b>. Enter pickup/delivery FSAs, pallets, weight, temperature. Preview price without creating a booking.</p>
+    <p><b>Corridor pricing</b> = what the customer pays. <b>Prema AI Estimator</b> = internal cost and NET PROFIT. These are never mixed or shown on Where We Go. Rate Plans and technical lanes remain readable only for historical bookings.</p>
 </div>
 
 <!-- ================================================================ -->
@@ -269,8 +253,8 @@
     <ol>
         <li><b>Customer Request</b> — from any channel</li>
         <li><b>Normalized Booking Request</b> — all channels produce the same structure</li>
-        <li><b>Route Resolution</b> — FSA → Region → Lane → Corridor → Departure</li>
-        <li><b>Pricing</b> — Rate Plan lookup or agreed/negotiated rate</li>
+        <li><b>Route Resolution</b> — verified address/FSA → Region → Corridor(s) → exact Departure(s)</li>
+        <li><b>Pricing</b> — Corridor formula for Scheduled LTL; explicit agreed rate for Custom/Expedited</li>
         <li><b>Tax Decision</b> — destination province → correct HST/GST</li>
         <li><b>Capacity Check</b> — per-segment pallet/weight validation with row locking</li>
         <li><b>Booking Confirmation</b> — one atomic transaction creates: Booking + Stops + Lines + Legs + Tax Snapshot + Invoice + Dispatch Job</li>
@@ -315,8 +299,8 @@
         <li>Select <b>Customer</b></li>
         <li>Add <b>Pickup Stops</b> and <b>Delivery Stops</b> (with postal codes, addresses, contacts)</li>
         <li>Set <b>Pallets</b>, <b>Weight</b>, <b>Equipment Type</b> (Dry/Reefer), <b>Temperature</b></li>
-        <li>Choose <b>Pricing Method</b>: Rate Plan, Negotiated, Manual, or Imported Invoice</li>
-        <li>If Rate Plan: system auto-resolves pricing. Otherwise: enter agreed rate.</li>
+        <li>Choose <b>Scheduled Network</b> or <b>Custom / Expedited</b></li>
+        <li>Scheduled Network uses Corridor pricing and exact departures. Custom / Expedited uses an explicit agreed rate.</li>
         <li>Click <span class="dm-btn">Confirm</span> — booking created with all linked records</li>
     </ol>
     <div class="dm-info">Internal users can see both <b>Customer Price</b> and <b>Internal Cost/NET PROFIT</b>. This information is never visible to customers.</div>
@@ -329,8 +313,10 @@
     <ol>
         <li>System checks if a <b>Booking already exists</b> for this invoice</li>
         <li>If it exists: opens the existing Booking (no duplicate)</li>
-        <li>If not: extracts shipment data from invoice/estimator → creates normalized booking → <b>links existing invoice</b> (does NOT create a new invoice)</li>
-        <li>Creates: Booking Stops, Lines, Legs, reserves capacity, creates Dispatch Job</li>
+        <li>If not: the Book Load wizard collects service type, saved pickup/delivery locations, pallets, weight, Dry/Reefer, temperature, and requested date</li>
+        <li>Scheduled LTL uses Corridor pricing and exact departures; Custom / Expedited uses the explicit invoice workflow</li>
+        <li>The existing draft invoice is linked and its freight amount uses the frozen booking price</li>
+        <li>One Planner operation card is created per physical truck/day; booking does not auto-dispatch the driver</li>
     </ol>
     <div class="dm-danger"><b>Repeated clicks safe:</b> Clicking Create/Open Booking twice opens the same booking. No duplicate invoice or dispatch job.</div>
     <div class="dm-info">Historical invoices with existing dispatch jobs remain unchanged. Only new bookings use the V4 workflow.</div>
@@ -374,12 +360,13 @@
 <div class="dm-section" id="recurring">
     <h2>15. Recurring Agreements</h2>
     <p>Navigate: <b>Bookings → Recurring Agreements</b></p>
-    <p>For <b>regular weekly/biweekly LTL shipments</b>.</p>
+    <p>One customer agreement may contain up to <b>10 independent recurring jobs</b>.</p>
     <ol>
-        <li>Create agreement: customer, pickup/delivery FSAs, pallets, weight, temperature</li>
-        <li>Set: <b>Frequency</b> (weekly/biweekly), <b>Preferred Weekday</b>, <b>Start/End Date</b></li>
-        <li>The <b>daily cron</b> automatically generates bookings on due dates</li>
-        <li>Each generated booking uses an idempotency key: <code>recurring:{agreement_id}:{shipment_date}</code></li>
+        <li>Create the agreement with customer, contract/PO, start/end dates, billing notes, and service notes</li>
+        <li>Add each recurring job with a Region or Google-verified pickup and delivery address, frequency, weekday, windows, pallets, weight, Dry/Reefer, temperature, commodity, and accessorials</li>
+        <li>Region-only jobs may be tracked for planning; automatic booking requires both exact addresses to be Google verified</li>
+        <li>The daily cron generates due bookings through the same Corridor pricing and booking service</li>
+        <li>Each generated booking uses an idempotency key containing the recurring job and date</li>
         <li>Running the cron twice creates <b>no duplicates</b></li>
     </ol>
     <div class="dm-info">The next shipment date advances <b>only after successful booking creation</b>. Failures create administrator activities (not silently swallowed).</div>
@@ -446,35 +433,37 @@
 
 <!-- ================================================================ -->
 <div class="dm-section" id="weekly-schedule">
-    <h2>19. Weekly Schedule Board</h2>
-    <p>Navigate: <b>Dispatch Operations → Weekly Schedule</b></p>
-    <p>7-day horizontal scrolling view showing corridor departures and local operations.</p>
-    <h3>Corridor Cards Show</h3>
+    <h2>19. Departure Schedule</h2>
+    <p>Navigate: <b>Network → Service Routes → open a Corridor → Departures</b></p>
+    <p>Every active weekly Corridor maintains up to eight weeks of exact future departures. The separate Weekly Schedule board was removed because Dispatch Planner is the operational calendar.</p>
+    <h3>Departure Rules</h3>
     <ul>
-        <li>Status (scheduled/ontime/completed/cancelled/delayed), Truck, Driver, Equipment</li>
-        <li>Peak Pallets, Peak Weight, Total Pallets Handled</li>
-        <li><b>Outbound Revenue</b>, <b>Backhaul Revenue</b>, <b>Gross Revenue</b></li>
-        <li>Estimated Cost, <b>Departure NET PROFIT</b>, <b>Cycle NET PROFIT</b>, Margin %</li>
-        <li>Booking count, Stop count, Readiness</li>
+        <li>Default truck and start time come from the Corridor</li>
+        <li>Open a specific Departure to override its truck without changing other weeks</li>
+        <li>Capacity comes from that exact truck's verified layout and payload</li>
+        <li>A truck cannot hold another Corridor or custom job on the same operating day</li>
+        <li>Future booked departures and completed history are never deleted by a schedule change</li>
     </ul>
-    <div class="dm-info"><b>Cycle NET PROFIT</b> = Outbound Revenue + Backhaul Revenue − Full Cycle Cost. This accounts for the complete operating cycle (e.g., Tuesday outbound + Wednesday return), not just one-way profit.</div>
-    <h3>Filters</h3>
-    <p>Truck filter, Phase filter, Region filter. <b>PB38446 appears. DEMO-01 is excluded.</b> Saturday and Sunday show no default operations unless confirmed carryover work exists.</p>
 </div>
 
 <!-- ================================================================ -->
 <div class="dm-section" id="dispatch-planner">
     <h2>20. Dispatch Planner</h2>
     <p>Navigate: <b>Dispatch Operations → Dispatch Planner</b></p>
-    <p>Drag-and-drop board for assigning dispatch jobs to trucks and days. Features:</p>
+    <p>The single operational truck/day calendar for scheduled LTL and custom work.</p>
     <ul>
-        <li>Weekly calendar view with truck columns</li>
-        <li>Drag unassigned jobs onto truck/day slots</li>
+        <li>Weekly calendar with truck rows and day columns</li>
+        <li>Confirmed LTL automatically appears on the exact Departure truck</li>
+        <li>A Monday pickup and Tuesday delivery appear as separate operation cards; no stretched two-day line</li>
+        <li>Multiple customer loads may share the same exact LTL Departure until pallet or weight capacity is full</li>
+        <li>Drag custom/unassigned jobs only onto free truck/day slots</li>
+        <li>Changing a Departure truck synchronizes every Planner card on that Departure</li>
         <li>Auto-creates Load Plans on assignment</li>
         <li>Pallet Layout panel for floor positioning</li>
         <li>Truck utilization and driver assignment</li>
         <li>Cross-dock transfer handoff tracking</li>
     </ul>
+    <div class="dm-warn">Live en-route re-optimization is deferred. Use the existing manual Optimize action after reviewing any new pickup.</div>
 </div>
 
 <!-- ================================================================ -->
@@ -615,7 +604,7 @@
         <tr><td>Dispatch Readonly</td><td>group_dispatch_readonly</td><td>View boards and reports only</td></tr>
         <tr><td>Driver</td><td>group_dispatch_driver</td><td>Driver App: own jobs/stops only, evidence upload, POD</td></tr>
         <tr><td>Warehouse</td><td>group_dispatch_warehouse</td><td>Warehouse App: load plans, mark loaded, report damage</td></tr>
-        <tr><td>Pricing Manager</td><td>group_logistics_pricing_manager</td><td>Rate plans, pricing config</td></tr>
+        <tr><td>Pricing Manager</td><td>group_logistics_pricing_manager</td><td>Corridor pricing configuration</td></tr>
         <tr><td>Logistics Customer</td><td>group_logistics_customer</td><td>Portal: own bookings, own tracking</td></tr>
     </table>
 </div>
@@ -634,7 +623,8 @@
         <tr><td>Portal 404 for non-staff</td><td>Portal requires beta-tester group or portal_enabled parameter = True.</td></tr>
         <tr><td>"No layout template available"</td><td>Create a layout template under Fleet → Equipment Profiles → Layout Templates.</td></tr>
         <tr><td>Menu items missing</td><td>Check user has Dispatcher or Dispatch Manager group. Ctrl+F5 to refresh.</td></tr>
-        <tr><td>Recurring cron not creating bookings</td><td>Check cron is active, agreement is within date range, no existing booking for that date.</td></tr>
+        <tr><td>Recurring cron not creating bookings</td><td>Check agreement/job is active, due date is within range, both locations are Google verified, and no booking already exists.</td></tr>
+        <tr><td>Departure has no truck</td><td>The Corridor default truck is already occupied that day. Reassign the conflicting job or choose another truck on Open: Departure.</td></tr>
     </table>
 </div>
 
@@ -643,7 +633,7 @@
     <h2>32. Daily Dispatcher Checklist</h2>
     <ol>
         <li>Open <b>Live Map</b> — verify all operational trucks have recent GPS positions</li>
-        <li>Open <b>Weekly Schedule Board</b> — verify today's departures are scheduled with trucks/drivers</li>
+        <li>Open <b>Dispatch Planner</b> — verify today's Departure cards have the correct trucks</li>
         <li>Open <b>Booking Board</b> — review new bookings from all channels overnight</li>
         <li>Assign <b>trucks</b> to unassigned departures</li>
         <li>Assign <b>drivers</b> to unassigned jobs</li>
@@ -661,14 +651,14 @@
     <h2>33. End-to-End Testing Checklist</h2>
     <table class="dm-table">
         <tr><th>#</th><th>Test</th><th>Expected Result</th></tr>
-        <tr><td>1</td><td>Portal: customer books Kingston → Montreal</td><td>Booking created with correct price, tax, invoice, dispatch</td></tr>
+        <tr><td>1</td><td>Website/Phone: customer books a configured Corridor</td><td>Frozen Corridor price, exact departure, tax, draft invoice, Planner card(s)</td></tr>
         <tr><td>2</td><td>Phone: dispatcher books Kingston → Belleville</td><td>One booking. Double-click = same booking.</td></tr>
-        <tr><td>3</td><td>Internal: staff books Kingston → Hamilton via Transit Mississauga</td><td>Two booking legs created</td></tr>
-        <tr><td>4</td><td>Invoice: draft invoice → Create/Open Booking</td><td>Existing invoice linked. No duplicate. One dispatch job.</td></tr>
+        <tr><td>3</td><td>Internal: staff books a Hub-transfer route</td><td>Two sequential legs and both exact departures reserved</td></tr>
+        <tr><td>4</td><td>Invoice: draft invoice → Book Load → Scheduled Network</td><td>Existing invoice linked. No duplicate. One card per truck/day operation.</td></tr>
         <tr><td>5</td><td>Invoice: click Create/Open Booking twice</td><td>Opens same booking. No duplicate.</td></tr>
         <tr><td>6</td><td>WhatsApp: customer tenders load → negotiate → approve</td><td>Booking with tax. Invoice with tax line. Internal cost hidden.</td></tr>
         <tr><td>7</td><td>Custom Quote: create → quote → accept → convert</td><td>Booking created with quoted price</td></tr>
-        <tr><td>8</td><td>Recurring: activate agreement → run cron → run cron again</td><td>One booking. Second run = no duplicate.</td></tr>
+        <tr><td>8</td><td>Recurring: activate one verified-address job → run cron twice</td><td>One booking. Second run = no duplicate.</td></tr>
         <tr><td>9</td><td>Capacity: Mississauga→Montreal 8 + Kingston→Montreal 8</td><td>Second rejected (overlapping segment = 16 pallets)</td></tr>
         <tr><td>10</td><td>Capacity: Mississauga→Kingston 8 + Kingston→Montreal 8</td><td>Both accepted (non-overlapping segments)</td></tr>
         <tr><td>11</td><td>Tax: Ontario destination</td><td>HST applied. Booking total = Invoice total.</td></tr>
@@ -676,7 +666,9 @@
         <tr><td>13</td><td>Tracking: booking number only (no token)</td><td>No shipment data returned</td></tr>
         <tr><td>14</td><td>Tracking: booking number + correct token</td><td>Status, cities, delivery estimate. No cost/GPS/driver data.</td></tr>
         <tr><td>15</td><td>Portal: Customer A tries Customer B booking</td><td>Access denied</td></tr>
-        <tr><td>16</td><td>Live Map: PB38446 visible, DEMO-01 hidden</td><td>Correct vehicle shown on map</td></tr>
+        <tr><td>16</td><td>Where We Go: select a pickup and destination</td><td>Reachable lines and nearest departure; no price shown</td></tr>
+        <tr><td>17</td><td>Two-day LTL booking</td><td>Separate pickup-day and delivery-day cards on the same Departure truck</td></tr>
+        <tr><td>18</td><td>Try assigning another job to an occupied truck/day</td><td>Blocked with the conflicting route/job identified</td></tr>
     </table>
 </div>
 

@@ -27,12 +27,14 @@
                         <field name="public_name"/>
                         <field name="code"/>
                         <field name="is_default"/>
+                        <field name="canonical_region_id"/>
                         <field name="active"/>
                         <field name="customer_visible"/>
                     </group>
                     <group string="Location">
                         <field name="saved_location_id"/>
                         <field name="formatted_address"/>
+                        <field name="google_place_id" readonly="1"/>
                         <field name="latitude"/>
                         <field name="longitude"/>
                         <field name="timezone"/>
@@ -48,7 +50,8 @@
                         <field name="liftgate_access"/>
                     </group>
                     <group string="Supported Regions">
-                        <field name="supported_region_ids" widget="many2many_tags"/>
+                        <field name="supported_region_ids" widget="many2many_tags"
+                               domain="[('is_official_ltl_region','=',True)]"/>
                     </group>
                 </sheet>
             </form>

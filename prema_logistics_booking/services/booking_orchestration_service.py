@@ -16,12 +16,10 @@ Usage:
 """
 
 import datetime
-import json
 import logging
-import secrets
 import uuid
 
-from odoo import _
+from odoo import _, fields
 from odoo.exceptions import AccessError, UserError, ValidationError
 
 from .temperature_compat import to_canonical_temperature_mode, validate_temperature_request
@@ -70,7 +68,8 @@ LEG_STATES = [
 EQUIPMENT_TYPES = [("dry", "Dry"), ("reefer", "Reefer")]
 
 PRICING_METHODS = [
-    ("rate_plan", "Rate Plan"),
+    ("corridor", "Corridor $/km"),
+    ("rate_plan", "Historical Rate Plan (retired alias)"),
     ("contract", "Contract"),
     ("negotiated", "Negotiated"),
     ("manual", "Manual"),
@@ -104,6 +103,7 @@ class NormalizedBookingRequest:
         self.transfer_allowed = data.get("transfer_allowed", True)
         self.requested_pickup_date = data.get("requested_pickup_date")
         self.requested_delivery_date = data.get("requested_delivery_date")
+        self.same_day_requested = data.get("same_day_requested", False)
 
         self.pallets = data.get("pallets", 1)
         self.weight_lbs = data.get("weight_lbs", 0.0)
@@ -117,7 +117,7 @@ class NormalizedBookingRequest:
         self.bol_number = data.get("bol_number", "")
         self.instructions = data.get("instructions", "")
 
-        self.pricing_method = data.get("pricing_method", "rate_plan")
+        self.pricing_method = data.get("pricing_method", "corridor")
         self.agreed_rate = data.get("agreed_rate", 0.0)
         self.currency_id = data.get("currency_id")
 
@@ -128,6 +128,7 @@ class NormalizedBookingRequest:
         self.wa_negotiation_id = data.get("wa_negotiation_id")
         self.custom_quote_id = data.get("custom_quote_id")
         self.recurring_agreement_id = data.get("recurring_agreement_id")
+        self.recurring_job_id = data.get("recurring_job_id")
 
         self.liftgate_pickup = data.get("liftgate_pickup", False)
         self.liftgate_delivery = data.get("liftgate_delivery", False)
@@ -220,9 +221,11 @@ class BookingOrchestrationService:
             normalized_request.liftgate_delivery,
             normalized_request.appointment,
             normalized_request.residential,
+            normalized_request.same_day_requested,
             partner=self.env["res.partner"].browse(normalized_request.partner_id),
             required_temperature_c=normalized_request.required_temperature_c,
             resolve_departures=True,
+            reference_dt=normalized_request.requested_pickup_date,
         )
 
         if not result.available:
@@ -234,13 +237,17 @@ class BookingOrchestrationService:
             "partner_id": normalized_request.partner_id,
             "pickup_fsa_id": pickup_fsa.id,
             "delivery_fsa_id": delivery_fsa.id,
+            "corridor_id": result.corridor.id,
             "shipment_type": normalized_request.load_type,
             "temperature_mode": normalized_request.equipment_type,
             "required_temperature_c": normalized_request.required_temperature_c or 0.0,
             "pallets": normalized_request.pallets,
             "weight_lbs": normalized_request.weight_lbs,
-            "service_offering_id": result.service_offering.id,
-            "rate_plan_id": result.rate_plan.id,
+            "liftgate_pickup": normalized_request.liftgate_pickup,
+            "liftgate_delivery": normalized_request.liftgate_delivery,
+            "appointment": normalized_request.appointment,
+            "residential": normalized_request.residential,
+            "same_day_requested": normalized_request.same_day_requested,
             "pickup_date": result.pickup_date,
             "delivery_date_estimate": result.delivery_date_estimate,
             "calculated_price": result.calculated_price,
@@ -255,8 +262,8 @@ class BookingOrchestrationService:
             "delivery_date": str(result.delivery_date_estimate),
             "calculated_price": result.calculated_price,
             "price_lines": result.price_lines,
-            "lane_name": result.lane.name,
-            "service_offering_name": result.service_offering.name,
+            "lane_name": result.corridor.name,
+            "service_offering_name": "Scheduled LTL Corridor",
             "expires_at": session.expires_at.isoformat() if session.expires_at else None,
         }
 
@@ -265,6 +272,7 @@ class BookingOrchestrationService:
         normalized_request: NormalizedBookingRequest,
         existing_invoice: object = None,
         skip_invoice: bool = False,
+        pricing_session: object = None,
     ):
         """Create a confirmed booking from an internal (staff) source.
         This is the canonical method for phone, internal, invoice, WA,
@@ -284,6 +292,19 @@ class BookingOrchestrationService:
                 normalized_request.idempotency_key,
             )
             return existing
+
+        frozen_session = False
+        if pricing_session:
+            frozen_session = pricing_session.sudo().exists()
+            if not frozen_session:
+                raise UserError(_("This price is no longer available. Please get a new price."))
+            frozen_session.ensure_one()
+            existing = self.env["logistics.booking"].sudo().search([
+                ("pricing_session_token", "=", frozen_session.token),
+            ], limit=1)
+            if existing:
+                return existing
+            self._validate_frozen_session(frozen_session, normalized_request)
 
         # ── 2. Validate partner ───────────────────────────────────────────
         partner = self.env["res.partner"].browse(normalized_request.partner_id)
@@ -307,16 +328,23 @@ class BookingOrchestrationService:
         # ── 4. Resolve pricing ────────────────────────────────────────────
         from ..services.pricing_service import PricingService
 
-        pricing = PricingService(self.env)
-        rate_plan = None
-        service_offering = None
         pickup_date = normalized_request.requested_pickup_date
         delivery_date = normalized_request.requested_delivery_date
         calculated_price = normalized_request.agreed_rate
         route_snapshot = False
         price_snapshot = False
 
-        if normalized_request.pricing_method in ("rate_plan", "contract") and pickup_fsa and delivery_fsa:
+        if frozen_session:
+            self._validate_frozen_session(
+                frozen_session, normalized_request, pickup_fsa, delivery_fsa,
+            )
+            pickup_date = frozen_session.pickup_date
+            delivery_date = frozen_session.delivery_date_estimate
+            calculated_price = frozen_session.calculated_price
+            route_snapshot = frozen_session.route_snapshot
+            price_snapshot = frozen_session.price_snapshot
+        elif normalized_request.pricing_method in ("corridor", "rate_plan", "contract") and pickup_fsa and delivery_fsa:
+            pricing = PricingService(self.env)
             result = pricing.calculate(
                 pickup_fsa, delivery_fsa,
                 normalized_request.load_type,
@@ -327,15 +355,15 @@ class BookingOrchestrationService:
                 normalized_request.liftgate_delivery,
                 normalized_request.appointment,
                 normalized_request.residential,
+                normalized_request.same_day_requested,
                 partner=partner,
                 required_temperature_c=normalized_request.required_temperature_c,
                 resolve_departures=True,
+                reference_dt=normalized_request.requested_pickup_date,
             )
-            if not result.available and normalized_request.pricing_method == "rate_plan":
+            if not result.available and normalized_request.pricing_method in ("corridor", "rate_plan"):
                 raise UserError(_("No service available: %s") % (result.reason or "unknown"))
             if result.available:
-                rate_plan = result.rate_plan
-                service_offering = result.service_offering
                 pickup_date = result.pickup_date
                 delivery_date = result.delivery_date_estimate
                 route_snapshot = result.route_snapshot
@@ -343,8 +371,8 @@ class BookingOrchestrationService:
                 if not calculated_price:
                     calculated_price = result.calculated_price
 
-        # Fallback: use agreed_rate if no rate plan matched (contract/manual/
-        # negotiated pricing methods only — never a silent $0).
+        # Fallback: use agreed_rate for contract/manual/negotiated pricing
+        # only — never a silent $0 and never a Rate Plan lookup.
         if not calculated_price and normalized_request.agreed_rate:
             calculated_price = normalized_request.agreed_rate
         if not calculated_price and not route_snapshot:
@@ -356,7 +384,10 @@ class BookingOrchestrationService:
         # ── 5. Build booking vals ─────────────────────────────────────────
         booking_vals = {
             "partner_id": partner.id,
-            "booking_channel": normalized_request.source_channel,
+            "booking_channel": {
+                "portal": "customer_portal",
+                "whatsapp": "whatsapp",
+            }.get(normalized_request.source_channel, normalized_request.source_channel),
             "source_channel": normalized_request.source_channel,
             "source_model": normalized_request.source_model or "",
             "source_res_id": normalized_request.source_res_id or 0,
@@ -383,13 +414,19 @@ class BookingOrchestrationService:
             "liftgate_delivery": normalized_request.liftgate_delivery,
             "appointment": normalized_request.appointment,
             "residential": normalized_request.residential,
+            "same_day_requested": normalized_request.same_day_requested,
         }
+
+        if frozen_session:
+            booking_vals["pricing_session_token"] = frozen_session.token
 
         # Cross-reference fields
         if normalized_request.wa_negotiation_id:
             booking_vals["wa_negotiation_id"] = normalized_request.wa_negotiation_id
         if normalized_request.recurring_agreement_id:
             booking_vals["recurring_agreement_id"] = normalized_request.recurring_agreement_id
+        if normalized_request.recurring_job_id:
+            booking_vals["recurring_job_id"] = normalized_request.recurring_job_id
 
         if pickup_fsa:
             booking_vals["pickup_fsa_id"] = pickup_fsa.id
@@ -397,10 +434,6 @@ class BookingOrchestrationService:
         if delivery_fsa:
             booking_vals["delivery_fsa_id"] = delivery_fsa.id
             booking_vals["delivery_address"] = delivery_fsa.display_city or delivery_fsa.fsa
-        if rate_plan:
-            booking_vals["rate_plan_id"] = rate_plan.id
-        if service_offering:
-            booking_vals["service_offering_id"] = service_offering.id
         if pickup_date:
             booking_vals["pickup_date"] = pickup_date
         if delivery_date:
@@ -441,6 +474,24 @@ class BookingOrchestrationService:
         # ── 7. Atomic transaction: booking + stops + lines + legs + dispatch + tax + invoice ──
         try:
             with self.env.cr.savepoint():
+                if frozen_session:
+                    # Serialize consumption of one quote token. A duplicate
+                    # browser submit or two staff clicks can never reserve
+                    # the same frozen departures twice.
+                    self.env.cr.execute(
+                        "SELECT id FROM logistics_pricing_session WHERE id = %s FOR UPDATE",
+                        [frozen_session.id],
+                    )
+                    frozen_session.invalidate_recordset(["state", "expires_at"])
+                    existing = Booking.sudo().search([
+                        ("pricing_session_token", "=", frozen_session.token),
+                    ], limit=1)
+                    if existing:
+                        return existing
+                    self._validate_frozen_session(
+                        frozen_session, normalized_request, pickup_fsa, delivery_fsa,
+                    )
+
                 booking = Booking.sudo().create(booking_vals)
 
                 # Create booking stops
@@ -450,9 +501,6 @@ class BookingOrchestrationService:
 
                 # Create booking lines
                 self._create_booking_lines(booking, normalized_request)
-
-                # Create dispatch job
-                booking._create_dispatch_job()
 
                 # Apply tax decision
                 booking._apply_tax_decision()
@@ -465,12 +513,23 @@ class BookingOrchestrationService:
                         booking._create_draft_invoice()
 
                 # Create booking legs WITH atomic capacity reservation — the
-                # ONE reservation path for every channel. Only rate-plan-
+                # ONE reservation path for every channel. Only corridor-
                 # priced channels (scheduled network) require an exact leg;
                 # legacy ad-hoc/imported-invoice jobs rely on prema.dispatch.job.
                 self.create_legs_and_reserve(
-                    booking, required=(normalized_request.pricing_method == "rate_plan"),
+                    booking,
+                    required=(
+                        bool(frozen_session)
+                        or normalized_request.pricing_method in ("corridor", "rate_plan")
+                    ),
                 )
+
+                # Only after the exact departure(s) are reserved can the
+                # Planner create the correct truck/day operation cards.
+                booking._create_dispatch_job()
+
+                if frozen_session:
+                    frozen_session.write({"state": "converted"})
 
         except Exception:
             _logger.exception(
@@ -504,12 +563,12 @@ class BookingOrchestrationService:
             booking.invoice_id.button_cancel()
 
         # Cancel dispatch job if exists and not completed
-        if booking.dispatch_job_id:
+        if booking.dispatch_job_ids:
             cancel_stage = self.env["prema.dispatch.stage"].sudo().search(
                 [("stage_type", "=", "cancelled")], limit=1
             )
             if cancel_stage:
-                booking.dispatch_job_id.write({"stage_id": cancel_stage.id})
+                booking.dispatch_job_ids.write({"stage_id": cancel_stage.id})
 
         _logger.info(
             "BookingOrchestrationService: cancelled booking %s (reason: %s)",
@@ -555,6 +614,59 @@ class BookingOrchestrationService:
 
         return None
 
+    def _validate_frozen_session(
+        self, session, normalized_request, pickup_fsa=None, delivery_fsa=None,
+    ):
+        """Validate a server-side quote before it is consumed.
+
+        The displayed quote is authoritative, but only for the exact request
+        that produced it. This guard is shared by phone/internal adapters and
+        is re-run while the session row is locked immediately before create.
+        """
+        partner = self.env["res.partner"].sudo().browse(
+            normalized_request.partner_id
+        ).exists()
+        if not partner:
+            raise UserError(_("Customer not found."))
+        if session.partner_id.commercial_partner_id != partner.commercial_partner_id:
+            raise AccessError(_("This pricing result does not belong to this customer."))
+        if session.is_expired():
+            raise UserError(_("This price has expired. Please get a new price."))
+        if session.state != "priced":
+            raise UserError(_("This price has already been used. Open the existing booking."))
+
+        snapshot = session.route_snapshot or {}
+        if snapshot.get("pricing_authority") != "corridor_per_km":
+            raise UserError(_(
+                "This quote used the retired pricing setup. Please get a new corridor-based price."
+            ))
+        if not snapshot.get("legs"):
+            raise UserError(_("This quote has no scheduled departure. Please get a new price."))
+
+        expected_temperature = (
+            normalized_request.required_temperature_c
+            if normalized_request.required_temperature_c is not None
+            else 0.0
+        )
+        scalar_mismatches = (
+            session.shipment_type != normalized_request.load_type,
+            session.temperature_mode != normalized_request.equipment_type,
+            abs((session.required_temperature_c or 0.0) - expected_temperature) > 0.0001,
+            session.pallets != normalized_request.pallets,
+            abs((session.weight_lbs or 0.0) - (normalized_request.weight_lbs or 0.0)) > 0.01,
+            bool(session.liftgate_pickup) != bool(normalized_request.liftgate_pickup),
+            bool(session.liftgate_delivery) != bool(normalized_request.liftgate_delivery),
+            bool(session.appointment) != bool(normalized_request.appointment),
+            bool(session.residential) != bool(normalized_request.residential),
+            bool(session.same_day_requested) != bool(normalized_request.same_day_requested),
+        )
+        if any(scalar_mismatches):
+            raise UserError(_("Shipment details changed after pricing. Please get a new price."))
+        if pickup_fsa and session.pickup_fsa_id != pickup_fsa:
+            raise UserError(_("Pickup area changed after pricing. Please get a new price."))
+        if delivery_fsa and session.delivery_fsa_id != delivery_fsa:
+            raise UserError(_("Delivery area changed after pricing. Please get a new price."))
+
     def _create_booking_stops(self, booking, pickup_stops, delivery_stops):
         """Create real booking stops from raw pickup/delivery stop dicts.
         THE single stop-creation path for every channel — no channel may
@@ -567,12 +679,14 @@ class BookingOrchestrationService:
                 "booking_id": booking.id,
                 "sequence": seq,
                 "stop_type": "pickup",
+                "saved_location_id": pu.get("saved_location_id") or False,
                 "company_name": pu.get("company_name", ""),
                 "street": pu.get("street", ""),
                 "city": pu.get("city", ""),
                 "province_state": pu.get("province_state", pu.get("province", "")),
                 "postal_zip": pu.get("postal_code", ""),
                 "formatted_address": pu.get("formatted_address", ""),
+                "google_place_id": pu.get("google_place_id", ""),
                 "latitude": pu.get("latitude", 0.0),
                 "longitude": pu.get("longitude", 0.0),
                 "contact_name": pu.get("contact_name", ""),
@@ -590,12 +704,14 @@ class BookingOrchestrationService:
                 "booking_id": booking.id,
                 "sequence": seq,
                 "stop_type": "delivery",
+                "saved_location_id": dl.get("saved_location_id") or False,
                 "company_name": dl.get("company_name", ""),
                 "street": dl.get("street", ""),
                 "city": dl.get("city", ""),
                 "province_state": dl.get("province_state", dl.get("province", "")),
                 "postal_zip": dl.get("postal_code", ""),
                 "formatted_address": dl.get("formatted_address", ""),
+                "google_place_id": dl.get("google_place_id", ""),
                 "latitude": dl.get("latitude", 0.0),
                 "longitude": dl.get("longitude", 0.0),
                 "contact_name": dl.get("contact_name", ""),
@@ -765,8 +881,10 @@ class BookingOrchestrationService:
                 "Cannot confirm booking %s: real pickup/delivery stops are missing."
             ) % (booking.booking_number or booking.id))
 
-        currency = self.env["res.currency"].sudo().browse(leg_snaps[0].get("currency_id")) \
-            or booking.currency_id or self.env.company.currency_id
+        currency = self.env["res.currency"].sudo().browse(
+            leg_snaps[0].get("currency_id") or False
+        ).exists()
+        currency = currency or booking.currency_id or self.env.company.currency_id
 
         Region = self.env["logistics.region"].sudo()
         created_legs = self.env["logistics.booking.leg"]
@@ -800,8 +918,16 @@ class BookingOrchestrationService:
             if currency:
                 frozen_price = currency.round(frozen_price)
 
-            origin_region = Region.search([("code", "=", ls.get("origin_region", ""))], limit=1)
-            dest_region = Region.search([("code", "=", ls.get("dest_region", ""))], limit=1)
+            origin_region = Region.browse(ls.get("origin_region_id") or False).exists()
+            if not origin_region:
+                origin_region = Region.search(
+                    [("code", "=", ls.get("origin_region", ""))], limit=1,
+                )
+            dest_region = Region.browse(ls.get("dest_region_id") or False).exists()
+            if not dest_region:
+                dest_region = Region.search(
+                    [("code", "=", ls.get("dest_region", ""))], limit=1,
+                )
 
             leg = Leg.create({
                 "booking_id": booking.id,
@@ -821,8 +947,8 @@ class BookingOrchestrationService:
                 "frozen_leg_price": frozen_price,
                 "frozen_price_breakdown": ls.get("price_lines", []),
                 "transfer_hub_id": hub_id or False,
-                "pickup_date": ls.get("departure_date") or booking.pickup_date,
-                "delivery_date": ls.get("departure_date") or booking.estimated_delivery_date,
+                "pickup_date": ls.get("pickup_date") or ls.get("departure_date") or booking.pickup_date,
+                "delivery_date": ls.get("delivery_date") or ls.get("departure_date") or booking.estimated_delivery_date,
                 "pallets": pallets,
                 "weight_lbs": weight_lbs,
                 "status": "scheduled",
@@ -833,6 +959,8 @@ class BookingOrchestrationService:
 
         if len(created_legs) > 1:
             booking.write({"is_multi_leg": True})
+        if created_legs:
+            booking.write({"departure_id": created_legs[0].departure_id.id})
         self._refresh_departure_peaks(vehicles_by_departure.keys())
         _logger.info(
             "BookingOrchestrationService: reserved capacity for booking %s on departures %s",
@@ -892,6 +1020,44 @@ class BookingOrchestrationService:
         booking.write({"invoice_id": invoice.id, "invoice_created_at": fields.Datetime.now()})
         invoice.sudo().write({"logistics_booking_id": booking.id})
 
+        # Scheduled LTL uses the frozen corridor quote, never the invoice's
+        # pre-existing total as a pricing bypass. Keep other invoice lines
+        # intact and synchronize the configured freight line only.
+        if (booking.route_snapshot or {}).get("pricing_authority") == "corridor_per_km":
+            if invoice.state != "draft":
+                raise UserError(_("A scheduled LTL booking can only link to a draft invoice."))
+            product, _country = booking._select_freight_product()
+            if not product:
+                raise UserError(_(
+                    "The configured freight product is missing. Configure it before booking Scheduled LTL from an invoice."
+                ))
+            freight_lines = invoice.invoice_line_ids.filtered(lambda line: line.product_id == product)
+            values = {
+                "name": booking._generate_invoice_description(),
+                "quantity": 1.0,
+                "price_unit": booking.calculated_price,
+            }
+            if freight_lines:
+                freight_lines[:1].write(values)
+            else:
+                income_account = (
+                    product.property_account_income_id
+                    or product.categ_id.property_account_income_categ_id
+                    or invoice.journal_id.default_account_id
+                )
+                if not income_account:
+                    raise UserError(_(
+                        "No income account is configured for the freight product or invoice journal. "
+                        "Configure one before booking Scheduled LTL from an invoice."
+                    ))
+                self.env["account.move.line"].sudo().create({
+                    **values,
+                    "move_id": invoice.id,
+                    "product_id": product.id,
+                    "account_id": income_account.id,
+                    "tax_ids": [(6, 0, booking.tax_rule_id.ids)],
+                })
+
         # Tax alignment check
         if booking.tax_rule_id and invoice.state == "draft":
             for line in invoice.invoice_line_ids:
@@ -911,7 +1077,3 @@ class BookingOrchestrationService:
                         ) % booking.booking_number,
                         user_id=invoice.create_uid.id or self.env.user.id,
                     )
-
-
-# Import here to avoid circular imports
-from odoo import fields

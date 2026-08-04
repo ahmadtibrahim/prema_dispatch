@@ -30,9 +30,9 @@ python3 odoo-bin -c /etc/odoo18.conf -d <test-db> \
 
 ## Modules
 
-- **prema_dispatch** — Core dispatch execution, driver app, load plans, GPS tracking (v18.0.2.1.0)
-- **prema_logistics_booking** — Commercial pricing, customer booking, corridors, capacity (v18.0.4.7.0)
+- **prema_dispatch** — Core dispatch execution, Planner, driver app, load plans, GPS tracking (v18.0.2.2.0)
+- **prema_logistics_booking** — Corridor pricing, customer booking, departures, capacity (v18.0.5.0.0)
 
 ## Test Status
 
-158 tests executed (prema_logistics_booking) on Prod-db-staging. Network Map availability engine deployed, migration 18.0.4.7.0 applied. Production upgraded and serving live traffic (2026-08-03).
+Source compilation, XML parsing, JavaScript syntax, and whitespace validation pass for v18.0.5.0.0. Run the focused `prema_v5` tests and the existing module suites on a disposable production-copy database before deployment.

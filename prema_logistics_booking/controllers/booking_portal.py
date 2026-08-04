@@ -1,14 +1,7 @@
-import datetime
-
 from odoo import _, http
 from odoo.exceptions import AccessError, UserError
 from odoo.http import request
 from werkzeug.exceptions import NotFound
-
-from ..services.pricing_service import PricingService
-
-PRICING_SESSION_TTL_MINUTES = 20
-
 
 def _portal_enabled():
     val = request.env["ir.config_parameter"].sudo().get_param("logistics_booking.portal_enabled")
@@ -117,47 +110,50 @@ class LogisticsBookingPortal(http.Controller):
 
         shipment_type = kwargs.get("shipment_type") or "ltl"
         temperature_mode = kwargs.get("temperature_mode") or "dry"
+        from ..services.temperature_compat import parse_required_temperature_c
+        required_temperature_c = parse_required_temperature_c(
+            kwargs.get("required_temperature_c")
+        )
         liftgate_pickup = bool(kwargs.get("liftgate_pickup"))
         liftgate_delivery = bool(kwargs.get("liftgate_delivery"))
         appointment = bool(kwargs.get("appointment"))
         residential = bool(kwargs.get("residential"))
         same_day_requested = bool(kwargs.get("same_day_requested"))
 
-        partner = request.env.user.partner_id
-        result = PricingService(request.env).calculate(
-            pickup_fsa, delivery_fsa, shipment_type, temperature_mode, pallets, weight_lbs,
-            liftgate_pickup, liftgate_delivery, appointment, residential, same_day_requested,
-            partner=partner, resolve_departures=True,
-        )
+        from ..services.booking_orchestration_service import BookingOrchestrationService
 
-        if not result.available:
+        partner = request.env.user.partner_id
+        service = BookingOrchestrationService(request.env)
+        try:
+            normalized = service.normalize_request({
+                "partner_id": partner.id,
+                "pickup_stops": [{"postal_code": pickup_fsa.fsa}],
+                "delivery_stops": [{"postal_code": delivery_fsa.fsa}],
+                "load_type": shipment_type,
+                "equipment_type": temperature_mode,
+                "required_temperature_c": required_temperature_c,
+                "pallets": pallets,
+                "weight_lbs": weight_lbs,
+                "liftgate_pickup": liftgate_pickup,
+                "liftgate_delivery": liftgate_delivery,
+                "appointment": appointment,
+                "residential": residential,
+                "same_day_requested": same_day_requested,
+                "pricing_method": "corridor",
+            }, source_channel="portal")
+            quote = service.prepare_quote(normalized)
+        except UserError as exc:
             return request.render("prema_logistics_booking.portal_not_available", {
-                "reason": result.reason,
+                "reason": str(exc),
             })
 
-        expires_at = datetime.datetime.now() + datetime.timedelta(minutes=PRICING_SESSION_TTL_MINUTES)
-        session = request.env["logistics.pricing.session"].sudo().create({
-            "partner_id": partner.id,
-            "pickup_fsa_id": pickup_fsa.id,
-            "delivery_fsa_id": delivery_fsa.id,
-            "service_offering_id": result.service_offering.id,
-            "rate_plan_id": result.rate_plan.id,
-            "shipment_type": shipment_type,
-            "temperature_mode": temperature_mode,
-            "pallets": pallets,
-            "weight_lbs": weight_lbs,
-            "liftgate_pickup": liftgate_pickup,
-            "liftgate_delivery": liftgate_delivery,
-            "appointment": appointment,
-            "residential": residential,
-            "same_day_requested": same_day_requested,
-            "pickup_date": result.pickup_date,
-            "delivery_date_estimate": result.delivery_date_estimate,
-            "price_snapshot": result.price_lines,
-            "route_snapshot": result.route_snapshot,
-            "calculated_price": result.calculated_price,
-            "expires_at": expires_at,
-        })
+        session = request.env["logistics.pricing.session"].sudo().search([
+            ("token", "=", quote["quote_token"]),
+        ], limit=1)
+        if not session:
+            return request.render("prema_logistics_booking.portal_not_available", {
+                "reason": _("The price session could not be created. Please try again."),
+            })
 
         return request.render("prema_logistics_booking.portal_step3_result", {
             "session": session, "pickup_fsa": pickup_fsa, "delivery_fsa": delivery_fsa,

@@ -1,7 +1,7 @@
 # Prema Dispatch — Authoritative Master Reference
 
-**Version:** 5.1
-**Last Updated:** 2026-08-03
+**Version:** 6.0
+**Last Updated:** 2026-08-04
 **Replaces:** All standalone Prema Dispatch .md files in /root and /docs
 **Canonical URL:** `/opt/odoo/custom-addons/prema_dispatch/PREMA_DISPATCH_MASTER.md`
 
@@ -26,7 +26,7 @@ planning, driver worksheets, GPS tracking, POD collection, and accounting — al
 a single canonical booking engine.
 
 **Repository:** `github.com/ahmadtibrahim/prema_dispatch` (private)
-**Modules:** `prema_dispatch` (v18.0.2.1.0), `prema_logistics_booking` (v18.0.4.7.0)
+**Modules:** `prema_dispatch` (v18.0.2.2.0), `prema_logistics_booking` (v18.0.5.0.0)
 **Database:** Prod-db (production), Prod-db-test1a (test)
 **Odoo Config:** `/etc/odoo18.conf`
 **Upgrade:** `python3 odoo-bin -c /etc/odoo18.conf -d <db> --stop-after-init -u prema_logistics_booking,prema_dispatch --no-http`
@@ -40,17 +40,19 @@ a single canonical booking engine.
    and dispatch creation services.
 2. No price may be calculated directly inside a controller, view, template, invoice action,
    wizard, or website page.
-3. One booking = one invoice = one dispatch job (idempotent).
-4. Pricing authority: `logistics.rate.plan` (sole writable location for revenue_target,
-   target_load_quantity, included_weight_per_pallet, safe_weight_capacity).
+3. One booking = one invoice; Planner creates one operation card per physical truck/day
+   (idempotent), so an overnight job may correctly have two cards.
+4. Pricing authority: `logistics.corridor` (`rate_per_km`, `planned_pallets`,
+   `included_weight_per_pallet`, `minimum_booking_charge`). Rate Plans are historical only.
 5. Capacity authority: `CapacityEngine` (one canonical class).
 6. Booking authority: `BookingOrchestrationService.confirm()` (one canonical confirmation
    method for all channels).
-7. All channels produce exactly: 1 Booking → Stops → Lines → Legs → Tax → 1 Invoice →
-   1 Dispatch Job.
+7. All channels produce: 1 Booking → Stops → Lines → exact Legs → Tax → 1 Invoice →
+   truck/day Planner operation card(s).
 8. Never trust browser-submitted prices — always recalculate server-side at confirmation.
-9. Corridor is operational only (no customer pricing fields).
-10. Service Route = evolved `logistics.lane` (relabeled, not a new model).
+9. Service Route = `logistics.corridor`; it owns the weekly route and Scheduled LTL price.
+10. `logistics.lane`, Rate Plans, lane schedules, route runs, and region destinations are
+    retained only for historical compatibility and hidden from normal setup.
 
 ---
 
@@ -88,7 +90,7 @@ Public Website  Portal  Phone  Internal  Invoice  WhatsApp  Quote  Recurring
 
 | Service | Responsibility |
 |---|---|
-| `PricingService.calculate()` | Pricing only — resolves lane, rate plan, computes price |
+| `PricingService.calculate()` | Pricing only — resolves Corridor leg(s) and computes the frozen price |
 | `ScheduledAvailabilityService` | Finds valid departures only |
 | `BookingOrchestrationService.quote()` | Coordinates pricing + availability |
 | `BookingOrchestrationService.confirm()` | Transactional confirmation — recalculates price, locks capacity, creates booking |
@@ -96,26 +98,23 @@ Public Website  Portal  Phone  Internal  Invoice  WhatsApp  Quote  Recurring
 
 No circular calls between PricingService and BookingOrchestrationService.
 
-### Canonical V4 Pricing Formula
+### Canonical V5 Corridor Pricing Formula
 
-Single implementation in `PricingService._compute_v4_formula()`:
+Single active Scheduled LTL implementation in `PricingService`:
 
 ```
-base_rate_per_pallet = revenue_target / target_load_quantity
-base_charge = pallets × base_rate_per_pallet
-included_weight = pallets × included_weight_per_pallet (default 500 lb)
-excess_weight = max(0, actual_weight_lbs − included_weight)
-excess_weight_rate = revenue_target / safe_weight_capacity (default 11,000 lb)
-excess_weight_charge = excess_weight × excess_weight_rate
-subtotal = base_charge + excess_weight_charge
-final_price = round(subtotal / 5) × 5
+customer_rate_per_pallet_km = corridor.rate_per_km / corridor.planned_pallets
+leg_price = pallets × travelled_road_km × customer_rate_per_pallet_km
+booking_subtotal = sum(all direct or Hub-transfer leg prices)
+final_price = max(booking_subtotal, one booking minimum charge)
+full_corridor_revenue_target = full_corridor_distance × corridor.rate_per_km
 ```
 
 ---
 
 ## 4. Module and Model Map
 
-### prema_dispatch (v18.0.2.1.0)
+### prema_dispatch (v18.0.2.2.0)
 - **Purpose:** Core dispatch execution
 - **Depends on:** base, mail, account, fleet, sale, website, voip, premafirm_ai_engine
 - **Models:** prema.dispatch.job, .stop, .item, .stage, .load.plan, .location, .driver.worksheet, .timeline.event, .crossdock.location, .custody.event, .route.visit, .document, .dispatch.load.plan.job/event/operation, .pallet.stop.allocation, .vehicle.layout.template/position
@@ -124,7 +123,7 @@ final_price = round(subtotal / 5) × 5
 - **Frontend:** live_map.js, dispatch_board.js, booking_status_board.js, pallet_layout.js, driver_app.js, warehouse_app.js
 - **Security groups:** group_dispatch_manager, group_dispatcher, group_dispatch_readonly, group_dispatch_driver, group_dispatch_warehouse
 
-### prema_logistics_booking (v18.0.4.7.0)
+### prema_logistics_booking (v18.0.5.0.0)
 - **Purpose:** Commercial pricing, customer booking, corridor/network management, capacity engine
 - **Depends on:** base, base_setup, mail, portal, website, fleet, account, sale_management, prema_dispatch
 - **Models:** logistics.booking, .stop, .line, .leg, .lane, .rate.plan, .rate.tier, .corridor, .corridor.stop, .corridor.departure, .daily.local.operation, .region, .fsa, .fsa.zone, .city, .region.destination, .hub, .service.level, .service.offering, .lane.schedule, .holiday.calendar, .equipment.profile, .pricing.session, .custom.quote, .recurring.agreement, .customer.rate, .surcharge.type, .rate.plan.surcharge, .fsa.rate.adjustment
@@ -143,100 +142,47 @@ final_price = round(subtotal / 5) × 5
 | Concept | Canonical Model | Writable Authority | Display Locations |
 |---|---|---|---|
 | Customer | res.partner | partner form | booking, invoice |
-| Service Route | logistics.lane | lane form | lane form (relabeled "Service Route") |
-| Customer Price | logistics.rate.plan | rate plan form | lane form (related, read-only) |
-| Revenue Target | logistics.rate.plan | rate plan form | lane form (related, read-only) |
-| Target Load Quantity | logistics.rate.plan | rate plan form | lane form (related, read-only) |
-| Included Weight/Pallet | logistics.rate.plan | rate plan form | lane form (related, read-only) |
-| Safe Weight Capacity | logistics.rate.plan | rate plan form | lane form (related, read-only) |
+| Service Route | logistics.corridor | Corridor form | Network → Service Routes |
+| Scheduled LTL Price | logistics.corridor | Corridor form | frozen booking quote |
+| Revenue Target | logistics.corridor.full_revenue_target | computed | Corridor form |
+| Planned Pallets | logistics.corridor.planned_pallets | Corridor form | Corridor form |
+| Included Weight/Pallet | logistics.corridor.included_weight_per_pallet | Corridor form | Corridor form |
+| Minimum Booking Charge | logistics.corridor.minimum_booking_charge | Corridor form | Corridor form |
 | Booking | logistics.booking | confirm() only | booking form, portal |
 | Booking Price | logistics.booking.calculated_price | immutable (set at confirm) | booking form, portal |
-| Corridor | logistics.corridor | corridor form (operational fields only) | corridor form |
-| Departure | logistics.corridor.departure | departure form | weekly board |
-| Capacity | logistics.corridor.departure | CapacityEngine | weekly board |
+| Departure | logistics.corridor.departure | Corridor schedule/default plus date override | Dispatch Planner |
+| Capacity | exact departure fleet.vehicle | Fleet layout/payload | Departure, Planner |
 | Tax | logistics.booking._resolve_freight_tax() | config parameters | booking form |
 | Invoice | account.move | Odoo standard | booking smart button |
-| Dispatch Job | prema.dispatch.job | auto-created at confirm | dispatch board |
+| Planner Operation | prema.dispatch.job | auto-created per booking leg/day | Dispatch Planner |
 | FSA | logistics.fsa | fsa form | postal coverage |
 | Region | logistics.region | region form | coverage map |
 | Hub | logistics.hub | hub form | network map |
-| Internal Cost | premafirm.rate.estimator | Prema AI Estimator | lane, rate plan |
+| Internal Cost | premafirm.rate.estimator | Prema AI Estimator | internal booking/dispatch views |
 
 ---
 
-## 6. Service Routes (logistics.lane)
+## 6. Service Routes (`logistics.corridor`)
 
-`logistics.lane` IS the Service Route. The model name stays for database compatibility;
-the menu label and `_description` read "Service Route."
+The Corridor form is the one setup screen for ordered regions, pickup/delivery permission,
+weekly operating days, start time, default truck, holiday calendars, $/km, planned pallets,
+minimum charge, road distance, and computed full-corridor revenue target.
 
-A Service Route is the customer-buyable freight product — one origin region to one
-destination region.
-
-**Current identity fields (lane):**
-- `origin_region_id`, `destination_region_id` — unique pair constraint
-- `active`, `customer_visible`, `phase`
-- `name` (computed: "Origin → Dest")
-
-**Operational fields (lane):**
-- `equipment_profile_id` — default equipment
-- `max_pallets`, `max_weight_lbs` — physical limits from equipment
-- `road_km` — estimated road distance
-- `corridor_ids` (M2m) — serving corridors
-- `via_hub_id` — hub-and-spoke routing
-- `direct_allowed`, `via_hub_allowed`
-
-**Pricing fields (lane — read-only, from active rate plan):**
-- `revenue_target_display`, `customer_price_per_pallet`, `excess_weight_rate`
-- `planned_pallets_display`, `included_weight_display`, `safe_weight_display`
-
-**Schedule fields (lane — read-only, from active schedule):**
-- `pickup_cutoff_time`, `operating_days_display`
-
-**Financial fields (lane):**
-- `estimated_one_way_cost` (Prema AI), `target_net_profit`, `target_margin_pct`
-- Return/round-trip fields
-
-**Fields to add in Stage 2:**
-- `origin_hub_id`, `destination_hub_id` (M2o logistics.hub)
-- `dry_capable`, `reefer_capable`
-- `service_type` (ltl/ftl/both) — replaces ltl_capable/ftl_capable
-- `direction` — east/west/north/south/bidirectional/local
-- `return_service_route_id` (M2o self)
-- Related/computed fields from active rate plan and schedule
-
-**Fields to deprecate in Stage 2 (move authority to rate plan):**
-- `revenue_target` → related from rate plan
-- `preferred_revenue_target` → drop
-- `target_load_pallets` → related from rate plan TLQ
-- `ltl_capable`, `ftl_capable` → absorbed into `service_type`
-- `reefer_supported` → renamed `reefer_capable`
+`logistics.lane` is a hidden technical region pair used only where old records still refer
+to it. It is not a pricing or scheduling authority.
 
 ---
 
 ## 7. Regions, FSAs, Cities, and Hubs
 
 ### Regions (logistics.region)
-15 production regions (R1–R15), 2 archived test regions (T1X, T2X). Geographic grouping
-for pricing and routing. Must not store independent customer pricing — pricing authority
-is rate plan.
+The approved LTL region catalogue is the only source for new Corridor setup. New catalogue
+rows are customer-hidden until FSA coverage and map coordinates are reviewed.
 
-| Code | Name | Main City | Hub Name |
-|---|---|---|---|
-| R1 | GTA Central | Mississauga | Mississauga |
-| R2 | Southwest West | London | London |
-| R3 | Southwest Central | London | London |
-| R4 | Golden Horseshoe South | Hamilton | Hamilton |
-| R5 | Central North | Barrie | Barrie |
-| R6 | Grey-Bruce | Owen Sound | — |
-| R7 | Northeast Ontario | Sudbury | — |
-| R8 | East-Central 401 | Belleville | Belleville |
-| R9 | Kawartha | Peterborough | — |
-| R10 | Eastern Ontario West | Kingston | Kingston |
-| R11 | Eastern Ontario East | Brockville | — |
-| R12 | Ottawa Valley | Ottawa | Ottawa |
-| R13 | Greater Montreal | Montreal | Montreal |
-| R14 | Central Quebec | Drummondville | — |
-| R15 | Quebec City Region | Quebec City | Quebec City |
+Niagara Region; Hamilton, Halton and Brant; Greater Toronto Area; York; Durham;
+Headwaters; Waterloo and Wellington regions; Northumberland; Southeastern Ontario;
+Montérégie; Laval; Centre-du-Québec; Québec, city and area; Chaudière-Appalaches;
+Bas-Saint-Laurent; Ottawa Region; Haliburton Highlands to the Ottawa Valley; Kawarthas.
 
 ### FSAs (logistics.fsa)
 Postal code mapping to regions. 3-character Forward Sortation Area. `pickup_supported`
@@ -256,28 +202,24 @@ Physical cross-dock/warehouse locations.
 ## 8. Corridors and Departures
 
 ### Corridors (logistics.corridor)
-Directional operational routes with ordered stops. **Operational only — no customer
-pricing fields.**
+Directional operational routes with ordered stops and Scheduled LTL pricing.
 
-| ID | Name | Direction | Start | End | Stops |
-|---|---|---|---|---|---|
-| 1 | GTA → QUEBEC (EASTBOUND) | eastbound | R1 | R15 | 8 stops: R1→R10→R11→R8→R12→R13→R14→R15 |
-| 2 | QUEBEC → GTA (WESTBOUND) | westbound | R15 | R1 | 8 stops: R15→R14→R13→R12→R8→R11→R10→R1 |
-| 3 | LOCAL & REGIONAL OPERATIONS | local | R1 | R1 | 8 unassigned stops |
-| 4 | GTA → OTTAWA & RETURN | eastbound | R1 | R12 | 6 stops: R1→R10→R11→R8→R12→R12 |
+| Day | Approved ordered service |
+|---|---|
+| Monday and Thursday | Hub → Niagara Region → Hamilton, Halton and Brant → Greater Toronto Area → York → Durham → Headwaters → Waterloo and Wellington regions → Hub |
+| Tuesday 12:00 AM, overnight | Hub → Durham → Northumberland → Southeastern Ontario → Montérégie → Laval → Centre-du-Québec → Québec, city and area → Chaudière-Appalaches → Bas-Saint-Laurent |
+| Wednesday | Tuesday service in reverse travel order → Hub |
+| Friday | Hub → Northumberland → Southeastern Ontario → Ottawa Region → Haliburton Highlands to the Ottawa Valley → Kawarthas → Hub |
+| Saturday | Half-day Friday-pickup delivery or assigned Monday-route carryover |
+| Sunday | Off |
 
 ### Departures (logistics.corridor.departure)
-Dated execution of a corridor. Holds real capacity, assigned truck/driver, status.
-Generated by cron for 12-week rolling horizon.
+Dated execution of a Corridor. The system maintains an eight-week rolling horizon.
+Default truck/start time come from the Corridor; a single date may override the truck.
+Schedule changes rebuild only future unbooked Scheduled rows.
 
-**Key fields:** departure_date, vehicle_id, driver_id, status (scheduled/departed/
-in_transit/completed/cancelled), max_capacity (default 12), computed_peak_pallets.
-
-### Known Routing Limitation
-The `ScheduledAvailabilityService` currently matches departures against corridor
-`start_hub_id`/`end_hub_id` only. Intermediate corridor stops (e.g., Montreal/R13 on
-the Quebec City/R15 corridor) are not treated as direct bookable departure destinations.
-This must be addressed in Stage 2–3.
+Capacity comes from the exact assigned truck. The Driver field is not a Corridor scheduling
+authority; drivers remain operational assignments.
 
 ---
 
@@ -286,45 +228,15 @@ This must be addressed in Stage 2–3.
 ### Approved Formula
 
 ```
-Customer Price per Pallet = Revenue Target ÷ Target Load Quantity
-Booking Total = (Pallets × Price/Pallet) + Excess Weight Charge
-Final = ROUND(Total / 5) × 5
+Customer $/km per Pallet = Corridor $/km ÷ Planned Pallets
+Booking Total = Pallets × Actual Travel km × Customer $/km per Pallet
+Hub Transfer = priced pickup-to-Hub leg + priced Hub-to-delivery leg
+Final = MAX(Booking Total, one complete-booking minimum)
 ```
 
-### Approved Mississauga → Montreal Values
-
-| Parameter | Value |
-|---|---|
-| Revenue Target | $1,600.00 |
-| Target Load Quantity (Planned Pallets) | 8 |
-| Customer Price per Pallet | $200.00 |
-| Included Weight per Pallet | 500 lb |
-| Safe Weight Capacity | 11,000 lb |
-| Excess Weight Rate | $1,600 ÷ 11,000 = $0.1454545…/lb |
-| Final Price Rounding | Nearest $5 |
-
-### Pricing Examples
-
-| Pallets | Weight | Base | Excess | Surcharge | Final |
-|---|---|---|---|---|---|
-| 1 | 500 lb | $200.00 | 0 lb | $0.00 | **$200.00** |
-| 2 | 1,000 lb | $400.00 | 0 lb | $0.00 | **$400.00** |
-| 1 | 700 lb | $200.00 | 200 lb | $29.09 | **$230.00** |
-| 8 | 4,000 lb | $1,600.00 | 0 lb | $0.00 | **$1,600.00** |
-| 8 | 6,000 lb | $1,600.00 | 2,000 lb | $290.91 | **$1,890.00** |
-| 9 | 4,500 lb | $1,800.00 | 0 lb | $0.00 | **$1,800.00** |
-
-### Rate Plan (logistics.rate.plan)
-**Sole writable pricing authority.** Versioned per service offering. Active pricing
-must be editable and visible from the Service Route form via related/computed fields.
-
-**Writable fields:** revenue_target, target_load_quantity, included_weight_per_pallet,
-safe_weight_capacity, effective_from, effective_to, active, pricing_method.
-
-**Computed fields:** customer_price_per_pallet (= revenue_target ÷ TLQ),
-excess_weight_rate (= revenue_target ÷ safe_weight_capacity).
-
-**Pricing mode:** `simple` (V4 formula) or `tiered` (legacy, not used for customer pricing).
+Example: $4/km ÷ 6 planned pallets = $0.666667 per pallet-km. One pallet travelling
+110 km calculates to $73.33, so the $150 booking minimum applies. Six pallets calculate
+to $440. Rate Plans remain readable only for historical frozen quotations.
 
 ### Accessorials
 - Dry and Reefer: same base price (temperature is a service category, not a surcharge)
@@ -341,7 +253,7 @@ excess_weight_rate (= revenue_target ÷ safe_weight_capacity).
 | 13 | Pinwheel | No | `manual_review=True`, dispatcher override required, must pass weight + equipment validation |
 | ≥ 14 | N/A | No | Rejected entirely — not auto-approved |
 
-Planned Pallets (target_load_quantity) is a **revenue-target divisor**, NOT a physical
+Planned Pallets is a **customer-rate divisor**, NOT a physical
 capacity ceiling. Physical capacity comes from the assigned truck's layout (straight=12,
 pinwheel=13, turned=14) and payload weight limit (default 11,000 lb).
 
@@ -363,9 +275,10 @@ Capacity is reserved transactionally using `SELECT FOR UPDATE` row-level locking
 | Custom Quote | custom_quote | custom_quote:{quote_id} | BookingOrchestrationService.confirm() |
 | Recurring | recurring | recurring:{agreement_id}:{date} | BookingOrchestrationService.confirm() |
 
-Every channel produces exactly: 1 Booking → Stops → Lines → Legs → Tax → 1 Invoice →
-1 Dispatch Job. Idempotency key prevents duplicates across all channels. Duplicate
-confirmation returns the existing booking.
+Every channel produces one canonical Booking and one Invoice. Exact legs reserve exact
+departures. Planner cards are generated per physical truck/day, so a same-day leg has one
+card and an overnight pickup/delivery leg has two. Duplicate confirmation returns the
+existing booking and cards.
 
 ---
 
@@ -373,7 +286,8 @@ confirmation returns the existing booking.
 
 **Controller:** `prema_logistics_booking/controllers/request_quote.py`
 **Templates:** `prema_logistics_booking/views/request_quote_templates.xml`
-**Auth:** public (gated by `logistics_booking.public_test_mode` or `portal_enabled`)
+**Auth:** public route, disabled unless `portal_enabled=True` or the signed-in partner is an
+approved beta tester. `public_test_mode=False` is forced by the 18.0.5.0.0 migration.
 
 | Step | Route | Method | Action |
 |---|---|---|---|
@@ -431,30 +345,24 @@ review price/cost/margin → confirm
 
 ## 15. Invoice and Sale Order Booking
 
-### Invoice → Create Booking
-**Method:** `account.move.action_create_or_open_booking()`
+### Invoice → Book Load
+**Method:** `account.move.action_book_load()`
 **File:** `prema_dispatch/models/account_move_dispatch.py`
-**Flow:** On any draft invoice → "Create/Open Booking" → creates booking from invoice
-data, links existing invoice (no duplicate), creates dispatch. Repeated clicks reopen
-same booking. Idempotency key: `invoice:{move_id}`.
-
-### Invoice → Book Load (Legacy — deprecated in Stage 4)
-**Method:** `account.move._do_action_book_load()`
-Creates dispatch job directly without booking. Do not use for new development.
-
-### Sale Order → Book Load (Legacy — deprecated in Stage 4)
-**Method:** `sale.order.action_book_load()`
-Creates dispatch job directly without booking. Do not use for new development.
+**Flow:** On a draft invoice → Book Load wizard → Scheduled Network or Custom/Expedited.
+Scheduled LTL collects exact saved locations and shipment details, uses Corridor pricing,
+reserves exact departures, and reuses the same draft invoice. Repeated clicks reopen the
+existing booking or Planner cards. There is no silent legacy direct-dispatch fallback.
 
 ---
 
 ## 16. Dispatch Job Creation
 
 Occurs automatically during booking confirmation via `logistics.booking._create_dispatch_job()`:
-1. Creates `prema.dispatch.job` with `source_model="logistics.booking"`, `source_res_id=booking.id`
-2. Creates dispatch stops from booking stops
-3. Creates dispatch items from booking lines
-4. Links invoice to booking
+1. Creates one `prema.dispatch.job` Planner operation per booking leg/truck/day
+2. Splits pickup and delivery into separate cards when their dates differ
+3. Copies the exact Departure truck and locks assignment to that Departure
+4. Creates only the stops/items performed on that card and links the same invoice
+5. Allows other bookings to share the same exact LTL Departure until capacity is full
 
 The dispatch job flows through stages: Draft → New Booking → Planning → Assigned →
 Ready to Dispatch → Sent to Driver → En Route Pickup → At Pickup → Picked Up →
@@ -498,12 +406,11 @@ systemctl restart odoo18
 4. **Hub Location:** Settings → General Settings → Prema AI tab → Hub Location
 
 ### Post-Install Checklist
-- [ ] Verify all 4 corridors have start/end hubs set
-- [ ] Verify Mississauga→Montreal rate plan: revenue_target=$1,600, TLQ=8
-- [ ] Archive test regions T1X/T2X (set active=False)
+- [ ] Verify every Corridor has approved ordered regions, Hub endpoints, weekly days, start time, $/km, planned pallets, and default truck
+- [ ] Review FSA coverage and map anchors before setting official regions customer-visible
 - [ ] Generate departure horizon (cron or manual)
-- [ ] Set `logistics_booking.public_test_mode` to False in production
-- [ ] Verify test suite: 108/108 passing
+- [ ] Verify `logistics_booking.public_test_mode=False`
+- [ ] Run the `prema_v5` focused tests plus existing module tests on a disposable production-copy database
 - [ ] Configure operational vehicles (exclude DEMO-01 via `x_operational_logistics=False`)
 - [ ] Run browser smoke test through /request-a-quote
 
@@ -518,7 +425,7 @@ systemctl restart odoo18
 | Dispatch Read-Only | View boards and reports |
 | Driver | Driver app, own jobs/stops only |
 | Warehouse | Warehouse app, load plans |
-| Logistics Pricing Manager | Rate plans, pricing config |
+| Logistics Pricing Manager | Corridor pricing config |
 | Logistics Pricing Administrator | Full pricing + geography |
 | Logistics Booking Manager | Bookings, quotes, recurring agreements |
 | Logistics Customer | Portal access, own bookings only (record-rule scoped) |
@@ -535,13 +442,12 @@ Tracking requires both booking_number + tracking_token (prevents sequential enum
 
 ## 20. Tests and Expected Results
 
-### Current Status (2026-08-03)
-- **prema_logistics_booking: 158 tests executed** on Prod-db-staging
-- Network Map availability engine deployed (replaces Where-We-Go)
-- Migration 18.0.4.7.0 applied (schema updates for network availability)
-- Remaining test failures are pre-existing fixture design issues (hardcoded postal codes vs real FSA data), not regressions
-- `prema_dispatch` module: 137 pre-existing errors unrelated to booking work
-- Production: module upgraded and serving live traffic
+### Current Status (2026-08-04)
+- Source compilation, XML parsing, JavaScript syntax, and `git diff --check` pass locally
+- Focused `prema_v5` regression tests cover Corridor pricing, eight-week schedule rebuild,
+  and the ten-job Recurring Agreement limit
+- Full Odoo database tests and production upgrade remain deployment steps; do not claim
+  them from a source-only checkout
 
 ### Test Command
 ```bash
@@ -564,8 +470,8 @@ python3 odoo-bin -c /etc/odoo18.conf -d Prod-db-test1a \
 | test_v4_validation.py | 25 | Tax review, row-lock capacity, all channels, E2E routing, LTL hub pricing, concurrency |
 
 ### Expected Pricing Results
-All 6 mandatory test cases pass on the corrected Mississauga→Montreal rate plan
-($1,600/8=$200/pallet). See Section 9 for the complete table.
+See Section 9. Scheduled LTL uses Corridor distance and $/km; Custom/Expedited uses its
+explicit agreed rate.
 
 ---
 
@@ -603,15 +509,11 @@ All 6 mandatory test cases pass on the corrected Mississauga→Montreal rate pla
 
 ## 22. Current Production Configuration
 
-### Rate Plan (Mississauga → Montreal)
-- Rate Plan ID: 105 (GTA Central → Greater Montreal Next Day (Dry) v1)
-- revenue_target: $1,600.00
-- target_load_quantity: 8
-- included_weight_per_pallet: 500 lb
-- safe_weight_capacity: 11,000 lb
-- customer_price_per_pallet: $200.00
-- excess_weight_rate: $0.1455/lb
-- **Note:** Updated on Prod-db-test1a — awaiting production deployment
+### Corridor Pricing
+- Configured on each Service Route: $/km, Planned Pallets, included weight/pallet,
+  minimum booking charge
+- Full-Corridor Revenue Target is computed from route distance × $/km
+- Rate Plans remain archived historical records after upgrade
 
 ### Corridors
 - 4 corridors, all with start/end hubs populated
@@ -623,78 +525,39 @@ All 6 mandatory test cases pass on the corrected Mississauga→Montreal rate pla
 
 ### Config Parameters
 - `logistics_booking.portal_enabled`: False
-- `logistics_booking.public_test_mode`: True (⚠️ set to False for production)
+- `logistics_booking.public_test_mode`: False (forced by migration)
 - `logistics.default_planned_pallets`: 7
 
 ---
 
 ## 23. Known Issues
 
-1. **Routing limitation:** Availability matches corridor start/end hubs only. Intermediate
-   corridor stops (Montreal/R13 on Quebec City/R15 corridor) not treated as direct bookable
-   destinations. **Fix in Stage 2–3.**
-
-2. **DEFAULT_TARGETS hardcoded R-codes:** `pricing_service.py:25-34` contains fallback
-   revenue targets keyed by region codes (R1↔R8=$1600, R1↔R10=$2300, etc.). These should
-   be replaced with DB lookups. **Fix in Stage 3.**
-
-3. **WEEKLY_TEMPLATE/SELLABLE_SCHEDULE:** `routing_service.py` contains hardcoded
-   routing tables marked deprecated. **Remove in Stage 3.**
-
-4. **Hardcoded "R1" hub:** Availability and routing services reference region code "R1"
-   in 5+ locations instead of reading hub from lane. **Fix in Stage 3.**
-
-5. **_estimate_price exception swallowing:** Returns $0 on any pricing failure — silent.
-   **Fix in Stage 3.**
-
-6. **Booking confirmation uses stored session price:** Per the approved design,
-   confirmation must recalculate price, re-resolve FSAs, recheck departure and capacity
-   with SELECT FOR UPDATE. **Implement in Stage 3.**
-
-7. **Corridor 3 (LOCAL) has unassigned stop regions:** 8 stops without mapped regions.
-   **Address in Stage 2+.**
-
-8. **14-pallet override not implemented:** Currently rejected entirely. Spec requires
-   manual approval flow. **Implement in Stage 2–3.**
-
-9. **Duplicated fields on lane/rate_plan:** Both have revenue_target fields. Lane's
-   field will be deprecated when Service Route related fields are added. **Stage 2.**
+1. Official catalogue regions are intentionally customer-hidden until FSA coverage and
+   map anchors are reviewed in production.
+2. Full Odoo database tests and browser tests require the deployment server or a disposable
+   production-copy database; local source validation cannot prove runtime data quality.
+3. Historical Rate Plan/lane/schedule records remain in the database for audit compatibility,
+   but their setup screens are removed and the 18.0.5.0.0 migration archives active Rate Plans.
+4. Live en-route re-optimization is deferred; dispatchers continue to review and run the
+   existing Optimize action manually.
+5. Automatic external region/FSA importing is deferred; region/FSA review remains manual.
 
 ---
 
 ## 24. Remaining Implementation Stages
 
-### Stage 2 — Canonical Service Route Structure
-- Add Service Route fields to logistics.lane
-- Add related/computed fields from active rate plan
-- Deprecate duplicate pricing fields on lane and corridor
-- Add corridor.departure views
-- Update lane form to "Service Route" layout
+### Required before production upgrade
+- Run both module upgrades and `prema_v5` plus existing tests on a disposable production copy.
+- Browser-test Where We Go, Phone Booking, Invoice Book Load, a two-day scheduled LTL
+  booking, a Hub transfer, departure truck override, and capacity release after cancellation.
+- Review official region FSAs/map anchors, configure Corridor distances/prices/default trucks,
+  and then enable only reviewed regions for customers.
 
-### Stage 3 — Unified quote() and confirm()
-- Create canonical `BookingOrchestrationService.quote()`
-- Create canonical `BookingOrchestrationService.confirm()` with recalculation + SELECT FOR UPDATE
-- Remove DEFAULT_TARGETS, WEEKLY_TEMPLATE, SELLABLE_SCHEDULE hardcodes
-- Remove hardcoded "R1" hub references
-- Unify capacity checking through CapacityEngine
-- Fix _estimate_price exception swallowing
-
-### Stage 4 — Migrate All Booking Channels
-- Route all 7+ channels through quote() and confirm()
-- Remove legacy Invoice "Book Load" and SO "Book Load" paths
-- Remove bare-create fallback in custom quote conversion
-
-### Stage 5 — Menu Consolidation
-- Relabel "Lanes & Pricing" → "Service Routes"
-- Reorganize menus per approved hierarchy
-- Remove duplicate menu entries
-- Fix dead menu items
-
-### Stage 6 — Full Tests
-- 15 mandatory test cases through all 5 channels
-- All 108 existing tests continue to pass
-- Multi-channel price identity verification
-- Concurrency tests
+### Deferred to protect launch budget
+- Live en-route route re-optimization.
+- Automatic region/FSA import.
+- Public/customer map rollout and broad portal automation.
+- Additional UI polish and historical test-fixture cleanup unrelated to the launch path.
 
 ---
 
@@ -773,11 +636,16 @@ systemctl restart odoo18
 | 2026-08-01 | Tracking token prevents enumeration | Active |
 | 2026-08-01 | Invoice Create/Open instead of direct dispatch (V4) | Active |
 | 2026-08-01 | 14+ pallets rejected (not auto-approved) | Active |
-| 2026-08-02 | logistics.lane evolved as Service Route — no new model | Active |
-| 2026-08-02 | logistics.rate.plan is sole writable pricing authority | Active |
-| 2026-08-02 | logistics.corridor is operational only (no customer pricing) | Active |
-| 2026-08-02 | 9 pallets = $1,800 (Planned Pallets is revenue divisor, not capacity) | Active |
-| 2026-08-02 | Booking confirmation must recalculate price + lock with SELECT FOR UPDATE | Stage 3 |
+| 2026-08-02 | logistics.lane evolved as Service Route — no new model | Superseded 2026-08-04 |
+| 2026-08-02 | logistics.rate.plan is sole writable pricing authority | Superseded 2026-08-04 |
+| 2026-08-02 | logistics.corridor is operational only (no customer pricing) | Superseded 2026-08-04 |
+| 2026-08-04 | logistics.corridor is Service Route and Scheduled LTL pricing authority | Active |
+| 2026-08-04 | $/km ÷ Planned Pallets = customer pallet-km rate; $150 minimum once per booking | Active |
+| 2026-08-04 | Eight-week rolling departures inherit Corridor truck/time | Active |
+| 2026-08-04 | Dispatch Planner is the only operational weekly calendar | Active |
+| 2026-08-04 | One Planner card per physical truck/day operation | Active |
+| 2026-08-04 | One Recurring Agreement may contain up to ten route jobs | Active |
+| 2026-08-04 | Booking confirmation recalculates price + locks exact departures | Active |
 | 2026-08-02 | Pre-existing tests fixed (target_load_quantity, weight values) | Superseded |
 | 2026-08-02 | "Lanes & Pricing" menu relabeled → "Service Routes" in Stage 5 | Pending |
 | 2026-08-02 | Public website pricing bug (hardcoded pallets=1, weight=0) — Stage 1 fix | Fixed |
@@ -801,11 +669,14 @@ systemctl restart odoo18
 | 2026-08-03 | Legacy services removed | routing_service.py, where_we_go.py | Replaced by network_availability_service |
 | 2026-08-03 | Version bump to 18.0.4.7.0 | __manifest__.py | prema_logistics_booking v18.0.4.7.0 |
 | 2026-08-03 | Production upgrade | Prod-db | Module upgraded, Odoo restarted, live traffic confirmed |
+| 2026-08-04 | Corridor/Planner unification | v18.0.5.0.0 | Source implementation and migration completed |
+| 2026-08-04 | User Manual and master reference | docs/views | Updated to current Corridor schedule and pricing |
+| 2026-08-04 | Focused V5 regressions | test_v5_dispatch_unification.py | Pricing, eight-week schedule, recurring job limit |
 
-## 29. Dispatch Unification (18.0.4.6.0) — 2026-08-03
+## 30. Historical Dispatch Unification (18.0.4.6.0) — 2026-08-03
 
-Sections above describing "108/108 tests", earlier version numbers, or Chilled/Frozen
-as active options are superseded by this section for anything they conflict with.
+This section is retained as historical deployment evidence. Sections 1–29 and Section 31
+supersede its Rate Plan and single-dispatch-job architecture.
 
 **Canonical architecture, as implemented:**
 - `services/temperature_compat.py` is the SOLE Dry/Reefer adapter (chilled/frozen→reefer,
@@ -878,3 +749,32 @@ verified correct via the real-data smoke test above. `prema_dispatch`'s own suit
 137 pre-existing errors unrelated to this work (e.g. `test_load_plan.py` calling an
 undefined `install_google_mocks` helper) — out of scope for the dispatch-unification
 brief.
+
+---
+
+## 31. Corridor, Departure, and Planner Unification (18.0.5.0.0) — 2026-08-04
+
+This is the current architecture and supersedes Section 30 wherever they conflict.
+
+- Corridors own Scheduled LTL route topology, weekly schedule, default truck/time,
+  road distance, $/km, Planned Pallets, and one booking minimum.
+- The departure cron maintains an eight-week rolling horizon. Future booked and historical
+  departures are preserved; empty rows are rebuilt when the weekly schedule changes.
+- A specific Departure may override the Corridor truck. That change synchronizes every
+  Planner card linked to the Departure.
+- Scheduled LTL confirmation creates one Planner operation per leg/truck/day. Overnight
+  pickup and delivery are separate cards. Loads sharing the same exact Departure may share
+  its truck until pallet/weight capacity is full; unrelated work on that truck/day is blocked.
+- Phone, website, recurring, and Scheduled-Network invoice requests use the same Corridor
+  quote and exact departure snapshot. Custom/Expedited keeps an explicit agreed-rate path.
+- Invoice Book Load reuses its draft invoice and has no exception fallback to legacy direct
+  dispatch.
+- Recurring Agreements support up to ten jobs. Each endpoint may be a reviewed Region or a
+  Google-verified Saved Location; automatic generation requires two exact verified locations.
+- Where We Go is authenticated, draws configured direct/Hub-transfer reachability, shows the
+  nearest exact departure, and never displays prices.
+- The 18.0.5.0.0 migration removes obsolete navigation/actions/views, archives Rate Plans,
+  applies the approved weekly schedule, backfills Planner operation dates, migrates old
+  recurring endpoints, rebuilds future departures, and forces `public_test_mode=False`.
+- Deferred for launch budget: live en-route re-optimization, automatic region/FSA import,
+  broad public map/portal rollout, and unrelated legacy test-fixture cleanup.

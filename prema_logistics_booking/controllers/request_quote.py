@@ -122,17 +122,12 @@ class LogisticsRequestQuote(http.Controller):
         liftgate_delivery = bool(kwargs.get("liftgate_delivery"))
         appointment = bool(kwargs.get("appointment"))
         residential = bool(kwargs.get("residential"))
-
-        # Primary: search next 14 days automatically
-        from ..services.availability_service import ScheduledAvailabilityService
+        # Search the complete customer-visible eight-week corridor horizon.
         avail_svc = ScheduledAvailabilityService(request.env)
         all_options = []
         seen_dates = set()
 
-        # Search current week + next week (14 days)
-        import datetime
-        now = datetime.datetime.now()
-        for week_offset in range(3):  # current + next + one more
+        for week_offset in range(8):
             availability = avail_svc.find_available_services(
                 pickup_fsa, delivery_fsa, pallets, weight_lbs, temperature_mode, week_offset,
                 required_temperature_c=required_temperature_c,
@@ -143,16 +138,12 @@ class LogisticsRequestQuote(http.Controller):
                 key = str(opt.delivery_date) if opt.delivery_date else ""
                 if key and key not in seen_dates:
                     seen_dates.add(key)
-                    # Check capacity label
+                    remaining = opt.available_pallets
                     cap_label = "AVAILABLE"
-                    if opt.departure:
-                        remaining = opt.departure.max_capacity - (opt.departure.computed_peak_pallets or 0)
-                    elif opt.route_run:
-                        remaining = opt.route_run.available_pallets
-                        if remaining < pallets:
-                            cap_label = "SOLD_OUT"
-                        elif remaining <= 3:
-                            cap_label = "LIMITED_SPACE"
+                    if remaining < pallets:
+                        cap_label = "SOLD_OUT"
+                    elif remaining <= 3:
+                        cap_label = "LIMITED_SPACE"
 
                     all_options.append({
                         "priority": opt.priority,
@@ -221,6 +212,14 @@ class LogisticsRequestQuote(http.Controller):
         liftgate_delivery = bool(kwargs.get("liftgate_delivery"))
         appointment = bool(kwargs.get("appointment"))
         residential = bool(kwargs.get("residential"))
+        requested_pickup_date = None
+        try:
+            if kwargs.get("requested_pickup_date"):
+                requested_pickup_date = datetime.date.fromisoformat(
+                    kwargs["requested_pickup_date"]
+                )
+        except ValueError:
+            return request.redirect("/request-a-quote")
 
         # Get real pricing
         result = PricingService(request.env).calculate(
@@ -228,6 +227,7 @@ class LogisticsRequestQuote(http.Controller):
             liftgate_pickup, liftgate_delivery, appointment, residential,
             partner=None, required_temperature_c=required_temperature_c,
             resolve_departures=True,
+            reference_dt=requested_pickup_date,
         )
 
         if not result.available:
@@ -243,8 +243,9 @@ class LogisticsRequestQuote(http.Controller):
             "partner_id": request.env.user.partner_id.id if not request.env.user._is_public() else 1,
             "pickup_fsa_id": pickup_fsa.id,
             "delivery_fsa_id": delivery_fsa.id,
-            "service_offering_id": result.service_offering.id,
-            "rate_plan_id": result.rate_plan.id,
+            "corridor_id": result.corridor.id,
+            "service_offering_id": result.service_offering.id if result.service_offering else False,
+            "rate_plan_id": result.rate_plan.id if result.rate_plan else False,
             "shipment_type": "ltl",
             "temperature_mode": temperature_mode,
             "required_temperature_c": required_temperature_c if required_temperature_c is not None else 0.0,

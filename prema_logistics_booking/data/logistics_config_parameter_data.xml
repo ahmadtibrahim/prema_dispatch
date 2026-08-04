@@ -7,7 +7,7 @@
         </record>
         <record id="param_logistics_booking_public_test_mode" model="ir.config_parameter">
             <field name="key">logistics_booking.public_test_mode</field>
-            <field name="value">True</field>
+            <field name="value">False</field>
         </record>
     </data>
 </odoo>

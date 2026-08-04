@@ -232,6 +232,12 @@
                                                 <input type="hidden" name="pallets" t-att-value="pallets"/>
                                                 <input type="hidden" name="weight_lbs" t-att-value="weight_lbs"/>
                                                 <input type="hidden" name="temperature_mode" t-att-value="temperature_mode"/>
+                                                <input type="hidden" name="required_temperature_c" t-att-value="required_temperature_c"/>
+                                                <input t-if="liftgate_pickup" type="hidden" name="liftgate_pickup" value="1"/>
+                                                <input t-if="liftgate_delivery" type="hidden" name="liftgate_delivery" value="1"/>
+                                                <input t-if="appointment" type="hidden" name="appointment" value="1"/>
+                                                <input t-if="residential" type="hidden" name="residential" value="1"/>
+                                                <input type="hidden" name="requested_pickup_date" t-att-value="opt['pickup_date']"/>
                                                 <input type="hidden" name="delivery_day" t-att-value="opt['delivery_date_formatted']"/>
                                                 <input type="hidden" name="pickup_day" t-att-value="opt['pickup_date_formatted']"/>
                                                 <button type="submit" class="btn btn-primary">Select</button>

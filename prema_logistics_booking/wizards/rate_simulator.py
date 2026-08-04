@@ -56,9 +56,8 @@ class LogisticsRateSimulator(models.TransientModel):
             if not result.available:
                 lines.append(f"\nNOT AVAILABLE -- reason: {result.reason}")
             else:
-                lines.append(f"\nLane: {result.lane.name}")
-                lines.append(f"Service Offering: {result.service_offering.name}")
-                lines.append(f"Rate Plan: {result.rate_plan.name}")
+                lines.append(f"\nCorridor: {result.corridor.name}")
+                lines.append("Pricing: Corridor $/km")
                 lines.append(f"Next Pickup: {result.pickup_date}")
                 lines.append(f"Estimated Delivery: {result.delivery_date_estimate}")
                 lines.append("\nPrice Breakdown:")
