@@ -28,23 +28,6 @@
             <form>
                 <sheet>
                     <div class="oe_title"><h1><field name="name"/></h1></div>
-                    <group string="Route">
-                        <group>
-                            <field name="name"/>
-                            <field name="direction"/>
-                            <field name="equipment_type"/>
-                            <field name="phase"/>
-                            <field name="truck_slot"/>
-                            <field name="weekday"/>
-                        </group>
-                        <group string="Hub Assignment">
-                            <field name="origin_hub_id" string="Origin Hub" widget="many2one" options="{'no_create': True}"/>
-                            <field name="destination_hub_id" string="Destination Hub" widget="many2one" options="{'no_create': True}"/>
-                            <field name="transfer_hub_id" string="Transfer Hub" widget="many2one" options="{'no_create': True}"/>
-                            <field name="same_day_return"/>
-                            <field name="paired_return_service_id"/>
-                        </group>
-                    </group>
                     <group string="Legacy Hub References (read-only)">
                         <group>
                             <field name="start_hub_id" string="Start Region (deprecated)" readonly="1"/>
@@ -57,23 +40,71 @@
                             <field name="temperature_capability"/>
                         </group>
                     </group>
-                    <group string="Capacity &amp; Revenue">
-                        <group>
-                            <field name="truck_capacity"/>
-                            <field name="planned_pallets"/>
-                            <field name="full_distance_km"/>
-                        </group>
-                        <group>
-                            <field name="full_revenue_target" widget="monetary"/>
-                            <field name="min_departure_revenue" widget="monetary"/>
-                            <field name="conditional"/>
-                        </group>
-                    </group>
-                    <group string="Links">
-                        <field name="lane_ids" widget="many2many_tags"/>
-                        <field name="return_corridor_id"/>
-                        <field name="feeds_corridor_id"/>
-                    </group>
+                    <notebook>
+                        <page string="Route">
+                            <group>
+                                <group>
+                                    <field name="name"/>
+                                    <field name="direction"/>
+                                    <field name="is_two_way" string="Two-Way Service" readonly="1"/>
+                                    <field name="equipment_type"/>
+                                    <field name="phase"/>
+                                    <field name="truck_slot"/>
+                                    <field name="weekday"/>
+                                </group>
+                                <group string="Hub Assignment">
+                                    <field name="origin_hub_id" string="Origin Hub" widget="many2one" options="{'no_create': True}"/>
+                                    <field name="destination_hub_id" string="Destination Hub" widget="many2one" options="{'no_create': True}"/>
+                                    <field name="transfer_hub_id" string="Transfer Hub" widget="many2one" options="{'no_create': True}"/>
+                                    <field name="same_day_return"/>
+                                    <field name="paired_return_service_id"/>
+                                </group>
+                            </group>
+                        </page>
+                        <page string="Stops">
+                            <field name="stop_ids">
+                                <list editable="bottom">
+                                    <field name="sequence"/>
+                                    <field name="region_id"/>
+                                    <field name="pickup_allowed"/>
+                                    <field name="delivery_allowed"/>
+                                </list>
+                            </field>
+                        </page>
+                        <page string="Departures">
+                            <field name="departure_ids" domain="[('departure_date', '>=', context_today())]">
+                                <list>
+                                    <field name="departure_date"/>
+                                    <field name="departure_time"/>
+                                    <field name="vehicle_id"/>
+                                    <field name="status"/>
+                                    <field name="cutoff_time"/>
+                                </list>
+                            </field>
+                        </page>
+                        <page string="Capacity, Revenue &amp; Pricing">
+                            <group string="Capacity &amp; Revenue">
+                                <group>
+                                    <field name="truck_capacity"/>
+                                    <field name="planned_pallets"/>
+                                    <field name="full_distance_km"/>
+                                </group>
+                                <group>
+                                    <field name="full_revenue_target" widget="monetary"/>
+                                    <field name="min_departure_revenue" widget="monetary"/>
+                                    <field name="conditional"/>
+                                </group>
+                            </group>
+                            <group string="Effective Rate Plan">
+                                <field name="effective_rate_plan_ids" widget="many2many_tags" readonly="1"/>
+                            </group>
+                            <group string="Links">
+                                <field name="lane_ids" widget="many2many_tags"/>
+                                <field name="return_corridor_id"/>
+                                <field name="feeds_corridor_id"/>
+                            </group>
+                        </page>
+                    </notebook>
                 </sheet>
             </form>
         </field>

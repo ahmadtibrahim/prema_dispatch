@@ -1,6 +1,72 @@
 <?xml version="1.0" encoding="utf-8"?>
 <templates>
 <t t-name="prema_logistics_booking.WhereWeGoAction">
-<iframe t-attf-src="/logistics/where-we-go" style="width:100%;height:100%;border:none;position:absolute;top:0;left:0"/>
+    <div class="d-flex h-100">
+        <div class="o_wwg_sidebar border-end p-3" style="width: 360px; flex-shrink: 0; overflow-y: auto;">
+            <h4 class="mb-3">Where We Go</h4>
+            <label class="form-label">Pickup Point</label>
+            <select class="form-select mb-3" t-on-change="(ev) => this.onSelectOrigin(ev.target.value)">
+                <option value="">Select a pickup...</option>
+                <t t-foreach="state.hubs" t-as="hub" t-key="hub.key">
+                    <option t-att-value="hub.key" t-att-selected="state.selectedOriginKey === hub.key">HUB — <t t-esc="hub.public_name || hub.name"/></option>
+                </t>
+                <t t-foreach="state.origins" t-as="origin" t-key="origin.key">
+                    <option t-att-value="origin.key" t-att-selected="state.selectedOriginKey === origin.key"><t t-esc="origin.name"/></option>
+                </t>
+            </select>
+
+            <div t-if="state.loadingDestinations" class="text-muted">
+                <span class="spinner-border spinner-border-sm me-2" role="status"></span>Loading destinations...
+            </div>
+            <div t-elif="!state.selectedOriginKey" class="text-muted">
+                Select a pickup to see destinations
+            </div>
+            <div t-else="">
+                <h6 class="mt-2 mb-2">Destinations</h6>
+                <t t-if="state.destinations.length === 0">
+                    <div class="text-muted">No destinations available.</div>
+                </t>
+                <t t-else="">
+                    <ul class="list-unstyled">
+                        <t t-foreach="state.destinations" t-as="dest" t-key="dest.region_id">
+                            <li class="border rounded p-2 mb-2">
+                                <div class="d-flex justify-content-between align-items-center">
+                                    <span t-esc="dest.region_name"/>
+                                    <t t-if="dest.status === 'direct'">
+                                        <span class="badge bg-success">Direct</span>
+                                    </t>
+                                    <t t-elif="dest.status === 'hub_transfer'">
+                                        <span class="badge bg-primary">Via Hub</span>
+                                    </t>
+                                    <t t-else="">
+                                        <span class="badge bg-secondary">Unavailable</span>
+                                    </t>
+                                </div>
+                                <div t-if="dest.status === 'direct' and dest.legs.length > 0" class="small text-muted mt-1">
+                                    Departure: <t t-esc="dest.legs[0].departure_date"/>
+                                </div>
+                                <div t-elif="dest.status === 'hub_transfer' and dest.legs.length > 0" class="small text-muted mt-1">
+                                    <t t-foreach="dest.legs" t-as="leg" t-key="leg_index">
+                                        <div>Leg <t t-esc="leg_index + 1"/>: <t t-esc="leg.departure_date"/></div>
+                                    </t>
+                                </div>
+                                <div t-if="dest.status === 'unavailable'" class="small text-muted mt-1">
+                                    <t t-esc="getReasonText(dest.reason)"/>
+                                </div>
+                            </li>
+                        </t>
+                    </ul>
+                </t>
+            </div>
+        </div>
+        <div class="flex-fill d-flex flex-column p-3">
+            <div class="mb-2 text-end">
+                <button class="btn btn-primary" t-on-click="() => this.onCheckPrice()">Check Price</button>
+            </div>
+            <div class="o_wwg_map_placeholder flex-fill border rounded bg-light d-flex align-items-center justify-content-center">
+                <span class="text-muted">Map placeholder</span>
+            </div>
+        </div>
+    </div>
 </t>
 </templates>

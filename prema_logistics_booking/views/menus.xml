@@ -40,19 +40,22 @@
     <menuitem id="menu_v4_quotes" name="Custom Quotes" parent="menu_v4_bookings" action="action_logistics_custom_quote" sequence="40"/>
     <menuitem id="menu_v4_wa" name="WhatsApp Negotiations" parent="menu_v4_bookings" action="agent_wa.action_wa_negotiations" sequence="50"/>
 
-    <record id="action_where_we_go" model="ir.actions.act_url">
+    <record id="action_where_we_go" model="ir.actions.client">
         <field name="name">Where We Go</field>
-        <field name="url">/logistics/where-we-go</field>
-        <field name="target">self</field>
+        <field name="tag">prema_where_we_go</field>
     </record>
 
     <menuitem id="menu_v4_where_we_go" name="Where We Go" parent="menu_v4_network" action="action_where_we_go" sequence="5"/>
-    <menuitem id="menu_v4_weekly_svcs" name="Weekly Services" parent="menu_v4_network" action="action_logistics_corridor" sequence="10"/>
+    <menuitem id="menu_v4_weekly_svcs" name="Service Routes" parent="menu_v4_network" action="action_logistics_corridor" sequence="10"/>
     <menuitem id="menu_v4_hubs" name="Hubs" parent="menu_v4_network" action="action_logistics_hub" sequence="25"/>
     <menuitem id="menu_v4_regions" name="Regions" parent="menu_v4_network" action="action_logistics_region" sequence="40"/>
     <menuitem id="menu_v4_saved_locations" name="Saved Locations" parent="menu_v4_network" action="prema_dispatch.action_dispatch_locations" sequence="60"/>
 
-    <menuitem id="menu_v4_lanes_pricing" name="Service Routes" parent="menu_v4_pricing" action="action_logistics_lane" sequence="10"/>
+    <!-- menu_v4_lanes_pricing (Pricing -> "Service Routes" -> logistics.lane)
+         intentionally removed: logistics.lane is hidden technical topology
+         data now, not a customer-pricing surface. Deletion+cleanup handled by
+         migrations/18.0.4.7.0/post-migrate.py for already-migrated databases
+         where the ir.ui.menu record already exists. -->
     <menuitem id="menu_v4_rate_plans" name="Rate Plans" parent="menu_v4_pricing" action="action_logistics_rate_plan" sequence="15"/>
     <menuitem id="menu_v4_rate_sim" name="Rate Simulator" parent="menu_v4_pricing" action="action_logistics_rate_simulator" sequence="20"/>
     <menuitem id="menu_v4_customer_rates" name="Customer Contract Rates" parent="menu_v4_pricing" action="action_logistics_customer_rate" sequence="60"/>

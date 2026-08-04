@@ -1,6 +1,6 @@
 {
     "name": "Prema Logistics Booking",
-    "version": "18.0.4.6.0",
+    "version": "18.0.4.7.0",
     "summary": "Private customer LTL/FTL pricing, scheduling, and booking engine "
                "for PremaFirm Logistics — integrates with Prema Dispatch.",
     "category": "Logistics",
@@ -51,7 +51,6 @@ root for architecture notes, decisions, and phase status.
         "views/res_partner_logistics_views.xml",
         "views/rate_simulator_views.xml",
         "views/res_config_settings_views.xml",
-        "views/where_we_go_template.xml",
         "views/menus.xml",
         "views/portal_templates.xml",
         "views/request_quote_templates.xml",
@@ -61,7 +60,6 @@ root for architecture notes, decisions, and phase status.
         "web.assets_backend": [
             "prema_logistics_booking/static/src/xml/where_we_go_action.xml",
             "prema_logistics_booking/static/src/js/where_we_go_action.js",
-            "prema_logistics_booking/static/src/js/where_we_go.js",
             # Weekly schedule board merged into prema_dispatch's Dispatch Planner.
             # The Owl widget files are kept on disk for reference but no longer loaded.
         ],

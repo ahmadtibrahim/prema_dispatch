@@ -1,9 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<odoo>
-    <template id="where_we_go_page" name="Where We Go">
-        <t t-call="web.layout">
-            <t t-set="head"><title>Where We Go</title></t>
-            <iframe id="wwg_frame" style="width:100%;height:calc(100vh - 46px);border:none" t-attf-src="/logistics/where-we-go/map"/>
-        </t>
-    </template>
-</odoo>

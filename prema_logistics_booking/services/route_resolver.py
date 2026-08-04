@@ -79,6 +79,15 @@ class RouteResolver:
         # Filter by shipment type
         return [o for o in offerings if o.shipment_type in (shipment_type, "both")]
 
+    def find_rate_plan_for_regions(self, origin_region, dest_region, equipment="dry", shipment_type="ltl", today=None):
+        """Public wrapper around _find_active_rate_plan for callers that only
+        need to know "is there a commercially active Rate Plan for this
+        region pair" (e.g. a corridor's read-only effective-Rate-Plan
+        summary) without going through the full FSA-based resolve()."""
+        today = today or date.today()
+        lane, rate_plan = self._find_active_rate_plan(origin_region, dest_region, equipment, shipment_type, today)
+        return rate_plan
+
     def _find_active_rate_plan(self, origin_region, dest_region, equipment, shipment_type, today):
         """Find the active, effective Rate Plan for an exact ordered lane.
         Returns None if zero or multiple offerings match."""

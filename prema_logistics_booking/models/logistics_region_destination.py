@@ -1,7 +1,11 @@
-"""Region Destination Matrix — what destinations are reachable from each region.
+"""Region Destination Matrix — ARCHIVED, read-only, derived reference only.
 
-Used by the customer portal to show "Available Destinations" cards
-(like airline destinations) when a customer selects their pickup city.
+Superseded by RouteResolver/DepartureResolver + logistics.corridor.stop as
+the live routing/schedule-day authority. This model duplicated that authority
+with plain, manually-maintained fields and no compute tying it back to
+lane/corridor data, so it could silently diverge. It has no menu entry and no
+live callers — do not populate it manually or wire it into new features; ACL
+is read-only for every group (see security/ir.model.access.csv).
 """
 from odoo import fields, models
 
