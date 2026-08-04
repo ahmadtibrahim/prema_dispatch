@@ -115,6 +115,58 @@ class LogisticsCorridor(models.Model):
     departure_ids = fields.One2many("logistics.corridor.departure", "corridor_id")
     stop_ids = fields.One2many("logistics.corridor.stop", "corridor_id")
 
+    is_two_way = fields.Boolean(
+        string="Two-Way Service", compute="_compute_is_two_way",
+        help="True only when return_corridor_id is set AND that paired "
+             "corridor's stop order is the exact reverse of this one's — "
+             "never inferred from the two corridors merely sharing regions.",
+    )
+    effective_rate_plan_ids = fields.Many2many(
+        "logistics.rate.plan", compute="_compute_effective_rate_plans",
+        string="Effective Rate Plans",
+        help="Read-only. The active Rate Plan(s) RouteResolver would actually "
+             "select for each pickup-to-delivery pair this corridor serves. "
+             "Not stored — compute on the form view only, never in a list "
+             "view column (one call to RouteResolver per stop pair).",
+    )
+
+    @api.depends(
+        "return_corridor_id", "stop_ids.sequence", "stop_ids.region_id",
+        "return_corridor_id.stop_ids.sequence", "return_corridor_id.stop_ids.region_id",
+    )
+    def _compute_is_two_way(self):
+        for rec in self:
+            paired = rec.return_corridor_id
+            if not paired:
+                rec.is_two_way = False
+                continue
+            # Plain list comprehensions, not .mapped(...).ids — mapped() on a
+            # Many2one collapses repeated regions (a recordset is a set of
+            # ids), which would silently break the ordering comparison for
+            # any corridor whose stops revisit the same region (e.g. a
+            # self-contained round-trip corridor).
+            this_order = [s.region_id.id for s in rec.stop_ids.sorted("sequence")]
+            paired_order = [s.region_id.id for s in paired.stop_ids.sorted("sequence")]
+            rec.is_two_way = bool(this_order) and this_order == list(reversed(paired_order))
+
+    @api.depends("stop_ids.sequence", "stop_ids.region_id", "stop_ids.pickup_allowed", "stop_ids.delivery_allowed")
+    def _compute_effective_rate_plans(self):
+        from ..services.route_resolver import RouteResolver
+        resolver = RouteResolver(self.env)
+        for rec in self:
+            stops = rec.stop_ids.sorted("sequence")
+            rate_plans = self.env["logistics.rate.plan"]
+            for i, orig in enumerate(stops):
+                if not orig.region_id or not orig.pickup_allowed:
+                    continue
+                for j, dest in enumerate(stops):
+                    if j <= i or not dest.region_id or not dest.delivery_allowed:
+                        continue
+                    rate_plan = resolver.find_rate_plan_for_regions(orig.region_id, dest.region_id)
+                    if rate_plan:
+                        rate_plans |= rate_plan
+            rec.effective_rate_plan_ids = rate_plans
+
     @api.model
     def generate_segment_rates(self, corridor_id, preview=True):
         corridor = self.browse(corridor_id)

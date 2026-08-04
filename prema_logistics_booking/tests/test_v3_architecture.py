@@ -103,27 +103,11 @@ class TestV3Architecture(common.TransactionCase):
         run.unlink()
 
     # ── ROUTING RESOLUTION TESTS ────────────────────────────────────
-
-    def test_10_routing_mississauga_to_montreal(self):
-        """FSA→Region→Lane resolution works when FSAs exist."""
-        from odoo.addons.prema_logistics_booking.services.routing_service import RoutingService
-        svc = RoutingService(self.env)
-
-        # Find any two FSAs in different regions
-        fsa1 = self.Fsa.search([("region_id", "!=", False)], limit=1)
-        fsa2 = self.Fsa.search([("region_id", "!=", False), ("id", "!=", fsa1.id)], limit=1)
-
-        if fsa1 and fsa2 and fsa1.region_id != fsa2.region_id:
-            result = svc.full_resolve(fsa1.fsa, fsa2.fsa)
-            self.assertIsNotNone(result)
-            self.assertIn("available", result)
-            self.assertIn("pickup_region", result)
-            self.assertIn("delivery_region", result)
-        else:
-            # Test DB has no FSA data — verify the method doesn't crash
-            result = svc.resolve_postal_code("L5M")
-            # May legitimately be None if L5M FSA doesn't exist in test DB
-            self.assertTrue(result is None or isinstance(result, dict))
+    # (test_10_routing_mississauga_to_montreal removed — exercised the
+    # deleted legacy services/routing_service.py, superseded by
+    # RouteResolver/DepartureResolver; see test_ordered_lane_pricing.py and
+    # test_pricing_integration.py for the equivalent coverage on the real
+    # resolution path.)
 
     def test_11_lane_origin_destination(self):
         """Lanes exist with correct origin/destination regions."""

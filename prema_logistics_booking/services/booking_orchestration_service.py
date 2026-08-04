@@ -188,48 +188,6 @@ class BookingOrchestrationService:
 
         return NormalizedBookingRequest(values)
 
-    def resolve_service_options(self, normalized_request: NormalizedBookingRequest) -> list:
-        """Resolve available service options (lanes, departures, pricing) for a
-        normalized request. Returns list of service option dicts for customer
-        or staff to choose from."""
-        from ..services.routing_service import RoutingService
-
-        router = RoutingService(self.env)
-        options = []
-
-        # Resolve each pickup→delivery pair
-        for pu_stop in (normalized_request.pickup_stops or [{"postal": ""}]):
-            for del_stop in (normalized_request.delivery_stops or [{"postal": ""}]):
-                pu_postal = pu_stop.get("postal_code", pu_stop.get("postal", ""))
-                del_postal = del_stop.get("postal_code", del_stop.get("postal", ""))
-
-                if pu_postal and del_postal:
-                    result = router.full_resolve(
-                        pu_postal, del_postal,
-                        pickup_date=normalized_request.requested_pickup_date,
-                        pallets=normalized_request.pallets,
-                        weight_lbs=normalized_request.weight_lbs,
-                        equipment=normalized_request.equipment_type,
-                    )
-                    for opt in (result.options if hasattr(result, "options") else [result] if result else []):
-                        options.append({
-                            "route_type": getattr(opt, "route_type", "direct"),
-                            "origin_region": getattr(opt, "origin_region", ""),
-                            "destination_region": getattr(opt, "destination_region", ""),
-                            "pickup_date": str(getattr(opt, "pickup_date", "")),
-                            "delivery_date": str(getattr(opt, "delivery_date", "")),
-                            "departure_id": getattr(opt, "departure_id", None),
-                            "corridor_id": getattr(opt, "corridor_id", None),
-                            "lane_id": getattr(opt, "lane_id", None),
-                            "rate_plan_id": getattr(opt, "rate_plan_id", None),
-                            "service_offering_id": getattr(opt, "service_offering_id", None),
-                            "calculated_price": getattr(opt, "calculated_price", 0.0),
-                            "transfer_count": getattr(opt, "transfer_count", 0),
-                            "customer_route_text": getattr(opt, "customer_route_text", ""),
-                        })
-
-        return options
-
     def prepare_quote(self, normalized_request: NormalizedBookingRequest, session_ttl_minutes: int = 20) -> dict:
         """Create a pricing session / quote for the customer to review.
         Returns a dict with quote_token, price, and expiration."""

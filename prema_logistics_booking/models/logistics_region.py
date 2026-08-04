@@ -1,4 +1,11 @@
-from odoo import api, fields, models
+from odoo import _, api, fields, models
+from odoo.exceptions import AccessError
+
+
+def _require_dispatch_staff(env):
+    if not env.user.has_group("prema_dispatch.group_dispatcher") and \
+       not env.user.has_group("prema_dispatch.group_dispatch_manager"):
+        raise AccessError(_("Only dispatchers and logistics managers can view the network map."))
 
 
 class LogisticsRegion(models.Model):
@@ -45,74 +52,45 @@ class LogisticsRegion(models.Model):
         ("code_uniq", "unique(code)", "Region code must be unique."),
     ]
 
-    
     @api.model
-    def get_map_data(self):
-        """RPC: Return all Where We Go map data."""
-        Region = self.sudo()
-        Lane = self.env["logistics.lane"].sudo()
+    def get_network_map_data(self):
+        """Where We Go — static reference data (regions + hubs) for the map's
+        pickup selector. Requires Dispatcher or Logistics Manager group.
+        Destinations for a chosen pickup are fetched separately via
+        get_network_destinations(), not eagerly computed here."""
+        _require_dispatch_staff(self.env)
         Hub = self.env["logistics.hub"].sudo()
-        Corridor = self.env["logistics.corridor"].sudo()
-        Departure = self.env["logistics.corridor.departure"].sudo()
-        from datetime import date
 
-        regions = []
-        for r in Region.search([("active", "=", True), ("customer_visible", "=", True)]):
-            regions.append({
-                "id": r.id, "code": r.code, "name": r.name,
-                "display_number": r.display_number or r.id,
-                "main_city": r.main_city or "",
-                "lat": r.marker_latitude or 44.0,
-                "lng": r.marker_longitude or -78.0,
-                "polygon": r.polygon_geojson or "",
-            })
+        regions = [{
+            "id": r.id, "code": r.code, "name": r.name,
+            "display_number": r.display_number or r.id,
+            "main_city": r.main_city or "",
+            "lat": r.marker_latitude or 44.0,
+            "lng": r.marker_longitude or -78.0,
+        } for r in self.sudo().search([("active", "=", True), ("customer_visible", "=", True)])]
 
-        hubs = []
-        for h in Hub.search([("active", "=", True)]):
-            hubs.append({
-                "id": h.id, "name": h.name, "public_name": h.public_name,
-                "lat": h.latitude or 43.649, "lng": h.longitude or -79.659,
-                "is_default": h.is_default,
-            })
+        hubs = [{
+            "id": h.id, "name": h.name, "public_name": h.public_name,
+            "lat": h.latitude or 43.649, "lng": h.longitude or -79.659,
+            "is_default": h.is_default,
+        } for h in Hub.search([("active", "=", True)])]
 
-        lanes = []
-        for l in Lane.search([("active", "=", True)]):
-            lanes.append({
-                "id": l.id, "origin_id": l.origin_region_id.id,
-                "dest_id": l.destination_region_id.id,
-                "direct_allowed": l.direct_allowed,
-                "via_hub_allowed": l.via_hub_allowed,
-                "road_km": l.road_km or 0,
-            })
+        api_key = self.env["ir.config_parameter"].sudo().get_param("google_maps_api_key", "")
+        return {"regions": regions, "hubs": hubs, "google_api_key": api_key or ""}
 
-        services = []
-        for c in Corridor.search([("active", "=", True)]):
-            stops = []
-            for s in c.stop_ids.sorted("sequence"):
-                stops.append({
-                    "region_id": s.region_id.id if s.region_id else None,
-                    "sequence": s.sequence,
-                })
-            services.append({
-                "id": c.id, "name": c.name, "weekday": c.weekday or "",
-                "direction": c.direction, "stops": stops,
-            })
+    @api.model
+    def get_network_destinations(self, origin_model, origin_id, equipment="dry"):
+        """Where We Go — destinations reachable from one pickup (a region or
+        the hub itself). Requires Dispatcher or Logistics Manager group."""
+        _require_dispatch_staff(self.env)
+        if origin_model not in ("logistics.region", "logistics.hub"):
+            return []
+        origin = self.env[origin_model].sudo().browse(int(origin_id))
+        if not origin.exists():
+            return []
 
-        today = date.today()
-        deps = []
-        for d in Departure.search([
-            ("departure_date", ">=", today),
-            ("departure_date", "<=", today + date.resolution * 14),
-            ("active", "=", True), ("status", "=", "scheduled"),
-        ], order="departure_date", limit=60):
-            deps.append({
-                "id": d.id, "date": str(d.departure_date),
-                "corridor_id": d.corridor_id.id,
-                "vehicle": d.vehicle_id.name or "",
-            })
-
-        return {"regions": regions, "hubs": hubs, "lanes": lanes,
-                "services": services, "departures": deps}
+        from ..services.network_availability_service import NetworkAvailabilityService
+        return NetworkAvailabilityService(self.env).list_destinations_from(origin, equipment=equipment)
 
     def name_get(self):
         return [(r.id, f"{r.code} - {r.name}") for r in self]

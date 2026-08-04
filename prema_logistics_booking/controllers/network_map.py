@@ -1,6 +1,14 @@
 """Network Map and Price Matrix — owner-friendly pricing visualization."""
 from odoo import http
 from odoo.http import request
+from werkzeug.exceptions import Forbidden
+
+
+def _require_dispatch_staff():
+    user = request.env.user
+    if not user.has_group("prema_dispatch.group_dispatcher") and \
+       not user.has_group("prema_dispatch.group_dispatch_manager"):
+        raise Forbidden()
 
 
 class LogisticsNetworkMap(http.Controller):
@@ -31,6 +39,7 @@ class LogisticsNetworkMap(http.Controller):
 
     @http.route("/logistics/price-matrix", type="http", auth="user", website=False)
     def price_matrix(self, **kwargs):
+        _require_dispatch_staff()
         Region = request.env["logistics.region"].sudo()
         Lane = request.env["logistics.lane"].sudo()
         RatePlan = request.env["logistics.rate.plan"].sudo()
