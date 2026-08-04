@@ -1,6 +1,22 @@
 <?xml version="1.0" encoding="utf-8"?>
 <odoo>
 
+<!-- ====================================================================
+     Portal Dashboard — "Request a Quote" card for beta-testers only
+     ==================================================================== -->
+<template id="portal_my_home_booking_card"
+          name="Portal My Home: Request a Quote card"
+          inherit_id="portal.portal_my_home">
+    <xpath expr="//div[@id='portal_common_category']" position="inside">
+        <t t-if="user.has_group('prema_logistics_booking.group_booking_beta_tester')"
+           t-call="portal.portal_docs_entry">
+            <t t-set="title">Request a Quote</t>
+            <t t-set="text">Book LTL/FTL shipments online</t>
+            <t t-set="url" t-value="'/request-a-quote'"/>
+        </t>
+    </xpath>
+</template>
+
 <template id="portal_landing_anonymous" name="Booking Landing (Anonymous)">
     <t t-call="website.layout">
         <div class="container o_page_container py-5">
