@@ -41,7 +41,7 @@
 <div class="dm-wrap">
 
 <h1 class="dm-title">Prema Dispatch — User Manual</h1>
-<p class="dm-subtitle">Version 4.0 - Updated August 2026 - PremaFirm Logistics</p>
+<p class="dm-subtitle">Version 4.1 - Updated August 2026 - PremaFirm Logistics</p>
 
 <div class="dm-toc">
     <h2>Table of Contents</h2>
@@ -52,6 +52,7 @@
         <li><a href="#locations">Saved Locations</a></li>
         <li><a href="#geography">Geography: FSAs, Regions, Cities</a></li>
         <li><a href="#network">Network: Corridors &amp; Departures</a></li>
+        <li><a href="#network-map">Network Availability Map</a></li>
         <li><a href="#pricing">Pricing: Rate Plans &amp; Lanes</a></li>
         <li><a href="#booking-flows">Booking Flows (All 7 Channels)</a></li>
         <li><a href="#portal">Portal Booking</a></li>
@@ -205,6 +206,36 @@
         <tr><td>Saturday</td><td>No default operation</td><td>Carryover only</td></tr>
         <tr><td>Sunday</td><td>No default operation</td><td>—</td></tr>
     </table>
+</div>
+
+<!-- ================================================================ -->
+<div class="dm-section" id="network-map">
+    <h2>6b. Network Availability Map</h2>
+    <p>Navigate: <b>Network → Network Availability Map</b></p>
+    <h3>What It Shows</h3>
+    <p>The Network Availability Map gives you a <b>real-time visual overview</b> of corridor capacity across the entire Ontario–Quebec network. It replaces the previous "Where We Go" tool with a more powerful, data-driven availability engine.</p>
+    <ul>
+        <li><b>Corridor-level status:</b> Each corridor/departure shows remaining pallet capacity and weight headroom</li>
+        <li><b>Region-to-region lookup:</b> Select any origin/destination region pair to see available departures</li>
+        <li><b>Temperature filtering:</b> Filter by Dry or Reefer capability per departure</li>
+        <li><b>Date range:</b> View availability across the departure horizon (up to 12 weeks)</li>
+    </ul>
+    <h3>Capacity Status Labels</h3>
+    <table class="dm-table">
+        <tr><th>Label</th><th>Meaning</th><th>Action</th></tr>
+        <tr><td><b>AVAILABLE</b></td><td>Plenty of space (≥ 4 pallets remaining)</td><td>Book normally</td></tr>
+        <tr><td><b>LIMITED SPACE</b></td><td>1–3 pallets remaining</td><td>Book soon — space running out</td></tr>
+        <tr><td><b>SOLD OUT</b></td><td>No space remaining</td><td>Try next departure or offer custom quote</td></tr>
+    </table>
+    <h3>Availability Engine</h3>
+    <p>The <code>NetworkAvailabilityService</code> queries real corridor/departure data including:</p>
+    <ul>
+        <li>Reserved pallets per departure (live booking data)</li>
+        <li>Vehicle capacity (assigned truck's layout — straight/pinwheel)</li>
+        <li>Temperature compatibility (Dry vs Reefer vehicle assignment)</li>
+        <li>Corridor stop sequences and region coverage</li>
+    </ul>
+    <div class="dm-info"><b>Pro tip:</b> Use the Network Availability Map before making phone bookings — it shows you at a glance which departures still have space, so you can set accurate customer expectations for pickup/delivery dates.</div>
 </div>
 
 <!-- ================================================================ -->
