@@ -640,7 +640,11 @@ class LogisticsBooking(models.Model):
         # ── Create dispatch items: shared pallet or dedicated ──
         Alloc = self.env["prema.dispatch.pallet.stop.allocation"].sudo()
         physical_count = self.physical_pallets or self.pallets
-        delivery_stops = self.stop_ids.filtered(lambda s: s.stop_type == "delivery").sorted("sequence")
+        # Use search() to avoid One2many cache staleness after stop creation
+        BStop = self.env["logistics.booking.stop"].sudo()
+        delivery_stops = BStop.search([
+            ("booking_id", "=", self.id), ("stop_type", "=", "delivery"),
+        ], order="sequence")
 
         if self.shared_pallet_mode and delivery_stops:
             # Shared pallet: ONE item per physical pallet, allocated to all delivery stops
@@ -744,8 +748,10 @@ class LogisticsBooking(models.Model):
                 sequence += 1
 
         if not jobs:
-            pickups = self.stop_ids.filtered(lambda stop: stop.stop_type == "pickup").sorted("sequence")
-            deliveries = self.stop_ids.filtered(lambda stop: stop.stop_type == "delivery").sorted("sequence")
+            # Use search() to avoid One2many cache staleness
+            BStop = self.env["logistics.booking.stop"].sudo()
+            pickups = BStop.search([("booking_id", "=", self.id), ("stop_type", "=", "pickup")], order="sequence")
+            deliveries = BStop.search([("booking_id", "=", self.id), ("stop_type", "=", "delivery")], order="sequence")
             operation_date = self.pickup_date or fields.Date.context_today(self)
             jobs |= self._create_dispatch_operation(
                 False, "custom", operation_date,

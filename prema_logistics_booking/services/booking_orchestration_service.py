@@ -697,6 +697,9 @@ class BookingOrchestrationService:
                 self._create_booking_stops(
                     booking, normalized_request.pickup_stops, normalized_request.delivery_stops,
                 )
+                # Invalidate One2many cache so downstream methods (leg creation,
+                # dispatch job, tax, invoice description) see the new stops.
+                booking.invalidate_recordset(['stop_ids'])
 
                 # Create booking lines
                 self._create_booking_lines(booking, normalized_request)
@@ -1075,8 +1078,15 @@ class BookingOrchestrationService:
                     "changed. Please get a new price."
                 ))
 
-        pickup_stop = booking.stop_ids.filtered(lambda s: s.stop_type == "pickup").sorted("sequence")[:1]
-        delivery_stop = booking.stop_ids.filtered(lambda s: s.stop_type == "delivery").sorted("sequence")[:1]
+        # Use search() instead of booking.stop_ids One2many to avoid ORM
+        # cache staleness: _create_booking_stops ran in the same transaction
+        # but the One2many field may not reflect newly-created records yet.
+        pickup_stop = Stop.search([
+            ("booking_id", "=", booking.id), ("stop_type", "=", "pickup"),
+        ], order="sequence", limit=1)
+        delivery_stop = Stop.search([
+            ("booking_id", "=", booking.id), ("stop_type", "=", "delivery"),
+        ], order="sequence", limit=1)
         if not pickup_stop or not delivery_stop:
             raise UserError(_(
                 "Cannot confirm booking %s: real pickup/delivery stops are missing."
