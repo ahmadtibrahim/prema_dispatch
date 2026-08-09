@@ -234,45 +234,69 @@ class LogisticsBooking(models.Model):
 
     def _build_confirm_delivery_stops(self, session, address_vals):
         """Build delivery_stops list for confirm_from_session, supporting
-        multi-stop with per-stop pallets and shared-pallet mode."""
+        multi-stop with per-stop pallets and shared-pallet mode.
+
+        CRITICAL: logistics.booking.stop.saved_location_id points to
+        prema.dispatch.location (the master facility), NOT to
+        logistics.saved.location. We resolve dispatch_location_id from the
+        saved location and snapshot the address/contact data at confirm time.
+        """
         stops_data = address_vals.get("delivery_stops_data") or []
         if stops_data:
-            # Multi-stop: use per-stop data from UAT-011
             stops = []
             for sd in stops_data:
                 sl = self.env["logistics.saved.location"].browse(sd.get("saved_location_id") or 0)
                 session_stop = session.delivery_stop_ids.filtered(
                     lambda s, seq=sd.get("sequence", 0): s.sequence == seq
                 )[:1]
+                # Resolve the master dispatch location from the customer saved location
+                dispatch_loc_id = sl.dispatch_location_id.id if sl and sl.dispatch_location_id else None
                 stops.append({
                     "company_name": sl.business_name or sl.name if sl else "",
                     "street": sl.street if sl else "",
-                    "formatted_address": sl.street if sl else "",
+                    "city": sl.city if sl else "",
+                    "province_state": sl.state_id.code if sl and sl.state_id else "",
                     "postal_code": sl.postal_code if sl else "",
-                    "contact_name": sd.get("contact_name") or "",
-                    "phone": sd.get("phone") or "",
-                    "instructions": sd.get("instructions") or "",
+                    "formatted_address": sl.street if sl else "",
+                    "latitude": sl.latitude if sl else 0.0,
+                    "longitude": sl.longitude if sl else 0.0,
+                    "google_place_id": sl.google_place_id if sl else "",
+                    "contact_name": sd.get("contact_name") or (sl.contact_name if sl else ""),
+                    "phone": sd.get("phone") or (sl.contact_phone if sl else ""),
+                    "instructions": sd.get("instructions") or (sl.delivery_instructions if sl else ""),
+                    "dock_available": bool(sl.dock_info) if sl else False,
                     "pallet_count": session_stop.pallets if session_stop else 1,
                     "weight_lb": session_stop.weight_lbs if session_stop else 500,
-                    "liftgate_required": session.liftgate_delivery,
-                    "saved_location_id": sd.get("saved_location_id") or None,
+                    "liftgate_required": session.liftgate_delivery or (sl.liftgate_required if sl else False),
+                    # CRITICAL: saved_location_id = prema.dispatch.location (master facility)
+                    "saved_location_id": dispatch_loc_id,
+                    # logistics_saved_location_id = logistics.saved.location (customer profile)
+                    "logistics_saved_location_id": sl.id if sl else None,
                     "shared_pallet": bool(session_stop.shared_pallet) if session_stop else False,
                 })
             return stops
         # Single-stop fallback
         de_loc = session.delivery_saved_location_id
+        dispatch_loc_id = de_loc.dispatch_location_id.id if de_loc and de_loc.dispatch_location_id else None
         return [{
-            "company_name": address_vals.get("delivery_company") or "",
-            "street": address_vals.get("delivery_address") or "",
-            "formatted_address": address_vals.get("delivery_address") or "",
-            "postal_code": address_vals.get("delivery_postal_code") or "",
-            "contact_name": address_vals.get("delivery_contact_name") or "",
-            "phone": address_vals.get("delivery_phone") or "",
-            "instructions": address_vals.get("delivery_instructions") or "",
+            "company_name": de_loc.business_name or de_loc.name if de_loc else "",
+            "street": de_loc.street if de_loc else "",
+            "city": de_loc.city if de_loc else "",
+            "province_state": de_loc.state_id.code if de_loc and de_loc.state_id else "",
+            "postal_code": de_loc.postal_code if de_loc else "",
+            "formatted_address": de_loc.street if de_loc else "",
+            "latitude": de_loc.latitude if de_loc else 0.0,
+            "longitude": de_loc.longitude if de_loc else 0.0,
+            "google_place_id": de_loc.google_place_id if de_loc else "",
+            "contact_name": address_vals.get("delivery_contact_name") or (de_loc.contact_name if de_loc else ""),
+            "phone": address_vals.get("delivery_phone") or (de_loc.contact_phone if de_loc else ""),
+            "instructions": address_vals.get("delivery_instructions") or (de_loc.delivery_instructions if de_loc else ""),
+            "dock_available": bool(de_loc.dock_info) if de_loc else False,
             "pallet_count": session.physical_pallets or session.pallets,
             "weight_lb": session.weight_lbs,
-            "liftgate_required": session.liftgate_delivery,
-            "saved_location_id": de_loc.id if de_loc else None,
+            "liftgate_required": session.liftgate_delivery or (de_loc.liftgate_required if de_loc else False),
+            "saved_location_id": dispatch_loc_id,
+            "logistics_saved_location_id": de_loc.id if de_loc else None,
             "shared_pallet": False,
         }]
 
@@ -329,20 +353,30 @@ class LogisticsBooking(models.Model):
         from ..services.booking_orchestration_service import BookingOrchestrationService
 
         svc = BookingOrchestrationService(self.env)
+        pu_loc = session.pickup_saved_location_id
+        pu_dispatch_id = pu_loc.dispatch_location_id.id if pu_loc and pu_loc.dispatch_location_id else None
         normalized = svc.normalize_request({
             "partner_id": user_partner.id,
             "pickup_stops": [{
-                "company_name": address_vals.get("pickup_company") or "",
-                "street": address_vals.get("pickup_address") or "",
-                "formatted_address": address_vals.get("pickup_address") or "",
-                "postal_code": address_vals.get("pickup_postal_code") or "",
-                "contact_name": address_vals.get("pickup_contact_name") or "",
-                "phone": address_vals.get("pickup_phone") or "",
-                "instructions": address_vals.get("pickup_instructions") or "",
+                "company_name": pu_loc.business_name or pu_loc.name if pu_loc else "",
+                "street": pu_loc.street if pu_loc else "",
+                "city": pu_loc.city if pu_loc else "",
+                "province_state": pu_loc.state_id.code if pu_loc and pu_loc.state_id else "",
+                "postal_code": pu_loc.postal_code if pu_loc else address_vals.get("pickup_postal_code") or "",
+                "formatted_address": pu_loc.street if pu_loc else address_vals.get("pickup_address") or "",
+                "latitude": pu_loc.latitude if pu_loc else 0.0,
+                "longitude": pu_loc.longitude if pu_loc else 0.0,
+                "google_place_id": pu_loc.google_place_id if pu_loc else "",
+                "contact_name": address_vals.get("pickup_contact_name") or (pu_loc.contact_name if pu_loc else ""),
+                "phone": address_vals.get("pickup_phone") or (pu_loc.contact_phone if pu_loc else ""),
+                "instructions": address_vals.get("pickup_instructions") or (pu_loc.pickup_instructions if pu_loc else ""),
                 "pallet_count": session.physical_pallets or session.pallets,
                 "weight_lb": session.weight_lbs,
-                "liftgate_required": session.liftgate_pickup,
-                "saved_location_id": session.pickup_saved_location_id.id if session.pickup_saved_location_id else None,
+                "liftgate_required": session.liftgate_pickup or (pu_loc.liftgate_required if pu_loc else False),
+                # CRITICAL: saved_location_id = prema.dispatch.location (master facility)
+                "saved_location_id": pu_dispatch_id,
+                # logistics_saved_location_id = logistics.saved.location (customer profile)
+                "logistics_saved_location_id": pu_loc.id if pu_loc else None,
             }],
             "delivery_stops": self._build_confirm_delivery_stops(session, address_vals),
             "load_type": session.shipment_type,
