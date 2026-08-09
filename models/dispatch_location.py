@@ -107,6 +107,12 @@ class PremaDispatchLocation(models.Model):
     )
 
     active = fields.Boolean(default=True)
+    portal_reusable = fields.Boolean(
+        string="Portal Reusable", default=False,
+        help="When enabled, this location appears in portal Saved Location "
+             "autocomplete for all authenticated customers. Use for shared "
+             "facilities (chain stores, public warehouses, cross-docks).",
+    )
 
     location_type = fields.Selection([
         ("warehouse",  "Warehouse"),
@@ -118,6 +124,17 @@ class PremaDispatchLocation(models.Model):
         ("hotel_motel", "Motels / Hotels"),
         ("other",      "Other"),
     ], string="Location Type", default="customer")
+
+    stop_type = fields.Selection([
+        ("pickup", "Pickup"),
+        ("delivery", "Delivery"),
+        ("both", "Pickup & Delivery"),
+    ], string="Stop Type", default="delivery", index=True,
+       help="How Prema Dispatch is allowed to use this location: pickup only, "
+            "delivery only, or both. Editable by authorized staff. This controls "
+            "which booking selectors this location appears in — NOT the computed "
+            "historical usage.")
+
     allow_cross_dock = fields.Boolean(
         string="Allow Cross-Dock",
         help="This location can be used to temporarily transfer freight between loads "
@@ -125,6 +142,16 @@ class PremaDispatchLocation(models.Model):
              "for it later) — a property of a location, not a separate Location Type. "
              "A Warehouse most commonly allows this, but any location type can.",
     )
+
+    usage_type = fields.Selection([
+        ("pickup", "Pickup"),
+        ("delivery", "Delivery"),
+        ("both", "Both"),
+        ("unknown", "Unknown"),
+    ], string="Historical Usage", compute="_compute_usage_type", store=True, index=True,
+       help="Whether this location is used for pickups, deliveries, or both — "
+            "computed from the stop history so dispatchers and drivers can see "
+            "at a glance what kind of stop to expect here.")
 
     # ── Duplicate detection ──
     duplicate_status = fields.Selection([
@@ -737,6 +764,11 @@ class PremaDispatchLocation(models.Model):
         # Merge location_type: duplicate's type wins if primary is default "customer"
         if primary.location_type == "customer" and self.location_type and self.location_type != "customer":
             primary_updates["location_type"] = self.location_type
+        # Merge stop_type: "both" is most permissive, duplicate's type wins if broader
+        if self.stop_type == "both" and primary.stop_type != "both":
+            primary_updates["stop_type"] = "both"
+        elif self.stop_type != "delivery" and primary.stop_type == "delivery":
+            primary_updates["stop_type"] = self.stop_type
         if not primary.allow_cross_dock and self.allow_cross_dock:
             primary_updates["allow_cross_dock"] = True
 
@@ -864,6 +896,8 @@ class PremaDispatchLocation(models.Model):
             "chain_name": self.chain_name or "", "location_number": self.location_number or "",
             "business_name": self.business_name or "", "address": self.address or "",
             "city": self.city or "", "postal_code": self.postal_code or "", "location_type": self.location_type or "",
+            "stop_type": self.stop_type or "delivery",
+            "usage_type": self.usage_type or "unknown",
             "dock_door": self.dock_door or "", "pin_lat": self.pin_lat, "pin_lng": self.pin_lng,
             "pin_source": self.pin_source or "", "exact_pin_available": bool(self.pin_set),
             "verification_state": self.verification_state or "",
@@ -902,18 +936,46 @@ class PremaDispatchLocation(models.Model):
         sliced = results[offset:offset + limit]
         return {"success": True, "results": [r._driver_payload() for r in sliced], "limit": limit, "offset": offset}
 
+    @api.depends("stop_ids.stop_type")
+    def _compute_usage_type(self):
+        """Compute whether this location is used for pickups, deliveries, or both.
+
+        Based on the stop_type of all linked stops:
+        - pickup / cross_dock_pickup → counts as pickup
+        - dropoff / return / cross_dock_drop / transfer → counts as delivery
+        """
+        PICKUP_TYPES = {"pickup", "cross_dock_pickup"}
+        DELIVERY_TYPES = {"dropoff", "return", "cross_dock_drop", "transfer"}
+        for loc in self:
+            types = set()
+            for stop in loc.stop_ids:
+                if stop.stop_type in PICKUP_TYPES:
+                    types.add("pickup")
+                elif stop.stop_type in DELIVERY_TYPES:
+                    types.add("delivery")
+            if "pickup" in types and "delivery" in types:
+                loc.usage_type = "both"
+            elif "pickup" in types:
+                loc.usage_type = "pickup"
+            elif "delivery" in types:
+                loc.usage_type = "delivery"
+            else:
+                loc.usage_type = "unknown"
+
     @api.depends("stop_ids")
     def _compute_stop_count(self):
         for loc in self:
             loc.stop_count = len(loc.stop_ids)
 
     def name_get(self):
-        """Show the real saved-location business name in stop/company pickers,
-        falling back to the internal location name or address when needed."""
+        """Show the smart display label (Business — City) everywhere this
+        location is referenced — form title, list view, stop pickers, etc.
+
+        Falls back through: display_label → business_name → name → address."""
         return [
             (
                 rec.id,
-                rec.business_name or rec.name or rec.address or "",
+                rec.location_display_label or rec.business_name or rec.name or rec.address or "",
             )
             for rec in self
         ]

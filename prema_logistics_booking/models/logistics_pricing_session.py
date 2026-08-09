@@ -36,12 +36,35 @@ class LogisticsPricingSession(models.TransientModel):
         help="Numeric required temperature for Reefer quotes. 0.0 is a valid value.",
     )
     pallets = fields.Integer(required=True)
+    physical_pallets = fields.Integer(
+        string="Physical Pallets", default=1, required=True,
+        help="Actual physical handling units on the truck. May differ from "
+             "pallets (sum of per-stop) when pallets are shared across stops.",
+    )
+    shared_pallet_mode = fields.Boolean(
+        string="Shared Pallet Mode", default=False,
+        help="True when one or more physical pallets are shared across multiple delivery stops.",
+    )
     weight_lbs = fields.Float(required=True)
     liftgate_pickup = fields.Boolean()
     liftgate_delivery = fields.Boolean()
     appointment = fields.Boolean()
     residential = fields.Boolean()
     same_day_requested = fields.Boolean()
+
+    pickup_saved_location_id = fields.Many2one(
+        "logistics.saved.location", string="Pickup Saved Location",
+        help="Frozen from Step 1 selection — used for Step 3 display.",
+    )
+    delivery_saved_location_id = fields.Many2one(
+        "logistics.saved.location", string="Delivery Saved Location",
+        help="Frozen from Step 1 selection — used for Step 3 display.",
+    )
+
+    delivery_stop_ids = fields.One2many(
+        "logistics.pricing.session.stop", "session_id",
+        string="Delivery Stops",
+    )
 
     pickup_date = fields.Date()
     delivery_date_estimate = fields.Date()

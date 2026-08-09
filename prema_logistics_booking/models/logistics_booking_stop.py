@@ -13,6 +13,12 @@ class LogisticsBookingStop(models.Model):
 
     # Saved location (reuse existing dispatch.location)
     saved_location_id = fields.Many2one("prema.dispatch.location", string="Saved Location", index=True, ondelete="set null")
+    # New customer Saved Location (commercial layer)
+    logistics_saved_location_id = fields.Many2one(
+        "logistics.saved.location", string="Customer Saved Location",
+        index=True, ondelete="set null",
+        help="Customer-facing saved location reference.",
+    )
 
     # Identity
     company_name = fields.Char()

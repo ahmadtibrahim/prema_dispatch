@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+<!-- ====================================================================
+     Portal — Book Shipment
+     Built behind portal_enabled=False gate.
+     ==================================================================== -->
+
+<template id="portal_my_bookings_list" name="Portal: My Bookings List">
+    <t t-call="portal.portal_layout">
+        <t t-set="title">My Bookings</t>
+        <div class="container">
+            <div class="d-flex justify-content-between align-items-center mb-4">
+                <h3 class="mb-0">My Bookings</h3>
+                <a href="/my/bookings/new" class="btn btn-primary">Book Shipment</a>
+            </div>
+            <div t-if="bookings" class="table-responsive">
+                <table class="table table-hover">
+                    <thead>
+                        <tr>
+                            <th>Booking #</th>
+                            <th>Date</th>
+                            <th>Pickup</th>
+                            <th>Delivery</th>
+                            <th>Status</th>
+                            <th>Total</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <t t-foreach="bookings" t-as="b">
+                            <tr>
+                                <td><a t-attf-href="/my/bookings/{{b.id}}"><t t-esc="b.name or 'BKG-%d' % b.id"/></a></td>
+                                <td t-esc="b.create_date.strftime('%Y-%m-%d') if b.create_date else ''"/>
+                                <td t-esc="b.pickup_city or ''"/>
+                                <td t-esc="b.delivery_city or ''"/>
+                                <td><span class="badge bg-primary" t-esc="b.state or 'draft'"/></td>
+                                <td t-esc="'$%.2f' % (b.calculated_price or 0) if b.calculated_price else '—'"/>
+                            </tr>
+                        </t>
+                    </tbody>
+                </table>
+            </div>
+            <div t-if="not bookings" class="text-center py-5">
+                <p class="text-muted">No bookings yet.</p>
+                <a href="/my/bookings/new" class="btn btn-primary">Book Your First Shipment</a>
+            </div>
+        </div>
+    </t>
+</template>
+
+<template id="portal_booking_detail" name="Portal: Booking Detail">
+    <t t-call="portal.portal_layout">
+        <t t-set="title">Booking #<t t-esc="booking.name or 'BKG-%d' % booking.id"/></t>
+        <div class="container">
+            <div class="row mb-4">
+                <div class="col-md-6">
+                    <div class="card">
+                        <div class="card-header"><strong>Pickup</strong></div>
+                        <div class="card-body">
+                            <p t-esc="booking.pickup_address or '—'"/>
+                            <small class="text-muted" t-esc="booking.pickup_region or ''"/>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-6">
+                    <div class="card">
+                        <div class="card-header"><strong>Delivery</strong></div>
+                        <div class="card-body">
+                            <p t-esc="booking.delivery_address or '—'"/>
+                            <small class="text-muted" t-esc="booking.delivery_region or ''"/>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="card mb-4">
+                <div class="card-header"><strong>Shipment Details</strong></div>
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col-md-3"><strong>Status:</strong> <span class="badge bg-primary" t-esc="booking.state or 'draft'"/></div>
+                        <div class="col-md-3"><strong>Pallets:</strong> <t t-esc="booking.total_pallets or 0"/></div>
+                        <div class="col-md-3"><strong>Weight:</strong> <t t-esc="'%d lbs' % (booking.total_weight_lbs or 0)"/></div>
+                        <div class="col-md-3"><strong>Total:</strong> <t t-esc="'$%.2f' % (booking.calculated_price or 0)"/></div>
+                    </div>
+                </div>
+            </div>
+            <div t-if="booking.routing_summary" class="card mb-4">
+                <div class="card-header"><strong>Routing</strong></div>
+                <div class="card-body">
+                    <p t-esc="booking.routing_summary"/>
+                    <small class="text-muted">Estimated delivery: <t t-esc="booking.estimated_delivery or 'Pending confirmation'"/></small>
+                </div>
+            </div>
+        </div>
+    </t>
+</template>
+
+</odoo>

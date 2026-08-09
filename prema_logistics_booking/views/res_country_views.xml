@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- Country form: add logistics network toggle -->
+    <record id="view_country_form_inherit_logistics" model="ir.ui.view">
+        <field name="name">res.country.form.inherit.logistics</field>
+        <field name="model">res.country</field>
+        <field name="inherit_id" ref="base.view_country_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//group[1]" position="inside">
+                <field name="logistics_network_enabled"
+                       widget="boolean_toggle"
+                       help="Enable/disable this country for new Prema Logistics operations."/>
+            </xpath>
+        </field>
+    </record>
+
+    <!-- State form: add logistics network toggle -->
+    <record id="view_country_state_form_inherit_logistics" model="ir.ui.view">
+        <field name="name">res.country.state.form.inherit.logistics</field>
+        <field name="model">res.country.state</field>
+        <field name="inherit_id" ref="base.view_country_state_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//group[1]" position="inside">
+                <field name="logistics_network_enabled"
+                       widget="boolean_toggle"
+                       help="Enable/disable this province/state for new Prema Logistics operations."/>
+            </xpath>
+        </field>
+    </record>
+</odoo>

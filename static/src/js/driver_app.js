@@ -1698,10 +1698,23 @@ function pickupScheduleLocationSearch(){
 
 function pickupSearchResultsHtml(flow){
     const hasQuery=(flow.searchQuery||"").trim().length >= 2;
+    const stopTypeBadge=(st)=>{
+        if(st==="pickup") return '<span class="da-stoptype-badge da-stoptype-pickup">Pickup</span>';
+        if(st==="delivery") return '<span class="da-stoptype-badge da-stoptype-delivery">Delivery</span>';
+        if(st==="both") return '<span class="da-stoptype-badge da-stoptype-both">Pickup &amp; Delivery</span>';
+        return '<span class="da-stoptype-badge da-stoptype-unknown">—</span>';
+    };
+    const histUsageBadge=(ut)=>{
+        if(ut==="pickup") return '<span class="da-usage-badge da-usage-pickup">Hist: 📦 Pickup</span>';
+        if(ut==="delivery") return '<span class="da-usage-badge da-usage-delivery">Hist: 📬 Delivery</span>';
+        if(ut==="both") return '<span class="da-usage-badge da-usage-both">Hist: ↔ Both</span>';
+        return "";
+    };
     const resultsHtml=(flow.searchResults||[]).map(loc=>`
         <div class="da-stop-mini">
             <div class="da-stop-mini-title">${esc(loc.display_label||loc.business_name||loc.address)}</div>
             <div class="da-stop-mini-sub">${esc(loc.address||"")}</div>
+            <div class="da-stoptype-row">${stopTypeBadge(loc.stop_type)} ${histUsageBadge(loc.usage_type)}</div>
             <div class="da-pickup-row" style="margin-top:8px">
                 <button class="da-btn da-btn-primary da-btn-sm" type="button" data-action="pickup-add-saved-stop" data-location-id="${loc.id}">Add Stop</button>
             </div>

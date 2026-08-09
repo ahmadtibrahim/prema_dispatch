@@ -1,0 +1,134 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- List View -->
+    <record id="view_logistics_direct_delivery_rule_list" model="ir.ui.view">
+        <field name="name">logistics.direct.delivery.rule.list</field>
+        <field name="model">logistics.direct.delivery.rule</field>
+        <field name="arch" type="xml">
+            <list>
+                <field name="name"/>
+                <field name="origin_region_id"/>
+                <field name="destination_region_id"/>
+                <field name="applicable_corridor_id"/>
+                <field name="allowed_service_days"/>
+                <field name="direct_same_day_allowed"/>
+                <field name="hub_transfer_required"/>
+                <field name="max_direct_distance_km"/>
+                <field name="active"/>
+            </list>
+        </field>
+    </record>
+
+    <!-- Form View -->
+    <record id="view_logistics_direct_delivery_rule_form" model="ir.ui.view">
+        <field name="name">logistics.direct.delivery.rule.form</field>
+        <field name="model">logistics.direct.delivery.rule</field>
+        <field name="arch" type="xml">
+            <form>
+                <sheet>
+                    <div class="alert alert-info" role="alert"
+                         invisible="direct_same_day_allowed != True or hub_transfer_required != False">
+                        DIRECT: Freight may move directly from origin to destination
+                        on the same day without Hub transfer.
+                    </div>
+                    <div class="alert alert-warning" role="alert"
+                         invisible="direct_same_day_allowed != False or hub_transfer_required != True">
+                        HUB TRANSFER: Freight must route through the Hub.
+                    </div>
+                    <group>
+                        <group string="Geography">
+                            <field name="origin_region_id"/>
+                            <field name="destination_region_id"/>
+                            <field name="direction"/>
+                        </group>
+                        <group string="Routing">
+                            <field name="direct_same_day_allowed" widget="boolean_toggle"/>
+                            <field name="hub_transfer_required" widget="boolean_toggle"/>
+                            <field name="applicable_corridor_id"/>
+                            <field name="allowed_service_days"
+                                   placeholder="monday,thursday"/>
+                            <field name="active"/>
+                        </group>
+                    </group>
+                    <group string="Operational Limits">
+                        <field name="max_direct_distance_km"/>
+                        <field name="earliest_pickup_time"/>
+                        <field name="latest_pickup_time"/>
+                        <field name="latest_delivery_time"/>
+                        <field name="operational_notes"/>
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <!-- Search View -->
+    <record id="view_logistics_direct_delivery_rule_search" model="ir.ui.view">
+        <field name="name">logistics.direct.delivery.rule.search</field>
+        <field name="model">logistics.direct.delivery.rule</field>
+        <field name="arch" type="xml">
+            <search>
+                <field name="name"/>
+                <field name="origin_region_id"/>
+                <field name="destination_region_id"/>
+                <filter name="direct" string="Direct Allowed"
+                        domain="[('direct_same_day_allowed','=',True)]"/>
+                <filter name="hub" string="Hub Transfer"
+                        domain="[('hub_transfer_required','=',True)]"/>
+            </search>
+        </field>
+    </record>
+
+    <!-- Action -->
+    <record id="action_logistics_direct_delivery_rule" model="ir.actions.act_window">
+        <field name="name">Direct Delivery Rules</field>
+        <field name="res_model">logistics.direct.delivery.rule</field>
+        <field name="view_mode">list,form</field>
+    </record>
+
+    <!-- Menu -->
+    <menuitem id="menu_direct_delivery_rules"
+              name="Direct Delivery Rules"
+              parent="prema_logistics_booking.menu_v4_bookings"
+              action="action_logistics_direct_delivery_rule"
+              sequence="26"/>
+
+    <!-- Test Routing Decision Wizard -->
+    <record id="view_test_routing_decision_form" model="ir.ui.view">
+        <field name="name">test.routing.decision.form</field>
+        <field name="model">logistics.test.routing.decision</field>
+        <field name="arch" type="xml">
+            <form>
+                <group>
+                    <group string="Regions">
+                        <field name="origin_region_id"/>
+                        <field name="destination_region_id"/>
+                    </group>
+                    <group string="Shipment">
+                        <field name="pickup_day"/>
+                        <field name="pickup_time"/>
+                        <field name="road_distance_km"/>
+                    </group>
+                </group>
+                <group string="Result" invisible="decision == False">
+                    <field name="decision" readonly="1"/>
+                    <field name="reason_text" readonly="1"/>
+                    <field name="reason_code" readonly="1"/>
+                    <field name="direct_allowed" readonly="1"/>
+                    <field name="hub_transfer_required" readonly="1"/>
+                </group>
+                <footer>
+                    <button name="action_test" string="Test Decision" type="object" class="btn-primary"/>
+                    <button string="Cancel" class="btn-secondary" special="cancel"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+
+    <record id="action_test_routing_decision" model="ir.actions.act_window">
+        <field name="name">Test Routing Decision</field>
+        <field name="res_model">logistics.test.routing.decision</field>
+        <field name="view_mode">form</field>
+        <field name="target">new</field>
+    </record>
+</odoo>

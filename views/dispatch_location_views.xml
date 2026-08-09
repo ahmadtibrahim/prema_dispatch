@@ -69,6 +69,10 @@
                             <field name="country_id" invisible="1"/>
                             <field name="partner_id" string="Customer / Warehouse"/>
                             <field name="location_type"/>
+                            <field name="stop_type"/>
+                            <field name="usage_type" widget="badge" decoration-success="usage_type == 'both'" decoration-info="usage_type == 'pickup'" decoration-warning="usage_type == 'delivery'" decoration-muted="usage_type == 'unknown'"/>
+                            <field name="portal_reusable" widget="boolean_toggle"
+                                   help="When enabled, this location appears in portal Saved Location autocomplete for all authenticated customers. Use for shared facilities (chain stores, public warehouses, cross-docks)."/>
                             <field name="allow_cross_dock" widget="boolean_toggle"/>
                             <field name="dock_door" placeholder="e.g. Door 7, Bay 3"/>
                             <field name="google_place_id" invisible="1"/>
@@ -97,13 +101,13 @@
                             <field name="trailer_53ft_accessible" widget="boolean_toggle"/>
                         </group>
                     </group>
-                    <group string="Driver Instructions">
+                    <group string="Parking / Entrance Notes">
                         <field name="parking_notes" placeholder="Entrance side, gate code, dock instructions…"
                                nolabel="1" colspan="2"/>
                     </group>
-                    <group string="Structured Driver Guidance">
+                    <group string="Driver Instructions">
                         <field name="driver_instructions" nolabel="1" colspan="2"
-                               placeholder="Turn-by-turn / arrival guidance for drivers…"/>
+                               placeholder="Receiving entrance, parking, gate procedure, call-before-arrival, dock info, special access, delivery/pickup notes…"/>
                     </group>
                     <group string="Security Notes">
                         <field name="security_notes" nolabel="1" colspan="2"/>
@@ -199,7 +203,10 @@
                 <field name="address"/>
                 <field name="partner_id" string="Customer"/>
                 <field name="location_type" string="Type"/>
+                <field name="stop_type" string="Stop Type"/>
+                <field name="usage_type" string="Historical Usage" decoration-success="usage_type == 'both'" decoration-info="usage_type == 'pickup'" decoration-warning="usage_type == 'delivery'" decoration-muted="usage_type == 'unknown'"/>
                 <field name="allow_cross_dock" string="Cross-Dock"/>
+                <field name="portal_reusable" string="Portal Reusable"/>
                 <field name="dock_door" string="Door"/>
                 <field name="google_verified" string="Google Verified"/>
                 <field name="duplicate_status" string="Possible Duplicate"/>
@@ -257,6 +264,27 @@
 
                 <separator/>
 
+                <!-- Portal Reusable (UAT-003) -->
+                <filter name="portal_reusable_filter" string="Portal Reusable"
+                        domain="[('portal_reusable','=',True)]"/>
+
+                <separator/>
+
+                <!-- Stop Type filters (editable, controls booking eligibility) -->
+                <filter name="stop_type_pickup" string="Stop: Pickup" domain="[('stop_type','=','pickup')]"/>
+                <filter name="stop_type_delivery" string="Stop: Delivery" domain="[('stop_type','=','delivery')]"/>
+                <filter name="stop_type_both" string="Stop: Pickup &amp; Delivery" domain="[('stop_type','=','both')]"/>
+
+                <separator/>
+
+                <!-- Historical Usage filters (computed from stop history) -->
+                <filter name="usage_pickup" string="History: Pickup" domain="[('usage_type','=','pickup')]"/>
+                <filter name="usage_delivery" string="History: Delivery" domain="[('usage_type','=','delivery')]"/>
+                <filter name="usage_both" string="History: Both" domain="[('usage_type','=','both')]"/>
+                <filter name="usage_unknown" string="History: Unknown" domain="[('usage_type','=','unknown')]"/>
+
+                <separator/>
+
                 <!-- Standard filters -->
                 <filter name="pin_set" string="Pin Set" domain="[('pin_set','=',True)]"/>
                 <filter name="has_photo" string="Has Photo" domain="[('entrance_photo','!=',False)]"/>
@@ -273,6 +301,8 @@
                     <filter name="group_postal_code" string="Postal Code" context="{'group_by':'postal_code'}"/>
                     <filter name="group_partner" string="Customer" context="{'group_by':'partner_id'}"/>
                     <filter name="group_location_type" string="Location Type" context="{'group_by':'location_type'}"/>
+                    <filter name="group_stop_type" string="Stop Type" context="{'group_by':'stop_type'}"/>
+                    <filter name="group_usage_type" string="Historical Usage" context="{'group_by':'usage_type'}"/>
                     <filter name="group_duplicate_status" string="Duplicate Status" context="{'group_by':'duplicate_status'}"/>
                 </group>
             </search>

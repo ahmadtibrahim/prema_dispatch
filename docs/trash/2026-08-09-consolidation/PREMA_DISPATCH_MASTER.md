@@ -1,7 +1,7 @@
 # Prema Dispatch — Authoritative Master Reference
 
-**Version:** 6.0
-**Last Updated:** 2026-08-04
+**Version:** 6.1
+**Last Updated:** 2026-08-09
 **Replaces:** All standalone Prema Dispatch .md files in /root and /docs
 **Canonical URL:** `/opt/odoo/custom-addons/prema_dispatch/PREMA_DISPATCH_MASTER.md`
 
@@ -26,7 +26,7 @@ planning, driver worksheets, GPS tracking, POD collection, and accounting — al
 a single canonical booking engine.
 
 **Repository:** `github.com/ahmadtibrahim/prema_dispatch` (private)
-**Modules:** `prema_dispatch` (v18.0.2.2.0), `prema_logistics_booking` (v18.0.5.0.0)
+**Modules:** `prema_dispatch` (v18.0.2.3.0), `prema_logistics_booking` (v18.0.5.1.0)
 **Database:** Prod-db (production), Prod-db-test1a (test)
 **Odoo Config:** `/etc/odoo18.conf`
 **Upgrade:** `python3 odoo-bin -c /etc/odoo18.conf -d <db> --stop-after-init -u prema_logistics_booking,prema_dispatch --no-http`
@@ -44,6 +44,8 @@ a single canonical booking engine.
    (idempotent), so an overnight job may correctly have two cards.
 4. Pricing authority: `logistics.corridor` (`rate_per_km`, `planned_pallets`,
    `included_weight_per_pallet`, `minimum_booking_charge`). Rate Plans are historical only.
+   Physical pallet count (`physical_pallets`) is the authoritative capacity/pricing unit —
+   per-stop pallet counts are for internal allocation only and never affect price.
 5. Capacity authority: `CapacityEngine` (one canonical class).
 6. Booking authority: `BookingOrchestrationService.confirm()` (one canonical confirmation
    method for all channels).
@@ -319,12 +321,19 @@ transactionally.
 | Step | Route | Action |
 |---|---|---|
 | 1 | /booking | Landing page (anonymous → login, unapproved → pending) |
-| 2 | /my/booking/new | Enter pickup/delivery postal codes |
-| 3 | /my/booking/details | Enter shipment details |
-| 4 | /my/booking/quote | Server-side pricing → display price + schedule |
-| 5 | /my/booking/confirm | Enter addresses, confirm booking |
+| 2 | /my/booking/new | Select saved pickup + delivery locations (multi-stop: up to 20) |
+| 3 | /my/booking/details | Enter shipment details, Total Physical Pallets, per-stop allocation, shared pallet mode |
+| 4 | /my/booking/quote | Server-side pricing using physical_pallets → display price + schedule |
+| 5 | /my/booking/confirm | Per-stop contact/instructions, confirm booking |
 | 6 | /my/bookings | List customer's bookings |
 | 7 | /my/bookings/{id} | Booking detail |
+
+**Multi-Stop + Physical Pallet Support (UAT-014):**
+- Step 2: customer selects pickup + N delivery saved locations (max 20)
+- Step 3: enters **Total Physical Pallets** (actual handling units). In shared pallet mode, one pallet serves multiple stops.
+- Pricing uses `physical_pallets`, not the sum of per-stop counts — a shared pallet is priced once.
+- On confirm: dedicated mode creates one `prema.dispatch.item` per physical pallet; shared mode creates one item with `load_unit_type='shared_pallet'` and `stop_allocation_ids` for all delivery stops.
+- Capacity reservation = physical pallets only.
 
 ---
 
@@ -672,6 +681,7 @@ systemctl restart odoo18
 | 2026-08-04 | Corridor/Planner unification | v18.0.5.0.0 | Source implementation and migration completed |
 | 2026-08-04 | User Manual and master reference | docs/views | Updated to current Corridor schedule and pricing |
 | 2026-08-04 | Focused V5 regressions | test_v5_dispatch_unification.py | Pricing, eight-week schedule, recurring job limit |
+| 2026-08-09 | UAT-014: Physical Pallet & Stop Allocation | 7 files | Dedicated + shared pallet modes; pricing uses physical_pallets; per-stop allocation UI; dispatch item bridge; Mike Johnson demo contacts cleared |
 
 ## 30. Historical Dispatch Unification (18.0.4.6.0) — 2026-08-03
 

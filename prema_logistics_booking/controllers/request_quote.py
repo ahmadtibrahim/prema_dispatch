@@ -45,14 +45,15 @@ def _require_visible():
 class LogisticsRequestQuote(http.Controller):
 
     # ==================================================================
-    # STEP 1 — LOCATIONS
+    # STEP 1 — LOCATIONS (redirects to canonical Saved Locations flow)
     # ==================================================================
-    @http.route("/request-a-quote", type="http", auth="public", website=True, sitemap=False)
+    @http.route("/request-a-quote", type="http", auth="user", website=True, sitemap=False)
     def step1_locations(self, **kwargs):
         _require_visible()
-        return request.render("prema_logistics_booking.portal_booking_step1_locations", {})
+        # Redirect to the canonical authenticated booking flow with Saved Locations
+        return request.redirect("/my/booking/new")
 
-    @http.route("/request-a-quote/locations", type="http", auth="public", website=True, sitemap=False, methods=["POST"])
+    @http.route("/request-a-quote/locations", type="http", auth="user", website=True, sitemap=False, methods=["POST"])
     def step1_submit(self, **kwargs):
         _require_visible()
         pickup_postal = (kwargs.get("pickup_postal_code") or "").strip()
@@ -84,7 +85,7 @@ class LogisticsRequestQuote(http.Controller):
     # ==================================================================
     # STEP 2 — SHIPMENT DETAILS
     # ==================================================================
-    @http.route("/request-a-quote/shipment", type="http", auth="public", website=True, sitemap=False)
+    @http.route("/request-a-quote/shipment", type="http", auth="user", website=True, sitemap=False)
     def step2_shipment(self, **kwargs):
         _require_visible()
         return request.render("prema_logistics_booking.portal_booking_step2_shipment", {
@@ -99,7 +100,7 @@ class LogisticsRequestQuote(http.Controller):
     # ==================================================================
     # STEP 3 — SEARCH NEXT 14 DAYS + SHOW DELIVERY OPTIONS
     # ==================================================================
-    @http.route("/request-a-quote/delivery-options", type="http", auth="public", website=True, sitemap=False, methods=["POST"])
+    @http.route("/request-a-quote/delivery-options", type="http", auth="user", website=True, sitemap=False, methods=["POST"])
     def step3_delivery_options(self, **kwargs):
         _require_visible()
         Fsa = request.env["logistics.fsa"].sudo()
@@ -189,7 +190,7 @@ class LogisticsRequestQuote(http.Controller):
     # ==================================================================
     # STEP 4 — SELECT & PRICE A SPECIFIC OPTION
     # ==================================================================
-    @http.route("/request-a-quote/select", type="http", auth="public", website=True, sitemap=False, methods=["POST"])
+    @http.route("/request-a-quote/select", type="http", auth="user", website=True, sitemap=False, methods=["POST"])
     def step4_select(self, **kwargs):
         _require_visible()
         Fsa = request.env["logistics.fsa"].sudo()
@@ -280,7 +281,7 @@ class LogisticsRequestQuote(http.Controller):
     # ==================================================================
     # BOOKING CONFIRMATION
     # ==================================================================
-    @http.route("/request-a-quote/confirm", type="http", auth="public", website=True, sitemap=False, methods=["POST"])
+    @http.route("/request-a-quote/confirm", type="http", auth="user", website=True, sitemap=False, methods=["POST"])
     def confirm_booking(self, **kwargs):
         _require_visible()
         token = kwargs.get("token")
@@ -310,7 +311,7 @@ class LogisticsRequestQuote(http.Controller):
     # ==================================================================
     # CUSTOM QUOTE SUBMISSION
     # ==================================================================
-    @http.route("/request-a-quote/submit", type="http", auth="public", website=True, sitemap=False, methods=["POST"])
+    @http.route("/request-a-quote/submit", type="http", auth="user", website=True, sitemap=False, methods=["POST"])
     def submit_custom_quote(self, **kwargs):
         _require_visible()
         vals = {

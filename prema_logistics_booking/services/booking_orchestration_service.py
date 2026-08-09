@@ -106,6 +106,8 @@ class NormalizedBookingRequest:
         self.same_day_requested = data.get("same_day_requested", False)
 
         self.pallets = data.get("pallets", 1)
+        self.physical_pallets = data.get("physical_pallets", data.get("pallets", 1))
+        self.shared_pallet_mode = data.get("shared_pallet_mode", False)
         self.weight_lbs = data.get("weight_lbs", 0.0)
         self.commodity = data.get("commodity", "")
         self.stackable = data.get("stackable", True)
@@ -191,10 +193,24 @@ class BookingOrchestrationService:
 
     def prepare_quote(self, normalized_request: NormalizedBookingRequest, session_ttl_minutes: int = 20) -> dict:
         """Create a pricing session / quote for the customer to review.
-        Returns a dict with quote_token, price, and expiration."""
-        from ..services.pricing_service import PricingService
 
-        pricing = PricingService(self.env)
+        Routes through ShipmentRoutingService (canonical engine) when coordinates
+        are available, falling back to legacy pricing.calculate() for FSA-only mode.
+        Returns a dict with quote_token, price, and expiration."""
+        from ..services.shipment_routing_service import ShipmentRoutingService
+
+        # Extract coordinates from normalized request stops
+        pickup_lat = None
+        pickup_lng = None
+        delivery_lat = None
+        delivery_lng = None
+        if normalized_request.pickup_stops:
+            pickup_lat = normalized_request.pickup_stops[0].get("latitude")
+            pickup_lng = normalized_request.pickup_stops[0].get("longitude")
+        if normalized_request.delivery_stops:
+            delivery_lat = normalized_request.delivery_stops[-1].get("latitude")
+            delivery_lng = normalized_request.delivery_stops[-1].get("longitude")
+
         pickup_fsa = None
         delivery_fsa = None
 
@@ -208,9 +224,150 @@ class BookingOrchestrationService:
             if postal:
                 delivery_fsa = self.env["logistics.fsa"].sudo().resolve_from_postal(postal)
 
+        # ── Route A: Coordinates available → ShipmentRoutingService (hub transfers) ──
+        if pickup_lat and delivery_lat and pickup_lng and delivery_lng:
+            _logger.info("prepare_quote: routing via ShipmentRoutingService "
+                        "(pickup=%s,%s delivery=%s,%s)",
+                        pickup_lat, pickup_lng, delivery_lat, delivery_lng)
+
+            routing_svc = ShipmentRoutingService(self.env)
+            route = routing_svc.plan_route(
+                pickup_lat=float(pickup_lat),
+                pickup_lng=float(pickup_lng),
+                delivery_lat=float(delivery_lat),
+                delivery_lng=float(delivery_lng),
+                pallets=normalized_request.pallets,
+                weight_lbs=normalized_request.weight_lbs,
+                requested_pickup_date=normalized_request.requested_pickup_date,
+                equipment=normalized_request.equipment_type,
+            )
+
+            if not route.available:
+                # Map technical reason codes to customer-friendly messages
+                friendly_reason = {
+                    "NO_PICKUP_REGION": "We could not determine the pickup service region.",
+                    "NO_DELIVERY_REGION": "We could not determine the delivery service region.",
+                    "MANUAL_QUOTE_PICKUP": "Pickup location is outside our scheduled service area.",
+                    "MANUAL_QUOTE_DELIVERY": "Delivery location is outside our scheduled service area.",
+                    "REQUESTED_PICKUP_DATE_NOT_SERVED": route.reason,
+                    "NO_LEGS": "This shipment requires manual scheduling. Please request a quote.",
+                    "NETWORK_DISABLED": "Scheduled service is not available for this region.",
+                    "AMBIGUOUS_PICKUP": "Pickup region could not be determined precisely.",
+                    "AMBIGUOUS_DELIVERY": "Delivery region could not be determined precisely.",
+                    "MANUAL_REVIEW": "This shipment requires manual scheduling. Please request a quote.",
+                    "INVALID_DATE": "The requested pickup date is not valid.",
+                }.get(route.reason_code, "This shipment requires manual scheduling. Please request a quote.")
+                raise UserError(_(friendly_reason))
+
+            # Extract corridor/departure info from the first leg (for session compatibility)
+            first_leg = route.legs[0] if route.legs else None
+            corridor = self.env["logistics.corridor"].browse(first_leg.corridor_id) if first_leg and first_leg.corridor_id else self.env["logistics.corridor"]
+            last_leg = route.legs[-1] if route.legs else None
+            est_delivery = last_leg.departure_date if last_leg else None
+
+            # Build price lines from legs
+            price_lines = []
+            for leg in route.legs:
+                price_lines.append({
+                    "label": f"Leg {leg.sequence} — {leg.corridor_name} ({leg.leg_type})",
+                    "distance_km": leg.estimated_distance_km,
+                    "pallets": leg.pallets,
+                    "rate_per_km": leg.rate_per_km,
+                    "pallet_rate_per_km": leg.pallet_rate_per_km,
+                    "amount": leg.leg_price,
+                    "departure_date": leg.departure_date,
+                })
+            route_total = sum(leg.leg_price for leg in route.legs)
+            booking_min = 150.0
+            final_price = max(route_total, booking_min)
+            if route_total < booking_min:
+                price_lines.append({
+                    "label": "Minimum booking adjustment",
+                    "distance_km": 0, "pallets": 0,
+                    "rate_per_km": 0, "pallet_rate_per_km": 0,
+                    "amount": round(final_price - route_total, 2),
+                    "departure_date": None,
+                })
+
+            # Create pricing session
+            Session = self.env["logistics.pricing.session"].sudo()
+            # Extract saved location IDs from normalized request
+            pu_saved_id = None
+            de_saved_id = None
+            if normalized_request.pickup_stops:
+                pu_saved_id = normalized_request.pickup_stops[0].get("saved_location_id")
+            if normalized_request.delivery_stops:
+                de_saved_id = normalized_request.delivery_stops[0].get("saved_location_id")
+
+            session = Session.create({
+                "partner_id": normalized_request.partner_id,
+                "pickup_fsa_id": pickup_fsa.id if pickup_fsa else None,
+                "delivery_fsa_id": delivery_fsa.id if delivery_fsa else None,
+                "corridor_id": corridor.id if corridor else None,
+                "shipment_type": normalized_request.load_type,
+                "temperature_mode": normalized_request.equipment_type,
+                "required_temperature_c": normalized_request.required_temperature_c or 0.0,
+                "pallets": normalized_request.physical_pallets,  # physical pallets for pricing/capacity
+                "physical_pallets": normalized_request.physical_pallets,
+                "shared_pallet_mode": normalized_request.shared_pallet_mode,
+                "weight_lbs": sum(ds.get("weight_lbs", 500) for ds in normalized_request.delivery_stops) if normalized_request.delivery_stops else normalized_request.weight_lbs,
+                "liftgate_pickup": normalized_request.liftgate_pickup,
+                "liftgate_delivery": normalized_request.liftgate_delivery,
+                "appointment": normalized_request.appointment,
+                "residential": normalized_request.residential,
+                "same_day_requested": normalized_request.same_day_requested,
+                "pickup_date": first_leg.departure_date if first_leg else None,
+                "delivery_date_estimate": est_delivery,
+                "calculated_price": final_price,
+                "price_snapshot": price_lines,
+                "route_snapshot": route.routing_snapshot,
+                "pickup_saved_location_id": pu_saved_id,
+                "delivery_saved_location_id": de_saved_id,
+                "expires_at": fields.Datetime.now() + datetime.timedelta(minutes=session_ttl_minutes),
+            })
+
+            # Create per-stop records for multi-stop bookings
+            StopModel = self.env["logistics.pricing.session.stop"].sudo()
+            for i, ds in enumerate(normalized_request.delivery_stops):
+                sl_id = ds.get("saved_location_id")
+                sl = self.env["logistics.saved.location"].browse(sl_id) if sl_id else None
+                StopModel.create({
+                    "session_id": session.id,
+                    "sequence": i + 1,
+                    "saved_location_id": sl_id,
+                    "location_name": sl.name if sl else ds.get("city", ""),
+                    "street": sl.street if sl else ds.get("address", ""),
+                    "city": sl.city if sl else ds.get("city", ""),
+                    "state_code": sl.state_id.code if sl and sl.state_id else "",
+                    "postal_code": sl.postal_code if sl else ds.get("postal_code", ""),
+                    "latitude": ds.get("latitude", 0),
+                    "longitude": ds.get("longitude", 0),
+                    "pallets": ds.get("pallets", 1),
+                    "weight_lbs": ds.get("weight_lbs", 500),
+                    "shared_pallet": ds.get("shared_pallet", False),
+                    "liftgate_delivery": ds.get("liftgate_delivery", False),
+                    "appointment": ds.get("appointment", False),
+                    "instructions": ds.get("instructions", ""),
+                })
+
+            return {
+                "quote_token": session.token,
+                "pickup_date": first_leg.departure_date if first_leg else None,
+                "delivery_date": est_delivery,
+                "calculated_price": final_price,
+                "price_lines": price_lines,
+                "lane_name": corridor.name if corridor else "Hub Transfer",
+                "service_offering_name": "Scheduled LTL" if len(route.legs) == 1 else f"Hub Transfer ({len(route.legs)} legs)",
+                "expires_at": session.expires_at.isoformat() if session.expires_at else None,
+                "legs": len(route.legs),
+            }
+
+        # ── Route B: FSA-only fallback (legacy) ──
         if not pickup_fsa or not delivery_fsa:
             raise UserError(_("Could not resolve origin or destination postal code."))
 
+        from ..services.pricing_service import PricingService
+        pricing = PricingService(self.env)
         result = pricing.calculate(
             pickup_fsa, delivery_fsa,
             normalized_request.load_type,
@@ -229,7 +386,19 @@ class BookingOrchestrationService:
         )
 
         if not result.available:
-            raise UserError(_("No service available: %s") % (result.reason or "unknown"))
+            friendly = result.reason or "unknown"
+            # Don't expose internal reason codes to customers
+            if friendly.startswith("no_corridor"):
+                friendly = "This shipment requires manual scheduling. Please request a quote."
+            raise UserError(_(friendly))
+
+        # Extract saved location IDs from normalized request
+        pu_saved_id = None
+        de_saved_id = None
+        if normalized_request.pickup_stops:
+            pu_saved_id = normalized_request.pickup_stops[0].get("saved_location_id")
+        if normalized_request.delivery_stops:
+            de_saved_id = normalized_request.delivery_stops[0].get("saved_location_id")
 
         # Create pricing session
         Session = self.env["logistics.pricing.session"].sudo()
@@ -241,8 +410,10 @@ class BookingOrchestrationService:
             "shipment_type": normalized_request.load_type,
             "temperature_mode": normalized_request.equipment_type,
             "required_temperature_c": normalized_request.required_temperature_c or 0.0,
-            "pallets": normalized_request.pallets,
-            "weight_lbs": normalized_request.weight_lbs,
+            "pallets": normalized_request.physical_pallets,
+            "physical_pallets": normalized_request.physical_pallets,
+            "shared_pallet_mode": normalized_request.shared_pallet_mode,
+            "weight_lbs": sum(ds.get("weight_lbs", 500) for ds in normalized_request.delivery_stops) if normalized_request.delivery_stops else normalized_request.weight_lbs,
             "liftgate_pickup": normalized_request.liftgate_pickup,
             "liftgate_delivery": normalized_request.liftgate_delivery,
             "appointment": normalized_request.appointment,
@@ -253,8 +424,34 @@ class BookingOrchestrationService:
             "calculated_price": result.calculated_price,
             "price_snapshot": result.price_lines,
             "route_snapshot": result.route_snapshot,
+            "pickup_saved_location_id": pu_saved_id,
+            "delivery_saved_location_id": de_saved_id,
             "expires_at": fields.Datetime.now() + datetime.timedelta(minutes=session_ttl_minutes),
         })
+
+        # Create per-stop records for multi-stop bookings
+        StopModel = self.env["logistics.pricing.session.stop"].sudo()
+        for i, ds in enumerate(normalized_request.delivery_stops):
+            sl_id = ds.get("saved_location_id")
+            sl = self.env["logistics.saved.location"].browse(sl_id) if sl_id else None
+            StopModel.create({
+                "session_id": session.id,
+                "sequence": i + 1,
+                "saved_location_id": sl_id,
+                "location_name": sl.name if sl else ds.get("city", ""),
+                "street": sl.street if sl else ds.get("address", ""),
+                "city": sl.city if sl else ds.get("city", ""),
+                "state_code": sl.state_id.code if sl and sl.state_id else "",
+                "postal_code": sl.postal_code if sl else ds.get("postal_code", ""),
+                "latitude": ds.get("latitude", 0),
+                "longitude": ds.get("longitude", 0),
+                "pallets": ds.get("pallets", 1),
+                "weight_lbs": ds.get("weight_lbs", 500),
+                "shared_pallet": ds.get("shared_pallet", False),
+                "liftgate_delivery": ds.get("liftgate_delivery", False),
+                "appointment": ds.get("appointment", False),
+                "instructions": ds.get("instructions", ""),
+            })
 
         return {
             "quote_token": session.token,
@@ -401,7 +598,9 @@ class BookingOrchestrationService:
                 if normalized_request.required_temperature_c is not None
                 else 0.0
             ),
-            "pallets": normalized_request.pallets,
+            "pallets": normalized_request.physical_pallets,
+            "physical_pallets": normalized_request.physical_pallets,
+            "shared_pallet_mode": normalized_request.shared_pallet_mode,
             "weight_lbs": normalized_request.weight_lbs,
             "commodity": normalized_request.commodity or "",
             "calculated_price": calculated_price,

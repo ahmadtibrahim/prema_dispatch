@@ -7,6 +7,9 @@
             <list>
                 <field name="code"/>
                 <field name="name"/>
+                <field name="country_id"/>
+                <field name="state_id"/>
+                <field name="boundary_status"/>
                 <field name="main_city"/>
                 <field name="active_fsa_count" string="FSAs"/>
                 <field name="pickup_fsa_count" string="Pickup FSAs"/>
@@ -25,14 +28,27 @@
                     <button name="action_apply_fsa_coverage" string="Apply FSA Coverage"
                             type="object" class="btn-primary"
                             groups="prema_dispatch.group_dispatch_manager"/>
+                    <button name="action_validate_boundary" string="Validate Boundary"
+                            type="object" class="btn-secondary"
+                            groups="prema_dispatch.group_dispatch_manager"/>
+                    <button name="action_check_overlaps" string="Check Overlaps"
+                            type="object" class="btn-secondary"
+                            groups="prema_dispatch.group_dispatch_manager"/>
+                    <button name="action_test_coordinate" string="Test Coordinate"
+                            type="object" class="btn-secondary"
+                            groups="prema_dispatch.group_dispatch_manager"/>
                 </header>
                 <sheet>
                     <group>
                         <group string="Region">
                             <field name="code"/>
                             <field name="name"/>
+                            <field name="country_id"/>
+                            <field name="state_id"/>
                             <field name="main_city"/>
                             <field name="default_hub_id"/>
+                            <field name="minimum_booking_charge" widget="monetary"/>
+                            <field name="currency_id" invisible="1"/>
                             <field name="customer_visible"/>
                             <field name="is_official_ltl_region" readonly="1"/>
                             <field name="active"/>
@@ -46,6 +62,24 @@
                         </group>
                     </group>
                     <notebook>
+                        <page string="Boundary">
+                            <group>
+                                <group string="Geometry">
+                                    <field name="polygon_geojson" colspan="2" placeholder="Paste GeoJSON Polygon or MultiPolygon here..."/>
+                                    <field name="boundary_area_km2" readonly="1"/>
+                                    <field name="boundary_checksum" readonly="1"/>
+                                </group>
+                                <group string="Metadata">
+                                    <field name="boundary_status"/>
+                                    <field name="boundary_source"/>
+                                    <field name="boundary_source_url" widget="url"/>
+                                    <field name="boundary_version_date"/>
+                                    <field name="match_priority"/>
+                                    <field name="boundary_reviewed_by" readonly="1"/>
+                                    <field name="boundary_reviewed_at" readonly="1"/>
+                                </group>
+                            </group>
+                        </page>
                         <page string="Postal Coverage">
                             <div class="alert alert-info" role="alert">
                                 Paste only reviewed Canadian FSA prefixes. The app creates missing prefixes,
@@ -68,6 +102,37 @@
             </form>
         </field>
     </record>
+    <!-- Test Coordinate Wizard -->
+    <record id="view_logistics_region_test_coordinate_form" model="ir.ui.view">
+        <field name="name">logistics.region.test.coordinate.form</field>
+        <field name="model">logistics.region.test.coordinate</field>
+        <field name="arch" type="xml">
+            <form>
+                <group>
+                    <field name="region_id" invisible="1"/>
+                    <group string="Input">
+                        <field name="latitude" placeholder="e.g. 43.159"/>
+                        <field name="longitude" placeholder="e.g. -79.247"/>
+                    </group>
+                    <group string="Result">
+                        <field name="result_matched" widget="boolean_toggle" readonly="1"/>
+                        <field name="result_region_code" readonly="1"/>
+                        <field name="result_region_name" readonly="1"/>
+                        <field name="result_match_method" readonly="1"/>
+                        <field name="result_ambiguity" readonly="1"/>
+                        <field name="result_reason" readonly="1"/>
+                        <field name="result_candidates" readonly="1"/>
+                    </group>
+                </group>
+                <footer>
+                    <button name="action_test" string="Test This Region" type="object" class="btn-primary"/>
+                    <button name="action_test_all_regions" string="Test All Regions" type="object" class="btn-secondary"/>
+                    <button string="Cancel" class="btn-secondary" special="cancel"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+
     <record id="action_logistics_region" model="ir.actions.act_window">
         <field name="name">Regions</field>
         <field name="res_model">logistics.region</field>

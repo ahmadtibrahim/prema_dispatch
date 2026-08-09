@@ -41,7 +41,7 @@
 <div class="dm-wrap">
 
 <h1 class="dm-title">Prema Dispatch — User Manual</h1>
-<p class="dm-subtitle">Version 5.0 - Updated August 4, 2026 - PremaFirm Logistics</p>
+<p class="dm-subtitle">Version 5.1 - Updated August 9, 2026 - PremaFirm Logistics</p>
 
 <div class="dm-toc">
     <h2>Table of Contents</h2>
@@ -69,6 +69,7 @@
         <li><a href="#dispatch-planner">Dispatch Planner</a></li>
         <li><a href="#live-map">Live Fleet Map</a></li>
         <li><a href="#load-plans">Load Plans</a></li>
+        <li><a href="#pallet-allocation">Physical Pallet &amp; Stop Allocation</a></li>
         <li><a href="#driver-worksheets">Driver Worksheets</a></li>
         <li><a href="#trucks-drivers">Trucks &amp; Drivers</a></li>
         <li><a href="#pickup-delivery">Pickup, Transfer &amp; Delivery</a></li>
@@ -267,14 +268,15 @@
     <h2>9. Portal Booking (Customer Self-Service)</h2>
     <p>Route: <code>/my/booking</code> (customer logs into their account)</p>
     <ol>
-        <li>Customer enters <b>pickup postal code</b> and <b>delivery postal code</b></li>
-        <li>System resolves FSAs → Regions → Lane → available service options</li>
-        <li>Customer sees <b>price quote</b> with pickup/delivery dates</li>
-        <li>Customer enters detailed addresses and shipment info (pallets, weight, temperature)</li>
+        <li>Customer selects <b>pickup</b> and <b>delivery</b> saved locations (multi-stop: add up to 20 delivery stops)</li>
+        <li>Customer enters <b>Total Physical Pallets</b> and per-stop allocation (dedicated or shared mode)</li>
+        <li>System resolves FSAs → Regions → Lanes → available departures and prices</li>
+        <li>Customer picks a <b>pickup date</b> from the eligible-date calendar</li>
+        <li>Customer reviews the quote: physical pallet count, per-stop breakdown, price</li>
         <li>Customer <b>confirms</b> — system creates pricing session (20-min TTL)</li>
-        <li>On confirmation: Booking + Stops + Lines + Legs + Tax + Draft Invoice + Dispatch Job</li>
+        <li>On confirmation: Booking + Stops + Lines + Legs + Tax + Draft Invoice + Dispatch Job with physical pallet items</li>
     </ol>
-    <div class="dm-info">Portal bookings require the customer to have <b>Logistics Pricing Status = Approved</b> and be in the <b>Logistics Customer</b> group.</div>
+    <div class="dm-info">Portal bookings require the customer to have <b>Logistics Pricing Status = Approved</b> and be in the <b>Logistics Customer</b> group. See <a href="#pallet-allocation">Section 22a — Physical Pallet &amp; Stop Allocation</a> for dedicated vs. shared pallet workflows.</div>
 </div>
 
 <!-- ================================================================ -->
@@ -501,6 +503,58 @@
         <li><b>Lock/Unlock</b> — manager can lock plan (prevents edits), unlock requires reason</li>
         <li><b>Transfer Handoff</b> — move pallets between trucks at transfer hubs</li>
         <li><b>Recommend Layout</b> — AI-suggested positions (advisory only, never auto-applied)</li>
+    </ul>
+</div>
+
+<!-- ================================================================ -->
+<div class="dm-section" id="pallet-allocation">
+    <h2>22a. Physical Pallet &amp; Stop Allocation</h2>
+    <p>Prema Dispatch distinguishes between <b>physical pallets</b> (actual handling units on the truck) and <b>stop allocations</b> (which pallet serves which delivery stop).</p>
+
+    <h3>Two Allocation Modes</h3>
+    <table class="dm-table">
+        <tr><th>Mode</th><th>Example</th><th>Physical Pallets</th><th>Stops</th><th>Capacity</th></tr>
+        <tr><td><b>Dedicated</b></td><td>3 pallets: Stop 1 gets 1, Stop 2 gets 2</td><td>3</td><td>2</td><td>3</td></tr>
+        <tr><td><b>Shared</b></td><td>1 pallet shared across 5 stops</td><td>1</td><td>5</td><td>1</td></tr>
+    </table>
+
+    <h3>Dedicated Pallet Mode (Default)</h3>
+    <p>Each physical pallet is assigned to a single delivery stop. The system creates one <code>prema.dispatch.item</code> per physical pallet.</p>
+    <p>Example: 3 physical pallets → Stop 1 receives Pallet 1, Stop 2 receives Pallets 2-3.</p>
+
+    <h3>Shared Pallet Mode</h3>
+    <p>One physical pallet carries freight for multiple delivery stops. The pallet stays onboard until all its assigned stops are delivered.</p>
+    <p>Example: 1 physical pallet → contains items for Healthy Planet, NOFRILLS, Foodland, Metro. Capacity counted as <b>1</b>, not 4.</p>
+    <p>In the Driver App, a shared pallet shows as <b>PALLET P001 — SHARED</b> with per-stop item assignments. At each stop, only that stop's freight is unloaded.</p>
+
+    <div class="dm-info"><b>Pricing:</b> Shared pallets are priced as ONE physical pallet for the entire journey — never charged multiple times for serving multiple stops. Capacity reservation counts physical pallets, never per-stop totals.</div>
+
+    <h3>Booking Portal — Customer Workflow</h3>
+    <h4>Simple Mode (Dedicated)</h4>
+    <ol>
+        <li>Customer enters <b>Total Physical Pallets</b> (e.g., 3)</li>
+        <li>For each delivery stop, enters how many pallets go to that stop</li>
+        <li>System auto-creates physical pallet units and assigns them</li>
+        <li>Capacity reservation = total physical pallets entered</li>
+    </ol>
+    <h4>Shared Pallet Mode</h4>
+    <ol>
+        <li>Customer checks <b>"Shared Pallet / Mixed Stops"</b></li>
+        <li>Enters <b>1</b> physical pallet (or more if multiple shared pallets)</li>
+        <li>Each delivery stop is linked to the shared pallet(s)</li>
+        <li>Step 3 review shows: <b>"1 Physical Pallet · Shared Across N Stops"</b></li>
+    </ol>
+
+    <h3>Load Plan Integration</h3>
+    <p>Shared pallets occupy <b>one floor position</b> on the truck, same as dedicated pallets. The <code>load_unit_type</code> field (<code>pallet</code> / <code>shared_pallet</code>) determines position consumption.</p>
+    <p>Stop allocations are stored via <code>prema.dispatch.pallet.stop.allocation</code> — the same model used by the Load Plan for shared-skid handling. Max 5 stops per physical pallet.</p>
+
+    <h3>Data Model</h3>
+    <ul>
+        <li><b><code>prema.dispatch.item</code></b> — one physical handling unit (pallet or shared pallet). Fields: <code>load_unit_type</code>, <code>shared_skid</code>, <code>consumes_floor_position</code>, <code>stop_allocation_ids</code></li>
+        <li><b><code>prema.dispatch.pallet.stop.allocation</code></b> — many-to-many join: one pallet → many stops. <code>unique(item, stop)</code></li>
+        <li><b><code>logistics.pricing.session</code></b> — booking-layer fields: <code>physical_pallets</code>, <code>shared_pallet_mode</code></li>
+        <li><b><code>logistics.booking</code></b> — confirmed booking fields: <code>physical_pallets</code>, <code>shared_pallet_mode</code></li>
     </ul>
 </div>
 

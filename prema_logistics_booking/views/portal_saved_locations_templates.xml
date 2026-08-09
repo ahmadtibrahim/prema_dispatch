@@ -1,0 +1,706 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+<!-- ====================================================================
+     Portal — My Saved Locations
+     Built behind portal_enabled=False gate. Not exposed to customers yet.
+     ==================================================================== -->
+
+<template id="portal_my_saved_locations" name="Portal: My Saved Locations">
+    <t t-call="portal.portal_layout">
+        <t t-set="title">My Saved Locations</t>
+        <div class="container">
+            <!-- Header -->
+            <div class="d-flex justify-content-between align-items-center mb-4">
+                <h3 class="mb-0">Saved Locations</h3>
+                <a t-attf-href="/my/saved-locations/add" class="btn btn-primary">
+                    Add Location
+                </a>
+            </div>
+
+            <!-- Filters -->
+            <div class="mb-3">
+                <div class="btn-group" role="group">
+                    <a href="/my/saved-locations" class="btn btn-outline-secondary"
+                       t-att-class="'btn btn-outline-secondary' + (not filter_type and ' active' or '')">
+                        All
+                    </a>
+                    <a href="/my/saved-locations?filter=pickup" class="btn btn-outline-secondary"
+                       t-att-class="'btn btn-outline-secondary' + (filter_type == 'pickup' and ' active' or '')">
+                        Pickup
+                    </a>
+                    <a href="/my/saved-locations?filter=delivery" class="btn btn-outline-secondary"
+                       t-att-class="'btn btn-outline-secondary' + (filter_type == 'delivery' and ' active' or '')">
+                        Delivery
+                    </a>
+                </div>
+            </div>
+
+            <!-- Location Cards -->
+            <div t-if="locations" class="row">
+                <t t-foreach="locations" t-as="loc">
+                    <div class="col-12 col-md-6 col-lg-4 mb-3">
+                        <div class="card h-100">
+                            <div class="card-body">
+                                <h5 class="card-title" t-esc="loc.name"/>
+                                <h6 class="card-subtitle mb-2 text-muted" t-esc="loc.company_name or loc.commercial_partner_id.name"/>
+
+                                <!-- Type Badge -->
+                                <span t-if="loc.location_type == 'pickup'" class="badge bg-primary">Pickup</span>
+                                <span t-if="loc.location_type == 'delivery'" class="badge bg-success">Delivery</span>
+                                <span t-if="loc.location_type == 'both'" class="badge bg-info">Pickup &amp; Delivery</span>
+
+                                <!-- Default Badges -->
+                                <span t-if="loc.is_default_pickup" class="badge bg-warning text-dark">Default Pickup</span>
+                                <span t-if="loc.is_default_delivery" class="badge bg-warning text-dark">Default Delivery</span>
+
+                                <p class="card-text mt-2">
+                                    <small class="text-muted">
+                                        <t t-esc="loc.street"/><br/>
+                                        <t t-if="loc.street2"><t t-esc="loc.street2"/><br/></t>
+                                        <t t-if="loc.unit">Unit <t t-esc="loc.unit"/><br/></t>
+                                        <t t-esc="loc.city"/>, <t t-esc="loc.state_id.code or ''"/>
+                                        <t t-if="loc.postal_code"> <t t-esc="loc.postal_code"/></t>
+                                    </small>
+                                </p>
+
+                                <!-- Region Status -->
+                                <div class="mt-2">
+                                    <span t-if="loc.region_match_result == 'SCHEDULED_MATCH'"
+                                          class="badge bg-success">Scheduled Network</span>
+                                    <span t-if="loc.region_match_result == 'MANUAL_QUOTE'"
+                                          class="badge bg-warning text-dark">Manual Quote Required</span>
+                                    <span t-if="loc.region_match_result == 'NETWORK_DISABLED'"
+                                          class="badge bg-secondary">Automatic Booking Unavailable</span>
+                                    <span t-if="loc.region_match_result == 'AMBIGUOUS'"
+                                          class="badge bg-danger">Manual Region Review Required</span>
+                                </div>
+                            </div>
+                            <div class="card-footer bg-transparent">
+                                <a t-attf-href="/my/saved-locations/{{loc.id}}/edit"
+                                   class="btn btn-sm btn-outline-primary">Edit</a>
+                                <a t-attf-href="/my/saved-locations/{{loc.id}}/set-default-pickup"
+                                   class="btn btn-sm btn-outline-secondary"
+                                   t-if="loc.location_type in ('pickup','both') and not loc.is_default_pickup">
+                                    Set Default Pickup
+                                </a>
+                                <a t-attf-href="/my/saved-locations/{{loc.id}}/set-default-delivery"
+                                   class="btn btn-sm btn-outline-secondary"
+                                   t-if="loc.location_type in ('delivery','both') and not loc.is_default_delivery">
+                                    Set Default Delivery
+                                </a>
+                            </div>
+                        </div>
+                    </div>
+                </t>
+            </div>
+
+            <div t-if="not locations" class="text-center py-5">
+                <p class="text-muted">No saved locations yet.</p>
+                <a href="/my/saved-locations/add" class="btn btn-primary">Add Your First Location</a>
+            </div>
+        </div>
+    </t>
+</template>
+
+<!-- Add/Edit Location Form -->
+<template id="portal_saved_location_form" name="Portal: Saved Location Form">
+    <t t-call="portal.portal_layout">
+        <t t-set="title">Saved Location</t>
+        <div class="container">
+            <form method="POST" t-attf-action="/my/saved-locations/{{'edit' if location else 'add'}}">
+                <input type="hidden" name="csrf_token" t-att-value="request.csrf_token()"/>
+                <div class="row mb-3">
+                    <div class="col-md-6">
+                        <label class="form-label">Location Name *</label>
+                        <input type="text" name="name" class="form-control" required="required"
+                               t-att-value="location.name if location else ''"
+                               placeholder="e.g. Toronto Warehouse"/>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">Location Type *</label>
+                        <select name="location_type" class="form-select" required="required">
+                            <option value="pickup" t-att-selected="location and location.location_type == 'pickup' and 'selected' or None">Pickup Location</option>
+                            <option value="delivery" t-att-selected="location and location.location_type == 'delivery' and 'selected' or None">Delivery Location</option>
+                            <option value="both" t-att-selected="location and location.location_type == 'both' and 'selected' or None">Pickup and Delivery</option>
+                        </select>
+                    </div>
+                </div>
+                <!-- Contact -->
+                <div class="row mb-3">
+                    <div class="col-md-4">
+                        <label class="form-label">Contact Name</label>
+                        <input type="text" name="contact_name" class="form-control"
+                               t-att-value="location.contact_name if location else ''"/>
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label">Contact Phone</label>
+                        <input type="text" name="contact_phone" class="form-control"
+                               t-att-value="location.contact_phone if location else ''"/>
+                    </div>
+                    <div class="col-md-4">
+                        <label class="form-label">Contact Email</label>
+                        <input type="email" name="contact_email" class="form-control"
+                               t-att-value="location.contact_email if location else ''"/>
+                    </div>
+                </div>
+                <!-- Address -->
+                <div class="mb-3">
+                    <label class="form-label">Street Address</label>
+                    <input type="text" name="street" class="form-control"
+                           t-att-value="location.street if location else ''"/>
+                </div>
+                <div class="row mb-3">
+                    <div class="col-md-6">
+                        <label class="form-label">Unit / Suite</label>
+                        <input type="text" name="unit" class="form-control"
+                               t-att-value="location.unit if location else ''"/>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">City</label>
+                        <input type="text" name="city" class="form-control"
+                               t-att-value="location.city if location else ''"/>
+                    </div>
+                </div>
+                <div class="row mb-3">
+                    <div class="col-md-6">
+                        <label class="form-label">Province</label>
+                        <select name="state_id" class="form-select">
+                            <option value="">--</option>
+                            <t t-foreach="states" t-as="s">
+                                <option t-att-value="str(s.id)"
+                                        t-att-data-code="s.code or ''">
+                                    <t t-esc="s.name"/>
+                                </option>
+                            </t>
+                        </select>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">Postal Code</label>
+                        <input type="text" name="postal_code" class="form-control"
+                               t-att-value="location.postal_code if location else ''"/>
+                    </div>
+                </div>
+                <!-- Operational -->
+                <div class="row mb-3">
+                    <div class="col-md-6">
+                        <label class="form-label">Dock Info</label>
+                        <input type="text" name="dock_info" class="form-control"
+                               t-att-value="location.dock_info if location else ''"/>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label">Opening Hours</label>
+                        <input type="text" name="opening_hours" class="form-control"
+                               placeholder="e.g. Mon-Fri 8:00-17:00"
+                               t-att-value="location.opening_hours if location else ''"/>
+                    </div>
+                </div>
+                <div class="mb-3 form-check">
+                    <input type="checkbox" name="appointment_required" class="form-check-input" value="1"
+                           t-att-checked="location and location.appointment_required and 'checked' or None"/>
+                    <label class="form-check-label">Appointment Required</label>
+                </div>
+                <div class="mb-3 form-check">
+                    <input type="checkbox" name="liftgate_required" class="form-check-input" value="1"
+                           t-att-checked="location and location.liftgate_required and 'checked' or None"/>
+                    <label class="form-check-label">Liftgate Required</label>
+                </div>
+                <div class="mb-3 form-check">
+                    <input type="checkbox" name="forklift_available" class="form-check-input" value="1"
+                           t-att-checked="location and location.forklift_available and 'checked' or None"/>
+                    <label class="form-check-label">Forklift Available</label>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Pickup Instructions</label>
+                    <textarea name="pickup_instructions" class="form-control" rows="2"
+                              t-esc="location.pickup_instructions if location else ''"/>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Delivery Instructions</label>
+                    <textarea name="delivery_instructions" class="form-control" rows="2"
+                              t-esc="location.delivery_instructions if location else ''"/>
+                </div>
+                <div class="d-flex justify-content-between">
+                    <a href="/my/saved-locations" class="btn btn-secondary">Cancel</a>
+                    <button type="submit" class="btn btn-primary">Save Location</button>
+                </div>
+            </form>
+        </div>
+    </t>
+</template>
+
+<!-- Enhanced Add/Edit Location Form with smart autocomplete (UAT-003) -->
+<template id="portal_saved_location_form_enhanced" name="Portal: Saved Location Form (Enhanced)">
+    <t t-call="portal.portal_layout">
+        <t t-set="title">Saved Location</t>
+        <div class="container">
+            <div class="mx-auto" style="max-width:750px">
+                <div t-if="error" class="alert alert-warning" t-esc="error"/>
+
+                <form method="POST" id="savedLocationForm">
+                    <input type="hidden" name="csrf_token" t-att-value="request.csrf_token()"/>
+                    <input type="hidden" name="branch_name_manual" id="branch_name_manual"
+                           t-att-value="(location and location.branch_name_manual) and '1' or '0'"/>
+
+                    <!-- Location Name with autocomplete (UAT-003) -->
+                    <div class="mb-3">
+                        <label class="form-label fw-bold">Location Name *</label>
+                        <input type="text" name="name" id="loc_name" class="form-control form-control-lg"
+                               required="required" autocomplete="off"
+                               t-att-value="location.name if location else ''"
+                               placeholder="Start typing a facility name, chain, or store number..."/>
+                        <div id="autocomplete_results" class="list-group position-absolute shadow"
+                             style="z-index:1000; max-height:300px; overflow-y:auto; display:none; width:95%">
+                        </div>
+                        <div class="form-text">
+                            Search for an existing facility or enter a new location name.
+                        </div>
+                    </div>
+
+                    <!-- Identity fields (UAT-003 req 8) -->
+                    <!-- Location Type (must be prominent) -->
+                    <div class="row mb-3">
+                        <div class="col-md-4">
+                            <label class="form-label fw-bold">Location Type *</label>
+                            <select name="location_type" class="form-select" required="required">
+                                <option value="pickup" t-att-selected="(default_type == 'pickup' or (location and location.location_type == 'pickup')) and 'selected' or None">Pickup Location</option>
+                                <option value="delivery" t-att-selected="(default_type == 'delivery' or (location and location.location_type == 'delivery')) and 'selected' or None">Delivery Location</option>
+                                <option value="both" t-att-selected="(default_type == 'both' or (location and location.location_type == 'both')) and 'selected' or None">Pickup and Delivery</option>
+                            </select>
+                            <div class="form-text">Select whether this is a pickup, delivery, or both.</div>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Chain / Brand</label>
+                            <input type="text" name="chain_name" id="chain_name" class="form-control"
+                                   t-att-value="location.chain_name if location else ''"
+                                   placeholder="e.g. Foodland"/>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Store / Location #</label>
+                            <input type="text" name="store_number" id="store_number" class="form-control"
+                                   t-att-value="location.store_number if location else ''"
+                                   placeholder="e.g. 3290"/>
+                        </div>
+                    </div>
+
+                    <div class="row mb-3">
+                        <div class="col-md-6">
+                            <label class="form-label">Business Name</label>
+                            <input type="text" name="business_name" id="business_name" class="form-control"
+                                   t-att-value="location.business_name if location else ''"
+                                   placeholder="Business name"/>
+                        </div>
+                    </div>
+
+                    <!-- Branch Name (UAT-003 req 9: auto-default [Chain] - [City]) -->
+                    <div class="mb-3">
+                        <label class="form-label">Branch / Display Name</label>
+                        <input type="text" name="branch_name" id="branch_name" class="form-control"
+                               t-att-value="location.branch_name if location else ''"
+                               placeholder="e.g. Foodland - Picton"/>
+                        <div class="form-text">
+                            Auto-generated from Chain + City. Edit to override.
+                        </div>
+                    </div>
+
+                    <!-- Hidden fields for pre-fill data -->
+                    <input type="hidden" name="google_place_id" id="loc_place_id" t-att-value="location.google_place_id if location else ''"/>
+                    <input type="hidden" name="latitude" id="loc_lat" t-att-value="location.latitude if location else '0'"/>
+                    <input type="hidden" name="longitude" id="loc_lng" t-att-value="location.longitude if location else '0'"/>
+                    <input type="hidden" name="formatted_address" id="loc_formatted_address" t-att-value="location.formatted_address if location else ''"/>
+                    <input type="hidden" name="dispatch_location_id" id="dispatch_location_id" t-att-value="location.dispatch_location_id.id if location and location.dispatch_location_id else '0'"/>
+
+                    <!-- Google Places Address Search (UAT-003 req 10) -->
+                    <div class="mb-3">
+                        <label class="form-label">Street Address * <span class="text-muted">— search or type</span></label>
+                        <input type="text" name="street" id="street_address" class="form-control" required="required"
+                               autocomplete="off"
+                               t-att-value="location.street if location else ''"
+                               placeholder="Start typing an address for Google Places suggestions..."/>
+                    </div>
+
+                    <!-- Contact -->
+                    <div class="row mb-3">
+                        <div class="col-md-4">
+                            <label class="form-label">Contact Name</label>
+                            <input type="text" name="contact_name" class="form-control"
+                                   t-att-value="location.contact_name if location else ''"/>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Contact Phone</label>
+                            <input type="text" name="contact_phone" class="form-control"
+                                   t-att-value="location.contact_phone if location else ''"/>
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Contact Email</label>
+                            <input type="email" name="contact_email" class="form-control"
+                                   t-att-value="location.contact_email if location else ''"/>
+                        </div>
+                    </div>
+
+                    <div class="row mb-3">
+                        <div class="col-md-3">
+                            <label class="form-label">Unit / Suite</label>
+                            <input type="text" name="unit" id="unit_field" class="form-control"
+                                   t-att-value="location.unit if location else ''"/>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label">City</label>
+                            <input type="text" name="city" id="city_field" class="form-control"
+                                   t-att-value="location.city if location else ''"/>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label">Postal Code</label>
+                            <input type="text" name="postal_code" id="postal_code_field" class="form-control"
+                                   t-att-value="location.postal_code if location else ''"/>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label">Province</label>
+                            <select name="state_id" id="state_id_field" class="form-select">
+                                <option value="">--</option>
+                                <t t-foreach="states" t-as="s">
+                                    <option t-att-value="str(s.id)"
+                                            t-att-data-code="s.code or ''"
+                                            t-att-selected="(location and location.state_id and location.state_id.id == s.id) and 'selected' or None">
+                                        <t t-esc="s.name"/>
+                                    </option>
+                                </t>
+                            </select>
+                        </div>
+                    </div>
+
+                    <!-- Operational -->
+                    <div class="row mb-3">
+                        <div class="col-md-6">
+                            <label class="form-label">Dock Info</label>
+                            <input type="text" name="dock_info" class="form-control"
+                                   t-att-value="location.dock_info if location else ''"/>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Opening Hours</label>
+                            <input type="text" name="opening_hours" class="form-control"
+                                   placeholder="e.g. Mon-Fri 8:00-17:00"
+                                   t-att-value="location.opening_hours if location else ''"/>
+                        </div>
+                    </div>
+                    <div class="mb-3 form-check">
+                        <input type="checkbox" name="appointment_required" class="form-check-input" value="1"
+                               t-att-checked="location and location.appointment_required and 'checked' or None"/>
+                        <label class="form-check-label">Appointment Required</label>
+                    </div>
+                    <div class="mb-3 form-check">
+                        <input type="checkbox" name="liftgate_required" class="form-check-input" value="1"
+                               t-att-checked="location and location.liftgate_required and 'checked' or None"/>
+                        <label class="form-check-label">Liftgate Required</label>
+                    </div>
+                    <div class="mb-3 form-check">
+                        <input type="checkbox" name="forklift_available" class="form-check-input" value="1"
+                               t-att-checked="location and location.forklift_available and 'checked' or None"/>
+                        <label class="form-check-label">Forklift Available</label>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Pickup Instructions</label>
+                        <textarea name="pickup_instructions" class="form-control" rows="2"
+                                  t-esc="location.pickup_instructions if location else ''"/>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Delivery Instructions</label>
+                        <textarea name="delivery_instructions" class="form-control" rows="2"
+                                  t-esc="location.delivery_instructions if location else ''"/>
+                    </div>
+
+                    <div class="d-flex justify-content-between">
+                        <a href="/my/saved-locations" class="btn btn-secondary">Cancel</a>
+                        <button type="submit" class="btn btn-primary">Save Location</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <script><![CDATA[
+            // ══════════════════════════════════════════════════════════════════
+            // UAT-003 — Smart Saved Location Autocomplete
+            // ══════════════════════════════════════════════════════════════════
+
+            // ── Load Google Maps dynamically ──
+            (function loadGoogleMaps() {
+                var gmaps = document.createElement('script');
+                gmaps.src = 'https://maps.googleapis.com/maps/api/js?key=AIzaSyALGj3dz0EYDy89J0odZscREtWGAcYkj3U&libraries=places';
+                gmaps.async = true;
+                gmaps.defer = true;
+                document.head.appendChild(gmaps);
+            })();
+
+            // ── Facility Name Autocomplete (UAT-003 req 1-6) ─────────────────────
+            var acTimer = null;
+            var acInput = document.getElementById('loc_name');
+            var acResults = document.getElementById('autocomplete_results');
+            var lastQuery = '';
+
+            if (acInput) {
+                acInput.addEventListener('input', function() {
+                    var q = this.value.trim();
+                    if (q === lastQuery) return;
+                    lastQuery = q;
+                    clearTimeout(acTimer);
+                    if (q.length < 2) {
+                        acResults.style.display = 'none';
+                        return;
+                    }
+                    acTimer = setTimeout(function() {
+                        fetch('/my/saved-locations/autocomplete?q=' + encodeURIComponent(q))
+                            .then(function(r) { return r.json(); })
+                            .then(function(data) {
+                                acResults.innerHTML = '';
+                                if (!data.results || data.results.length === 0) {
+                                    acResults.style.display = 'none';
+                                    return;
+                                }
+                                data.results.forEach(function(item) {
+                                    var div = document.createElement('a');
+                                    div.className = 'list-group-item list-group-item-action';
+                                    div.style.cursor = 'pointer';
+
+                                    var badge = item.source === 'shared' ?
+                                        '<span class="badge bg-success float-end">Known Facility</span>' :
+                                        '<span class="badge bg-secondary float-end">Saved</span>';
+
+                                    var label = item.chain ?
+                                        (item.chain + (item.branch ? ' — ' + item.branch : (item.city ? ' — ' + item.city : ''))) :
+                                        item.name;
+
+                                    var sub = [];
+                                    if (item.business && item.business !== item.chain) sub.push(item.business);
+                                    if (item.store_number) sub.push('Store #' + item.store_number);
+                                    if (item.street) sub.push(item.street);
+                                    if (item.city) sub.push(item.city + ', ' + item.province);
+
+                                    div.innerHTML = '<strong>' + escapeHtml(label) + '</strong>' + badge +
+                                        '<br/><small class="text-muted">' + escapeHtml(sub.join(' · ')) + '</small>';
+
+                                    div.addEventListener('click', function() {
+                                        prefillFromSuggestion(item);
+                                        acResults.style.display = 'none';
+                                        lastQuery = label;
+                                    });
+                                    acResults.appendChild(div);
+                                });
+                                acResults.style.display = 'block';
+                            });
+                    }, 250);
+                });
+
+                // Hide results when clicking outside
+                document.addEventListener('click', function(e) {
+                    if (e.target !== acInput && !acResults.contains(e.target)) {
+                        acResults.style.display = 'none';
+                    }
+                });
+            }
+
+            // ── Helper: set province dropdown by code (ON) or name (Ontario) ──
+            function setProvinceByCode(code) {
+                if (!code) return;
+                var provEl = document.getElementById('state_id_field');
+                if (!provEl) return;
+                var upper = code.toUpperCase().trim();
+                // Try data-code match first (most precise)
+                for (var i = 0; i < provEl.options.length; i++) {
+                    if (provEl.options[i].getAttribute('data-code') === upper) {
+                        provEl.selectedIndex = i;
+                        return;
+                    }
+                }
+                // Fallback: match option text
+                for (var i = 0; i < provEl.options.length; i++) {
+                    if (provEl.options[i].text.toUpperCase() === upper) {
+                        provEl.selectedIndex = i;
+                        return;
+                    }
+                }
+            }
+
+            function prefillFromSuggestion(item) {
+                document.getElementById('loc_name').value = item.chain ?
+                    (item.chain + (item.branch ? ' - ' + item.branch : (item.city ? ' - ' + item.city : ''))) :
+                    item.name;
+                document.getElementById('street_address').value = item.street || '';
+                document.getElementById('city_field').value = item.city || '';
+                document.getElementById('postal_code_field').value = item.postal_code || '';
+                document.getElementsByName('dock_info')[0].value = item.dock_info || '';
+                document.getElementsByName('opening_hours')[0].value = item.opening_hours || '';
+                document.getElementById('loc_place_id').value = item.place_id || '';
+                document.getElementById('loc_lat').value = item.latitude || 0;
+
+                // UAT-004: Override Location Type from master facility's stop_type
+                // Master data precedence > URL ?type= query parameter
+                if (item.location_type) {
+                    var typeSelect = document.querySelector('select[name="location_type"]');
+                    if (typeSelect) {
+                        typeSelect.value = item.location_type;
+                    }
+                }
+                document.getElementById('loc_lng').value = item.longitude || 0;
+                // Link to shared master dispatch location (UAT-003 req 6)
+                if (item.source === 'shared' && item.dispatch_location_id) {
+                    document.getElementById('dispatch_location_id').value = item.dispatch_location_id;
+                }
+                if (item.liftgate_required) {
+                    document.getElementsByName('liftgate_required')[0].checked = true;
+                }
+                if (item.appointment_required) {
+                    document.getElementsByName('appointment_required')[0].checked = true;
+                }
+                if (item.forklift_available) {
+                    document.getElementsByName('forklift_available')[0].checked = true;
+                }
+                document.getElementById('chain_name').value = item.chain || '';
+                document.getElementById('business_name').value = item.business || '';
+                document.getElementById('store_number').value = item.store_number || '';
+                // Auto-default branch name if not manually set
+                var branchEl = document.getElementById('branch_name');
+                var branchManual = document.getElementById('branch_name_manual');
+                if (branchEl && branchManual && branchManual.value !== '1') {
+                    branchEl.value = item.branch || '';
+                }
+
+                // Auto-select province from suggestion (works for both shared and own locations)
+                setProvinceByCode(item.province);
+
+                // If a shared dispatch location was selected, try to fetch Google
+                // Place details from master data
+                if (item.source === 'shared') {
+                    // Province already set above
+                }
+            }
+
+            // ── Branch Name Auto-Default (UAT-003 req 9) ────────────────────────
+            var branchEl = document.getElementById('branch_name');
+            var chainEl = document.getElementById('chain_name');
+            var cityEl = document.getElementById('city_field');
+            var branchManualEl = document.getElementById('branch_name_manual');
+            var branchManuallySet = branchManualEl ? branchManualEl.value === '1' : false;
+
+            function autoDefaultBranchName() {
+                if (!branchEl || branchManuallySet) return;
+                if (!branchEl.value || branchEl.value.trim() === '') {
+                    var chain = (chainEl ? chainEl.value.trim() : '') || '';
+                    var city = (cityEl ? cityEl.value.trim() : '') || '';
+                    if (chain && city) {
+                        branchEl.value = chain + ' - ' + city;
+                    } else if (chain) {
+                        branchEl.value = chain;
+                    }
+                }
+            }
+
+            // Mark branch as manually edited
+            if (branchEl) {
+                branchEl.addEventListener('input', function() {
+                    // Only mark manual once the user actually types something in
+                    if (branchEl.value && !branchManuallySet) {
+                        branchManuallySet = true;
+                        if (branchManualEl) branchManualEl.value = '1';
+                    }
+                });
+            }
+
+            // Auto-default on chain or city change (only if not manually set)
+            if (chainEl) {
+                chainEl.addEventListener('change', function() {
+                    autoDefaultBranchName();
+                });
+                chainEl.addEventListener('blur', function() {
+                    autoDefaultBranchName();
+                });
+            }
+            if (cityEl) {
+                cityEl.addEventListener('change', function() {
+                    autoDefaultBranchName();
+                });
+                cityEl.addEventListener('blur', function() {
+                    autoDefaultBranchName();
+                });
+            }
+
+            // ── Google Places Address Autocomplete (UAT-003 req 10) ──────────────
+            function initGooglePlacesAutocomplete() {
+                var streetInput = document.getElementById('street_address');
+                if (!streetInput || typeof google === 'undefined' || !google.maps || !google.maps.places) {
+                    // Retry if Google Maps not loaded yet
+                    setTimeout(initGooglePlacesAutocomplete, 500);
+                    return;
+                }
+
+                var autocomplete = new google.maps.places.Autocomplete(streetInput, {
+                    componentRestrictions: { country: 'ca' },
+                    types: ['address'],
+                });
+
+                autocomplete.addListener('place_changed', function() {
+                    var place = autocomplete.getPlace();
+                    if (!place || !place.address_components) return;
+
+                    // Only fill address from Google if not already pre-filled from
+                    // a known facility (lat/lng not already set)
+                    var existingLat = parseFloat(document.getElementById('loc_lat').value) || 0;
+                    if (existingLat !== 0) return; // Already populated from known facility
+
+                    var comp = {};
+                    place.address_components.forEach(function(c) {
+                        c.types.forEach(function(t) { comp[t] = c; });
+                    });
+
+                    document.getElementById('street_address').value = [
+                        comp.street_number ? comp.street_number.long_name : '',
+                        comp.route ? comp.route.long_name : '',
+                    ].join(' ').trim() || place.name || '';
+
+                    document.getElementById('city_field').value =
+                        (comp.locality || comp.administrative_area_level_3 ||
+                         comp.sublocality || comp.postal_town || {}).long_name || '';
+
+                    document.getElementById('postal_code_field').value =
+                        (comp.postal_code || {}).long_name || '';
+
+                    var provCode = (comp.administrative_area_level_1 || {}).short_name || '';
+                    setProvinceByCode(provCode);
+
+                    document.getElementById('unit_field').value =
+                        (comp.subpremise || {}).long_name || '';
+
+                    document.getElementById('loc_place_id').value = place.place_id || '';
+                    document.getElementById('loc_lat').value = place.geometry ? place.geometry.location.lat() : 0;
+                    document.getElementById('loc_lng').value = place.geometry ? place.geometry.location.lng() : 0;
+                    document.getElementById('loc_formatted_address').value = place.formatted_address || '';
+
+                    // Auto-default branch name from chain + city
+                    autoDefaultBranchName();
+
+                    // Auto-default location name from formatted address if empty
+                    var nameEl = document.getElementById('loc_name');
+                    if (nameEl && (!nameEl.value || nameEl.value.trim() === '')) {
+                        nameEl.value = place.name || place.formatted_address || '';
+                    }
+                });
+            }
+
+            // Initialize Google Places after page load
+            if (document.readyState === 'complete') {
+                initGooglePlacesAutocomplete();
+            } else {
+                window.addEventListener('load', function() {
+                    initGooglePlacesAutocomplete();
+                });
+            }
+
+            function escapeHtml(str) {
+                var div = document.createElement('div');
+                div.appendChild(document.createTextNode(str));
+                return div.innerHTML;
+            }
+        ]]></script>
+    </t>
+</template>
+
+</odoo>

@@ -94,7 +94,10 @@ class RouteResolver:
         corridors = self.env["logistics.corridor"].search([("active", "=", True)])
         for corridor in corridors:
             segment = corridor.resolve_region_segment(origin_region, destination_region)
-            if segment and segment["distance_km"] > 0:
+            if not segment:
+                continue
+            # Allow intra-region (distance 0) segments for local corridors.
+            if origin_region == destination_region or (segment.get("distance_km") or 0) > 0:
                 segments.append(segment)
         return segments
 

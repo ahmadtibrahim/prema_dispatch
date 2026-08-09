@@ -99,6 +99,8 @@ class LogisticsBooking(models.Model):
     shipment_type = fields.Selection(SHIPMENT_TYPE_SELECTION, required=True)
     temperature_mode = fields.Selection(TEMPERATURE_MODE_SELECTION, required=True)
     pallets = fields.Integer(required=True)
+    physical_pallets = fields.Integer(default=1)
+    shared_pallet_mode = fields.Boolean(default=False)
     weight_lbs = fields.Float(required=True)
     liftgate_pickup = fields.Boolean()
     liftgate_delivery = fields.Boolean()
@@ -230,6 +232,50 @@ class LogisticsBooking(models.Model):
     # ── Booking Legs from Route Snapshot ──────────────────────────────
     # ------------------------------------------------------------------
 
+    def _build_confirm_delivery_stops(self, session, address_vals):
+        """Build delivery_stops list for confirm_from_session, supporting
+        multi-stop with per-stop pallets and shared-pallet mode."""
+        stops_data = address_vals.get("delivery_stops_data") or []
+        if stops_data:
+            # Multi-stop: use per-stop data from UAT-011
+            stops = []
+            for sd in stops_data:
+                sl = self.env["logistics.saved.location"].browse(sd.get("saved_location_id") or 0)
+                session_stop = session.delivery_stop_ids.filtered(
+                    lambda s, seq=sd.get("sequence", 0): s.sequence == seq
+                )[:1]
+                stops.append({
+                    "company_name": sl.business_name or sl.name if sl else "",
+                    "street": sl.street if sl else "",
+                    "formatted_address": sl.street if sl else "",
+                    "postal_code": sl.postal_code if sl else "",
+                    "contact_name": sd.get("contact_name") or "",
+                    "phone": sd.get("phone") or "",
+                    "instructions": sd.get("instructions") or "",
+                    "pallet_count": session_stop.pallets if session_stop else 1,
+                    "weight_lb": session_stop.weight_lbs if session_stop else 500,
+                    "liftgate_required": session.liftgate_delivery,
+                    "saved_location_id": sd.get("saved_location_id") or None,
+                    "shared_pallet": bool(session_stop.shared_pallet) if session_stop else False,
+                })
+            return stops
+        # Single-stop fallback
+        de_loc = session.delivery_saved_location_id
+        return [{
+            "company_name": address_vals.get("delivery_company") or "",
+            "street": address_vals.get("delivery_address") or "",
+            "formatted_address": address_vals.get("delivery_address") or "",
+            "postal_code": address_vals.get("delivery_postal_code") or "",
+            "contact_name": address_vals.get("delivery_contact_name") or "",
+            "phone": address_vals.get("delivery_phone") or "",
+            "instructions": address_vals.get("delivery_instructions") or "",
+            "pallet_count": session.physical_pallets or session.pallets,
+            "weight_lb": session.weight_lbs,
+            "liftgate_required": session.liftgate_delivery,
+            "saved_location_id": de_loc.id if de_loc else None,
+            "shared_pallet": False,
+        }]
+
     @api.model
     def confirm_from_session(self, token, address_vals):
         """Confirm a portal quote through the canonical orchestration service."""
@@ -293,22 +339,12 @@ class LogisticsBooking(models.Model):
                 "contact_name": address_vals.get("pickup_contact_name") or "",
                 "phone": address_vals.get("pickup_phone") or "",
                 "instructions": address_vals.get("pickup_instructions") or "",
-                "pallet_count": session.pallets,
+                "pallet_count": session.physical_pallets or session.pallets,
                 "weight_lb": session.weight_lbs,
                 "liftgate_required": session.liftgate_pickup,
+                "saved_location_id": session.pickup_saved_location_id.id if session.pickup_saved_location_id else None,
             }],
-            "delivery_stops": [{
-                "company_name": address_vals.get("delivery_company") or "",
-                "street": address_vals.get("delivery_address") or "",
-                "formatted_address": address_vals.get("delivery_address") or "",
-                "postal_code": address_vals.get("delivery_postal_code") or "",
-                "contact_name": address_vals.get("delivery_contact_name") or "",
-                "phone": address_vals.get("delivery_phone") or "",
-                "instructions": address_vals.get("delivery_instructions") or "",
-                "pallet_count": session.pallets,
-                "weight_lb": session.weight_lbs,
-                "liftgate_required": session.liftgate_delivery,
-            }],
+            "delivery_stops": self._build_confirm_delivery_stops(session, address_vals),
             "load_type": session.shipment_type,
             "equipment_type": session.temperature_mode,
             "required_temperature_c": (
@@ -316,7 +352,9 @@ class LogisticsBooking(models.Model):
                 if session.temperature_mode == "reefer"
                 else None
             ),
-            "pallets": session.pallets,
+            "pallets": session.physical_pallets or session.pallets,
+            "physical_pallets": session.physical_pallets or session.pallets,
+            "shared_pallet_mode": session.shared_pallet_mode or False,
             "weight_lbs": session.weight_lbs,
             "liftgate_pickup": session.liftgate_pickup,
             "liftgate_delivery": session.liftgate_delivery,
@@ -565,18 +603,69 @@ class LogisticsBooking(models.Model):
                 "weight_out_lbs": self.weight_lbs,
                 "dispatcher_notes": destination_stop.instructions or "",
             })
-        for line in self.line_ids:
-            Item.create({
-                "job_id": job.id,
-                "name": line.description or "Skid",
-                "description": line.commodity or self.commodity or "",
-                "pallet_count": line.pallets,
-                "weight_lbs": line.weight_lbs,
-                "pickup_stop_id": created_origin.id if created_origin else False,
-                "delivery_stop_id": created_destination.id if created_destination else False,
-                "available_after_stop_id": created_origin.id if created_origin else False,
-                "temperature_zone": "chilled" if self.temperature_mode == "reefer" else "ambient",
-            })
+        # ── Create dispatch items: shared pallet or dedicated ──
+        Alloc = self.env["prema.dispatch.pallet.stop.allocation"].sudo()
+        physical_count = self.physical_pallets or self.pallets
+        delivery_stops = self.stop_ids.filtered(lambda s: s.stop_type == "delivery").sorted("sequence")
+
+        if self.shared_pallet_mode and delivery_stops:
+            # Shared pallet: ONE item per physical pallet, allocated to all delivery stops
+            for p in range(physical_count):
+                label = f"Skid-{p+1}" if physical_count > 1 else "Shared Skid"
+                item = Item.create({
+                    "job_id": job.id,
+                    "name": label,
+                    "description": self.commodity or "",
+                    "pallet_count": 1,
+                    "weight_lbs": self.weight_lbs / max(physical_count, 1),
+                    "pickup_stop_id": created_origin.id if created_origin else False,
+                    "delivery_stop_id": delivery_stops[0].id if delivery_stops else (created_destination.id if created_destination else False),
+                    "available_after_stop_id": created_origin.id if created_origin else False,
+                    "temperature_zone": "chilled" if self.temperature_mode == "reefer" else "ambient",
+                    "load_unit_type": "shared_pallet",
+                    "shared_skid": True,
+                })
+                # Create stop allocations for all delivery stops
+                for idx, dstop in enumerate(delivery_stops):
+                    Alloc.create({
+                        "dispatch_item_id": item.id,
+                        "stop_id": dstop.id,
+                        "unload_sequence": (idx + 1) * 10,
+                    })
+        elif delivery_stops and len(delivery_stops) > 1:
+            # Dedicated multi-stop: create items based on per-stop pallet counts
+            pallet_counter = 1
+            for dstop in delivery_stops:
+                stop_pallets = dstop.pallet_count or 1
+                for _ in range(stop_pallets):
+                    Item.create({
+                        "job_id": job.id,
+                        "name": f"Skid-{pallet_counter}",
+                        "description": self.commodity or "",
+                        "pallet_count": 1,
+                        "weight_lbs": self.weight_lbs / max(physical_count, 1),
+                        "pickup_stop_id": created_origin.id if created_origin else False,
+                        "delivery_stop_id": dstop.id,
+                        "available_after_stop_id": created_origin.id if created_origin else False,
+                        "temperature_zone": "chilled" if self.temperature_mode == "reefer" else "ambient",
+                        "load_unit_type": "pallet",
+                    })
+                    pallet_counter += 1
+        else:
+            # Single-stop or legacy: one item per booking line
+            for line in self.line_ids:
+                Item.create({
+                    "job_id": job.id,
+                    "name": line.description or "Skid",
+                    "description": line.commodity or self.commodity or "",
+                    "pallet_count": line.pallets,
+                    "weight_lbs": line.weight_lbs,
+                    "pickup_stop_id": created_origin.id if created_origin else False,
+                    "delivery_stop_id": created_destination.id if created_destination else False,
+                    "available_after_stop_id": created_origin.id if created_origin else False,
+                    "temperature_zone": "chilled" if self.temperature_mode == "reefer" else "ambient",
+                    "load_unit_type": "pallet",
+                })
         return job
 
     def _create_dispatch_job(self):

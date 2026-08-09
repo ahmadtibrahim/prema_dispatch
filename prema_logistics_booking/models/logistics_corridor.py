@@ -312,6 +312,42 @@ class LogisticsCorridor(models.Model):
         after pickup, not a straight-line estimate.
         """
         self.ensure_one()
+
+        # Special case: intra-region booking (pickup and delivery in the same
+        # service Region). The portal quote flow resolves at the Region level
+        # (via FSAs) before we have exact addresses, so we treat this as a
+        # zero-distance segment on a local corridor instead of accidentally
+        # pricing the entire corridor loop from "hub visit #1" to "hub visit #2".
+        #
+        # IMPORTANT: Restrict this to local corridors only; linehaul corridors
+        # that revisit the hub Region must not be usable as "local within R1".
+        if origin_region and destination_region and origin_region == destination_region:
+            if self.direction not in ("local", "local_loop"):
+                return False
+            stops = self.stop_ids.filtered(lambda s: s.active and s.region_id).sorted("sequence")
+            # Need at least one served stop/hub match for this region with both permissions.
+            served = stops.filtered(
+                lambda s: s.region_id == origin_region and s.pickup_allowed and s.delivery_allowed
+            )
+            if not served:
+                return False
+            stop = served[:1]
+            return {
+                "corridor": self,
+                "origin_stop": stop,
+                "destination_stop": stop,
+                "origin_region": origin_region,
+                "destination_region": destination_region,
+                "distance_km": 0.0,
+                "pickup_day_offset": 0,
+                "delivery_day_offset": 0,
+                "origin_direction": "local",
+                "destination_direction": "local",
+                "origin_departure_time": self.start_time,
+                "destination_arrival_time": False,
+                "destination_sequence": stop.sequence,
+            }
+
         stops = self.stop_ids.filtered(lambda stop: stop.active and stop.region_id).sorted("sequence")
         route_end = max(
             (stops.mapped("distance_from_origin_km") or [0.0])
@@ -695,6 +731,26 @@ class LogisticsCorridorDeparture(models.Model):
         ("manual_override", "Manual Override"),
     ], default="corridor_default", required=True, copy=False)
     driver_id = fields.Many2one("res.partner", string="Driver")
+    special_operation = fields.Boolean(
+        string="Special Operation", default=False,
+        help="Manual/overflow/special-operation departure. Not auto-generated.",
+    )
+    special_operation_reason = fields.Char(string="Special Operation Reason")
+    special_operation_approved_by = fields.Many2one("res.users", string="Approved By")
+    source_corridor_id = fields.Many2one(
+        "logistics.corridor", string="Source Pricing Corridor",
+        help="The corridor whose pricing applies to this special departure.",
+    )
+    routing_review_required = fields.Boolean(
+        string="Routing Review Required", default=False,
+        help="Flagged when corridor changes affect this departure's bookings.",
+    )
+    capacity_status = fields.Selection([
+        ("available", "Available"),
+        ("limited", "Limited"),
+        ("full", "Full"),
+        ("overbooked_review", "Overbooked — Review"),
+    ], string="Capacity Status", compute="_compute_capacity_status", store=True)
     active = fields.Boolean(default=True)
     status = fields.Selection([
         ("scheduled", "Scheduled"), ("departed", "Departed"),
@@ -830,3 +886,16 @@ class LogisticsCorridorDeparture(models.Model):
             cn = r.corridor_id.name if r.corridor_id else ""
             d = r.departure_date.strftime("%a %b %d") if r.departure_date else ""
             r.name = f"{cn} — {d}" if cn else d
+
+    @api.depends("peak_pallets", "max_capacity")
+    def _compute_capacity_status(self):
+        for r in self:
+            cap = r.max_capacity or 12
+            used = r.peak_pallets or 0
+            avail = cap - used
+            if avail <= 0:
+                r.capacity_status = "full" if used <= cap else "overbooked_review"
+            elif avail <= 2:
+                r.capacity_status = "limited"
+            else:
+                r.capacity_status = "available"

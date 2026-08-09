@@ -1,7 +1,10 @@
+import logging
 import re
 
 from odoo import _, api, fields, models
 from odoo.exceptions import AccessError, UserError
+
+_logger = logging.getLogger(__name__)
 
 
 FSA_RE = re.compile(r"^[A-Z][0-9][A-Z]$")
@@ -29,6 +32,21 @@ class LogisticsRegion(models.Model):
         help="Historical only. Customer pricing is configured on Corridors.",
     )
 
+    # ── Pricing overrides ────────────────────────────────────────────
+    currency_id = fields.Many2one(
+        "res.currency", default=lambda self: self.env.company.currency_id,
+    )
+    minimum_booking_charge = fields.Monetary(
+        string="Minimum Booking Charge",
+        currency_field="currency_id",
+        default=0.0,
+        help=(
+            "Optional pricing floor for any booking where this Region is the "
+            "pickup or delivery endpoint. If set, it overrides corridor-level "
+            "minimums by taking the maximum."
+        ),
+    )
+
     # ── Map fields ────────────────────────────────────────────────────
     marker_latitude = fields.Float(string="Marker Latitude", digits=(10, 6))
     marker_longitude = fields.Float(string="Marker Longitude", digits=(10, 6))
@@ -41,6 +59,56 @@ class LogisticsRegion(models.Model):
     public_description = fields.Text(string="Public Description")
     default_hub_id = fields.Many2one("logistics.hub", string="Default Hub")
 
+    # ── Boundary metadata ──────────────────────────────────────────────
+    boundary_source = fields.Char(
+        string="Boundary Source",
+        help="e.g. 'Statistics Canada 2021 Census Boundary File', "
+             "'Custom aggregation by Dispatch Manager'",
+    )
+    boundary_source_url = fields.Char(string="Boundary Source URL")
+    boundary_version_date = fields.Date(string="Boundary Version Date")
+    boundary_status = fields.Selection([
+        ("draft", "Draft"),
+        ("proposed", "Proposed"),
+        ("reviewed", "Reviewed"),
+        ("approved", "Approved"),
+        ("rejected", "Rejected"),
+    ], default="draft", string="Boundary Status",
+       help="Only 'Approved' boundaries participate in live region matching.")
+    boundary_reviewed_by = fields.Many2one(
+        "res.users", string="Boundary Reviewed By", readonly=True, copy=False,
+    )
+    boundary_reviewed_at = fields.Datetime(
+        string="Boundary Reviewed At", readonly=True, copy=False,
+    )
+    boundary_area_km2 = fields.Float(
+        string="Boundary Area (km²)", digits=(12, 3), readonly=True,
+        help="Computed from the polygon geometry.",
+    )
+    boundary_checksum = fields.Char(
+        string="Boundary Checksum", readonly=True, copy=False,
+        help="SHA-256 of the normalized polygon. Used for cache invalidation.",
+    )
+    match_priority = fields.Integer(
+        string="Match Priority", default=10,
+        help="Higher priority wins when two approved regions overlap. "
+             "Default is 10; increase for smaller/more specific regions.",
+    )
+
+    # ── Country / Province ────────────────────────────────────────────
+    country_id = fields.Many2one(
+        "res.country", string="Country",
+        default=lambda self: self.env.ref("base.ca"),
+        index=True,
+        help="Country this region belongs to. Determines available provinces/states.",
+    )
+    state_id = fields.Many2one(
+        "res.country.state", string="Province / State",
+        domain="[('country_id', '=', country_id)]",
+        index=True,
+        help="Province or state this region belongs to.",
+    )
+
     # ── Status ────────────────────────────────────────────────────────
     customer_visible = fields.Boolean(default=True, string="Customer Visible")
     phase = fields.Integer(default=1)
@@ -50,6 +118,30 @@ class LogisticsRegion(models.Model):
         help="Only approved Prema LTL regions are offered in new route and recurring-job setup.",
     )
     active = fields.Boolean(default=True)
+
+    def _is_network_available(self):
+        """Check the full hierarchy for new logistics operations:
+
+        region.active = True
+        AND region.country_id exists
+        AND region.country_id.logistics_network_enabled = True
+        AND region.state_id exists
+        AND region.state_id.logistics_network_enabled = True
+
+        Returns False if any link in the chain is unavailable.
+        Historical records are unaffected — this is for NEW operations only."""
+        self.ensure_one()
+        if not self.active:
+            return False
+        if not self.country_id:
+            return False
+        if not self.country_id.logistics_network_enabled:
+            return False
+        if not self.state_id:
+            return False
+        if not self.state_id.logistics_network_enabled:
+            return False
+        return True
 
     # ── Postal Coverage ──────────────────────────────────────────────
     fsa_ids = fields.One2many("logistics.fsa", "region_id", string="FSAs")
@@ -187,6 +279,177 @@ class LogisticsRegion(models.Model):
 
         from ..services.network_availability_service import NetworkAvailabilityService
         return NetworkAvailabilityService(self.env).list_destinations_from(origin, equipment=equipment)
+
+    # ── Constraints ──────────────────────────────────────────────────
+
+    @api.constrains("country_id", "state_id")
+    def _check_state_belongs_to_country(self):
+        """Ensure the selected province/state belongs to the selected country."""
+        for region in self:
+            if region.country_id and region.state_id:
+                if region.state_id.country_id != region.country_id:
+                    raise UserError(_(
+                        "The province/state '%(state)s' does not belong to "
+                        "the country '%(country)s'. Please select a "
+                        "province/state within the chosen country.",
+                        state=region.state_id.name,
+                        country=region.country_id.name,
+                    ))
+
+    # ── Cascading deactivation ────────────────────────────────────────
+
+    @api.model
+    def _get_available_regions_domain(self):
+        """Domain for regions available for new operations.
+
+        Checks the full hierarchy:
+          region.active = True
+          AND region.is_official_ltl_region = True
+          AND country_id.logistics_network_enabled = True
+          AND state_id.logistics_network_enabled = True
+        """
+        return [
+            ("active", "=", True),
+            ("is_official_ltl_region", "=", True),
+            ("country_id", "!=", False),
+            ("country_id.logistics_network_enabled", "=", True),
+            ("state_id", "!=", False),
+            ("state_id.logistics_network_enabled", "=", True),
+        ]
+
+    def write(self, vals):
+        """Detect deactivation and log. If active is being set to False,
+        log the change for audit. Cascading effects (corridor stops, future
+        departures, bookings) are handled by downstream processes that
+        filter by _get_available_regions_domain()."""
+        if "active" in vals and not vals["active"]:
+            for region in self:
+                _logger.info(
+                    "Region %s (ID %s) deactivated. Country=%s State=%s. "
+                    "Historical records preserved. Region unavailable for new operations.",
+                    region.code, region.id,
+                    region.country_id.name if region.country_id else "N/A",
+                    region.state_id.name if region.state_id else "N/A",
+                )
+        return super().write(vals)
+
+    # ── Boundary management ─────────────────────────────────────────
+
+    def action_validate_boundary(self):
+        """Validate the polygon_geojson field using Shapely.
+
+        Computes boundary_area_km2 and boundary_checksum if valid.
+        Updates boundary_status to 'reviewed' if currently 'draft' or 'proposed'.
+        """
+        from ..services.region_resolver import RegionResolver
+
+        resolver = RegionResolver(self.env)
+        for region in self:
+            if not region.polygon_geojson:
+                raise UserError(_("Region %s has no polygon GeoJSON to validate.") % region.code)
+
+            is_valid, message, repaired = resolver.validate_geometry(region.polygon_geojson)
+
+            vals = {}
+            if is_valid:
+                vals["boundary_area_km2"] = resolver.compute_area_km2(region.polygon_geojson)
+                vals["boundary_checksum"] = resolver.compute_checksum(region.polygon_geojson)
+                if region.boundary_status in ("draft", "proposed"):
+                    vals["boundary_status"] = "reviewed"
+                    vals["boundary_reviewed_by"] = self.env.user.id
+                    vals["boundary_reviewed_at"] = fields.Datetime.now()
+                region.write(vals)
+                # Clear geometry cache
+                resolver.invalidate_cache(region)
+            else:
+                if repaired:
+                    raise UserError(_(
+                        "Boundary validation failed for %(code)s:\n\n%(msg)s\n\n"
+                        "A repaired geometry is available. Review the proposed "
+                        "repair before applying it.",
+                        code=region.code, msg=message,
+                    ))
+                else:
+                    raise UserError(_(
+                        "Boundary validation failed for %(code)s:\n\n%(msg)s",
+                        code=region.code, msg=message,
+                    ))
+
+        return {
+            "type": "ir.actions.client",
+            "tag": "display_notification",
+            "params": {
+                "title": _("Boundary Validated"),
+                "message": _("Polygon is valid. Area and checksum updated."),
+                "type": "success",
+                "sticky": False,
+            },
+        }
+
+    def action_preview_boundary(self):
+        """Return an action to preview the boundary on a map.
+        For now, returns the region form with the map anchor focused."""
+        return {
+            "type": "ir.actions.act_window",
+            "res_model": "logistics.region",
+            "res_id": self.id,
+            "view_mode": "form",
+            "target": "current",
+        }
+
+    def action_check_overlaps(self):
+        """Check for polygon overlaps with other regions in the same province."""
+        from ..services.region_resolver import RegionResolver
+
+        resolver = RegionResolver(self.env)
+        overlaps = resolver.detect_overlaps(self)
+
+        if not overlaps:
+            return {
+                "type": "ir.actions.client",
+                "tag": "display_notification",
+                "params": {
+                    "title": _("No Overlaps"),
+                    "message": _("This region does not overlap with any other "
+                                 "approved region in the same province."),
+                    "type": "success",
+                    "sticky": False,
+                },
+            }
+
+        # Build a message summarizing overlaps
+        lines = []
+        for o in overlaps:
+            lines.append(_(
+                "%(code)s (%(name)s): %(area).1f km² overlap "
+                "(%(pct).1f%% of the smaller region) — %(severity)s",
+                code=o["region_b"].code,
+                name=o["region_b"].name,
+                area=o["overlap_area_km2"],
+                pct=max(o["overlap_pct_a"], o["overlap_pct_b"]),
+                severity=o["severity"],
+            ))
+
+        raise UserError(_(
+            "Overlap detected with %(count)d region(s):\n\n%(lines)s\n\n"
+            "Review and adjust boundaries or set match_priority values.",
+            count=len(overlaps),
+            lines="\n".join(lines),
+        ))
+
+    def action_test_coordinate(self):
+        """Test a coordinate against this region's polygon.
+
+        Opens a simple prompt to enter lat/lng and shows the result.
+        """
+        return {
+            "type": "ir.actions.act_window",
+            "name": _("Test Coordinate — %s") % self.code,
+            "res_model": "logistics.region.test.coordinate",
+            "view_mode": "form",
+            "target": "new",
+            "context": {"default_region_id": self.id},
+        }
 
     def name_get(self):
         return [(r.id, f"{r.code} - {r.name}") for r in self]

@@ -2,16 +2,17 @@
 <odoo>
 
 <!-- ====================================================================
-     Portal Dashboard — "Request a Quote" card for beta-testers only
+     Portal Dashboard — Bookings card (portal-only access to quote flow)
      ==================================================================== -->
 <template id="portal_my_home_booking_card"
-          name="Portal My Home: Request a Quote card"
+          name="Portal My Home: Bookings card"
           inherit_id="portal.portal_my_home">
     <xpath expr="//div[@id='portal_common_category']" position="inside">
-        <t t-if="user.has_group('prema_logistics_booking.group_booking_beta_tester')"
+        <t t-if="request.env.user.has_group('base.group_portal') or request.env.user.has_group('base.group_user')"
            t-call="portal.portal_docs_entry">
-            <t t-set="title">Request a Quote</t>
-            <t t-set="text">Book LTL/FTL shipments online</t>
+            <t t-set="config_card" t-value="True"/>
+            <t t-set="title">Bookings</t>
+            <t t-set="text">Request a quote / book a shipment</t>
             <t t-set="url" t-value="'/request-a-quote'"/>
         </t>
     </xpath>
@@ -81,20 +82,359 @@
     </t>
 </template>
 
+<!-- UAT-001: Authenticated booking Step 1 with Saved Locations -->
+<template id="portal_step1_locations" name="Booking Step 1 - Saved Locations">
+    <t t-call="portal.portal_layout">
+        <div class="container o_page_container py-5">
+            <div class="mx-auto" style="max-width:700px">
+                <h2 class="mb-2">Book a Shipment</h2>
+                <p class="text-muted mb-4">Select your pickup and delivery locations.</p>
+
+                <div t-if="error" class="alert alert-warning" t-esc="error"/>
+
+                <form action="/my/booking/new" method="post">
+                    <input type="hidden" name="csrf_token" t-att-value="request.csrf_token()"/>
+
+                    <!-- Pickup Location -->
+                    <div class="card mb-4">
+                        <div class="card-header bg-light"><strong>📦 Pickup Location</strong></div>
+                        <div class="card-body">
+                            <div class="mb-3">
+                                <label class="form-label fw-bold">Select a saved location</label>
+                                <select name="pickup_saved_location_id" class="form-select form-select-lg">
+                                    <option value="">— Choose pickup location —</option>
+                                    <t t-foreach="pickup_locations" t-as="loc">
+                                        <option t-att-value="str(loc.id)"
+                                                t-att-selected="'selected' if loc.is_default_pickup else None">
+                                            <t t-esc="loc.name"/>
+                                            <t t-if="loc.is_default_pickup"> ★ (Default)</t>
+                                            — <t t-esc="loc.city or ''"/>, <t t-esc="loc.state_id.code or ''"/>
+                                        </option>
+                                    </t>
+                                </select>
+                            </div>
+                            <div class="text-muted small mb-2" id="pickup_detail_text">
+                                <t t-if="not pickup_locations">
+                                    No saved pickup locations yet.
+                                </t>
+                            </div>
+                            <a href="/my/saved-locations/add?type=pickup&amp;return=booking" class="btn btn-sm btn-outline-primary">
+                                + Add New Pickup Location
+                            </a>
+                        </div>
+                    </div>
+
+                    <!-- Delivery Locations (multi-stop) -->
+                    <div class="card mb-4">
+                        <div class="card-header bg-light d-flex justify-content-between align-items-center">
+                            <strong>📍 Delivery Stops</strong>
+                            <button type="button" class="btn btn-sm btn-outline-primary" id="add_delivery_stop_btn">+ Add Stop</button>
+                        </div>
+                        <div class="card-body" id="delivery_stops_container">
+                            <!-- Delivery Stop 1 (always present) -->
+                            <div class="delivery-stop-row border rounded p-3 mb-2" data-stop-index="0">
+                                <div class="d-flex justify-content-between align-items-center mb-2">
+                                    <strong class="stop-label">Delivery Stop 1</strong>
+                                    <span/>
+                                </div>
+                                <select name="delivery_saved_location_id_1" class="form-select form-select-lg delivery-select">
+                                    <option value="">— Choose delivery location —</option>
+                                    <t t-foreach="delivery_locations" t-as="loc">
+                                        <option t-att-value="str(loc.id)"
+                                                t-att-data-street="loc.street or ''"
+                                                t-att-data-city="loc.city or ''"
+                                                t-att-data-state="loc.state_id.code or ''"
+                                                t-att-selected="'selected' if loc.is_default_delivery else None">
+                                            <t t-esc="loc.name"/>
+                                            <t t-if="loc.is_default_delivery"> ★ (Default)</t>
+                                            — <t t-esc="loc.city or ''"/>, <t t-esc="loc.state_id.code or ''"/>
+                                        </option>
+                                    </t>
+                                </select>
+                                <div class="stop-detail-text text-muted small mt-1"/>
+                                <div class="mt-2 d-flex gap-2">
+                                    <button type="button" class="btn btn-sm btn-outline-secondary move-up-btn" style="display:none">↑</button>
+                                    <button type="button" class="btn btn-sm btn-outline-secondary move-down-btn" style="display:none">↓</button>
+                                    <a href="/my/saved-locations/add?type=delivery&amp;return=booking&amp;stop_index=1" class="btn btn-sm btn-outline-secondary add-loc-link">+ New Location</a>
+                                    <button type="button" class="btn btn-sm btn-outline-danger remove-stop-btn" style="display:none">✕</button>
+                                </div>
+                            </div>
+                            <div id="max_stops_msg" class="text-muted small text-center" style="display:none">
+                                Maximum 20 delivery stops per booking.
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Multi-stop delivery JS -->
+                    <script><![CDATA[
+                        var MAX_DELIVERY_STOPS = 20;
+                        var stopCounter = 1; // starts at 1, Stop 1 already rendered
+
+                        // Template for a new stop row (cloned from Stop 1 style)
+                        function createStopRow(index) {
+                            var tmpl = document.querySelector('.delivery-stop-row');
+                            if (!tmpl) return null;
+                            var row = tmpl.cloneNode(true);
+                            row.setAttribute('data-stop-index', index);
+                            row.querySelector('.stop-label').textContent = 'Delivery Stop ' + (index + 1);
+                            // Update select name
+                            var sel = row.querySelector('select');
+                            sel.name = 'delivery_saved_location_id_' + (index + 1);
+                            sel.value = '';
+                            sel.classList.remove('is-valid');
+                            // Clear detail text
+                            row.querySelector('.stop-detail-text').textContent = '';
+                            // Update add-loc link
+                            var addLoc = row.querySelector('.add-loc-link');
+                            if (addLoc) addLoc.href = '/my/saved-locations/add?type=delivery&return=booking&stop_index=' + (index + 1);
+                            // Show all buttons (hidden on template)
+                            row.querySelector('.move-up-btn').style.display = '';
+                            row.querySelector('.move-down-btn').style.display = '';
+                            row.querySelector('.remove-stop-btn').style.display = '';
+                            return row;
+                        }
+
+                        function rebindStopRow(row, index, total) {
+                            // Label
+                            row.querySelector('.stop-label').textContent = 'Delivery Stop ' + (index + 1);
+                            // Select name
+                            var sel = row.querySelector('select');
+                            sel.name = 'delivery_saved_location_id_' + (index + 1);
+                            // Add-loc link
+                            var addLoc = row.querySelector('.add-loc-link');
+                            if (addLoc) addLoc.href = '/my/saved-locations/add?type=delivery&return=booking&stop_index=' + (index + 1);
+                            // Move up: hide for first
+                            row.querySelector('.move-up-btn').style.display = (index > 0) ? '' : 'none';
+                            // Move down: hide for last
+                            row.querySelector('.move-down-btn').style.display = (index < total - 1) ? '' : 'none';
+                            // Remove: show for all but stop 0 when total > 1
+                            row.querySelector('.remove-stop-btn').style.display = (total > 1) ? '' : 'none';
+                            // Bind select change
+                            bindSelectDetail(row);
+                        }
+
+                        function bindSelectDetail(row) {
+                            var sel = row.querySelector('select');
+                            var detail = row.querySelector('.stop-detail-text');
+                            if (!sel || !detail) return;
+                            sel.addEventListener('change', function() {
+                                var opt = sel.options[sel.selectedIndex];
+                                if (opt && opt.value) {
+                                    var street = opt.getAttribute('data-street') || '';
+                                    var city = opt.getAttribute('data-city') || '';
+                                    detail.innerHTML = 'Selected: <strong>' + opt.text.replace(/ ★ \(Default\)/, '') + '</strong>' +
+                                        (street ? ' — ' + street + (city ? ', ' + city : '') : '');
+                                } else {
+                                    detail.textContent = '';
+                                }
+                            });
+                        }
+
+                        function refreshAllStops() {
+                            var rows = document.querySelectorAll('.delivery-stop-row');
+                            var total = rows.length;
+                            stopCounter = total;
+                            rows.forEach(function(row, i) {
+                                row.setAttribute('data-stop-index', i);
+                                rebindStopRow(row, i, total);
+                            });
+                            document.getElementById('max_stops_msg').style.display = (total >= MAX_DELIVERY_STOPS) ? '' : 'none';
+                            document.getElementById('add_delivery_stop_btn').style.display = (total >= MAX_DELIVERY_STOPS) ? 'none' : '';
+                        }
+
+                        document.getElementById('add_delivery_stop_btn').addEventListener('click', function(e) {
+                            e.preventDefault();
+                            var rows = document.querySelectorAll('.delivery-stop-row');
+                            if (rows.length >= MAX_DELIVERY_STOPS) return;
+                            var newRow = createStopRow(rows.length);
+                            if (newRow) {
+                                document.getElementById('delivery_stops_container').insertBefore(
+                                    newRow, document.getElementById('max_stops_msg')
+                                );
+                                refreshAllStops();
+                            }
+                        });
+
+                        // Delegate clicks for move/remove buttons
+                        document.getElementById('delivery_stops_container').addEventListener('click', function(e) {
+                            var btn = e.target.closest('button');
+                            if (!btn) return;
+                            var row = btn.closest('.delivery-stop-row');
+                            if (!row) return;
+
+                            if (btn.classList.contains('move-up-btn')) {
+                                var prev = row.previousElementSibling;
+                                if (prev && prev.classList.contains('delivery-stop-row')) {
+                                    row.parentNode.insertBefore(row, prev);
+                                    refreshAllStops();
+                                }
+                            } else if (btn.classList.contains('move-down-btn')) {
+                                var next = row.nextElementSibling;
+                                if (next && next.classList.contains('delivery-stop-row')) {
+                                    row.parentNode.insertBefore(next, row);
+                                    refreshAllStops();
+                                }
+                            } else if (btn.classList.contains('remove-stop-btn')) {
+                                var rows = document.querySelectorAll('.delivery-stop-row');
+                                if (rows.length <= 1) return;
+                                row.remove();
+                                refreshAllStops();
+                            }
+                        });
+
+                        // Initialize Stop 1
+                        document.addEventListener('DOMContentLoaded', function() {
+                            bindSelectDetail(document.querySelector('.delivery-stop-row'));
+                            refreshAllStops();
+                            // Bind pickup detail
+                            var puSel = document.querySelector('select[name="pickup_saved_location_id"]');
+                            var puDetail = document.getElementById('pickup_detail_text');
+                            if (puSel && puDetail) {
+                                function refreshPu() {
+                                    var opt = puSel.options[puSel.selectedIndex];
+                                    if (opt && opt.value) {
+                                        puDetail.innerHTML = 'Selected: <strong>' + opt.text.replace(/ ★ \(Default\)/, '') + '</strong>';
+                                    } else {
+                                        puDetail.innerHTML = '';
+                                    }
+                                }
+                                puSel.addEventListener('change', refreshPu);
+                                refreshPu();
+                            }
+                        });
+                    ]]></script>
+
+                    <!-- Postal code fallback toggle -->
+                    <div class="mb-3">
+                        <a class="text-muted small text-decoration-none" data-bs-toggle="collapse" href="#postalFallback" role="button">
+                            Or enter a postal code instead →
+                        </a>
+                        <div class="collapse mt-2" id="postalFallback">
+                            <div class="row g-2">
+                                <div class="col-6">
+                                    <input type="text" name="pickup_postal_code" class="form-control" placeholder="Pickup postal code"/>
+                                </div>
+                                <div class="col-6">
+                                    <input type="text" name="delivery_postal_code" class="form-control" placeholder="Delivery postal code"/>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <button type="submit" class="btn btn-primary btn-lg w-100">Continue</button>
+                </form>
+
+                <!-- Auto-select sole location when only one exists (safety net) -->
+                <script><![CDATA[
+                    document.addEventListener('DOMContentLoaded', function() {
+                        // Auto-select the only real option in each dropdown
+                        // when nothing is pre-selected (no default flag set)
+                        ['pickup_saved_location_id', 'delivery_saved_location_id'].forEach(function(name) {
+                            var sel = document.querySelector('select[name="' + name + '"]');
+                            if (!sel) return;
+                            // Count real options (value != "")
+                            var realOpts = Array.from(sel.options).filter(function(o) { return o.value !== ''; });
+                            if (realOpts.length === 1 && sel.value === '') {
+                                sel.value = realOpts[0].value;
+                            }
+                        });
+                    });
+                ]]></script>
+
+                <!-- Auto-select newly created location if returning from Add New -->
+                <t t-if="new_loc_id">
+                    <script>
+                        document.addEventListener('DOMContentLoaded', function() {
+                            var newId = '<t t-esc="new_loc_id"/>';
+                            var newType = '<t t-esc="new_loc_type"/>';
+                            if (newType === 'pickup' || newType === 'both') {
+                                var pu = document.querySelector('select[name="pickup_saved_location_id"]');
+                                if (pu) { pu.value = newId; }
+                            }
+                            if (newType === 'delivery' || newType === 'both') {
+                                var de = document.querySelector('select[name="delivery_saved_location_id"]');
+                                if (de) { de.value = newId; }
+                            }
+                        });
+                    </script>
+                </t>
+            </div>
+        </div>
+    </t>
+</template>
+
 <template id="portal_step2_shipment" name="Booking Step 2 - Shipment Basics">
     <t t-call="portal.portal_layout">
         <div class="container o_page_container py-5">
             <h2>Shipment Details</h2>
-            <p>
-                Pickup: <strong t-esc="pickup_fsa.display_city or pickup_fsa.fsa"/>
-                &#8594;
-                Delivery: <strong t-esc="delivery_fsa.display_city or delivery_fsa.fsa"/>
-            </p>
+            <!-- Saved Location mode: show location names -->
+            <t t-if="pickup_loc or delivery_loc">
+                <div class="card mb-3">
+                    <div class="card-body">
+                        <div class="row">
+                            <div class="col-6">
+                                <strong>📦 Pickup:</strong><br/>
+                                <t t-if="pickup_loc">
+                                    <span t-esc="pickup_loc.name"/><br/>
+                                    <small class="text-muted" t-esc="pickup_loc.street"/>
+                                    <t t-if="pickup_loc.street"><br/></t>
+                                    <small class="text-muted" t-esc="pickup_loc.city"/><t t-if="pickup_loc.city and pickup_loc.state_id">, </t>
+                                    <small class="text-muted" t-esc="pickup_loc.state_id.code or ''"/>
+                                    <t t-if="pickup_loc.postal_code"> <small class="text-muted" t-esc="pickup_loc.postal_code"/></t>
+                                </t>
+                                <!-- FSA fallback (shouldn't normally happen with saved locs) -->
+                                <t t-if="not pickup_loc and pickup_fsa">
+                                    <span t-esc="pickup_fsa.display_city or pickup_fsa.fsa"/>
+                                </t>
+                            </div>
+                            <div class="col-6">
+                                <strong>📍 Delivery:</strong><br/>
+                                <t t-if="delivery_loc">
+                                    <span t-esc="delivery_loc.name"/><br/>
+                                    <small class="text-muted" t-esc="delivery_loc.street"/>
+                                    <t t-if="delivery_loc.street"><br/></t>
+                                    <small class="text-muted" t-esc="delivery_loc.city"/><t t-if="delivery_loc.city and delivery_loc.state_id">, </t>
+                                    <small class="text-muted" t-esc="delivery_loc.state_id.code or ''"/>
+                                    <t t-if="delivery_loc.postal_code"> <small class="text-muted" t-esc="delivery_loc.postal_code"/></t>
+                                </t>
+                                <t t-if="not delivery_loc and delivery_fsa">
+                                    <span t-esc="delivery_fsa.display_city or delivery_fsa.fsa"/>
+                                </t>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </t>
+            <!-- FSA-only mode: show FSA display names -->
+            <t t-if="not pickup_loc and not delivery_loc">
+                <p>
+                    Pickup: <strong t-esc="pickup_fsa.display_city or pickup_fsa.fsa if pickup_fsa else 'Unknown'"/>
+                    &#8594;
+                    Delivery: <strong t-esc="delivery_fsa.display_city or delivery_fsa.fsa if delivery_fsa else 'Unknown'"/>
+                </p>
+            </t>
             <div t-if="error" class="alert alert-danger" t-esc="error"/>
             <form action="/my/booking/quote" method="post" class="row g-3">
                 <input type="hidden" name="csrf_token" t-att-value="request.csrf_token()"/>
-                <input type="hidden" name="pickup_fsa" t-att-value="pickup_fsa.fsa"/>
-                <input type="hidden" name="delivery_fsa" t-att-value="delivery_fsa.fsa"/>
+                <!-- FSA codes for routing (works in both modes) -->
+                <input type="hidden" name="pickup_fsa" t-att-value="pickup_fsa.fsa if pickup_fsa else ''"/>
+                <input type="hidden" name="delivery_fsa" t-att-value="delivery_fsa.fsa if delivery_fsa else ''"/>
+                <!-- Saved Location IDs (preserved through the flow) -->
+                <t t-if="pickup_loc_id">
+                    <input type="hidden" name="pickup_loc_id" t-att-value="pickup_loc_id"/>
+                </t>
+                <t t-if="delivery_loc_id">
+                    <input type="hidden" name="delivery_loc_id" t-att-value="delivery_loc_id"/>
+                </t>
+                <!-- Coordinates (for quote/confirm steps) -->
+                <t t-if="pickup_lat">
+                    <input type="hidden" name="pickup_lat" t-att-value="str(pickup_lat)"/>
+                    <input type="hidden" name="pickup_lng" t-att-value="str(pickup_lng)"/>
+                </t>
+                <t t-if="delivery_lat">
+                    <input type="hidden" name="delivery_lat" t-att-value="str(delivery_lat)"/>
+                    <input type="hidden" name="delivery_lng" t-att-value="str(delivery_lng)"/>
+                </t>
                 <div class="col-md-6">
                     <label class="form-label">Shipment Type</label>
                     <select name="shipment_type" class="form-select">
@@ -116,24 +456,110 @@
                            id="portal_required_temperature_input" class="form-control"/>
                     <div class="form-text">Required for Reefer. 0°C is valid.</div>
                 </div>
-                <script>
+                <script><![CDATA[
                     function togglePortalTemperature() {
                         var select = document.getElementById('portal_temperature_mode');
                         var row = document.getElementById('portal_required_temperature');
                         var input = document.getElementById('portal_required_temperature_input');
-                        var reefer = select &amp;&amp; select.value === 'reefer';
+                        var reefer = select && select.value === 'reefer';
                         if (row) { row.style.display = reefer ? '' : 'none'; }
                         if (input) { input.required = reefer; }
                     }
-                </script>
-                <div class="col-md-6">
-                    <label class="form-label">Pallets</label>
-                    <input type="number" name="pallets" class="form-control" min="1" required="required"/>
+                ]]></script>
+                <!-- REQUESTED PICKUP DATE -->
+                <div class="col-12">
+                    <label class="form-label fw-bold">Requested Pickup Date *</label>
+                    <div id="selected_date_display" class="mb-2" style="font-size:15px;color:#1565C0;font-weight:600;min-height:22px"/>
+                    <input type="hidden" id="requested_pickup_date" name="requested_pickup_date" required="required"/>
+                    <!-- Date cards row -->
+                    <div id="pickup_date_cards" class="row g-2 mb-2" style="min-height:80px">
+                        <div class="col-12 text-muted py-3">
+                            <div class="spinner-border spinner-border-sm me-2" role="status"/>
+                            Loading availability for your route…
+                        </div>
+                    </div>
+                    <a href="#" id="view_more_dates" class="text-decoration-none small" style="display:none">
+                        View More Pickup Dates ▾
+                    </a>
+                    <!-- Expandable full calendar -->
+                    <div id="pickup_calendar_expanded" class="card mt-2" style="display:none">
+                        <div class="card-body py-2" id="pickup_calendar_body"/>
+                    </div>
+                    <div id="pickup_calendar_legend" class="mt-1 small text-muted" style="display:none">
+                        🔴 Regular pickup available <span style="margin:0 8px">·</span> Grey = unavailable
+                    </div>
                 </div>
-                <div class="col-md-6">
+                <div class="col-md-3">
+                    <label class="form-label">Total Physical Pallets *</label>
+                    <input type="number" id="pallets_input" name="physical_pallets" class="form-control" min="1" value="1" required="required"/>
+                    <div class="form-text">Actual pallet/skid units on the truck</div>
+                </div>
+                <div class="col-md-3">
                     <label class="form-label">Total Weight (lbs)</label>
-                    <input type="number" step="0.1" name="weight_lbs" class="form-control" required="required"/>
+                    <input type="number" id="weight_input" step="0.1" name="weight_lbs" class="form-control" value="500" required="required"/>
+                    <div class="form-text" id="weight_hint" style="display:none">
+                        <a href="#" id="reset_weight_link" class="text-decoration-none small">Reset to 500 lb/pallet</a>
+                    </div>
                 </div>
+                <!-- Hidden: legacy pallets field for backward compatibility -->
+                <input type="hidden" name="pallets" id="legacy_pallets" value="1"/>
+                <input type="hidden" name="shared_pallet_mode" id="shared_pallet_mode_input" value="0"/>
+                <!-- Shared Pallet checkbox (visible only when multi-stop) -->
+                <t t-if="delivery_locs and len(delivery_locs) > 1">
+                    <div class="col-12">
+                        <div class="form-check">
+                            <input type="checkbox" class="form-check-input" id="shared_pallet_checkbox" name="shared_pallet_mode_checkbox" value="1"
+                                   onchange="toggleSharedPalletMode()"/>
+                            <label class="form-check-label" for="shared_pallet_checkbox">
+                                <strong>Shared Pallet / Mixed Stops</strong>
+                                <small class="text-muted d-block">One physical pallet contains freight for multiple delivery stops</small>
+                            </label>
+                        </div>
+                    </div>
+                </t>
+                <!-- Delivery Stops list (multi-stop) with per-stop pallet allocation -->
+                <t t-if="delivery_locs and len(delivery_locs) > 1">
+                    <div class="col-12 mt-3">
+                        <div class="card"><div class="card-header bg-light d-flex justify-content-between align-items-center">
+                            <div><strong>Delivery Stops</strong> <small class="text-muted"><t t-esc="len(delivery_locs)"/> stops</small></div>
+                            <small class="text-muted" id="pallet_allocation_summary"/>
+                        </div>
+                        <div class="card-body py-2" id="delivery_stops_breakdown">
+                            <t t-foreach="delivery_locs" t-as="dl">
+                                <div class="d-flex align-items-center py-2 border-bottom delivery-stop-breakdown-row">
+                                    <strong class="me-2" style="min-width:20px"><t t-esc="dl_index + 1"/>.</strong>
+                                    <div class="flex-grow-1">
+                                        <t t-esc="dl.name"/>
+                                        <small class="text-muted d-block"><t t-esc="dl.city"/> <t t-esc="dl.state_id.code or ''"/></small>
+                                    </div>
+                                    <div class="per-stop-pallets-input" style="min-width:130px">
+                                        <div class="input-group input-group-sm">
+                                            <span class="input-group-text">Pallets</span>
+                                            <input type="number" class="form-control stop-pallet-input"
+                                                   t-att-name="'delivery_pallets_' + str(dl_index + 1)"
+                                                   min="1" value="1" style="max-width:60px"
+                                                   onchange="updatePalletAllocationSummary()"/>
+                                        </div>
+                                    </div>
+                                    <div class="shared-pallet-indicator ms-2" style="display:none">
+                                        <span class="badge rounded-pill" style="background:#7b1fa2;color:#fff">Shared</span>
+                                    </div>
+                                    <input type="hidden" t-att-name="'delivery_loc_id_' + str(dl_index + 1)" t-att-value="str(dl.id)"/>
+                                    <input type="hidden" t-att-name="'delivery_shared_pallet_' + str(dl_index + 1)" class="stop-shared-flag" value="0"/>
+                                </div>
+                            </t>
+                        </div></div>
+                    </div>
+                </t>
+                <!-- Single stop: hidden fields -->
+                <t t-if="not delivery_locs or len(delivery_locs) &lt;= 1">
+                    <t t-if="delivery_loc_id">
+                        <input type="hidden" name="delivery_loc_id_1" t-att-value="delivery_loc_id"/>
+                        <input type="hidden" name="delivery_pallets_1" t-att-value="str(pallets or 1)"/>
+                    </t>
+                </t>
+
+                <div class="col-12 mt-3"><strong>Service Options</strong></div>
                 <div class="col-md-4 form-check">
                     <input type="checkbox" class="form-check-input" name="liftgate_pickup" value="1"/>
                     <label class="form-check-label">Liftgate Pickup</label>
@@ -154,67 +580,601 @@
                     <input type="checkbox" class="form-check-input" name="same_day_requested" value="1"/>
                     <label class="form-check-label">Same-Day Express (if available)</label>
                 </div>
-                <div class="col-12">
-                    <button type="submit" class="btn btn-primary">Get Price</button>
+                <div class="col-12 mt-3">
+                    <button type="submit" class="btn btn-primary btn-lg px-5">Get Price</button>
                 </div>
             </form>
         </div>
     </t>
+
+    <!-- Smart date cards + calendar + weight auto-calc JS -->
+    <script><![CDATA[
+        document.addEventListener('DOMContentLoaded', function() {
+            // ════════════════════════════════════════════════════════════
+            // Weight auto-calc: pallets × 500 lb, manual override
+            // ════════════════════════════════════════════════════════════
+            var palletsEl = document.getElementById('pallets_input');
+            var weightEl = document.getElementById('weight_input');
+            var weightHint = document.getElementById('weight_hint');
+            var resetLink = document.getElementById('reset_weight_link');
+            var weightManual = false;
+            var WEIGHT_PER_PALLET = 500;
+
+            function autoWeight() {
+                if (weightManual) return;
+                var p = parseInt(palletsEl.value) || 1;
+                weightEl.value = p * WEIGHT_PER_PALLET;
+                weightHint.style.display = 'none';
+            }
+            if (palletsEl && weightEl) {
+                palletsEl.addEventListener('input', function() { autoWeight(); fetchEligibleDates(); });
+                weightEl.addEventListener('input', function() { if (document.activeElement === weightEl) { weightManual = true; weightHint.style.display = ''; } });
+                weightEl.addEventListener('focus', function() { weightManual = true; weightHint.style.display = ''; });
+                if (resetLink) { resetLink.addEventListener('click', function(e) { e.preventDefault(); weightManual = false; autoWeight(); }); }
+            }
+
+            // ════════════════════════════════════════════════════════════
+            // Date helpers
+            // ════════════════════════════════════════════════════════════
+            var DAYS = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+            var DAYS_SHORT = ['SUN','MON','TUE','WED','THU','FRI','SAT'];
+            var MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+            var MONTHS_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+            function fmtDisplay(ds) {
+                var d = new Date(ds + 'T00:00:00');
+                return DAYS[d.getDay()] + ', ' + MONTHS[d.getMonth()] + ' ' + d.getDate() + ', ' + d.getFullYear();
+            }
+            function fmtCardDate(ds) {
+                var d = new Date(ds + 'T00:00:00');
+                return {day: DAYS_SHORT[d.getDay()], date: MONTHS_SHORT[d.getMonth()].toUpperCase() + ' ' + d.getDate()};
+            }
+            function ymd(d) {
+                return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+            }
+
+            // ════════════════════════════════════════════════════════════
+            // State
+            // ════════════════════════════════════════════════════════════
+            var hiddenDate = document.getElementById('requested_pickup_date');
+            var displayEl = document.getElementById('selected_date_display');
+            var cardsDiv = document.getElementById('pickup_date_cards');
+            var viewMore = document.getElementById('view_more_dates');
+            var calExpanded = document.getElementById('pickup_calendar_expanded');
+            var calBody = document.getElementById('pickup_calendar_body');
+            var legendDiv = document.getElementById('pickup_calendar_legend');
+            var allDates = [];      // full eligible dates from backend
+            var dateMap = {};       // date_str → metadata
+            var calendarMonth = null; // {year, month} for the expanded calendar
+
+            // ════════════════════════════════════════════════════════════
+            // Select a date — single source of truth
+            // ════════════════════════════════════════════════════════════
+            function selectDate(ds) {
+                if (!ds || !dateMap[ds]) return;
+                hiddenDate.value = ds;
+                displayEl.textContent = fmtDisplay(ds);
+                renderCards();
+                if (calExpanded.style.display !== 'none') renderCalendarGrid();
+            }
+
+            // ════════════════════════════════════════════════════════════
+            // Fetch eligible dates from backend
+            // ════════════════════════════════════════════════════════════
+            function fetchEligibleDates() {
+                var puLat = parseFloat(document.querySelector('input[name="pickup_lat"]')?.value || 0);
+                var puLng = parseFloat(document.querySelector('input[name="pickup_lng"]')?.value || 0);
+                var deLat = parseFloat(document.querySelector('input[name="delivery_lat"]')?.value || 0);
+                var deLng = parseFloat(document.querySelector('input[name="delivery_lng"]')?.value || 0);
+
+                if (!puLat || !deLat) {
+                    cardsDiv.innerHTML = '<div class="col-12 text-muted py-2">Select pickup and delivery locations to see available dates.</div>';
+                    return;
+                }
+                cardsDiv.innerHTML = '<div class="col-12 text-muted py-2"><div class="spinner-border spinner-border-sm me-2" role="status"/>Loading…</div>';
+
+                var params = 'pickup_lat=' + puLat + '&pickup_lng=' + puLng +
+                    '&delivery_lat=' + deLat + '&delivery_lng=' + deLng +
+                    '&pallets=' + (parseInt(palletsEl?.value) || 1) +
+                    '&weight_lbs=' + (parseFloat(weightEl?.value) || 500);
+
+                fetch('/my/booking/eligible-dates?' + params, {credentials: 'same-origin'})
+                    .then(function(r) { return r.json(); })
+                    .then(function(data) {
+                        allDates = data.dates || [];
+                        dateMap = {};
+                        allDates.forEach(function(d) { dateMap[d.date] = d; });
+                        // Auto-select earliest if nothing selected or selected date no longer valid
+                        if (allDates.length > 0 && (!hiddenDate.value || !dateMap[hiddenDate.value])) {
+                            hiddenDate.value = allDates[0].date;
+                        }
+                        renderCards();
+                        if (calExpanded.style.display !== 'none') renderCalendarGrid();
+                    })
+                    .catch(function() {
+                        cardsDiv.innerHTML = '<div class="col-12 text-danger py-2">Could not load availability. Please try again.</div>';
+                    });
+            }
+
+            // ════════════════════════════════════════════════════════════
+            // Render date cards (primary UI)
+            // ════════════════════════════════════════════════════════════
+            function renderCards() {
+                if (allDates.length === 0) {
+                    cardsDiv.innerHTML = '<div class="col-12 text-muted py-2">No eligible pickup dates found for this movement.</div>';
+                    viewMore.style.display = 'none';
+                    displayEl.textContent = '';
+                    return;
+                }
+
+                var sel = hiddenDate.value;
+                if (sel && dateMap[sel]) {
+                    displayEl.textContent = fmtDisplay(sel);
+                }
+
+                // Show first 4 dates as cards
+                var show = allDates.slice(0, 4);
+                var html = '';
+                show.forEach(function(d) {
+                    var cd = fmtCardDate(d.date);
+                    var isSel = (d.date === sel);
+                    var onward = d.onward_corridor ? '<small class="d-block" style="font-size:10px;opacity:.8">Onward ' + DAYS_SHORT[new Date(d.estimated_delivery + 'T00:00:00').getDay()] + '</small>' : '';
+
+                    if (isSel) {
+                        html += '<div class="col-6 col-md-3">' +
+                            '<button type="button" class="card w-100 border-0 text-white p-2 date-card-selected" style="background:#C62828;cursor:pointer" data-date="' + d.date + '">' +
+                            '<small style="font-size:10px;opacity:.9">✓ SELECTED</small>' +
+                            '<div style="font-size:14px;font-weight:800;line-height:1.2">' + cd.day + '</div>' +
+                            '<div style="font-size:16px;font-weight:700;line-height:1.2">' + cd.date + '</div>' +
+                            '<small style="font-size:11px;opacity:.9">Regular Pickup</small>' + onward +
+                            '</button></div>';
+                    } else {
+                        html += '<div class="col-6 col-md-3">' +
+                            '<button type="button" class="card w-100 border p-2 date-card" style="cursor:pointer;transition:border-color .15s" data-date="' + d.date + '">' +
+                            '<div style="font-size:14px;font-weight:800;color:#555;line-height:1.2">' + cd.day + '</div>' +
+                            '<div style="font-size:16px;font-weight:700;line-height:1.2">' + cd.date + '</div>' +
+                            '<small style="font-size:11px;color:#888">Regular Pickup</small>' + onward +
+                            '</button></div>';
+                    }
+                });
+                cardsDiv.innerHTML = html;
+                viewMore.style.display = allDates.length > 4 ? '' : 'none';
+
+                // Bind card clicks
+                cardsDiv.querySelectorAll('button[data-date]').forEach(function(btn) {
+                    btn.addEventListener('click', function() {
+                        selectDate(btn.getAttribute('data-date'));
+                    });
+                });
+            }
+
+            // ════════════════════════════════════════════════════════════
+            // Expanded calendar grid (secondary)
+            // ════════════════════════════════════════════════════════════
+            function renderCalendarGrid() {
+                if (!calBody || allDates.length === 0) return;
+
+                // Determine month to show
+                var refDate;
+                if (hiddenDate.value && dateMap[hiddenDate.value]) {
+                    refDate = new Date(hiddenDate.value + 'T00:00:00');
+                } else {
+                    refDate = new Date(allDates[0].date + 'T00:00:00');
+                }
+                calendarMonth = {year: refDate.getFullYear(), month: refDate.getMonth()};
+
+                function drawMonth() {
+                    var y = calendarMonth.year, m = calendarMonth.month;
+                    var first = new Date(y, m, 1);
+                    var last = new Date(y, m + 1, 0);
+                    var startDay = first.getDay(); // 0=Sun
+                    var totalDays = last.getDate();
+                    var today = new Date(); today.setHours(0,0,0,0);
+                    var sel = hiddenDate.value;
+
+                    var h = '';
+                    // Header with nav arrows
+                    h += '<div class="d-flex justify-content-between align-items-center mb-2 px-1">';
+                    h += '<button type="button" class="btn btn-sm btn-outline-secondary cal-nav-prev" ' + (m === new Date().getMonth() && y === new Date().getFullYear() ? 'disabled' : '') + '>‹</button>';
+                    h += '<strong style="font-size:15px">' + MONTHS[m] + ' ' + y + '</strong>';
+                    h += '<button type="button" class="btn btn-sm btn-outline-secondary cal-nav-next">›</button>';
+                    h += '</div>';
+
+                    // Day headers
+                    h += '<div class="row row-cols-7 g-0 text-center mb-1" style="font-size:11px;color:#999;font-weight:600">';
+                    ['SUN','MON','TUE','WED','THU','FRI','SAT'].forEach(function(dh) { h += '<div class="col">' + dh + '</div>'; });
+                    h += '</div>';
+
+                    // Weeks
+                    var day = 1;
+                    for (var w = 0; w < 6 && day <= totalDays; w++) {
+                        h += '<div class="row row-cols-7 g-0">';
+                        for (var d = 0; d < 7; d++) {
+                            if ((w === 0 && d < startDay) || day > totalDays) {
+                                h += '<div class="col" style="min-height:40px"/>';
+                            } else {
+                                var ds = y + '-' + String(m+1).padStart(2,'0') + '-' + String(day).padStart(2,'0');
+                                var cellDate = new Date(y, m, day);
+                                var isPast = cellDate < today;
+                                var isEligible = !!dateMap[ds];
+                                var isSelected = (ds === sel);
+                                var cellStyle = '';
+                                var cellCls = '';
+                                var dot = '';
+                                var disabled = '';
+
+                                if (isSelected) {
+                                    cellStyle = 'background:#C62828;color:#fff;border-radius:50%;width:36px;height:36px;line-height:36px;margin:0 auto;font-weight:700';
+                                } else if (isEligible) {
+                                    cellStyle = 'font-weight:700;color:#111';
+                                    dot = '<span style="display:block;width:5px;height:5px;border-radius:50%;background:#C62828;margin:1px auto 0"/>';
+                                } else if (isPast) {
+                                    cellStyle = 'color:#ccc';
+                                    disabled = 'disabled tabindex="-1"';
+                                } else {
+                                    cellStyle = 'color:#bbb';
+                                    disabled = 'disabled tabindex="-1"';
+                                }
+
+                                h += '<div class="col d-flex flex-column align-items-center justify-content-center" style="min-height:40px">';
+                                h += '<button type="button" class="border-0 bg-transparent p-0 text-center cal-cell' + (isEligible ? ' cal-eligible' : '') + '"' +
+                                    ' style="font-size:13px;' + cellStyle + '"' +
+                                    ' data-date="' + ds + '" ' + disabled + '>' + day + dot + '</button>';
+                                h += '</div>';
+                                day++;
+                            }
+                        }
+                        h += '</div>';
+                    }
+                    calBody.innerHTML = h;
+                    legendDiv.style.display = '';
+
+                    // Bind cell clicks
+                    calBody.querySelectorAll('button.cal-eligible').forEach(function(btn) {
+                        btn.addEventListener('click', function() {
+                            selectDate(btn.getAttribute('data-date'));
+                        });
+                    });
+
+                    // Bind nav
+                    calBody.querySelector('.cal-nav-prev')?.addEventListener('click', function(e) { e.preventDefault(); calendarMonth.month--; if (calendarMonth.month < 0) { calendarMonth.year--; calendarMonth.month = 11; } drawMonth(); });
+                    calBody.querySelector('.cal-nav-next')?.addEventListener('click', function(e) { e.preventDefault(); calendarMonth.month++; if (calendarMonth.month > 11) { calendarMonth.year++; calendarMonth.month = 0; } drawMonth(); });
+                }
+                drawMonth();
+            }
+
+            // ════════════════════════════════════════════════════════════
+            // View More toggle
+            // ════════════════════════════════════════════════════════════
+            if (viewMore) {
+                viewMore.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    if (calExpanded.style.display === 'none') {
+                        calExpanded.style.display = '';
+                        viewMore.textContent = 'Hide Calendar ▴';
+                        renderCalendarGrid();
+                    } else {
+                        calExpanded.style.display = 'none';
+                        viewMore.textContent = 'View More Pickup Dates ▾';
+                    }
+                });
+            }
+
+            // ════════════════════════════════════════════════════════════
+            // Shared Pallet Mode toggle
+            // ════════════════════════════════════════════════════════════
+            window.toggleSharedPalletMode = function() {
+                var cb = document.getElementById('shared_pallet_checkbox');
+                var modeInput = document.getElementById('shared_pallet_mode_input');
+                var shared = cb && cb.checked;
+                if (modeInput) modeInput.value = shared ? '1' : '0';
+                var rows = document.querySelectorAll('.delivery-stop-breakdown-row');
+                rows.forEach(function(row) {
+                    var palletInput = row.querySelector('.per-stop-pallets-input');
+                    var sharedBadge = row.querySelector('.shared-pallet-indicator');
+                    var sharedFlag = row.querySelector('.stop-shared-flag');
+                    if (shared) {
+                        if (palletInput) palletInput.style.display = 'none';
+                        if (sharedBadge) sharedBadge.style.display = '';
+                        if (sharedFlag) sharedFlag.value = '1';
+                    } else {
+                        if (palletInput) palletInput.style.display = '';
+                        if (sharedBadge) sharedBadge.style.display = 'none';
+                        if (sharedFlag) sharedFlag.value = '0';
+                    }
+                });
+                updatePalletAllocationSummary();
+                // Update legacy pallets field for form compatibility
+                updateLegacyPallets();
+            };
+            window.updatePalletAllocationSummary = function() {
+                var summary = document.getElementById('pallet_allocation_summary');
+                if (!summary) return;
+                var cb = document.getElementById('shared_pallet_checkbox');
+                var shared = cb && cb.checked;
+                var physInput = document.getElementById('pallets_input');
+                var physical = parseInt(physInput ? physInput.value : '1') || 1;
+                if (shared) {
+                    var stops = document.querySelectorAll('.delivery-stop-breakdown-row');
+                    summary.textContent = physical + ' physical pallet' + (physical !== 1 ? 's' : '') + ' · shared across ' + stops.length + ' stops';
+                } else {
+                    var total = 0;
+                    document.querySelectorAll('.stop-pallet-input').forEach(function(inp) {
+                        total += parseInt(inp.value) || 0;
+                    });
+                    summary.textContent = physical + ' physical pallet' + (physical !== 1 ? 's' : '') + ' → ' + total + ' total allocated to stops';
+                }
+                updateLegacyPallets();
+            };
+            window.updateLegacyPallets = function() {
+                var legacyEl = document.getElementById('legacy_pallets');
+                var physInput = document.getElementById('pallets_input');
+                if (legacyEl && physInput) legacyEl.value = physInput.value;
+            };
+            // Hook physical pallets input change
+            var physPalletInput = document.getElementById('pallets_input');
+            if (physPalletInput) {
+                physPalletInput.addEventListener('input', function() {
+                    updatePalletAllocationSummary();
+                    autoWeight();
+                    fetchEligibleDates();
+                });
+            }
+            // Initial summary
+            updatePalletAllocationSummary();
+
+            // Fetch on load
+            fetchEligibleDates();
+            var tempSelect = document.getElementById('portal_temperature_mode');
+            if (tempSelect) tempSelect.addEventListener('change', fetchEligibleDates);
+        });
+    ]]></script>
 </template>
 
 <template id="portal_step3_result" name="Booking Step 3 - Price Result">
     <t t-call="portal.portal_layout">
-        <div class="container o_page_container py-5">
-            <h2>Your Rate</h2>
-            <table class="table table-sm">
-                <tr><td>Pickup</td><td t-esc="session.pickup_date"/></tr>
-                <tr><td>Estimated Delivery</td><td t-esc="session.delivery_date_estimate"/></tr>
-                <tr><td>Service</td><td>Scheduled LTL — <t t-esc="session.corridor_id.name"/></td></tr>
-                <tr t-foreach="session.price_snapshot or []" t-as="line">
-                    <td t-esc="line['label']"/>
-                    <td t-esc="'%.2f' % line['amount']"/>
-                </tr>
-            </table>
-            <p><strong>Price: $<t t-esc="'%.2f' % session.calculated_price"/> CAD</strong>
-                <br/><small>This price is guaranteed for 20 minutes. The price shown is the price you will be charged.</small></p>
+        <t t-set="pu" t-value="pickup_loc"/>
+        <t t-set="de" t-value="delivery_loc"/>
+        <div class="container o_page_container py-4" style="max-width:700px">
+            <h2 class="mb-3">Review &amp; Book</h2>
 
-            <form action="/my/booking/confirm" method="post" class="row g-3">
+            <!-- RATE CARD -->
+            <div class="card mb-4 border-primary">
+                <div class="card-header bg-primary text-white">
+                    <strong>YOUR RATE</strong>
+                </div>
+                <div class="card-body">
+                    <div class="row mb-3">
+                        <div class="col-6">
+                            <small class="text-muted">Pickup</small><br/>
+                            <strong><t t-esc="session.pickup_date"/></strong>
+                        </div>
+                        <div class="col-6">
+                            <small class="text-muted">Estimated Delivery</small><br/>
+                            <strong><t t-esc="session.delivery_date_estimate"/></strong>
+                        </div>
+                    </div>
+                    <small class="text-muted">Service</small><br/>
+                    <strong>Scheduled LTL</strong>
+                </div>
+            </div>
+
+            <!-- SHIPMENT DETAILS -->
+            <div class="card mb-4">
+                <div class="card-header bg-light"><strong>SHIPMENT DETAILS</strong></div>
+                <div class="card-body">
+                    <div class="row">
+                        <t t-if="session.shared_pallet_mode and delivery_stops">
+                            <div class="col-12 mb-2">
+                                <small class="text-muted">Physical Pallets</small><br/>
+                                <strong><t t-esc="session.physical_pallets or session.pallets"/> Physical Pallet<t t-if="(session.physical_pallets or session.pallets) != 1">s</t></strong>
+                                <span class="badge ms-2" style="background:#7b1fa2;color:#fff">Shared Across <t t-esc="len(delivery_stops)"/> Stops</span>
+                            </div>
+                        </t>
+                        <t t-if="not session.shared_pallet_mode or not delivery_stops">
+                            <div class="col-4"><small class="text-muted">Physical Pallets</small><br/><strong><t t-esc="session.physical_pallets or session.pallets"/></strong></div>
+                        </t>
+                        <div class="col-4"><small class="text-muted">Total Weight</small><br/><strong><t t-esc="'%g' % session.weight_lbs"/> lb</strong></div>
+                        <div class="col-4"><small class="text-muted">Type</small><br/><strong><t t-esc="session.shipment_type.upper()"/></strong></div>
+                    </div>
+                    <t t-if="session.temperature_mode == 'reefer'">
+                        <hr/>
+                        <small class="text-muted">Temperature</small><br/>
+                        <strong>Reefer <t t-esc="session.required_temperature_c"/>°C</strong>
+                    </t>
+                </div>
+            </div>
+
+            <!-- WHAT YOU ARE BOOKING -->
+            <div class="card mb-4">
+                <div class="card-header bg-light"><strong>WHAT YOU ARE BOOKING</strong></div>
+                <div class="card-body">
+                    <!-- Pickup Location -->
+                    <div class="mb-3">
+                        <small class="text-muted">📦 PICKUP</small>
+                        <t t-if="pickup_loc">
+                            <div class="border rounded p-3 bg-light">
+                                <strong t-esc="pickup_loc.name"/><br/>
+                                <t t-if="pickup_loc.street"><t t-esc="pickup_loc.street"/><br/></t>
+                                <t t-esc="pickup_loc.city"/><t t-if="pickup_loc.city and pickup_loc.state_id">, </t><t t-esc="pickup_loc.state_id.code or ''"/>
+                                <t t-if="pickup_loc.postal_code"> <t t-esc="pickup_loc.postal_code"/></t>
+                                <!-- Pickup Contact & Instructions collapsible -->
+                                <div class="mt-2 pt-2 border-top">
+                                    <a href="#" class="text-decoration-none small fw-bold contact-toggle" data-target="pu_contact">
+                                        CONTACT &amp; INSTRUCTIONS ▾
+                                    </a>
+                                    <div class="contact-panel mt-2" id="pu_contact" style="display:none">
+                                        <div class="row g-2">
+                                            <div class="col-sm-6">
+                                                <label class="form-label small mb-0">Contact Name</label>
+                                                <input type="text" name="pickup_contact_name" class="form-control form-control-sm"
+                                                       t-att-value="pickup_loc.contact_name or ''" placeholder="Pickup contact"/>
+                                            </div>
+                                            <div class="col-sm-6">
+                                                <label class="form-label small mb-0">Phone</label>
+                                                <input type="text" name="pickup_phone" class="form-control form-control-sm"
+                                                       t-att-value="pickup_loc.contact_phone or ''" placeholder="Pickup phone"/>
+                                            </div>
+                                            <div class="col-12">
+                                                <label class="form-label small mb-0">Dock Info</label>
+                                                <input type="text" name="pickup_dock_info" class="form-control form-control-sm"
+                                                       t-att-value="pickup_loc.dock_info or ''" placeholder="Dock door, bay, etc."/>
+                                            </div>
+                                            <div class="col-12">
+                                                <label class="form-label small mb-0">Pickup Instructions</label>
+                                                <input type="text" name="pickup_instructions" class="form-control form-control-sm"
+                                                       t-att-value="pickup_loc.pickup_instructions or ''" placeholder="e.g. Call ahead, use rear entrance"/>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </t>
+                        <t t-if="not pickup_loc">
+                            <div class="border rounded p-3 bg-light text-muted">
+                                <t t-esc="pickup_fsa.display_city or pickup_fsa.fsa"/><br/>
+                                <small>Postal code: <t t-esc="pickup_fsa.fsa"/></small>
+                            </div>
+                        </t>
+                    </div>
+                    <!-- Delivery Stops -->
+                    <div>
+                        <t t-if="delivery_stops">
+                            <t t-if="session.shared_pallet_mode">
+                                <small class="text-muted">📍 DELIVERIES · <t t-esc="len(delivery_stops)"/> STOPS · <span style="color:#7b1fa2">SHARED PALLET</span></small>
+                            </t>
+                            <t t-if="not session.shared_pallet_mode">
+                                <small class="text-muted">📍 DELIVERIES · <t t-esc="len(delivery_stops)"/> STOPS</small>
+                            </t>
+                        </t>
+                        <t t-if="delivery_stops">
+                            <t t-foreach="delivery_stops" t-as="stop">
+                                <div class="border rounded p-2 mb-2 bg-light">
+                                    <div class="d-flex justify-content-between">
+                                        <div>
+                                            <strong><t t-esc="stop.sequence"/>.</strong>
+                                            <strong><t t-esc="stop.location_name or stop.city or 'Stop ' + str(stop.sequence)"/></strong>
+                                            <t t-if="stop.shared_pallet"><span class="badge ms-1" style="background:#7b1fa2;color:#fff;font-size:0.7rem">SHARED</span></t>
+                                            <br/>
+                                            <small class="text-muted">
+                                                <t t-if="stop.street"><t t-esc="stop.street"/> · </t>
+                                                <t t-esc="stop.city"/><t t-if="stop.state_code">, <t t-esc="stop.state_code"/></t>
+                                                <t t-if="stop.postal_code"> <t t-esc="stop.postal_code"/></t>
+                                            </small>
+                                        </div>
+                                        <div class="text-end">
+                                            <t t-if="not session.shared_pallet_mode">
+                                                <strong><t t-esc="stop.pallets"/> pallet<t t-if="stop.pallets != 1">s</t></strong><br/>
+                                            </t>
+                                            <t t-if="session.shared_pallet_mode">
+                                                <small class="text-muted">Shared pallet</small><br/>
+                                            </t>
+                                            <small class="text-muted"><t t-esc="'%g' % stop.weight_lbs"/> lb</small>
+                                        </div>
+                                    </div>
+                                    <!-- Per-stop Contact & Instructions -->
+                                    <t t-set="sl" t-value="stop.saved_location_id"/>
+                                    <div class="mt-2 pt-2 border-top">
+                                        <a href="#" class="text-decoration-none small fw-bold contact-toggle" t-att-data-target="'de_contact_' + str(stop.sequence)">
+                                            CONTACT &amp; INSTRUCTIONS ▾
+                                        </a>
+                                        <div class="contact-panel mt-2" t-att-id="'de_contact_' + str(stop.sequence)" style="display:none">
+                                            <div class="row g-2">
+                                                <div class="col-sm-6">
+                                                    <label class="form-label small mb-0">Contact Name</label>
+                                                    <input type="text" t-att-name="'delivery_contact_name_' + str(stop.sequence)" class="form-control form-control-sm"
+                                                           t-att-value="sl.contact_name or ''" placeholder="Delivery contact"/>
+                                                </div>
+                                                <div class="col-sm-6">
+                                                    <label class="form-label small mb-0">Phone</label>
+                                                    <input type="text" t-att-name="'delivery_phone_' + str(stop.sequence)" class="form-control form-control-sm"
+                                                           t-att-value="sl.contact_phone or ''" placeholder="Delivery phone"/>
+                                                </div>
+                                                <div class="col-12">
+                                                    <label class="form-label small mb-0">Dock Info</label>
+                                                    <input type="text" t-att-name="'delivery_dock_info_' + str(stop.sequence)" class="form-control form-control-sm"
+                                                           t-att-value="sl.dock_info or ''" placeholder="Dock door, bay, etc."/>
+                                                </div>
+                                                <div class="col-12">
+                                                    <label class="form-label small mb-0">Delivery Instructions</label>
+                                                    <input type="text" t-att-name="'delivery_instructions_' + str(stop.sequence)" class="form-control form-control-sm"
+                                                           t-att-value="sl.delivery_instructions or ''" placeholder="e.g. Ring buzzer #3"/>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </t>
+                        </t>
+                        <t t-if="not delivery_stops">
+                            <div class="border rounded p-3 bg-light text-muted">
+                                <t t-esc="delivery_fsa.display_city or delivery_fsa.fsa"/><br/>
+                                <small>Postal code: <t t-esc="delivery_fsa.fsa"/></small>
+                            </div>
+                        </t>
+                    </div>
+                </div>
+            </div>
+
+            <!-- PRICING SUMMARY -->
+            <div class="card mb-4">
+                <div class="card-header bg-light"><strong>PRICING SUMMARY</strong></div>
+                <div class="card-body">
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+                        <t t-if="session.shared_pallet_mode and delivery_stops">
+                            <span><t t-esc="session.physical_pallets or session.pallets"/> Physical Pallet<t t-if="(session.physical_pallets or session.pallets) != 1">s</t> · Shared Across <t t-esc="len(delivery_stops)"/> Stops × LTL Scheduled Service</span>
+                        </t>
+                        <t t-if="not session.shared_pallet_mode or not delivery_stops">
+                            <span><t t-esc="session.physical_pallets or session.pallets"/> Physical Pallet<t t-if="(session.physical_pallets or session.pallets) != 1">s</t> × LTL Scheduled Service</span>
+                        </t>
+                        <strong>$<t t-esc="'%.2f' % session.calculated_price"/></strong>
+                    </div>
+                    <t t-if="session.liftgate_pickup or session.liftgate_delivery or session.appointment or session.residential">
+                        <hr/>
+                        <small class="text-muted">Accessorials included in price above</small><br/>
+                        <t t-if="session.liftgate_pickup"><small>· Liftgate Pickup</small><br/></t>
+                        <t t-if="session.liftgate_delivery"><small>· Liftgate Delivery</small><br/></t>
+                        <t t-if="session.appointment"><small>· Appointment Required</small><br/></t>
+                        <t t-if="session.residential"><small>· Residential / Limited Access</small><br/></t>
+                    </t>
+                    <hr/>
+                    <div class="d-flex justify-content-between align-items-center">
+                        <span style="font-size:18px;font-weight:700">TOTAL</span>
+                        <strong style="font-size:22px;color:#1565C0">$<t t-esc="'%.2f' % session.calculated_price"/> CAD</strong>
+                    </div>
+                </div>
+            </div>
+
+            <!-- CONFIRM FORM -->
+            <form action="/my/booking/confirm" method="post">
                 <input type="hidden" name="csrf_token" t-att-value="request.csrf_token()"/>
                 <input type="hidden" name="token" t-att-value="session.token"/>
-                <h4 class="mt-3">Pickup</h4>
-                <div class="col-md-6"><label class="form-label">Company</label>
-                    <input type="text" name="pickup_company" class="form-control"/></div>
-                <div class="col-md-6"><label class="form-label">Postal Code</label>
-                    <input type="text" name="pickup_postal_code" class="form-control"
-                           t-att-value="pickup_fsa.fsa" required="required"/></div>
-                <div class="col-md-6"><label class="form-label">Address</label>
-                    <input type="text" name="pickup_address" class="form-control" required="required"/></div>
-                <div class="col-md-6"><label class="form-label">Contact Name</label>
-                    <input type="text" name="pickup_contact_name" class="form-control"/></div>
-                <div class="col-md-6"><label class="form-label">Phone</label>
-                    <input type="text" name="pickup_phone" class="form-control"/></div>
-                <div class="col-md-12"><label class="form-label">Instructions</label>
-                    <textarea name="pickup_instructions" class="form-control"/></div>
 
-                <h4 class="mt-3">Delivery</h4>
-                <div class="col-md-6"><label class="form-label">Company</label>
-                    <input type="text" name="delivery_company" class="form-control"/></div>
-                <div class="col-md-6"><label class="form-label">Postal Code</label>
-                    <input type="text" name="delivery_postal_code" class="form-control"
-                           t-att-value="delivery_fsa.fsa" required="required"/></div>
-                <div class="col-md-6"><label class="form-label">Address</label>
-                    <input type="text" name="delivery_address" class="form-control" required="required"/></div>
-                <div class="col-md-6"><label class="form-label">Contact Name</label>
-                    <input type="text" name="delivery_contact_name" class="form-control"/></div>
-                <div class="col-md-6"><label class="form-label">Phone</label>
-                    <input type="text" name="delivery_phone" class="form-control"/></div>
-                <div class="col-md-12"><label class="form-label">Instructions</label>
-                    <textarea name="delivery_instructions" class="form-control"/></div>
-
-                <div class="col-12">
-                    <button type="submit" class="btn btn-success">Book Now</button>
+                <div class="d-grid mb-3">
+                    <button type="submit" class="btn btn-success btn-lg">Book Shipment</button>
                 </div>
+                <p class="text-center text-muted small">
+                    This rate is reserved for 20 minutes.
+                </p>
             </form>
+
+            <!-- Contact toggle JS -->
+            <script><![CDATA[
+                document.addEventListener('DOMContentLoaded', function() {
+                    document.querySelectorAll('.contact-toggle').forEach(function(link) {
+                        link.addEventListener('click', function(e) {
+                            e.preventDefault();
+                            var targetId = this.getAttribute('data-target');
+                            var panel = document.getElementById(targetId);
+                            if (panel) {
+                                var isOpen = panel.style.display !== 'none';
+                                panel.style.display = isOpen ? 'none' : '';
+                                this.textContent = (isOpen ? 'CONTACT & INSTRUCTIONS ▾' : 'CONTACT & INSTRUCTIONS ▴');
+                            }
+                        });
+                    });
+                });
+            ]]></script>
         </div>
     </t>
 </template>

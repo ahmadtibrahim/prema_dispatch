@@ -84,6 +84,19 @@ class TestPerKmPricing(TransactionCase):
                 actual_weight_lbs=500,
             )
 
+    def test_09_booking_minimum_applied_once(self):
+        total, adj = self.svc._apply_booking_minimum(
+            subtotal=100.0, minimum_charge=150.0, currency=self.currency,
+        )
+        self.assertEqual(total, 150.0)
+        self.assertEqual(adj, 50.0)
+
+        total, adj = self.svc._apply_booking_minimum(
+            subtotal=200.0, minimum_charge=150.0, currency=self.currency,
+        )
+        self.assertEqual(total, 200.0)
+        self.assertEqual(adj, 0.0)
+
 
 class TestDirectionPreservation(TransactionCase):
     def test_01_local_in_selection(self):

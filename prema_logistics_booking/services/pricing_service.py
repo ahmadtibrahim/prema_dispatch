@@ -28,6 +28,29 @@ class PricingService:
     def __init__(self, env):
         self.env = env(su=True)
 
+    @staticmethod
+    def _apply_booking_minimum(subtotal, minimum_charge, currency=None):
+        """Apply a pricing floor ONCE per booking (not once per leg).
+
+        Returns (total, adjustment_amount).
+        """
+        if currency:
+            subtotal = currency.round(subtotal)
+            minimum_charge = currency.round(minimum_charge)
+        else:
+            subtotal = round(subtotal or 0.0, 2)
+            minimum_charge = round(minimum_charge or 0.0, 2)
+
+        if subtotal >= minimum_charge:
+            return subtotal, 0.0
+
+        adjustment = minimum_charge - subtotal
+        if currency:
+            adjustment = currency.round(adjustment)
+        else:
+            adjustment = round(adjustment, 2)
+        return minimum_charge, adjustment
+
     def calculate(self, pickup_fsa, delivery_fsa, shipment_type, temperature_mode,
                    pallets, weight_lbs, liftgate_pickup=False, liftgate_delivery=False,
                    appointment=False, residential=False, same_day_requested=False,
@@ -90,10 +113,23 @@ class PricingService:
 
         leg_snapshots = []
         all_lines = []
-        minimum_charge = max((leg["minimum_booking_charge"] for leg in topology_legs), default=0.0)
         currency = self.env["res.currency"].browse(
             topology_legs[0]["currency_id"]
         ).exists() or self.env.company.currency_id
+
+        # Booking minimum: corridor min + optional endpoint region overrides
+        mins = [
+            (leg.get("minimum_booking_charge") or 0.0) for leg in topology_legs
+            if isinstance(leg, dict)
+        ]
+        try:
+            mins.append(origin_region.minimum_booking_charge or 0.0)
+            mins.append(destination_region.minimum_booking_charge or 0.0)
+        except Exception:
+            # Defensive: in case region model is customized/missing the field
+            pass
+        booking_minimum_charge = max(mins or [0.0])
+
         for index, leg in enumerate(topology_legs):
             breakdown = self.calculate_leg_per_km(
                 leg["distance_km"], leg["rate_per_km"], leg["planned_pallets"],
@@ -128,14 +164,15 @@ class PricingService:
             all_lines.extend(lines)
 
         subtotal = currency.round(sum(leg["price"] for leg in leg_snapshots))
-        minimum_top_up = currency.round(max(0.0, minimum_charge - subtotal))
-        if minimum_top_up:
-            leg_snapshots[-1]["price"] = currency.round(leg_snapshots[-1]["price"] + minimum_top_up)
+        total, minimum_adjustment = self._apply_booking_minimum(
+            subtotal, booking_minimum_charge, currency=currency,
+        )
+        if minimum_adjustment:
+            leg_snapshots[-1]["price"] = currency.round(leg_snapshots[-1]["price"] + minimum_adjustment)
             leg_snapshots[-1]["price_lines"].append({
-                "label": "Booking minimum adjustment", "amount": minimum_top_up,
+                "label": "Minimum booking adjustment", "amount": minimum_adjustment,
             })
-            all_lines.append({"label": "Minimum booking charge", "amount": minimum_top_up})
-        total = currency.round(subtotal + minimum_top_up)
+            all_lines.append({"label": "Minimum booking adjustment", "amount": minimum_adjustment})
 
         if leg_snapshots and leg_snapshots[0].get("departure_date"):
             pickup_date = datetime.date.fromisoformat(leg_snapshots[0]["pickup_date"])
@@ -153,7 +190,7 @@ class PricingService:
             "required_temperature_c": required_temperature_c,
             "shipment_type": shipment_type,
             "transfer_hub_id": transfer_hub_id,
-            "minimum_booking_charge": minimum_charge,
+            "minimum_booking_charge": booking_minimum_charge,
             "pricing_authority": "corridor_per_km",
         }
 

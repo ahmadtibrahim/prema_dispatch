@@ -1,3 +1,7 @@
+from . import res_country_extension
+from . import res_country_state_extension
+from . import logistics_saved_location
+from . import logistics_direct_delivery_rule
 from . import logistics_region
 from . import logistics_fsa
 from . import logistics_fsa_zone
@@ -16,6 +20,7 @@ from . import logistics_fsa_rate_adjustment
 from . import logistics_surcharge_type
 from . import logistics_customer_rate
 from . import logistics_pricing_session
+from . import logistics_pricing_session_stop
 from . import logistics_booking_line
 from . import logistics_booking_stop
 from . import logistics_booking_leg
