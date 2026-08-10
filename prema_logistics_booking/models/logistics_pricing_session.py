@@ -20,8 +20,8 @@ class LogisticsPricingSession(models.TransientModel):
 
     token = fields.Char(default=lambda self: uuid.uuid4().hex, index=True, required=True, copy=False)
     partner_id = fields.Many2one("res.partner", required=True, index=True)
-    pickup_fsa_id = fields.Many2one("logistics.fsa", required=True)
-    delivery_fsa_id = fields.Many2one("logistics.fsa", required=True)
+    pickup_fsa_id = fields.Many2one("logistics.fsa")
+    delivery_fsa_id = fields.Many2one("logistics.fsa")
     corridor_id = fields.Many2one(
         "logistics.corridor", string="Priced Corridor", readonly=True,
         help="Primary operational corridor frozen by the active quote.",

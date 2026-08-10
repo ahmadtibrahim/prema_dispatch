@@ -360,7 +360,10 @@ class LogisticsBookingPortal(http.Controller):
         if not delivery_fsa:
             delivery_fsa = Fsa.search([("fsa", "=", kwargs.get("delivery_fsa"))], limit=1)
 
-        if not pickup_fsa or not delivery_fsa:
+        # Require FSA OR coordinates — coordinates alone can drive ShipmentRoutingService
+        has_pickup_coords = kwargs.get("pickup_lat") and kwargs.get("pickup_lng")
+        has_delivery_coords = kwargs.get("delivery_lat") and kwargs.get("delivery_lng")
+        if (not pickup_fsa and not has_pickup_coords) or (not delivery_fsa and not has_delivery_coords):
             return request.redirect("/my/booking/new")
 
         try:
