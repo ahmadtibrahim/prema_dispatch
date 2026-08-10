@@ -110,3 +110,6 @@ access_dispatch_load_plan_operation_manager,dispatch.load.plan.operation.manager
 access_dispatch_load_plan_operation_driver,dispatch.load.plan.operation.driver,model_prema_dispatch_load_plan_operation,group_dispatch_driver,1,1,1,0
 access_dispatch_location_extraction_driver,dispatch.location.extraction.driver,model_prema_dispatch_location_extraction,group_dispatch_driver,1,1,1,0
 access_dispatch_location_photo_driver,dispatch.location.photo.driver,model_prema_dispatch_location_photo,group_dispatch_driver,1,1,1,0
+access_error_log_manager,error.log.manager,model_prema_dispatch_error_log,group_dispatch_manager,1,1,1,1
+access_error_log_dispatcher,error.log.dispatcher,model_prema_dispatch_error_log,group_dispatcher,1,1,1,0
+access_error_log_user,error.log.user,model_prema_dispatch_error_log,base.group_user,1,0,0,0

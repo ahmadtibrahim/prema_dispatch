@@ -371,6 +371,18 @@ class PremaDispatchJob(models.Model):
                             leg.write({"reservation_state": "released"})
 
         except Exception as exc:
+            import traceback as tb
+            self.env["prema.dispatch.error.log"].sudo().log_error(
+                source="booking_board",
+                action="bulk_remove",
+                error_message=str(exc),
+                severity="error",
+                error_type=type(exc).__name__,
+                traceback=tb.format_exc(),
+                dispatch_job_id=job.id if job.exists() else False,
+                booking_id=booking.id if booking else False,
+                record_name=job.name if job.exists() else str(job_id),
+            )
             return {"success": False, "error": str(exc)}
 
         return {

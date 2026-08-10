@@ -28,3 +28,4 @@ from . import dispatch_location_photo
 from . import dispatch_location_extraction
 from . import dispatch_route_visit
 from . import dispatch_load_plan_operation
+from . import dispatch_error_log

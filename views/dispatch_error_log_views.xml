@@ -1,0 +1,142 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+<!-- Error Log sequence -->
+<record id="seq_error_log" model="ir.sequence">
+    <field name="name">Prema Dispatch Error Log</field>
+    <field name="code">prema.dispatch.error.log</field>
+    <field name="prefix">%(y)s%(month)s%(day)s</field>
+    <field name="padding">4</field>
+    <field name="number_next">1</field>
+    <field name="number_increment">1</field>
+</record>
+
+<!-- ── List View ──────────────────────────────────────────────── -->
+<record id="view_error_log_tree" model="ir.ui.view">
+    <field name="name">prema.dispatch.error.log.tree</field>
+    <field name="model">prema.dispatch.error.log</field>
+    <field name="arch" type="xml">
+        <tree decoration-danger="severity=='critical'" decoration-warning="severity=='error'" default_order="id desc">
+            <field name="reference"/>
+            <field name="timestamp"/>
+            <field name="severity"/>
+            <field name="source"/>
+            <field name="action"/>
+            <field name="booking_number"/>
+            <field name="dispatch_job_number"/>
+            <field name="error_message"/>
+            <field name="user_id"/>
+            <field name="state"/>
+        </tree>
+    </field>
+</record>
+
+<!-- ── Search View ─────────────────────────────────────────────── -->
+<record id="view_error_log_search" model="ir.ui.view">
+    <field name="name">prema.dispatch.error.log.search</field>
+    <field name="model">prema.dispatch.error.log</field>
+    <field name="arch" type="xml">
+        <search>
+            <field name="reference"/>
+            <field name="error_message"/>
+            <field name="action"/>
+            <field name="booking_number"/>
+            <field name="dispatch_job_number"/>
+            <filter name="today" string="Today" domain="[('timestamp','&gt;=', datetime.date.today().strftime('%Y-%m-%d'))]"/>
+            <filter name="new" string="New" domain="[('state','=','new')]"/>
+            <separator/>
+            <filter name="source_portal" string="Portal" domain="[('source','=','portal')]"/>
+            <filter name="source_booking" string="Booking" domain="[('source','in',('booking_board','booking_confirm'))]"/>
+            <filter name="source_dispatch" string="Dispatch" domain="[('source','in',('dispatch_planner','dispatch_job','load_plan','driver_app'))]"/>
+            <filter name="source_pricing" string="Pricing" domain="[('source','in',('pricing','routing','capacity'))]"/>
+            <separator/>
+            <filter name="severity_critical" string="Critical" domain="[('severity','=','critical')]"/>
+            <filter name="severity_error" string="Error" domain="[('severity','=','error')]"/>
+            <group expand="0" string="Group By">
+                <filter name="group_source" string="Source" context="{'group_by':'source'}"/>
+                <filter name="group_state" string="Status" context="{'group_by':'state'}"/>
+                <filter name="group_severity" string="Severity" context="{'group_by':'severity'}"/>
+                <filter name="group_user" string="User" context="{'group_by':'user_id'}"/>
+                <filter name="group_day" string="Day" context="{'group_by':'timestamp:day'}"/>
+            </group>
+        </search>
+    </field>
+</record>
+
+<!-- ── Form View ───────────────────────────────────────────────── -->
+<record id="view_error_log_form" model="ir.ui.view">
+    <field name="name">prema.dispatch.error.log.form</field>
+    <field name="model">prema.dispatch.error.log</field>
+    <field name="arch" type="xml">
+        <form>
+            <header>
+                <button name="action_investigate" string="Investigate" type="object" class="btn-primary" states="new"/>
+                <button name="action_resolve" string="Resolve" type="object" class="btn-success" states="new,investigating"/>
+                <button name="action_ignore" string="Ignore" type="object" class="btn-secondary" states="new,investigating"/>
+                <button name="action_reopen" string="Reopen" type="object" states="resolved,ignored"/>
+                <field name="state" widget="statusbar"/>
+            </header>
+            <sheet>
+                <div class="oe_title">
+                    <h1><field name="reference"/></h1>
+                </div>
+                <group>
+                    <group>
+                        <field name="timestamp"/>
+                        <field name="severity"/>
+                        <field name="source"/>
+                        <field name="action"/>
+                        <field name="user_id"/>
+                        <field name="url"/>
+                    </group>
+                    <group>
+                        <field name="model_name"/>
+                        <field name="record_id"/>
+                        <field name="record_name"/>
+                        <field name="error_type"/>
+                        <field name="company_id" groups="base.group_multi_company"/>
+                    </group>
+                </group>
+                <group string="Related Records">
+                    <group>
+                        <field name="booking_id"/>
+                        <field name="dispatch_job_id"/>
+                        <field name="invoice_id"/>
+                    </group>
+                </group>
+                <group string="Error Details">
+                    <field name="error_message"/>
+                    <field name="request_summary" widget="text"/>
+                    <field name="traceback" widget="text" nolabel="1"/>
+                </group>
+                <group string="Resolution">
+                    <group>
+                        <field name="uat_notes" widget="text"/>
+                    </group>
+                    <group>
+                        <field name="resolution_notes" widget="text"/>
+                        <field name="resolved_by"/>
+                        <field name="resolved_date"/>
+                    </group>
+                </group>
+            </sheet>
+        </form>
+    </field>
+</record>
+
+<!-- ── Action ──────────────────────────────────────────────────── -->
+<record id="action_error_log" model="ir.actions.act_window">
+    <field name="name">Error Logs</field>
+    <field name="res_model">prema.dispatch.error.log</field>
+    <field name="view_mode">tree,form</field>
+    <field name="search_view_id" ref="view_error_log_search"/>
+</record>
+
+<!-- ── Menu ────────────────────────────────────────────────────── -->
+<menuitem id="menu_error_log"
+          name="Error Logs"
+          parent="prema_dispatch.menu_dispatch_reports_parent"
+          action="action_error_log"
+          sequence="50"/>
+
+</odoo>
