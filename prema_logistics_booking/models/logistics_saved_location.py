@@ -307,18 +307,24 @@ class LogisticsSavedLocation(models.Model):
                 "params": {"type": "danger", "message": "Google Maps API key not configured."},
             }
 
-        # Process locations with usable addresses but not Google-verified
-        domain = [
-            ("google_verified", "=", False),
+        # Process locations with usable addresses — unverified OR address-like biz names
+        candidates = self.search([
             ("street", "!=", False), ("street", "!=", ""),
             ("city", "!=", False), ("city", "!=", ""),
             ("active", "=", True),
-        ]
-        total = self.search_count(domain)
+        ])
+        # Filter: unverified OR business_name looks like an address (starts with digit)
+        def _needs_verify(loc):
+            if not loc.google_verified:
+                return True
+            biz = (loc.business_name or "").strip()
+            return biz and biz[:1].isdigit()  # address-like business name
+        domain_ids = [loc.id for loc in candidates if _needs_verify(loc)]
+        total = len(domain_ids)
         if total == 0:
             return {
                 "type": "ir.actions.client", "tag": "display_notification",
-                "params": {"type": "info", "message": "All locations already verified."},
+                "params": {"type": "info", "message": "All locations already verified and named correctly."},
             }
 
         verified = 0
@@ -328,7 +334,7 @@ class LogisticsSavedLocation(models.Model):
         duplicates = 0
         report_lines = []
 
-        batch = self.search(domain, limit=100)
+        batch = self.browse(domain_ids)
         for loc in batch:
             try:
                 # Build search query: business name if we have one, else address
