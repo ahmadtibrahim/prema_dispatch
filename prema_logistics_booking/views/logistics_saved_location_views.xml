@@ -31,6 +31,10 @@
                     <button name="action_resolve_region_with_google"
                             string="Re-run Region Detection" type="object"
                             class="btn-secondary"/>
+                    <button name="action_google_verify_locations"
+                            string="Google Verify" type="object"
+                            class="btn-primary"
+                            confirm="This will call Google Places to verify business names and addresses. Continue?"/>
                 </header>
                 <sheet>
                     <field name="region_match_result" invisible="1"/>

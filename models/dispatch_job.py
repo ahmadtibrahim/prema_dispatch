@@ -1615,6 +1615,39 @@ class PremaDispatchJob(models.Model):
     # ── JSON-RPC endpoints (called by OWL board) ──────────────────
 
     @api.model
+    def bulk_cancel_archive_bookings(self, job_ids):
+        """Bulk cancel/archive selected bookings from the Booking Board.
+        Cancels jobs (stage → cancelled), releases truck assignments,
+        cancels draft invoices. Does NOT hard-delete records.
+        Returns {success: N, skipped: N, errors: [...]}."""
+        success, skipped, errors = 0, 0, []
+        cancel_stage = self.env["prema.dispatch.stage"].sudo().search(
+            [("stage_type", "=", "cancelled")], limit=1,
+        )
+        for job in self.browse(job_ids).exists():
+            try:
+                if job.stage_id.stage_type in ("dispatched", "completed"):
+                    # Has active dispatch — cannot cancel
+                    skipped += 1
+                    continue
+                if job.stage_id.stage_type == "cancelled":
+                    # Already cancelled — count as success
+                    success += 1
+                    continue
+                # Release truck if assigned
+                if job.vehicle_id:
+                    job.unassign_truck()
+                # Cancel draft invoice if present
+                if job.invoice_id and job.invoice_id.state == "draft":
+                    job.invoice_id.button_cancel()
+                # Cancel the job
+                job.write({"stage_id": cancel_stage.id, "active": False})
+                success += 1
+            except Exception as exc:
+                errors.append({"job_id": job.id, "error": str(exc)})
+        return {"success": success, "skipped": skipped, "errors": errors}
+
+    @api.model
     def get_booking_status_board_data(self):
         """Structured Booking Board data: a single unified list, one row per
         open job (Booking #, Customer, Status, Pickup, Deadline, Route,

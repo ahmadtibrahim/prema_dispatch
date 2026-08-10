@@ -44,7 +44,11 @@ export class BookingStatusBoard extends Component {
         this.orm = useService("orm");
         this.action = useService("action");
         this.notification = useService("notification");
-        this.state = useState({ rows: [], loading: true, lastRefresh: null });
+        this.dialog = useService("dialog");
+        this.state = useState({
+            rows: [], loading: true, lastRefresh: null,
+            selectedIds: new Set(), bulkLoading: false,
+        });
 
         this._timer = null;
         onMounted(async () => {
@@ -55,15 +59,78 @@ export class BookingStatusBoard extends Component {
     }
 
     async load() {
+        const prevSelected = this.state.selectedIds;
         try {
             const data = await this.orm.call("prema.dispatch.job", "get_booking_status_board_data", []);
             this.state.rows = data.rows || [];
             this.state.lastRefresh = new Date().toLocaleTimeString();
+            const currentIds = new Set(this.state.rows.map(r => r.job_id));
+            const kept = new Set([...prevSelected].filter(id => currentIds.has(id)));
+            this.state.selectedIds = kept;
         } catch (e) {
             console.error("Booking board load failed:", e);
         } finally {
             this.state.loading = false;
         }
+    }
+
+    // ── Selection ────────────────────────────────────────────────
+    get selectedCount() { return this.state.selectedIds.size; }
+    get allVisibleSelected() {
+        return this.state.rows.length > 0 &&
+               this.state.rows.every(r => this.state.selectedIds.has(r.job_id));
+    }
+
+    toggleSelectAll() {
+        if (this.allVisibleSelected) {
+            this.state.selectedIds = new Set();
+        } else {
+            this.state.selectedIds = new Set(this.state.rows.map(r => r.job_id));
+        }
+    }
+
+    toggleRow(jobId) {
+        const next = new Set(this.state.selectedIds);
+        if (next.has(jobId)) next.delete(jobId); else next.add(jobId);
+        this.state.selectedIds = next;
+    }
+
+    clearSelection() { this.state.selectedIds = new Set(); }
+
+    // ── Bulk Remove ──────────────────────────────────────────────
+    async bulkRemove() {
+        const count = this.selectedCount;
+        if (count === 0) return;
+        this.dialog.add(
+            "Confirm Remove",
+            `Remove ${count} selected booking${count !== 1 ? 's' : ''} from the Booking Board?\n\nThe selected bookings will be cancelled and archived. Historical records will be preserved.`,
+            {
+                confirmLabel: `Remove ${count} Booking${count !== 1 ? 's' : ''}`,
+                cancelLabel: "Cancel",
+                confirmColor: "danger",
+            },
+            async () => {
+                this.state.bulkLoading = true;
+                try {
+                    const ids = [...this.state.selectedIds];
+                    const result = await this.orm.call("prema.dispatch.job", "bulk_cancel_archive_bookings", [ids]);
+                    const ok = result.success || 0;
+                    const skipped = result.skipped || 0;
+                    const errors = result.errors || [];
+                    let msg = `${ok} removed successfully.`;
+                    if (skipped > 0) msg += ` ${skipped} could not be removed (active deliveries).`;
+                    if (errors.length > 0) msg += ` ${errors.length} errors.`;
+                    this.notification.add(msg, { type: skipped > 0 ? "warning" : "success" });
+                    if (errors.length > 0) console.warn("Bulk remove errors:", errors);
+                    this.clearSelection();
+                    await this.load();
+                } catch (e) {
+                    this.notification.add(`Error: ${e.message}`, { type: "danger" });
+                } finally {
+                    this.state.bulkLoading = false;
+                }
+            }
+        );
     }
 
     statusLabel(key) { return STATUS_LABELS[key] || key; }

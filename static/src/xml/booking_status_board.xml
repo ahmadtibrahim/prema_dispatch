@@ -6,6 +6,16 @@
     <div class="o_bsb_header">
         <h4 class="mb-0">Booking Board</h4>
         <span class="text-muted small ms-2" t-if="state.lastRefresh">Updated <t t-esc="state.lastRefresh"/></span>
+        <!-- Bulk action bar -->
+        <div t-if="selectedCount > 0" class="o_bsb_bulk_bar ms-auto">
+            <span class="me-3"><t t-esc="selectedCount"/> selected</span>
+            <button class="btn btn-danger btn-sm me-2" t-on-click="() => this.bulkRemove()"
+                    t-att-disabled="state.bulkLoading">
+                <t t-if="state.bulkLoading"><i class="fa fa-spinner fa-spin me-1"/>Removing…</t>
+                <t t-else="">Remove</t>
+            </button>
+            <button class="btn btn-secondary btn-sm" t-on-click="() => this.clearSelection()">Clear</button>
+        </div>
     </div>
     <t t-if="state.loading">
         <div class="o_bsb_loading"><i class="fa fa-spinner fa-spin me-2"/>Loading…</div>
@@ -16,7 +26,7 @@
              by the backend so dispatchers still see them first. -->
         <div class="o_bsb_table">
             <div class="o_bsb_row o_bsb_row_head">
-                <div class="o_bsb_col_ref">Booking #</div>
+                <div class="o_bsb_col_check"><input type="checkbox" t-on-click="() => this.toggleSelectAll()" t-att-checked="allVisibleSelected"/></div>
                 <div class="o_bsb_col_customer">Customer</div>
                 <div class="o_bsb_col_status">Status</div>
                 <div class="o_bsb_col_pickup">Pickup</div>
@@ -36,8 +46,11 @@
                 <div class="o_bsb_empty">No open bookings.</div>
             </t>
             <t t-foreach="state.rows" t-as="row" t-key="row.job_id">
-                <div class="o_bsb_row" t-on-click="() => this.openJob(row.job_id)">
-                    <div class="o_bsb_col_ref"><t t-esc="row.reference"/></div>
+                <div class="o_bsb_row" t-attf-class="o_bsb_row {{ state.selectedIds.has(row.job_id) ? 'o_bsb_selected' : '' }}">
+                    <div class="o_bsb_col_check" t-on-click.stop="() => this.toggleRow(row.job_id)">
+                        <input type="checkbox" t-att-checked="state.selectedIds.has(row.job_id)"/>
+                    </div>
+                    <div class="o_bsb_col_ref" t-on-click="() => this.openJob(row.job_id)"><t t-esc="row.reference"/></div>
                     <div class="o_bsb_col_customer text-truncate"><t t-esc="row.customer"/></div>
                     <div class="o_bsb_col_status">
                         <span t-attf-class="o_bsb_badge status-#{row.status_key}"><t t-esc="statusLabel(row.status_key)"/></span>

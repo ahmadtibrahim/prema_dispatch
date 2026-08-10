@@ -11,11 +11,26 @@
 
 .o_bsb_header {
     display: flex;
-    align-items: baseline;
+    align-items: center;
     margin-bottom: 14px;
     color: #fff;
+    flex-wrap: wrap;
+    gap: 8px;
 }
 .o_bsb_header h4 { font-weight: 700; letter-spacing: .03em; }
+
+.o_bsb_bulk_bar {
+    display: flex;
+    align-items: center;
+    background: #c0392b;
+    color: #fff;
+    padding: 4px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 600;
+    animation: bsb-pulse .8s infinite;
+}
+.o_bsb_bulk_bar .btn { font-family: inherit; font-size: 11px; }
 
 .o_bsb_loading { text-align: center; padding: 40px; color: #8899b0; }
 .o_bsb_empty { text-align: center; padding: 24px; color: #8899b0; }
@@ -26,7 +41,7 @@
 
 .o_bsb_row {
     display: grid;
-    grid-template-columns: 130px 1fr 110px 90px 90px 1.4fr 60px 90px 90px 110px 110px 130px 100px 1.2fr 34px;
+    grid-template-columns: 36px 130px 1fr 110px 90px 90px 1.4fr 60px 90px 90px 110px 110px 130px 100px 1.2fr 34px;
     gap: 10px;
     padding: 8px 14px;
     border-bottom: 1px solid #333c52;
@@ -53,6 +68,12 @@
 .o_bsb_col_skids, .o_bsb_col_equipment { color: #b7bfd6; }
 .o_bsb_col_truck, .o_bsb_col_driver { color: #d5dbec; }
 .o_bsb_col_notes { color: #b7bfd6 !important; }
+.o_bsb_col_check { display: flex; justify-content: center; align-items: center; }
+.o_bsb_col_check input[type="checkbox"] { cursor: pointer; accent-color: #5b8cff; width: 14px; height: 14px; }
+
+.o_bsb_row.o_bsb_selected { background: rgba(91,140,255,.18); outline: 1px solid rgba(91,140,255,.4); }
+.o_bsb_row_head .o_bsb_col_check { cursor: pointer; }
+
 .o_bsb_col_actions { display: flex; justify-content: center; }
 
 .o_bsb_handoff_badge {

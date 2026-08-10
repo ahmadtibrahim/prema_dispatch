@@ -290,6 +290,169 @@ class LogisticsSavedLocation(models.Model):
         self.ensure_one()
         return self.location_type in ("delivery", "both")
 
+    # ── Google Places batch verification ────────────────────────────
+
+    def action_google_verify_locations(self):
+        """Batch Google-verify unverified saved locations with usable addresses.
+        Uses Google Places API to resolve place IDs, business names, and
+        standardized addresses. Updates display names to 'Business - City'.
+        Returns a verification report."""
+        import json, logging
+        _logger = logging.getLogger(__name__)
+        ICP = self.env["ir.config_parameter"].sudo()
+        api_key = ICP.get_param("google_maps_api_key", "")
+        if not api_key:
+            return {
+                "type": "ir.actions.client", "tag": "display_notification",
+                "params": {"type": "danger", "message": "Google Maps API key not configured."},
+            }
+
+        # Process locations with usable addresses but not Google-verified
+        domain = [
+            ("google_verified", "=", False),
+            ("street", "!=", False), ("street", "!=", ""),
+            ("city", "!=", False), ("city", "!=", ""),
+            ("active", "=", True),
+        ]
+        total = self.search_count(domain)
+        if total == 0:
+            return {
+                "type": "ir.actions.client", "tag": "display_notification",
+                "params": {"type": "info", "message": "All locations already verified."},
+            }
+
+        verified = 0
+        names_resolved = 0
+        already_ok = 0
+        could_not = 0
+        duplicates = 0
+        report_lines = []
+
+        batch = self.search(domain, limit=100)
+        for loc in batch:
+            try:
+                # Build search query: business name if we have one, else address
+                query = (loc.business_name or loc.chain_name or "").strip()
+                if not query or any(c.isdigit() for c in query[:3]):
+                    query = f"{loc.street}, {loc.city}, {loc.province_code or 'ON'}"
+                else:
+                    query = f"{query}, {loc.street}, {loc.city}"
+
+                # Call Google Places text search
+                import urllib.request, urllib.parse
+                params = urllib.parse.urlencode({
+                    "query": query,
+                    "key": api_key,
+                    "fields": "places.id,places.displayName,places.formattedAddress,places.location,places.addressComponents",
+                })
+                url = f"https://places.googleapis.com/v1/places:searchText?{params}"
+                # Fallback to legacy Places API if new one fails
+                url_fallback = f"https://maps.googleapis.com/maps/api/place/findplacefromtext/json?input={urllib.parse.quote(query)}&inputtype=textquery&fields=place_id,name,formatted_address,geometry&key={api_key}"
+
+                req = urllib.request.Request(url, headers={"X-Goog-FieldMask": "places.id,places.displayName,places.formattedAddress,places.location"})
+                try:
+                    with urllib.request.urlopen(req, timeout=5) as resp:
+                        data = json.loads(resp.read())
+                        places = data.get("places", [])
+                except Exception:
+                    # Fallback to legacy API
+                    with urllib.request.urlopen(url_fallback, timeout=5) as resp:
+                        data = json.loads(resp.read())
+                        places_raw = data.get("candidates", [])
+                        places = []
+                        for p in places_raw:
+                            places.append({
+                                "id": p.get("place_id"),
+                                "displayName": {"text": p.get("name", "")},
+                                "formattedAddress": p.get("formatted_address", ""),
+                                "location": p.get("geometry", {}).get("location", {}),
+                            })
+
+                if places and places[0].get("id"):
+                    place = places[0]
+                    pid = place["id"]
+                    name = (place.get("displayName") or {}).get("text", "") if isinstance(place.get("displayName"), dict) else place.get("displayName", "")
+                    addr = place.get("formattedAddress", "")
+                    loc_data = place.get("location", {})
+                    lat = loc_data.get("latitude") if isinstance(loc_data, dict) else (loc_data.get("lat") if loc_data else None)
+                    lng = loc_data.get("longitude") if isinstance(loc_data, dict) else (loc_data.get("lng") if loc_data else None)
+
+                    vals = {
+                        "google_place_id": pid,
+                        "google_verified": True,
+                        "google_verified_at": fields.Datetime.now(),
+                    }
+                    if addr and not loc.formatted_address:
+                        vals["formatted_address"] = addr
+                    if lat and not loc.latitude:
+                        vals["latitude"] = lat
+                    if lng and not loc.longitude:
+                        vals["longitude"] = lng
+
+                    # Resolve business name
+                    old_name = loc.name
+                    old_business = loc.business_name or ""
+                    if name and not loc.business_name:
+                        vals["business_name"] = name
+                    if name:
+                        # Generate friendly display name: Business - City
+                        city = loc.city or ""
+                        friendly = f"{name} - {city}" if city else name
+                        # Only auto-rename if current name looks like an address
+                        is_address_like = bool(loc.name) and any(
+                            w in (loc.name or "").lower()
+                            for w in ["street", " st ", "road", " rd ", "avenue", " ave ",
+                                      "boulevard", "blvd", "drive", " dr ", "highway", "hwy",
+                                      "unit", "gate", "blvd"]
+                        ) or any(c.isdigit() for c in (loc.name or "")[:3])
+                        if is_address_like or not loc.name:
+                            vals["name"] = friendly
+                        # Always set branch_name if blank
+                        if not loc.branch_name:
+                            vals["branch_name"] = friendly
+                        report_lines.append(f"{old_name} → {friendly} [{pid[:16]}...]")
+                        names_resolved += 1
+                    else:
+                        report_lines.append(f"{old_name} → verified [no business name] [{pid[:16]}...]")
+
+                    # Check for duplicates with same place_id
+                    dup = self.search([("google_place_id", "=", pid), ("id", "!=", loc.id)], limit=1)
+                    if dup:
+                        duplicates += 1
+                        report_lines.append(f"  ⚠ Duplicate: {dup.name} (ID={dup.id})")
+
+                    loc.write(vals)
+                    verified += 1
+                else:
+                    report_lines.append(f"{loc.name}: no Google match found")
+                    could_not += 1
+
+            except Exception as exc:
+                report_lines.append(f"{loc.name}: ERROR — {exc}")
+                could_not += 1
+                _logger.warning("Google verify failed for location %s: %s", loc.id, exc)
+
+        # Build summary
+        summary = (
+            f"Google Verification Complete\n"
+            f"Total checked: {total}\n"
+            f"Successfully Verified: {verified}\n"
+            f"Business names resolved: {names_resolved}\n"
+            f"Could not verify: {could_not}\n"
+            f"Duplicates detected: {duplicates}\n\n"
+            + "\n".join(report_lines[:50])
+        )
+        _logger.info("Google batch verify: %s", summary.replace("\n", " | "))
+
+        return {
+            "type": "ir.actions.act_window",
+            "name": "Google Verification Report",
+            "res_model": "logistics.saved.location",
+            "view_mode": "tree,form",
+            "domain": [("id", "in", batch.ids)],
+            "context": {"create": False},
+        }
+
     # ── Region resolution ─────────────────────────────────────────────
 
     def action_resolve_region(self):
