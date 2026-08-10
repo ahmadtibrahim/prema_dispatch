@@ -1,0 +1,165 @@
+/* Where We Go — scoped typography and layout */
+.wwg-root {
+    font-family: inherit;
+    color: #111827;
+    line-height: 1.45;
+}
+
+/* ── Sidebar ─────────────────────────────────────────────── */
+.wwg-sidebar {
+    width: 340px;
+    min-width: 300px;
+    flex-shrink: 0;
+    overflow-y: auto;
+    padding: 24px 20px 32px;
+    background: #fafbfc;
+}
+
+/* ── Header ──────────────────────────────────────────────── */
+.wwg-header { margin-bottom: 20px; }
+.wwg-title {
+    font-size: 28px;
+    font-weight: 700;
+    line-height: 1.2;
+    margin: 0 0 4px;
+    color: #111827;
+}
+.wwg-subtitle {
+    font-size: 14px;
+    font-weight: 400;
+    color: #6b7280;
+    margin: 0;
+}
+
+/* ── Sections ────────────────────────────────────────────── */
+.wwg-section { margin-bottom: 20px; }
+.wwg-section-label {
+    display: block;
+    font-size: 14px;
+    font-weight: 600;
+    color: #111827;
+    margin-bottom: 8px;
+}
+
+/* ── Select ──────────────────────────────────────────────── */
+.wwg-select { font-size: 14px; width: 100%; }
+
+/* ── Status ──────────────────────────────────────────────── */
+.wwg-status { font-size: 14px; color: #6b7280; padding: 8px 0; }
+
+/* ── Route rows ──────────────────────────────────────────── */
+.wwg-route-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 6px 4px;
+    cursor: pointer;
+    border-radius: 4px;
+    transition: background 0.1s;
+}
+.wwg-route-row:hover { background: rgba(0,0,0,0.03); }
+.wwg-route-row input[type="checkbox"] {
+    margin-top: 3px;
+    flex-shrink: 0;
+}
+.wwg-route-dot {
+    font-size: 14px;
+    line-height: 1.4;
+    flex-shrink: 0;
+    margin-top: 1px;
+}
+.wwg-route-info {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+.wwg-route-name {
+    font-size: 14px;
+    font-weight: 600;
+    line-height: 1.35;
+}
+.wwg-route-days {
+    font-size: 12px;
+    font-weight: 400;
+    color: #6b7280;
+    line-height: 1.3;
+}
+
+/* ── Region cards ─────────────────────────────────────────── */
+.wwg-region-card {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    width: 100%;
+    text-align: left;
+    border: 1px solid #e5e7eb;
+    border-radius: 6px;
+    padding: 8px 10px;
+    margin-bottom: 4px;
+    background: #fff;
+    cursor: pointer;
+    transition: border-color 0.1s, box-shadow 0.1s;
+    font-family: inherit;
+}
+.wwg-region-card:hover { border-color: #9ca3af; }
+.wwg-region-card--selected {
+    border-color: #1a73e8;
+    background: #e8f0fe;
+}
+.wwg-region-status {
+    font-size: 14px;
+    flex-shrink: 0;
+    margin-top: 1px;
+}
+.wwg-region-info {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+.wwg-region-name {
+    font-size: 14px;
+    font-weight: 500;
+    color: #111827;
+    line-height: 1.35;
+}
+.wwg-region-meta {
+    font-size: 12px;
+    font-weight: 400;
+    color: #6b7280;
+    line-height: 1.3;
+}
+.wwg-region-corridors {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2px 8px;
+    margin-top: 2px;
+}
+.wwg-region-corridor-tag {
+    font-size: 11px;
+    font-weight: 500;
+    line-height: 1.35;
+}
+
+/* ── Legend ───────────────────────────────────────────────── */
+.wwg-legend-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 0;
+    font-size: 13px;
+}
+.wwg-legend-dot { font-size: 12px; flex-shrink: 0; }
+.wwg-legend-name { font-weight: 500; color: #111827; }
+.wwg-legend-days { color: #6b7280; font-weight: 400; }
+
+/* ── Map ──────────────────────────────────────────────────── */
+.wwg-map-area { background: #fff; }
+.wwg-map {
+    width: 100%;
+    height: 100%;
+    min-height: 520px;
+    border: none;
+}
+
+/* ── Meta ─────────────────────────────────────────────────── */
+.wwg-meta { font-size: 12px; color: #6b7280; }

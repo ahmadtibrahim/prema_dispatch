@@ -94,4 +94,167 @@
     </t>
 </template>
 
+<!-- Portal: My Home tiles -->
+<template id="portal_my_home_bookings" name="Portal My Home: Bookings tile"
+          inherit_id="portal.portal_my_home" priority="30">
+    <xpath expr="//div[hasclass('o_portal_docs')]" position="inside">
+        <t t-call="portal.portal_docs_entry">
+            <t t-set="title">Bookings</t>
+            <t t-set="text">Request a quote / book a shipment</t>
+            <t t-set="url">/my/bookings</t>
+            <t t-set="icon_class">fa fa-clipboard-list</t>
+        </t>
+    </xpath>
+</template>
+
+<template id="portal_my_home_where_we_go" name="Portal My Home: Where We Go tile"
+          inherit_id="portal.portal_my_home" priority="29">
+    <xpath expr="//div[hasclass('o_portal_docs')]" position="inside">
+        <t t-call="portal.portal_docs_entry">
+            <t t-set="title">Where We Go</t>
+            <t t-set="text">View our scheduled service regions and routes</t>
+            <t t-set="url">/my/where-we-go</t>
+            <t t-set="icon_class">fa fa-map-marked-alt</t>
+        </t>
+    </xpath>
+</template>
+
+<template id="portal_where_we_go" name="Portal: Where We Go">
+    <t t-call="portal.portal_layout">
+        <t t-set="title">Where We Go</t>
+        <div class="container-fluid px-4 py-4">
+            <h2 class="mb-1">Where We Go</h2>
+            <p class="text-muted mb-4">Explore our scheduled service network across Ontario and Quebec.</p>
+            <div class="row g-4">
+                <div class="col-lg-4 col-xl-3" id="wwg_portal_panel">
+                    <div class="card shadow-sm mb-3">
+                        <div class="card-header bg-white"><strong>Starting Point</strong></div>
+                        <div class="card-body">
+                            <select id="wwg_portal_origin" class="form-select form-select-sm"
+                                    onchange="window.wwgPortalSelectOrigin(this.value)">
+                                <option value="hub:default">Mississauga Hub</option>
+                            </select>
+                            <div id="wwg_portal_destinations" class="mt-3 small"/>
+                        </div>
+                    </div>
+                    <p class="small text-muted">Route lines show our scheduled service network and are for service-area guidance only.</p>
+                    <a href="/my/booking/new" class="btn btn-primary btn-sm w-100">Book a Shipment</a>
+                </div>
+                <div class="col-lg-8 col-xl-9">
+                    <div id="wwg_portal_map" class="border rounded w-100" style="min-height:520px"/>
+                </div>
+            </div>
+        </div>
+    </t>
+    <script><![CDATA[
+        var wwgMap=null,wwgMarkers=[],wwgLines=[],wwgData=null;
+        var CORRIDOR_COLORS=["#3366CC","#DC3912","#FF9900","#109618","#990099","#0099C6","#DD4477","#66AA00","#B82E2E","#316395"];
+
+        function wwgPortalInit(){
+            var key=document.querySelector('meta[name="google-maps-api-key"]');
+            var apiKey=key?key.content:'';
+            if(!apiKey||!window.google){
+                var s=document.createElement('script');
+                s.src='https://maps.googleapis.com/maps/api/js?key='+encodeURIComponent(apiKey||'')+'&callback=wwgPortalMapReady';
+                s.async=true;s.defer=true;document.head.appendChild(s);
+            }else{wwgPortalMapReady();}
+        }
+
+        window.wwgPortalMapReady=function(){
+            var el=document.getElementById('wwg_portal_map');
+            if(!el||!window.google)return;
+            wwgMap=new google.maps.Map(el,{center:{lat:44.3,lng:-79.3},zoom:6,mapTypeControl:false,streetViewControl:false});
+            wwgPortalLoad();
+        };
+
+        function wwgPortalLoad(){
+            fetch('/logistics/network-map/topology',{
+                method:'POST',
+                headers:{'Content-Type':'application/json'},
+                body:JSON.stringify({jsonrpc:'2.0',method:'call',params:{}})
+            }).then(r=>r.json()).then(function(d){
+                var data=d.result||d;
+                if(data.error)return;
+                wwgData=data;wwgPortalDraw(data);wwgPortalPopulate(data);
+            });
+        }
+
+        function wwgPortalPopulate(data){
+            var sel=document.getElementById('wwg_portal_origin');
+            if(!sel)return;
+            sel.innerHTML='<option value="hub:default">Mississauga Hub</option>';
+            (data.regions||[]).forEach(function(r){
+                if(!r.manual_quote&&r.lat){sel.innerHTML+='<option value="region:'+r.id+'">'+r.name+'</option>';}
+            });
+        }
+
+        window.wwgPortalSelectOrigin=function(val){
+            if(!val)return;
+            if(val.startsWith('region:')){wwgPortalDrawRegion(parseInt(val.split(':')[1]));}
+            else{wwgPortalDraw(wwgData);}
+        };
+
+        function wwgPortalDraw(data){
+            if(!wwgMap)return;
+            wwgClear();var bounds=new google.maps.LatLngBounds();
+            var hub=data.hub;
+            if(hub&&hub.lat){
+                var m=new google.maps.Marker({map:wwgMap,position:{lat:Number(hub.lat),lng:Number(hub.lng)},title:hub.name,icon:'https://maps.google.com/mapfiles/ms/icons/green-dot.png',zIndex:100});
+                wwgMarkers.push(m);bounds.extend({lat:Number(hub.lat),lng:Number(hub.lng)});
+            }
+            (data.corridors||[]).forEach(function(c,ci){
+                var color=CORRIDOR_COLORS[ci%CORRIDOR_COLORS.length];
+                var regions=c.regions||[];if(!regions.length)return;
+                var path=[];
+                if(hub&&hub.lat)path.push({lat:Number(hub.lat),lng:Number(hub.lng)});
+                regions.forEach(function(r){if(r.lat)path.push({lat:Number(r.lat),lng:Number(r.lng)});});
+                if(path.length>=2){
+                    var line=new google.maps.Polyline({map:wwgMap,path:path,strokeColor:color,strokeOpacity:0.7,strokeWeight:2,zIndex:5});
+                    wwgLines.push(line);path.forEach(function(p){bounds.extend(p);});
+                }
+            });
+            (data.regions||[]).forEach(function(r){
+                if(!r.lat||r.manual_quote)return;
+                var m=new google.maps.Marker({map:wwgMap,position:{lat:Number(r.lat),lng:Number(r.lng)},title:r.name,icon:'https://maps.google.com/mapfiles/ms/icons/red-dot.png'});
+                m.addListener('click',function(){wwgPortalDrawRegion(r.id);});
+                wwgMarkers.push(m);bounds.extend({lat:Number(r.lat),lng:Number(r.lng)});
+            });
+            if(!bounds.isEmpty())wwgMap.fitBounds(bounds,40);
+        }
+
+        function wwgPortalDrawRegion(regionId){
+            if(!wwgData||!wwgMap)return;
+            wwgClear();var bounds=new google.maps.LatLngBounds();
+            var hub=wwgData.hub;
+            var region=(wwgData.regions||[]).find(function(r){return r.id===regionId;});
+            if(!region)return;
+            var pos={lat:Number(region.lat),lng:Number(region.lng)};
+            var m=new google.maps.Marker({map:wwgMap,position:pos,title:region.name,icon:'https://maps.google.com/mapfiles/ms/icons/blue-dot.png',zIndex:50});
+            wwgMarkers.push(m);bounds.extend(pos);
+            if(hub&&hub.lat){
+                var hm=new google.maps.Marker({map:wwgMap,position:{lat:Number(hub.lat),lng:Number(hub.lng)},title:hub.name,icon:'https://maps.google.com/mapfiles/ms/icons/green-dot.png',zIndex:100});
+                wwgMarkers.push(hm);bounds.extend({lat:Number(hub.lat),lng:Number(hub.lng)});
+            }
+            var dests=[];
+            var serving=(wwgData.corridors||[]).filter(function(c){return(c.regions||[]).some(function(r){return r.region_id===regionId;});});
+            serving.forEach(function(c,ci){
+                var color=CORRIDOR_COLORS[ci%CORRIDOR_COLORS.length];
+                var path=[];
+                if(hub&&hub.lat)path.push({lat:Number(hub.lat),lng:Number(hub.lng)});
+                (c.regions||[]).forEach(function(r){
+                    if(r.lat){path.push({lat:Number(r.lat),lng:Number(r.lng)});if(r.region_id!==regionId)dests.push({name:r.name,corridor:c.name,days:(c.operating_days||[]).join(', ')});}
+                });
+                if(path.length>=2){var line=new google.maps.Polyline({map:wwgMap,path:path,strokeColor:color,strokeOpacity:0.7,strokeWeight:2,zIndex:5});wwgLines.push(line);path.forEach(function(p){bounds.extend(p);});}
+            });
+            (wwgData.regions||[]).forEach(function(r){if(r.lat&&!r.manual_quote&&r.id!==regionId){var dm=new google.maps.Marker({map:wwgMap,position:{lat:Number(r.lat),lng:Number(r.lng)},title:r.name,icon:'https://maps.google.com/mapfiles/ms/icons/red-dot.png'});wwgMarkers.push(dm);bounds.extend({lat:Number(r.lat),lng:Number(r.lng)});}});
+            if(!bounds.isEmpty())wwgMap.fitBounds(bounds,40);
+            var panel=document.getElementById('wwg_portal_destinations');
+            if(panel){var h='<div class="fw-bold small mb-1">'+region.name+'</div>';if(dests.length){h+='<div class="small text-muted mb-2">Available Destinations</div>';var seen={};dests.forEach(function(d){if(!seen[d.name]){seen[d.name]=true;h+='<div class="small py-1 border-bottom">'+d.name+'<span class="text-muted d-block" style="font-size:10px">'+d.corridor+' · '+d.days+'</span></div>';}});}h+='<div class="small text-muted mt-2">Via Mississauga Hub</div>';panel.innerHTML=h;}
+        }
+
+        function wwgClear(){wwgMarkers.forEach(function(m){m.setMap(null);});wwgMarkers=[];wwgLines.forEach(function(l){l.setMap(null);});wwgLines=[];}
+        document.addEventListener('DOMContentLoaded',wwgPortalInit);
+    ]]></script>
+</template>
+
 </odoo>

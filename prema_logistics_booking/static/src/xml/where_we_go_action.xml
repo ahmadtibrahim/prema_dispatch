@@ -1,100 +1,119 @@
 <?xml version="1.0" encoding="utf-8"?>
 <templates>
 <t t-name="prema_logistics_booking.WhereWeGoAction">
-    <div class="d-flex h-100">
+    <div class="wwg-root d-flex h-100">
         <!-- Left panel -->
-        <div class="border-end p-3 d-flex flex-column" style="width: 340px; flex-shrink: 0; overflow-y: auto;">
-            <h4 class="mb-1">Where We Go</h4>
-            <p class="small text-muted mb-2">Network visualization &amp; planning. Not pricing distance.</p>
+        <div class="wwg-sidebar border-end d-flex flex-column">
+            <div class="wwg-header">
+                <h1 class="wwg-title">Where We Go</h1>
+                <p class="wwg-subtitle">Network visualization &amp; planning. Not pricing distance.</p>
+            </div>
 
             <!-- Hub selector -->
-            <label class="form-label fw-bold small">Hub</label>
-            <select class="form-select form-select-sm mb-3" t-on-change="(event) => this.onSelectHub(event.target.value)">
-                <option value="">Select a hub...</option>
-                <t t-foreach="state.hubs" t-as="h" t-key="h.id">
-                    <option t-att-value="h.id"
-                            t-att-selected="state.selectedHubId === h.id ? 'selected' : undefined">
-                        🏢 <t t-esc="h.public_name || h.name"/>
-                    </option>
-                </t>
-            </select>
+            <div class="wwg-section">
+                <label class="wwg-section-label">Hub</label>
+                <select class="form-select wwg-select"
+                        t-on-change="(event) => this.onSelectHub(event.target.value)">
+                    <option value="">Select a hub…</option>
+                    <t t-foreach="state.hubs" t-as="h" t-key="h.id">
+                        <option t-att-value="h.id"
+                                t-att-selected="state.selectedHubId === h.id ? 'selected' : undefined">
+                            🏢 <t t-esc="h.public_name || h.name"/>
+                        </option>
+                    </t>
+                </select>
+            </div>
 
             <!-- Loading -->
-            <div t-if="state.loading" class="text-muted small py-2">
-                <span class="spinner-border spinner-border-sm me-2"/>Loading network...
+            <div t-if="state.loading" class="wwg-status">
+                <span class="spinner-border spinner-border-sm me-2"/>Loading network…
             </div>
 
             <!-- No hub selected -->
-            <div t-elif="!state.selectedHubId" class="text-muted small">
+            <div t-elif="!state.selectedHubId" class="wwg-status">
                 Select a hub to view corridor network.
             </div>
 
             <!-- No corridors -->
-            <div t-elif="!state.corridors.length" class="alert alert-warning small py-2">
+            <div t-elif="!state.corridors.length" class="alert alert-warning py-2 small">
                 No scheduled corridors are configured from this Hub.
             </div>
 
-            <!-- Corridor toggles -->
+            <!-- Corridor toggles + regions + legend -->
             <t t-else="">
-                <div class="small fw-bold mb-1">Configured Routes</div>
-                <t t-foreach="state.corridors" t-as="corridor" t-key="corridor.id">
-                    <div class="form-check form-check-inline d-flex align-items-start mb-1 small">
-                        <input type="checkbox" class="form-check-input mt-1 me-1"
-                               t-att-id="'corr_' + str(corridor.id)"
-                               t-att-checked="state.visibleCorridors[corridor.id] ? 'checked' : undefined"
-                               t-on-change="() => this.toggleCorridor(corridor.id)"/>
-                        <label t-att-for="'corr_' + str(corridor.id)" class="form-check-label">
-                            <span t-att-style="'color:' + corridorColor(corridor_index) + ';font-weight:600'"
-                                  t-esc="'● ' + corridor.name"/>
-                            <span class="text-muted d-block" t-esc="(corridor.operating_days || []).join(', ')"/>
+                <div class="wwg-section">
+                    <div class="wwg-section-label">Configured Routes</div>
+                    <t t-foreach="state.corridors" t-as="corridor" t-key="corridor.id">
+                        <label class="wwg-route-row"
+                               t-att-for="'corr_' + corridor.id">
+                            <input type="checkbox"
+                                   t-att-id="'corr_' + corridor.id"
+                                   t-att-checked="state.visibleCorridors[corridor.id] ? 'checked' : undefined"
+                                   t-on-change="() => this.toggleCorridor(corridor.id)"/>
+                            <span class="wwg-route-dot"
+                                  t-att-style="'color:' + corridorColor(corridor_index)">●</span>
+                            <span class="wwg-route-info">
+                                <span class="wwg-route-name"
+                                      t-att-style="'color:' + corridorColor(corridor_index)"
+                                      t-esc="corridor.name"/>
+                                <span class="wwg-route-days"
+                                      t-esc="(corridor.operating_days || []).join(', ')"/>
+                            </span>
                         </label>
-                    </div>
-                </t>
+                    </t>
+                </div>
 
-                <hr class="my-2"/>
-
-                <!-- Regions served -->
-                <div class="small fw-bold mb-1">Regions</div>
-                <t t-if="!state.regions.length" class="text-muted small">No regions configured.</t>
-                <t t-foreach="state.regions" t-as="region" t-key="region.id">
-                    <button type="button"
-                            t-att-class="'btn btn-sm text-start w-100 border rounded mb-1 ' + (state.selectedRegionId === region.id ? 'btn-primary' : 'btn-light')"
-                            t-on-click="() => this.selectRegion(region.id)">
-                        <t t-if="region.manual_quote"><span class="text-muted">⚠</span></t>
-                        <t t-else=""><span class="text-success">✓</span></t>
-                        <t t-esc="region.name"/>
-                        <t t-if="region.manual_quote">
-                            <small class="text-muted d-block">Manual Quote</small>
-                        </t>
-                        <t t-else="">
-                            <small class="d-block" style="font-size:10px">
-                                <t t-foreach="corridorsForRegion(region.id)" t-as="c" t-key="c.id">
-                                    <span t-att-style="'color:' + corridorColor(c_index)"
-                                          t-esc="c.name + (c_index_last ? '' : ', ')"/>
+                <div class="wwg-section">
+                    <div class="wwg-section-label">Regions</div>
+                    <t t-if="!state.regions.length">
+                        <div class="wwg-meta">No regions configured.</div>
+                    </t>
+                    <t t-foreach="state.regions" t-as="region" t-key="region.id">
+                        <button type="button"
+                                t-att-class="'wwg-region-card ' + (state.selectedRegionId === region.id ? 'wwg-region-card--selected' : '')"
+                                t-on-click="() => this.selectRegion(region.id)">
+                            <span class="wwg-region-status"
+                                  t-esc="region.manual_quote ? '⚠' : '✓'"/>
+                            <span class="wwg-region-info">
+                                <span class="wwg-region-name" t-esc="region.name"/>
+                                <t t-if="region.manual_quote">
+                                    <span class="wwg-region-meta">Manual Quote — No Scheduled Corridor</span>
                                 </t>
-                            </small>
-                        </t>
-                    </button>
-                </t>
+                                <t t-else="">
+                                    <span class="wwg-region-corridors">
+                                        <t t-foreach="corridorsForRegion(region.id)" t-as="c" t-key="c.id">
+                                            <span class="wwg-region-corridor-tag"
+                                                  t-att-style="'color:' + corridorColor(c_index)"
+                                                  t-esc="c.name"/>
+                                        </t>
+                                    </span>
+                                </t>
+                            </span>
+                        </button>
+                    </t>
+                </div>
 
-                <!-- Legend -->
-                <hr class="my-2"/>
-                <div class="small fw-bold mb-1">Legend</div>
-                <t t-foreach="state.corridors" t-as="corridor" t-key="corridor.id">
-                    <div class="d-flex align-items-center mb-1 small">
-                        <span t-att-style="'color:' + corridorColor(corridor_index) + ';font-size:16px;margin-right:4px'">●</span>
-                        <span t-esc="corridor.name"/>
-                        <span class="text-muted ms-1" t-esc="'(' + (corridor.operating_days || []).join(', ') + ')'"/>
-                    </div>
-                </t>
+                <div class="wwg-section">
+                    <div class="wwg-section-label">Legend</div>
+                    <t t-foreach="state.corridors" t-as="corridor" t-key="corridor.id">
+                        <div class="wwg-legend-row">
+                            <span class="wwg-legend-dot"
+                                  t-att-style="'color:' + corridorColor(corridor_index)">●</span>
+                            <span class="wwg-legend-name" t-esc="corridor.name"/>
+                            <span class="wwg-legend-days"
+                                  t-esc="(corridor.operating_days || []).join(', ')"/>
+                        </div>
+                    </t>
+                </div>
             </t>
         </div>
 
         <!-- Map -->
-        <div class="flex-fill position-relative p-3">
-            <div t-if="state.mapError" class="alert alert-danger" t-esc="state.mapError"/>
-            <div t-ref="map" class="w-100 h-100 border rounded" style="min-height: 520px;"/>
+        <div class="wwg-map-area flex-fill position-relative">
+            <div t-if="state.mapError" class="alert alert-danger m-3" t-esc="state.mapError"/>
+            <div t-ref="map" class="wwg-map"/>
         </div>
     </div>
 </t>
+
 </templates>

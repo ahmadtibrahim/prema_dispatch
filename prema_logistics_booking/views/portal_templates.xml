@@ -78,15 +78,57 @@
                     <button type="submit" class="btn btn-primary">Continue</button>
                 </div>
             </form>
-        </div>
+            </div><!-- col -->
+        </div><!-- row -->
+        </div><!-- container-fluid -->
     </t>
 </template>
 
 <!-- UAT-001: Authenticated booking Step 1 with Saved Locations -->
 <template id="portal_step1_locations" name="Booking Step 1 - Saved Locations">
     <t t-call="portal.portal_layout">
-        <div class="container o_page_container py-5">
-            <div class="mx-auto" style="max-width:700px">
+        <div class="container-fluid px-4 py-4">
+        <div class="row g-4">
+            <!-- Left sidebar: Booking History -->
+            <div class="col-lg-4 col-xl-3">
+                <div class="card shadow-sm">
+                    <div class="card-header bg-white"><strong>Previous Bookings</strong></div>
+                    <div class="card-body p-2" style="max-height: 70vh; overflow-y: auto;">
+                        <t t-if="not customer_bookings">
+                            <p class="text-muted small p-2">No previous bookings yet.</p>
+                        </t>
+                        <t t-else="">
+                            <t t-foreach="customer_bookings" t-as="b">
+                                <a t-attf-href="/my/bookings/#{b.id}"
+                                   class="d-block text-decoration-none p-2 border-bottom"
+                                   style="transition: background 0.1s"
+                                   onmouseover="this.style.background='#f8f9fa'"
+                                   onmouseout="this.style.background=''">
+                                    <div class="d-flex justify-content-between align-items-start">
+                                        <div>
+                                            <small class="fw-bold d-block" style="color:#111"
+                                                   t-esc="b.booking_name or b.booking_number"/>
+                                            <small class="text-muted" t-esc="b.booking_number"/>
+                                        </div>
+                                        <span t-att-class="'badge ' + ('bg-success' if b.state in ('completed','delivered') else ('bg-secondary' if b.state == 'cancelled' else 'bg-primary'))"
+                                              style="font-size:10px"
+                                              t-esc="b.customer_status"/>
+                                    </div>
+                                    <small class="text-muted" style="font-size:11px">
+                                        <t t-esc="b.pickup_date"/> · $<t t-esc="'%.2f' % (b.calculated_price or 0)"/>
+                                    </small>
+                                </a>
+                            </t>
+                            <div class="text-center p-2">
+                                <a href="/my/bookings" class="btn btn-sm btn-outline-secondary w-100">View All Bookings</a>
+                            </div>
+                        </t>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Right: Booking form -->
+            <div class="col-lg-8 col-xl-9">
                 <h2 class="mb-2">Book a Shipment</h2>
                 <p class="text-muted mb-4">Select your pickup and delivery locations.</p>
 
@@ -1205,20 +1247,48 @@
 
 <template id="portal_booking_detail" name="Booking Detail">
     <t t-call="portal.portal_layout">
-        <div class="container o_page_container py-5">
-            <h2>Booking <t t-esc="booking.booking_number"/></h2>
-            <p>Status: <t t-esc="booking.state"/></p>
-            <p t-if="booking.dispatch_job_id">
-                Tracking: <a t-attf-href="/dispatch/track/#{booking.booking_number}"
-                              t-esc="booking.booking_number"/>
-            </p>
-            <table class="table table-sm">
+        <div class="container o_page_container py-4" style="max-width:720px">
+            <div class="d-flex justify-content-between align-items-start mb-3">
+                <div>
+                    <h2 class="mb-1"><t t-esc="booking.booking_name or booking.booking_number"/></h2>
+                    <small class="text-muted" t-esc="booking.booking_number"/>
+                </div>
+                <span t-att-class="'badge fs-6 ' + ('bg-success' if booking.state in ('completed','delivered') else ('bg-secondary' if booking.state == 'cancelled' else 'bg-primary'))"
+                      t-esc="booking.customer_status"/>
+            </div>
+
+            <div t-if="booking.state == 'cancelled'" class="alert alert-warning small">
+                <strong>Cancelled</strong>
+                <t t-if="booking.cancellation_source == 'customer'"> by you</t>
+                <t t-else=""> by PremaFirm</t>
+                <t t-if="booking.cancelled_at"> on <t t-esc="booking.cancelled_at.strftime('%b %d, %Y at %I:%M %p')"/></t>
+                <t t-if="booking.cancellation_reason"><br/>Reason: <t t-esc="booking.cancellation_reason"/></t>
+            </div>
+
+            <div class="card mb-3"><div class="card-body">
+            <table class="table table-sm mb-0">
                 <tr><td>Pickup</td><td t-esc="booking.pickup_address"/></tr>
                 <tr><td>Delivery</td><td t-esc="booking.delivery_address"/></tr>
                 <tr><td>Pickup Date</td><td t-esc="booking.pickup_date"/></tr>
-                <tr><td>Estimated Delivery</td><td t-esc="booking.estimated_delivery_date"/></tr>
-                <tr><td>Price</td><td>$<t t-esc="'%.2f' % booking.calculated_price"/> CAD</td></tr>
+                <tr><td>Est. Delivery</td><td t-esc="booking.estimated_delivery_date"/></tr>
+                <tr><td>Pallets</td><td t-esc="booking.physical_pallets or booking.pallets"/></tr>
+                <tr><td>Weight</td><td t-esc="'%g lb' % booking.weight_lbs"/></tr>
+                <tr><td>Price</td><td><strong>$<t t-esc="'%.2f' % booking.calculated_price"/> CAD</strong></td></tr>
             </table>
+            </div></div>
+
+            <t t-if="booking.state not in ('cancelled', 'completed', 'delivered')">
+                <form action="/my/bookings/cancel" method="post" onsubmit="return confirm('Cancel this booking? This cannot be undone.')" class="mb-3">
+                    <input type="hidden" name="csrf_token" t-att-value="request.csrf_token()"/>
+                    <input type="hidden" name="booking_id" t-att-value="str(booking.id)"/>
+                    <div class="input-group">
+                        <input type="text" name="reason" class="form-control form-control-sm" placeholder="Reason for cancellation (required)" required="required"/>
+                        <button type="submit" class="btn btn-outline-danger btn-sm">Cancel Booking</button>
+                    </div>
+                </form>
+            </t>
+
+            <a href="/my/booking/new" class="btn btn-outline-primary">Book Another Shipment</a>
         </div>
     </t>
 </template>

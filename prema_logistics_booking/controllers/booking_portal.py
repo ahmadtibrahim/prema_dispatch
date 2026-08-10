@@ -144,6 +144,11 @@ class LogisticsBookingPortal(http.Controller):
         new_loc_id = kwargs.get("new_loc_id")
         new_loc_type = kwargs.get("new_loc_type", "")
 
+        # Load customer's recent bookings for sidebar
+        customer_bookings = request.env["logistics.booking"].sudo().search([
+            ("commercial_partner_id", "=", partner.id),
+        ], order="id desc", limit=10)
+
         return request.render("prema_logistics_booking.portal_step1_locations", {
             "error": error,
             "pickup_locations": pickup_locations,
@@ -151,6 +156,7 @@ class LogisticsBookingPortal(http.Controller):
             "has_saved_locations": bool(pickup_locations or delivery_locations),
             "new_loc_id": new_loc_id,
             "new_loc_type": new_loc_type,
+            "customer_bookings": customer_bookings,
         })
 
     # ------------------------------------------------------------------
@@ -550,6 +556,30 @@ class LogisticsBookingPortal(http.Controller):
         return request.redirect(f"/my/bookings/{booking.id}")
 
     # ------------------------------------------------------------------
+    # Cancel Booking
+    # ------------------------------------------------------------------
+    @http.route("/my/bookings/cancel", type="http", auth="user", website=True, sitemap=False, methods=["POST"])
+    def booking_cancel(self, **kwargs):
+        require_visible()
+        if not is_approved_customer():
+            return request.render("prema_logistics_booking.portal_pending_approval", {})
+        booking_id = int(kwargs.get("booking_id", 0))
+        reason = kwargs.get("reason", "").strip()
+        if not reason:
+            return request.redirect(f"/my/bookings/{booking_id}?error=Please+provide+a+cancellation+reason")
+        booking = request.env["logistics.booking"].sudo().search([
+            ("id", "=", booking_id),
+            ("commercial_partner_id", "=", request.env.user.partner_id.commercial_partner_id.id),
+        ], limit=1)
+        if not booking:
+            raise NotFound()
+        try:
+            booking.action_cancel(reason=reason, source="customer")
+        except UserError as e:
+            return request.render("prema_logistics_booking.portal_booking_error", {"message": str(e)})
+        return request.redirect(f"/my/bookings/{booking_id}")
+
+    # ------------------------------------------------------------------
     # My Bookings
     # ------------------------------------------------------------------
     @http.route("/my/bookings", type="http", auth="user", website=True, sitemap=False)
@@ -571,3 +601,13 @@ class LogisticsBookingPortal(http.Controller):
             # an id belonging to another customer simply won't be found.
             raise NotFound()
         return request.render("prema_logistics_booking.portal_booking_detail", {"booking": booking})
+
+    # ------------------------------------------------------------------
+    # Where We Go — Customer Portal
+    # ------------------------------------------------------------------
+    @http.route("/my/where-we-go", type="http", auth="user", website=True, sitemap=False)
+    def portal_where_we_go(self, **kwargs):
+        require_visible()
+        if not is_approved_customer():
+            return request.render("prema_logistics_booking.portal_pending_approval", {})
+        return request.render("prema_logistics_booking.portal_where_we_go", {})

@@ -56,6 +56,10 @@ class LogisticsBooking(models.Model):
 
     booking_number = fields.Char(readonly=True, copy=False, index=True)
     name = fields.Char(compute="_compute_name", store=True, string="Name")
+    booking_name = fields.Char(
+        compute="_compute_booking_name", store=True, string="Booking Name",
+        help="Human-readable name from ordered stop cities (e.g. Brampton → Belleville).",
+    )
 
     partner_id = fields.Many2one("res.partner", required=True, index=True)
     commercial_partner_id = fields.Many2one(
@@ -69,6 +73,19 @@ class LogisticsBooking(models.Model):
          ("exception", "Exception")],
         default="confirmed", required=True
     )
+    customer_status = fields.Char(
+        compute="_compute_customer_status", store=False,
+        string="Customer Status",
+        help="Customer-facing status label (e.g. Confirmed, Scheduled, Driver Assigned).",
+    )
+
+    # ── Cancellation ──────────────────────────────────────────────
+    cancelled_at = fields.Datetime(readonly=True, copy=False)
+    cancelled_by = fields.Many2one("res.users", readonly=True, copy=False)
+    cancellation_source = fields.Selection([
+        ("customer", "Customer"), ("company", "PremaFirm"), ("system", "System"),
+    ], readonly=True, copy=False)
+    cancellation_reason = fields.Text(readonly=True, copy=False)
 
     pickup_fsa_id = fields.Many2one("logistics.fsa", index=True)
     delivery_fsa_id = fields.Many2one("logistics.fsa", index=True)
@@ -226,6 +243,29 @@ class LogisticsBooking(models.Model):
     def _compute_name(self):
         for rec in self:
             rec.name = rec.booking_number or f"Booking {rec.id}"
+
+    @api.depends("stop_ids.sequence", "stop_ids.stop_type", "stop_ids.city")
+    def _compute_booking_name(self):
+        for rec in self:
+            cities = []
+            for stop in rec.stop_ids.filtered(
+                lambda s: s.stop_type in ("pickup", "delivery")
+            ).sorted("sequence"):
+                city = (stop.city or "").strip()
+                if city and (not cities or city != cities[-1]):
+                    cities.append(city)
+            rec.booking_name = " → ".join(cities) if cities else (rec.booking_number or f"Booking {rec.id}")
+
+    def _compute_customer_status(self):
+        for rec in self:
+            status_map = {
+                "draft": "Quote", "quoted": "Quote",
+                "confirmed": "Confirmed", "planned": "Scheduled",
+                "in_execution": "Out for Delivery", "delivered": "Completed",
+                "completed": "Completed", "cancelled": "Cancelled",
+                "exception": "Exception",
+            }
+            rec.customer_status = status_map.get(rec.state, rec.state)
 
     @api.depends("calculated_price", "estimated_cost")
     def _compute_margin(self):
@@ -413,6 +453,35 @@ class LogisticsBooking(models.Model):
             if existing:
                 return existing
             raise
+
+    def action_cancel(self, reason="", source="customer"):
+        self.ensure_one()
+        if self.state == "cancelled":
+            return True
+        if self.state == "completed":
+            raise UserError(_("Completed bookings cannot be cancelled."))
+        if source == "customer":
+            executed = self.dispatch_job_ids.mapped("stage_id").filtered(
+                lambda s: s.stage_type in ("dispatched", "completed"))
+            if executed:
+                raise UserError(_("Shipment is already in progress. Please contact us to cancel."))
+        self.write({
+            "state": "cancelled", "cancelled_at": fields.Datetime.now(),
+            "cancelled_by": self.env.user.id,
+            "cancellation_source": source, "cancellation_reason": reason or "",
+        })
+        cancel_s = self.env["prema.dispatch.stage"].sudo().search(
+            [("stage_type", "=", "cancelled")], limit=1)
+        for job in self.dispatch_job_ids.filtered(
+            lambda j: j.stage_id.stage_type not in ("dispatched", "completed", "cancelled")):
+            if cancel_s:
+                job.write({"stage_id": cancel_s.id})
+        if self.invoice_id and self.invoice_id.state == "draft":
+            self.invoice_id.button_cancel()
+        for leg in self.leg_ids:
+            if leg.reservation_state in ("reserved", "pending"):
+                leg.write({"reservation_state": "released"})
+        return True
 
     def _generate_booking_number(self):
         seq = self.env["ir.sequence"].sudo().next_by_code("logistics.booking") or "0"
