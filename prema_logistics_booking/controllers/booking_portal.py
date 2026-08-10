@@ -287,11 +287,11 @@ class LogisticsBookingPortal(http.Controller):
             if not pickup_fsa:
                 pu_result = resolver.resolve(float(pickup_lat), float(pickup_lng or 0))
                 if pu_result.matched_region_code:
-                    pickup_fsa = Fsa.search([("service_region_id.code", "=", pu_result.matched_region_code)], limit=1)
+                    pickup_fsa = Fsa.search([("region_id.code", "=", pu_result.matched_region_code)], limit=1)
             if not delivery_fsa and first_delivery:
                 de_result = resolver.resolve(first_delivery.latitude, first_delivery.longitude)
                 if de_result.matched_region_code:
-                    delivery_fsa = Fsa.search([("service_region_id.code", "=", de_result.matched_region_code)], limit=1)
+                    delivery_fsa = Fsa.search([("region_id.code", "=", de_result.matched_region_code)], limit=1)
 
             # delivery_loc_id may be None if Step 1 only passed indexed
             # delivery_loc_id_N params (multi-stop URL scheme). Derive it
