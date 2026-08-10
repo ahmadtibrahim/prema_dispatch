@@ -170,7 +170,7 @@ class LogisticsSavedLocationsPortal(http.Controller):
             domain.append(("location_type", "in", ("delivery", "both")))
 
         locations = Saved.search(domain, order="is_default_pickup DESC, is_default_delivery DESC, name")
-        return request.render("prema_logistics_booking.portal_saved_locations_list", {
+        return request.render("prema_logistics_booking.portal_my_saved_locations", {
             "locations": locations,
             "filter_type": filter_type,
         })
