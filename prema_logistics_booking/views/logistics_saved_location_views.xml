@@ -168,8 +168,8 @@
 
     <!-- Menu -->
     <menuitem id="menu_saved_locations"
-              name="Saved Locations"
-              parent="prema_logistics_booking.menu_v4_bookings"
+              name="Customer Locations"
+              parent="prema_logistics_booking.menu_v4_locations"
               action="action_logistics_saved_location"
-              sequence="25"/>
+              sequence="10"/>
 </odoo>

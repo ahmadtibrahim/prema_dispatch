@@ -31,6 +31,7 @@
     <menuitem id="menu_v4_recurring" name="Recurring Agreements" parent="menu_v4_bookings" action="action_logistics_recurring_agreement" sequence="30"/>
     <menuitem id="menu_v4_quotes" name="Custom Quotes" parent="menu_v4_bookings" action="action_logistics_custom_quote" sequence="40"/>
     <menuitem id="menu_v4_wa" name="WhatsApp Negotiations" parent="menu_v4_bookings" action="agent_wa.action_wa_negotiations" sequence="50"/>
+    <menuitem id="menu_v4_locations" name="Locations" parent="menu_v4_bookings" sequence="60"/>
 
     <record id="action_where_we_go" model="ir.actions.client">
         <field name="name">Where We Go</field>
@@ -42,7 +43,7 @@
     <menuitem id="menu_v4_hubs" name="Hubs" parent="menu_v4_network" action="action_logistics_hub" sequence="25"/>
     <menuitem id="menu_v4_regions" name="Regions" parent="menu_v4_network" action="action_logistics_region" sequence="40"/>
     <menuitem id="menu_v4_schedule_exceptions" name="Schedule Exceptions" parent="menu_v4_network" action="action_logistics_holiday_calendar" sequence="50"/>
-    <menuitem id="menu_v4_saved_locations" name="Master Facilities" parent="menu_v4_network" action="prema_dispatch.action_dispatch_locations" sequence="60"/>
+    <menuitem id="menu_v4_saved_locations" name="Master Facilities" parent="menu_v4_locations" action="prema_dispatch.action_dispatch_locations" sequence="20"/>
 
     <!-- menu_v4_lanes_pricing (Pricing -> "Service Routes" -> logistics.lane)
          intentionally removed: logistics.lane is hidden technical topology
