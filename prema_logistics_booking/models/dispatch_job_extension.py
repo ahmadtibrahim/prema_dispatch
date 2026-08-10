@@ -261,12 +261,11 @@ class PremaDispatchJob(models.Model):
 
     @api.model
     def action_remove_from_booking_board(self, job_id):
-        """Canonical Booking Board removal — handles the FULL linked transaction:
-        booking → dispatch job → draft invoice → pallets → capacity → departure.
+        """Booking Board removal — reuses the canonical booking.action_cancel()
+        workflow (the proven manual-delete path), then unlinks draft invoice
+        and archives the dispatch job to remove it from the active board.
 
         Returns {success, skipped, error, invoice_deleted, booking_cancelled}.
-        Does NOT require the departure guard to be bypassed — we detach the
-        departure link as part of the removal, not as a truck-change operation.
         """
         job = self.browse(job_id)
         if not job.exists():
@@ -278,7 +277,7 @@ class PremaDispatchJob(models.Model):
 
         try:
             with self.env.cr.savepoint():
-                # ── 1. Guard: started jobs cannot be destructively deleted ──
+                # ── 1. Guard: started jobs cannot be removed ──
                 stops = job.stop_ids.filtered(lambda s: s.status != "cancelled")
                 started = stops.filtered(
                     lambda s: s.status in ("completed", "arrived", "en_route")
@@ -287,88 +286,37 @@ class PremaDispatchJob(models.Model):
                 if started or has_pod:
                     return {
                         "success": False, "skipped": True,
-                        "error": "This shipment has operational activity and cannot be deleted.",
+                        "error": "This shipment has operational activity and cannot be removed.",
                     }
 
-                # ── 2. Guard: posted/paid invoices cannot be deleted ──
+                # ── 2. Guard: posted/paid invoices block removal ──
                 invoice = job.invoice_id
                 if booking and not invoice:
                     invoice = booking.invoice_id
                 if invoice and invoice.state != "draft":
                     return {
                         "success": False, "skipped": True,
-                        "error": "This booking has a posted invoice and cannot be deleted. Cancel the invoice first.",
+                        "error": "BLOCKED — Accounting document exists (state=%s). Cancel the invoice first." % invoice.state,
                     }
 
-                # ── 3. Cancel stage FIRST (blocks constraint checks) ──
-                cancel_stage = self.env["prema.dispatch.stage"].sudo().search(
-                    [("stage_type", "=", "cancelled")], limit=1,
-                )
-                draft_stage = job._default_stage()
-                target_stage = cancel_stage or draft_stage
-                # Set stage to cancelled while vehicle/corridor still present —
-                # the constraint skips cancelled jobs (stage_type not in cancelled/completed)
-                job.with_context(skip_planner_conflict_check=True).write({
-                    "stage_id": target_stage.id,
-                })
-
-                # ── 4. Detach from corridor first (must happen BEFORE vehicle_id
-                # is cleared — the write() override at line 74 blocks vehicle_id
-                # changes while corridor_departure_id is still set).
-                if job.corridor_departure_id:
-                    job.corridor_departure_id = False
-                if booking and booking.departure_id:
-                    booking.departure_id = False
-                self.env.flush_all()
-                # Now safe to clear vehicle/driver — corridor is already detached
-                job.with_context(
-                    skip_planner_conflict_check=True,
-                    departure_vehicle_sync=True,
-                ).write({
-                    "vehicle_id": False,
-                    "driver_id": False,
-                    "assignment_warnings": "",
-                    "feasibility_status": "unknown",
-                    "feasibility_notes": "",
-                    "assignment_override_reason": False,
-                    "assignment_override_by": False,
-                    "assignment_override_at": False,
-                })
-
-                # ── 5. Detach items from load plan + deactivate allocations ──
-                items = job.item_ids.filtered(lambda i: i.status not in ("loaded", "delivered", "in_transit"))
-                items.mapped("stop_allocation_ids").filtered("active").write({"active": False})
-                items.write({"status": "cancelled", "load_plan_id": False, "position_id": False})
-
-                # ── 6. Archive the dispatch job ──
-                job.write({"active": False})
-
-                # ── 7. Cancel the booking ──
+                # ── 3. Use the canonical cancel workflow (same as manual form delete) ──
                 if booking and booking.state not in ("cancelled", "completed", "delivered"):
-                    booking.write({
-                        "state": "cancelled",
-                        "cancelled_at": fields.Datetime.now(),
-                        "cancelled_by": self.env.user.id,
-                        "cancellation_source": "company",
-                        "cancellation_reason": "Removed from Booking Board",
-                    })
+                    booking.action_cancel(
+                        reason="Removed from Booking Board",
+                        source="company",
+                    )
                     booking_cancelled = True
 
-                # ── 8. Unlink draft invoice ──
-                invoice = invoice or (job.invoice_id if hasattr(job, 'invoice_id') else False)
-                if not invoice and booking:
-                    invoice = booking.invoice_id
-                if invoice and invoice.state == "draft":
-                    # Verify no payments, no reconciliation
+                # ── 4. Unlink draft invoice (action_cancel only does button_cancel) ──
+                invoice = invoice or (booking.invoice_id if booking else False)
+                if invoice and invoice.exists() and invoice.state == "draft":
                     if not invoice.payment_state or invoice.payment_state == "not_paid":
                         invoice.unlink()
                         invoice_deleted = True
 
-                # ── 9. Release booking legs ──
-                if booking:
-                    for leg in booking.leg_ids:
-                        if leg.reservation_state in ("reserved", "pending"):
-                            leg.write({"reservation_state": "released"})
+                # ── 5. Archive the dispatch job so it leaves the active board ──
+                if job.exists():
+                    job.write({"active": False})
 
         except Exception as exc:
             import traceback as tb
