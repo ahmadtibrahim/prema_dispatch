@@ -673,10 +673,13 @@
                 }
                 cardsDiv.innerHTML = '<div class="col-12 text-muted py-2"><div class="spinner-border spinner-border-sm me-2" role="status"/>Loading…</div>';
 
+                var tempMode = document.getElementById('portal_temperature_mode');
+                var equip = (tempMode && tempMode.value === 'reefer') ? 'reefer' : 'dry';
                 var params = 'pickup_lat=' + puLat + '&pickup_lng=' + puLng +
                     '&delivery_lat=' + deLat + '&delivery_lng=' + deLng +
                     '&pallets=' + (parseInt(palletsEl?.value) || 1) +
-                    '&weight_lbs=' + (parseFloat(weightEl?.value) || 500);
+                    '&weight_lbs=' + (parseFloat(weightEl?.value) || 500) +
+                    '&equipment=' + equip;
 
                 fetch('/my/booking/eligible-dates?' + params, {credentials: 'same-origin'})
                     .then(function(r) { return r.json(); })
@@ -1216,27 +1219,6 @@
                 <tr><td>Estimated Delivery</td><td t-esc="booking.estimated_delivery_date"/></tr>
                 <tr><td>Price</td><td>$<t t-esc="'%.2f' % booking.calculated_price"/> CAD</td></tr>
             </table>
-
-            <!-- Price Breakdown (collapsible) -->
-            <div class="card mt-3" t-if="booking.price_snapshot">
-                <div class="card-header p-2" style="cursor:pointer"
-                     onclick="var el=document.getElementById('priceBreakdown');el.style.display=el.style.display==='none'?'block':'none';">
-                    <strong>View Price Details &#x25BE;</strong>
-                </div>
-                <div id="priceBreakdown" style="display:none">
-                    <table class="table table-sm mb-0">
-                        <t t-foreach="booking.price_snapshot or []" t-as="line">
-                            <tr>
-                                <td t-esc="line['label']"/>
-                                <td class="text-end"
-                                    t-att-class="'text-end ' + ('text-success' if line['amount'] &lt; 0 else '')">
-                                    $<t t-esc="'%.2f' % line['amount']"/>
-                                </td>
-                            </tr>
-                        </t>
-                    </table>
-                </div>
-            </div>
         </div>
     </t>
 </template>

@@ -211,6 +211,16 @@ class BookingOrchestrationService:
             delivery_lat = normalized_request.delivery_stops[-1].get("latitude")
             delivery_lng = normalized_request.delivery_stops[-1].get("longitude")
 
+        _logger.info(
+            "prepare_quote ENTRY: pu_lat=%s pu_lng=%s de_lat=%s de_lng=%s "
+            "pu_stops=%s de_stops=%s pallets=%s phys=%s equip=%s date=%s",
+            pickup_lat, pickup_lng, delivery_lat, delivery_lng,
+            len(normalized_request.pickup_stops) if normalized_request.pickup_stops else 0,
+            len(normalized_request.delivery_stops) if normalized_request.delivery_stops else 0,
+            normalized_request.pallets, normalized_request.physical_pallets,
+            normalized_request.equipment_type, normalized_request.requested_pickup_date,
+        )
+
         pickup_fsa = None
         delivery_fsa = None
 
@@ -243,6 +253,17 @@ class BookingOrchestrationService:
             )
 
             if not route.available:
+                _logger.error(
+                    "prepare_quote FAILED: reason_code=%s reason=%s "
+                    "pickup=(%s,%s) delivery=(%s,%s) pallets=%s weight=%s "
+                    "equipment=%s date=%s snapshot=%s",
+                    route.reason_code, route.reason,
+                    pickup_lat, pickup_lng, delivery_lat, delivery_lng,
+                    normalized_request.pallets, normalized_request.weight_lbs,
+                    normalized_request.equipment_type,
+                    normalized_request.requested_pickup_date,
+                    route.routing_snapshot,
+                )
                 # Map technical reason codes to customer-friendly messages
                 friendly_reason = {
                     "NO_PICKUP_REGION": "We could not determine the pickup service region.",
@@ -697,8 +718,9 @@ class BookingOrchestrationService:
                 self._create_booking_stops(
                     booking, normalized_request.pickup_stops, normalized_request.delivery_stops,
                 )
-                # Invalidate One2many cache so downstream methods (leg creation,
-                # dispatch job, tax, invoice description) see the new stops.
+                # Flush pending creates to DB so Stop.search() finds them,
+                # then invalidate One2many cache so downstream methods see them.
+                self.env.flush_all()
                 booking.invalidate_recordset(['stop_ids'])
 
                 # Create booking lines
@@ -1105,7 +1127,7 @@ class BookingOrchestrationService:
             origin = pickup_stop if is_first else None
             dest = delivery_stop if is_last else None
 
-            hub_id = ls.get("hub_id")
+            hub_id = ls.get("hub_id") or ls.get("transfer_hub_id")
             if hub_id:
                 hub_stop = hub_stop_by_hub_id.get(hub_id)
                 if not hub_stop:

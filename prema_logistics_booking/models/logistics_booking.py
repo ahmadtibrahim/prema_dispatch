@@ -55,6 +55,8 @@ class LogisticsBooking(models.Model):
     _order = "id desc"
 
     booking_number = fields.Char(readonly=True, copy=False, index=True)
+    name = fields.Char(compute="_compute_name", store=True, string="Name")
+
     partner_id = fields.Many2one("res.partner", required=True, index=True)
     commercial_partner_id = fields.Many2one(
         related="partner_id.commercial_partner_id", store=True, index=True
@@ -219,6 +221,11 @@ class LogisticsBooking(models.Model):
         ("booking_idempotency_uniq", "unique(source_channel, idempotency_key)",
          "A booking already exists for this idempotency key (duplicate prevention)."),
     ]
+
+    @api.depends("booking_number")
+    def _compute_name(self):
+        for rec in self:
+            rec.name = rec.booking_number or f"Booking {rec.id}"
 
     @api.depends("calculated_price", "estimated_cost")
     def _compute_margin(self):
@@ -637,17 +644,54 @@ class LogisticsBooking(models.Model):
                 "weight_out_lbs": self.weight_lbs,
                 "dispatcher_notes": destination_stop.instructions or "",
             })
-        # ── Create dispatch items: shared pallet or dedicated ──
-        Alloc = self.env["prema.dispatch.pallet.stop.allocation"].sudo()
-        physical_count = self.physical_pallets or self.pallets
-        # Use search() to avoid One2many cache staleness after stop creation
+        # ── Create dispatch stops for each delivery (prema.dispatch.stop, NOT logistics.booking.stop) ──
         BStop = self.env["logistics.booking.stop"].sudo()
-        delivery_stops = BStop.search([
+        booking_delivery_stops = BStop.search([
             ("booking_id", "=", self.id), ("stop_type", "=", "delivery"),
         ], order="sequence")
 
-        if self.shared_pallet_mode and delivery_stops:
-            # Shared pallet: ONE item per physical pallet, allocated to all delivery stops
+        dispatch_delivery_stops = self.env["prema.dispatch.stop"]
+        for idx, bstop in enumerate(booking_delivery_stops):
+            if created_destination and idx == 0:
+                # First delivery: update the already-created destination stop
+                created_destination.write({
+                    "saved_location_id": bstop.saved_location_id.id if bstop.saved_location_id else False,
+                    "address": bstop.formatted_address or bstop.street or "",
+                    "contact_name": bstop.contact_name or "",
+                    "contact_phone": bstop.phone or "",
+                    "latitude": bstop.latitude,
+                    "longitude": bstop.longitude,
+                    "pallets_out": bstop.pallet_count,
+                    "weight_out_lbs": bstop.weight_lb,
+                    "dispatcher_notes": bstop.instructions or "",
+                })
+                dispatch_delivery_stops |= created_destination
+            else:
+                extra = Stop.create({
+                    "job_id": job.id,
+                    "stop_type": "dropoff",
+                    "sequence": 20 + idx * 10,
+                    "partner_id": self.partner_id.id,
+                    "saved_location_id": bstop.saved_location_id.id if bstop.saved_location_id else False,
+                    "address": bstop.formatted_address or bstop.street or "",
+                    "contact_name": bstop.contact_name or "",
+                    "contact_phone": bstop.phone or "",
+                    "latitude": bstop.latitude,
+                    "longitude": bstop.longitude,
+                    "scheduled_time": delivery_at,
+                    "time_window_type": "exact",
+                    "exact_time": delivery_at,
+                    "pallets_out": bstop.pallet_count,
+                    "weight_out_lbs": bstop.weight_lb,
+                    "dispatcher_notes": bstop.instructions or "",
+                })
+                dispatch_delivery_stops |= extra
+
+        # ── Create dispatch items: shared pallet or dedicated ──
+        Alloc = self.env["prema.dispatch.pallet.stop.allocation"].sudo()
+        physical_count = self.physical_pallets or self.pallets
+
+        if self.shared_pallet_mode and dispatch_delivery_stops:
             for p in range(physical_count):
                 label = f"Skid-{p+1}" if physical_count > 1 else "Shared Skid"
                 item = Item.create({
@@ -657,24 +701,22 @@ class LogisticsBooking(models.Model):
                     "pallet_count": 1,
                     "weight_lbs": self.weight_lbs / max(physical_count, 1),
                     "pickup_stop_id": created_origin.id if created_origin else False,
-                    "delivery_stop_id": delivery_stops[0].id if delivery_stops else (created_destination.id if created_destination else False),
+                    "delivery_stop_id": dispatch_delivery_stops[0].id,
                     "available_after_stop_id": created_origin.id if created_origin else False,
                     "temperature_zone": "chilled" if self.temperature_mode == "reefer" else "ambient",
                     "load_unit_type": "shared_pallet",
                     "shared_skid": True,
                 })
-                # Create stop allocations for all delivery stops
-                for idx, dstop in enumerate(delivery_stops):
+                for idx, ds in enumerate(dispatch_delivery_stops):
                     Alloc.create({
                         "dispatch_item_id": item.id,
-                        "stop_id": dstop.id,
+                        "stop_id": ds.id,
                         "unload_sequence": (idx + 1) * 10,
                     })
-        elif delivery_stops and len(delivery_stops) > 1:
-            # Dedicated multi-stop: create items based on per-stop pallet counts
+        elif dispatch_delivery_stops and len(dispatch_delivery_stops) > 1:
             pallet_counter = 1
-            for dstop in delivery_stops:
-                stop_pallets = dstop.pallet_count or 1
+            for dstop in dispatch_delivery_stops:
+                stop_pallets = dstop.pallets_out or 1
                 for _ in range(stop_pallets):
                     Item.create({
                         "job_id": job.id,
@@ -690,7 +732,6 @@ class LogisticsBooking(models.Model):
                     })
                     pallet_counter += 1
         else:
-            # Single-stop or legacy: one item per booking line
             for line in self.line_ids:
                 Item.create({
                     "job_id": job.id,

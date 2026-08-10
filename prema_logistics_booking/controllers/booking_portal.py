@@ -105,6 +105,7 @@ class LogisticsBookingPortal(http.Controller):
                         f"pickup_lat={pickup_loc.latitude}&pickup_lng={pickup_loc.longitude}"
                         f"&delivery_lat={first_del.latitude}&delivery_lng={first_del.longitude}"
                         f"&pickup_loc_id={pickup_loc_id}"
+                        f"&delivery_loc_id={first_del.id}"
                     )
                     for i, dl in enumerate(delivery_locs):
                         params += f"&delivery_loc_id_{i+1}={dl.id}"
@@ -275,6 +276,13 @@ class LogisticsBookingPortal(http.Controller):
                 de_result = resolver.resolve(first_delivery.latitude, first_delivery.longitude)
                 if de_result.matched_region_code:
                     delivery_fsa = Fsa.search([("service_region_id.code", "=", de_result.matched_region_code)], limit=1)
+
+            # delivery_loc_id may be None if Step 1 only passed indexed
+            # delivery_loc_id_N params (multi-stop URL scheme). Derive it
+            # from the first entry so the single-stop template branch still
+            # renders the hidden form field.
+            if not delivery_loc_id and delivery_loc_ids:
+                delivery_loc_id = delivery_loc_ids[0]
 
             # Build template context
             return request.render("prema_logistics_booking.portal_step2_shipment", {
