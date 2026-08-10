@@ -2,49 +2,95 @@
 <templates>
 <t t-name="prema_logistics_booking.WhereWeGoAction">
     <div class="d-flex h-100">
-        <div class="border-end p-3" style="width: 380px; flex-shrink: 0; overflow-y: auto;">
+        <!-- Left panel -->
+        <div class="border-end p-3 d-flex flex-column" style="width: 340px; flex-shrink: 0; overflow-y: auto;">
             <h4 class="mb-1">Where We Go</h4>
-            <p class="small text-muted">Choose a pickup to see every configured LTL destination. Prices are not shown here.</p>
-            <label class="form-label">Pickup Point</label>
-            <select class="form-select mb-3" t-on-change="(event) => this.onSelectOrigin(event.target.value)">
-                <option value="">Select a pickup...</option>
-                <t t-foreach="state.hubs" t-as="hub" t-key="hub.key">
-                    <option t-att-value="hub.key">HUB — <t t-esc="hub.public_name || hub.name"/></option>
-                </t>
-                <t t-foreach="state.origins" t-as="origin" t-key="origin.key">
-                    <option t-att-value="origin.key"><t t-esc="origin.name"/></option>
+            <p class="small text-muted mb-2">Network visualization &amp; planning. Not pricing distance.</p>
+
+            <!-- Hub selector -->
+            <label class="form-label fw-bold small">Hub</label>
+            <select class="form-select form-select-sm mb-3" t-on-change="(event) => this.onSelectHub(event.target.value)">
+                <option value="">Select a hub...</option>
+                <t t-foreach="state.hubs" t-as="h" t-key="h.id">
+                    <option t-att-value="h.id"
+                            t-att-selected="state.selectedHubId === h.id ? 'selected' : undefined">
+                        🏢 <t t-esc="h.public_name || h.name"/>
+                    </option>
                 </t>
             </select>
 
-            <div t-if="state.loadingDestinations" class="text-muted">
-                <span class="spinner-border spinner-border-sm me-2" role="status"/>Loading destinations...
+            <!-- Loading -->
+            <div t-if="state.loading" class="text-muted small py-2">
+                <span class="spinner-border spinner-border-sm me-2"/>Loading network...
             </div>
-            <div t-elif="!state.selectedOriginKey" class="text-muted">Select a pickup to see destination lines.</div>
-            <div t-else="">
-                <h6 class="mt-2 mb-2">Configured Destinations</h6>
-                <div t-if="!state.destinations.length" class="alert alert-warning">No complete corridor topology is configured from this pickup.</div>
-                <t t-foreach="state.destinations" t-as="destination" t-key="destination.region_id">
+
+            <!-- No hub selected -->
+            <div t-elif="!state.selectedHubId" class="text-muted small">
+                Select a hub to view corridor network.
+            </div>
+
+            <!-- No corridors -->
+            <div t-elif="!state.corridors.length" class="alert alert-warning small py-2">
+                No scheduled corridors are configured from this Hub.
+            </div>
+
+            <!-- Corridor toggles -->
+            <t t-else="">
+                <div class="small fw-bold mb-1">Configured Routes</div>
+                <t t-foreach="state.corridors" t-as="corridor" t-key="corridor.id">
+                    <div class="form-check form-check-inline d-flex align-items-start mb-1 small">
+                        <input type="checkbox" class="form-check-input mt-1 me-1"
+                               t-att-id="'corr_' + str(corridor.id)"
+                               t-att-checked="state.visibleCorridors[corridor.id] ? 'checked' : undefined"
+                               t-on-change="() => this.toggleCorridor(corridor.id)"/>
+                        <label t-att-for="'corr_' + str(corridor.id)" class="form-check-label">
+                            <span t-att-style="'color:' + corridorColor(corridor_index) + ';font-weight:600'"
+                                  t-esc="'● ' + corridor.name"/>
+                            <span class="text-muted d-block" t-esc="(corridor.operating_days || []).join(', ')"/>
+                        </label>
+                    </div>
+                </t>
+
+                <hr class="my-2"/>
+
+                <!-- Regions served -->
+                <div class="small fw-bold mb-1">Regions</div>
+                <t t-if="!state.regions.length" class="text-muted small">No regions configured.</t>
+                <t t-foreach="state.regions" t-as="region" t-key="region.id">
                     <button type="button"
-                            t-att-class="'btn text-start w-100 border rounded p-2 mb-2 ' + (state.selectedDestinationId === destination.region_id ? 'btn-primary' : 'btn-light')"
-                            t-on-click="() => this.onSelectDestination(destination)">
-                        <div class="d-flex justify-content-between align-items-center">
-                            <strong t-esc="destination.region_name"/>
-                            <span t-if="destination.status === 'direct'" class="badge bg-success">Direct</span>
-                            <span t-else="" class="badge bg-info text-dark">Via Hub</span>
-                        </div>
-                        <div t-if="destination.bookable" class="small mt-1">
-                            <t t-foreach="destination.legs" t-as="leg" t-key="leg_index">
-                                <div>
-                                    Leg <t t-esc="leg_index + 1"/>:
-                                    <t t-esc="leg.departure_date"/> at <t t-esc="formatDepartureTime(leg.departure_time)"/>
-                                </div>
-                            </t>
-                        </div>
-                        <div t-else="" class="small mt-1 text-muted" t-esc="getReasonText(destination.reason)"/>
+                            t-att-class="'btn btn-sm text-start w-100 border rounded mb-1 ' + (state.selectedRegionId === region.id ? 'btn-primary' : 'btn-light')"
+                            t-on-click="() => this.selectRegion(region.id)">
+                        <t t-if="region.manual_quote"><span class="text-muted">⚠</span></t>
+                        <t t-else=""><span class="text-success">✓</span></t>
+                        <t t-esc="region.name"/>
+                        <t t-if="region.manual_quote">
+                            <small class="text-muted d-block">Manual Quote</small>
+                        </t>
+                        <t t-else="">
+                            <small class="d-block" style="font-size:10px">
+                                <t t-foreach="corridorsForRegion(region.id)" t-as="c" t-key="c.id">
+                                    <span t-att-style="'color:' + corridorColor(c_index)"
+                                          t-esc="c.name + (c_index_last ? '' : ', ')"/>
+                                </t>
+                            </small>
+                        </t>
                     </button>
                 </t>
-            </div>
+
+                <!-- Legend -->
+                <hr class="my-2"/>
+                <div class="small fw-bold mb-1">Legend</div>
+                <t t-foreach="state.corridors" t-as="corridor" t-key="corridor.id">
+                    <div class="d-flex align-items-center mb-1 small">
+                        <span t-att-style="'color:' + corridorColor(corridor_index) + ';font-size:16px;margin-right:4px'">●</span>
+                        <span t-esc="corridor.name"/>
+                        <span class="text-muted ms-1" t-esc="'(' + (corridor.operating_days || []).join(', ') + ')'"/>
+                    </div>
+                </t>
+            </t>
         </div>
+
+        <!-- Map -->
         <div class="flex-fill position-relative p-3">
             <div t-if="state.mapError" class="alert alert-danger" t-esc="state.mapError"/>
             <div t-ref="map" class="w-100 h-100 border rounded" style="min-height: 520px;"/>

@@ -280,6 +280,105 @@ class LogisticsRegion(models.Model):
         from ..services.network_availability_service import NetworkAvailabilityService
         return NetworkAvailabilityService(self.env).list_destinations_from(origin, equipment=equipment)
 
+    @api.model
+    def get_corridor_topology(self, hub_id=None):
+        """Return complete corridor topology for Where We Go network map.
+        Hub → ordered regions → Hub. Includes region polygons."""
+        _require_dispatch_staff(self.env)
+        import json
+
+        Corridor = self.env["logistics.corridor"].sudo()
+        Hub = self.env["logistics.hub"].sudo()
+        Region = self.env["logistics.region"].sudo()
+
+        if hub_id:
+            hub = Hub.browse(int(hub_id)).exists()
+        if not (hub_id and hub):
+            hub = Hub.search([("is_default", "=", True), ("active", "=", True)], limit=1)
+        if not hub:
+            return {"error": "No hub found"}
+
+        hub_payload = {
+            "id": hub.id,
+            "name": hub.public_name or hub.name,
+            "lat": hub.latitude or (hub.saved_location_id.pin_lat if hub.saved_location_id else 0),
+            "lng": hub.longitude or (hub.saved_location_id.pin_lng if hub.saved_location_id else 0),
+        }
+
+        all_stops = self.env["logistics.corridor.stop"].sudo().search([
+            ("active", "=", True),
+        ], order="corridor_id, sequence")
+        corridor_ids = all_stops.mapped("corridor_id").ids
+        corridors = Corridor.search([("id", "in", corridor_ids), ("active", "=", True)])
+
+        DAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+        corridor_list = []
+        all_region_ids = set()
+
+        for c in corridors:
+            c_stops = all_stops.filtered(lambda s, cid=c.id: s.corridor_id.id == cid)
+            regions = []
+            for s in c_stops:
+                r = s.region_id
+                all_region_ids.add(r.id)
+                regions.append({
+                    "region_id": r.id, "code": r.code, "name": r.name,
+                    "lat": r.marker_latitude, "lng": r.marker_longitude,
+                    "pickup_allowed": s.pickup_allowed,
+                    "delivery_allowed": s.delivery_allowed,
+                })
+
+            operating_days = [d[:3] for d in DAYS if getattr(c, f"operate_{d}")]
+
+            corridor_list.append({
+                "id": c.id, "name": c.name,
+                "operating_days": operating_days,
+                "regions": regions,
+            })
+
+        all_regions = Region.search([("id", "in", list(all_region_ids))])
+        region_payloads = []
+        for r in all_regions:
+            entry = {
+                "id": r.id, "code": r.code, "name": r.name,
+                "lat": r.marker_latitude, "lng": r.marker_longitude,
+                "main_city": r.main_city or "",
+            }
+            if r.polygon_geojson:
+                try:
+                    entry["geojson"] = json.loads(r.polygon_geojson)
+                except Exception:
+                    pass
+            region_payloads.append(entry)
+
+        manual_regions = Region.search([
+            ("active", "=", True), ("customer_visible", "=", True),
+            ("id", "not in", list(all_region_ids)),
+        ])
+        for r in manual_regions:
+            entry = {
+                "id": r.id, "code": r.code, "name": r.name,
+                "lat": r.marker_latitude, "lng": r.marker_longitude,
+                "main_city": r.main_city or "", "manual_quote": True,
+            }
+            if r.polygon_geojson:
+                try:
+                    entry["geojson"] = json.loads(r.polygon_geojson)
+                except Exception:
+                    pass
+            region_payloads.append(entry)
+
+        hubs = Hub.search([("active", "=", True)])
+        hub_list = [{"id": h.id, "name": h.public_name or h.name,
+                      "is_default": h.is_default} for h in hubs]
+
+        return {
+            "hub": hub_payload,
+            "corridors": corridor_list,
+            "regions": region_payloads,
+            "hubs": hub_list,
+        }
+
     # ── Constraints ──────────────────────────────────────────────────
 
     @api.constrains("country_id", "state_id")

@@ -4,16 +4,10 @@ import { useService } from "@web/core/utils/hooks";
 import { standardActionServiceProps } from "@web/webclient/actions/action_service";
 import { registry } from "@web/core/registry";
 
-const REASON_MESSAGES = {
-    no_scheduled_departure_in_window: "No bookable departure currently scheduled.",
-    no_vehicle_assigned: "The next departure does not have a truck yet.",
-    vehicle_not_operational: "The assigned truck is not operational.",
-    vehicle_capacity_not_configured: "The assigned truck capacity is not configured.",
-    temperature_incompatible: "No compatible truck is currently scheduled.",
-    payload_exceeded: "The next departure is full by weight.",
-    pallet_capacity_exceeded: "The next departure is full by pallets.",
-    pinwheel_override_required: "The next departure requires dispatcher approval.",
-};
+const CORRIDOR_COLORS = [
+    "#3366CC", "#DC3912", "#FF9900", "#109618", "#990099",
+    "#0099C6", "#DD4477", "#66AA00", "#B82E2E", "#316395",
+];
 
 class WhereWeGoAction extends Component {
     static template = "prema_logistics_booking.WhereWeGoAction";
@@ -23,180 +17,309 @@ class WhereWeGoAction extends Component {
         this.orm = useService("orm");
         this.mapRef = useRef("map");
         this.state = useState({
-            origins: [], hubs: [], destinations: [],
-            selectedOriginKey: "", selectedDestinationId: 0,
-            loadingDestinations: false, googleApiKey: "",
-            mapReady: false, mapError: "",
+            hub: null, hubs: [], corridors: [], regions: [],
+            selectedHubId: null, loading: false,
+            googleApiKey: "", mapReady: false, mapError: "",
+            visibleCorridors: {}, // corridor_id -> bool
+            selectedRegionId: null,
         });
         this.map = null;
         this.mapObjects = [];
+        this.polygonObjects = [];
+        this.regionMarkers = {}; // region_id -> marker
+        this.corridorLines = {}; // corridor_id -> [polylines]
 
         onWillStart(async () => {
-            const data = await this.orm.call("logistics.region", "get_network_map_data", []);
-            this.state.origins = (data.regions || []).map((region) => ({
-                ...region, key: `logistics.region:${region.id}`,
-            }));
-            this.state.hubs = (data.hubs || []).map((hub) => ({
-                ...hub, key: `logistics.hub:${hub.id}`,
-            }));
-            this.state.googleApiKey = data.google_api_key || "";
             try {
+                const data = await this.orm.call(
+                    "logistics.region", "get_network_map_data", []
+                );
+                this.state.googleApiKey = data.google_api_key || "";
+                this.state.hubs = data.hubs || [];
+                if (data.hubs && data.hubs.length > 0) {
+                    const defaultHub = data.hubs.find(h => h.is_default) || data.hubs[0];
+                    this.state.selectedHubId = defaultHub.id;
+                }
                 await this._loadGoogleMaps(this.state.googleApiKey);
             } catch (error) {
                 this.state.mapError = error.message || "Google Maps could not load.";
             }
         });
         onMounted(() => this._initializeMap());
-        onWillUnmount(() => this._clearMapObjects());
+        onWillUnmount(() => this._clearAll());
     }
 
+    // ═══════════════════════════════════════════════════════════════
+    // Google Maps loading
+    // ═══════════════════════════════════════════════════════════════
     _loadGoogleMaps(apiKey) {
-        if (window.google?.maps) {
-            return Promise.resolve();
-        }
-        if (!apiKey) {
-            return Promise.reject(new Error("Google Maps API key is not configured."));
-        }
-        if (window.__premaGoogleMapsPromise) {
-            return window.__premaGoogleMapsPromise;
-        }
+        if (window.google?.maps) return Promise.resolve();
+        if (!apiKey) return Promise.reject(new Error("Google Maps API key not configured."));
+        if (window.__premaGoogleMapsPromise) return window.__premaGoogleMapsPromise;
         window.__premaGoogleMapsPromise = new Promise((resolve, reject) => {
-            const callback = `premaWhereWeGoReady_${Date.now()}`;
-            window[callback] = () => {
-                delete window[callback];
-                resolve();
-            };
-            const script = document.createElement("script");
-            script.async = true;
-            script.defer = true;
-            script.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(apiKey)}&callback=${callback}`;
-            script.onerror = () => reject(new Error("Google Maps could not load."));
-            document.head.appendChild(script);
+            const cb = `premaWWG_${Date.now()}`;
+            window[cb] = () => { delete window[cb]; resolve(); };
+            const s = document.createElement("script");
+            s.async = true; s.defer = true;
+            s.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(apiKey)}&callback=${cb}`;
+            s.onerror = () => reject(new Error("Google Maps could not load."));
+            document.head.appendChild(s);
         });
         return window.__premaGoogleMapsPromise;
     }
 
     _initializeMap() {
-        if (!this.mapRef.el || !window.google?.maps) {
-            return;
-        }
+        if (!this.mapRef.el || !window.google?.maps) return;
         this.map = new window.google.maps.Map(this.mapRef.el, {
             center: { lat: 44.3, lng: -79.3 }, zoom: 6,
             mapTypeControl: false, streetViewControl: false,
         });
         this.state.mapReady = true;
-        this._drawNetwork();
+        if (this.state.selectedHubId) this._loadTopology();
     }
 
-    _originRecord() {
-        return [...this.state.hubs, ...this.state.origins].find(
-            (record) => record.key === this.state.selectedOriginKey
-        );
+    // ═══════════════════════════════════════════════════════════════
+    // Data loading
+    // ═══════════════════════════════════════════════════════════════
+    async onSelectHub(hubId) {
+        this.state.selectedHubId = hubId ? Number(hubId) : null;
+        this.state.selectedRegionId = null;
+        this.state.corridors = [];
+        this.state.regions = [];
+        this.state.visibleCorridors = {};
+        this._clearAll();
+        if (hubId) await this._loadTopology();
     }
 
-    async onSelectOrigin(key) {
-        this.state.selectedOriginKey = key || "";
-        this.state.selectedDestinationId = 0;
-        this.state.destinations = [];
-        if (!key) {
-            this._drawNetwork();
-            return;
-        }
-        const [model, idString] = key.split(":");
-        this.state.loadingDestinations = true;
+    async _loadTopology() {
+        if (!this.state.selectedHubId) return;
+        this.state.loading = true;
         try {
-            this.state.destinations = await this.orm.call(
-                "logistics.region", "get_network_destinations", [model, Number(idString)]
-            ) || [];
-            this._drawNetwork();
+            const data = await this.orm.call(
+                "logistics.region", "get_corridor_topology",
+                [this.state.selectedHubId]
+            );
+            this.state.hub = data.hub || null;
+            this.state.corridors = data.corridors || [];
+            this.state.regions = data.regions || [];
+            // Default: all corridors visible
+            const vis = {};
+            (data.corridors || []).forEach(c => { vis[c.id] = true; });
+            this.state.visibleCorridors = vis;
+        } catch (e) {
+            this.state.mapError = e.message || "Failed to load network data.";
         } finally {
-            this.state.loadingDestinations = false;
+            this.state.loading = false;
+            this._drawAll();
         }
     }
 
-    onSelectDestination(destination) {
-        this.state.selectedDestinationId = destination.region_id;
-        this._drawNetwork();
+    // ═══════════════════════════════════════════════════════════════
+    // Toggle & selection
+    // ═══════════════════════════════════════════════════════════════
+    toggleCorridor(corridorId) {
+        this.state.visibleCorridors[corridorId] = !this.state.visibleCorridors[corridorId];
+        this._drawAll();
     }
 
-    _clearMapObjects() {
-        for (const object of this.mapObjects) {
-            object.setMap?.(null);
-        }
+    selectRegion(regionId) {
+        this.state.selectedRegionId =
+            this.state.selectedRegionId === regionId ? null : regionId;
+        this._highlightRegion(regionId);
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // Drawing
+    // ═══════════════════════════════════════════════════════════════
+    _clearAll() {
+        for (const o of this.mapObjects) o.setMap?.(null);
         this.mapObjects = [];
+        for (const o of this.polygonObjects) o.setMap?.(null);
+        this.polygonObjects = [];
+        this.regionMarkers = {};
+        this.corridorLines = {};
     }
 
-    _validPoint(point) {
-        return point && Number(point.lat) && Number(point.lng);
-    }
-
-    _drawNetwork() {
-        if (!this.map || !window.google?.maps) {
-            return;
-        }
+    _drawAll() {
+        if (!this.map || !window.google?.maps) return;
         const G = window.google.maps;
-        this._clearMapObjects();
+        this._clearAll();
         const bounds = new G.LatLngBounds();
-        const origin = this._originRecord();
-        if (origin && this._validPoint(origin)) {
-            const position = { lat: Number(origin.lat), lng: Number(origin.lng) };
+        const hub = this.state.hub;
+
+        // 1. Hub marker
+        if (hub && hub.lat && hub.lng) {
+            const pos = { lat: Number(hub.lat), lng: Number(hub.lng) };
             const marker = new G.Marker({
-                map: this.map, position, title: origin.public_name || origin.name,
-                icon: "https://maps.google.com/mapfiles/ms/icons/green-dot.png",
+                map: this.map, position: pos,
+                title: hub.name,
+                icon: {
+                    url: "https://maps.google.com/mapfiles/ms/icons/green-dot.png",
+                    scaledSize: new G.Size(40, 40),
+                },
+                label: { text: "HUB", color: "#1a5e1a", fontSize: "10px", fontWeight: "bold" },
+                zIndex: 100,
             });
             this.mapObjects.push(marker);
-            bounds.extend(position);
+            bounds.extend(pos);
         }
 
-        for (const destination of this.state.destinations) {
-            const selected = destination.region_id === this.state.selectedDestinationId;
-            for (const leg of destination.legs || []) {
-                if (!this._validPoint(leg.origin) || !this._validPoint(leg.destination)) {
-                    continue;
-                }
-                const path = [
-                    { lat: Number(leg.origin.lat), lng: Number(leg.origin.lng) },
-                    { lat: Number(leg.destination.lat), lng: Number(leg.destination.lng) },
-                ];
-                const line = new G.Polyline({
-                    map: this.map, path,
-                    strokeColor: selected ? "#0d6efd" : "#8292a6",
-                    strokeOpacity: selected ? 1 : 0.5,
-                    strokeWeight: selected ? 6 : 3,
-                    zIndex: selected ? 20 : 5,
+        // 2. Region polygons (light overlay)
+        for (const region of this.state.regions) {
+            if (!region.geojson) continue;
+            const paths = this._geojsonToPaths(region.geojson);
+            if (!paths.length) continue;
+            const fillColor = region.manual_quote ? "#eeeeee" : "#e8f0fe";
+            const strokeColor = region.manual_quote ? "#cccccc" : "#a8c8fa";
+            for (const path of paths) {
+                const poly = new G.Polygon({
+                    map: this.map, paths: path,
+                    fillColor, fillOpacity: 0.2,
+                    strokeColor, strokeWeight: 1, strokeOpacity: 0.5,
+                    zIndex: 1,
                 });
-                this.mapObjects.push(line);
-                path.forEach((point) => bounds.extend(point));
-            }
-            if (this._validPoint(destination)) {
-                const position = { lat: Number(destination.lat), lng: Number(destination.lng) };
-                const marker = new G.Marker({
-                    map: this.map, position, title: destination.region_name,
-                    icon: selected
-                        ? "https://maps.google.com/mapfiles/ms/icons/blue-dot.png"
-                        : "https://maps.google.com/mapfiles/ms/icons/red-dot.png",
-                });
-                marker.addListener("click", () => this.onSelectDestination(destination));
-                this.mapObjects.push(marker);
-                bounds.extend(position);
+                this.polygonObjects.push(poly);
             }
         }
+
+        // 3. Corridor lines and region markers
+        const hubLat = hub?.lat ? Number(hub.lat) : null;
+        const hubLng = hub?.lng ? Number(hub.lng) : null;
+        const drawnRegions = new Set();
+
+        for (let ci = 0; ci < this.state.corridors.length; ci++) {
+            const corridor = this.state.corridors[ci];
+            if (!this.state.visibleCorridors[corridor.id]) continue;
+
+            const color = CORRIDOR_COLORS[ci % CORRIDOR_COLORS.length];
+            const regions = corridor.regions || [];
+            if (regions.length === 0) continue;
+
+            // Build path: Hub → R1 → R2 → ... → Rn → Hub (for same-day return)
+            const path = [];
+            if (hubLat && hubLng) path.push({ lat: hubLat, lng: hubLng });
+            for (const r of regions) {
+                if (r.lat && r.lng) {
+                    path.push({ lat: Number(r.lat), lng: Number(r.lng) });
+                    drawnRegions.add(r.region_id);
+                }
+            }
+            // Same-day return: close the loop back to hub
+            // (Quebec corridors go out and back on different days, but LOCAL does Mon/Thu return)
+            const isReturn = corridor.name.toUpperCase().includes("RETURN") ||
+                             corridor.name.toUpperCase().includes("LOCAL");
+            if (isReturn && hubLat && hubLng && path.length > 1) {
+                path.push({ lat: hubLat, lng: hubLng });
+            }
+
+            if (path.length < 2) continue;
+
+            const line = new G.Polyline({
+                map: this.map, path,
+                strokeColor: color, strokeOpacity: 0.8, strokeWeight: 3,
+                zIndex: 10,
+            });
+            this.mapObjects.push(line);
+            this.corridorLines[corridor.id] = [line];
+            path.forEach(p => bounds.extend(p));
+        }
+
+        // 4. Region markers
+        for (const region of this.state.regions) {
+            if (!region.lat || !region.lng) continue;
+            const pos = { lat: Number(region.lat), lng: Number(region.lng) };
+            const isSelected = region.id === this.state.selectedRegionId;
+            const isManual = region.manual_quote;
+
+            const marker = new G.Marker({
+                map: this.map, position: pos,
+                title: region.name,
+                icon: isManual
+                    ? "https://maps.google.com/mapfiles/ms/icons/grey-dot.png"
+                    : (isSelected
+                        ? "https://maps.google.com/mapfiles/ms/icons/blue-dot.png"
+                        : "https://maps.google.com/mapfiles/ms/icons/red-dot.png"),
+                zIndex: isSelected ? 50 : 20,
+                label: isSelected ? { text: region.code, color: "#1a1a1a", fontSize: "9px", fontWeight: "bold" } : null,
+            });
+            marker.addListener("click", () => this.selectRegion(region.id));
+            this.mapObjects.push(marker);
+            this.regionMarkers[region.id] = marker;
+            bounds.extend(pos);
+        }
+
+        // 5. Fit bounds
         if (!bounds.isEmpty()) {
             this.map.fitBounds(bounds, 45);
         }
     }
 
-    getReasonText(reason) {
-        return REASON_MESSAGES[reason] || "No bookable departure currently scheduled.";
+    _highlightRegion(regionId) {
+        // Re-draw everything to show selection state
+        this._drawAll();
+
+        // If selected, open info window on the marker
+        if (regionId && this.regionMarkers[regionId]) {
+            const region = this.state.regions.find(r => r.id === regionId);
+            const servingCorridors = this.state.corridors.filter(c =>
+                (c.regions || []).some(r => r.region_id === regionId)
+            );
+            if (region && this.map) {
+                const G = window.google.maps;
+                const content = `
+                    <div style="max-width:280px;font-size:13px">
+                        <strong>${region.name}</strong><br/>
+                        <small>${region.manual_quote ? 'Manual Quote / No Scheduled Corridor' : 'Scheduled Service'}</small>
+                        ${servingCorridors.length ? `
+                        <hr style="margin:4px 0"/>
+                        <small>Served By:</small><br/>
+                        ${servingCorridors.map(c => `— ${c.name} (${(c.operating_days||[]).join(', ')})`).join('<br/>')}
+                        ` : ''}
+                        ${region.main_city ? `<br/><small>Anchor: ${region.main_city}</small>` : ''}
+                        <br/><small>Code: ${region.code}</small>
+                    </div>`;
+                const info = new G.InfoWindow({ content });
+                info.open(this.map, this.regionMarkers[regionId]);
+                this.mapObjects.push(info);
+            }
+        }
     }
 
-    formatDepartureTime(value) {
-        const totalMinutes = Math.round(Number(value || 0) * 60);
-        const hours = Math.floor(totalMinutes / 60) % 24;
-        const minutes = totalMinutes % 60;
-        const suffix = hours >= 12 ? "PM" : "AM";
-        const displayHour = hours % 12 || 12;
-        return `${displayHour}:${String(minutes).padStart(2, "0")} ${suffix}`;
+    _geojsonToPaths(geojson) {
+        if (!geojson) return [];
+        const paths = [];
+        const extract = (geom) => {
+            if (!geom) return;
+            if (geom.type === "Polygon") {
+                for (const ring of geom.coordinates || []) {
+                    paths.push(ring.map(c => ({ lat: c[1], lng: c[0] })));
+                }
+            } else if (geom.type === "MultiPolygon") {
+                for (const poly of geom.coordinates || []) {
+                    for (const ring of poly || []) {
+                        paths.push(ring.map(c => ({ lat: c[1], lng: c[0] })));
+                    }
+                }
+            } else if (geom.type === "GeometryCollection") {
+                for (const g of geom.geometries || []) extract(g);
+            }
+        };
+        extract(geojson);
+        return paths;
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // Helpers
+    // ═══════════════════════════════════════════════════════════════
+    corridorsForRegion(regionId) {
+        if (!regionId) return [];
+        return this.state.corridors.filter(c =>
+            (c.regions || []).some(r => r.region_id === regionId)
+        );
+    }
+
+    corridorColor(index) {
+        return CORRIDOR_COLORS[index % CORRIDOR_COLORS.length];
     }
 }
 
