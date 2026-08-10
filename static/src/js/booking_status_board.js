@@ -4,6 +4,7 @@ import { Component, onMounted, onWillUnmount, useState } from "@odoo/owl";
 import { registry } from "@web/core/registry";
 import { useService } from "@web/core/utils/hooks";
 import { standardActionServiceProps } from "@web/webclient/actions/action_service";
+import { ConfirmationDialog } from "@web/core/confirmation_dialog/confirmation_dialog";
 
 const STATUS_LABELS = {
     unassigned:  "Unassigned",
@@ -99,17 +100,17 @@ export class BookingStatusBoard extends Component {
 
     // ── Single / Bulk Remove (canonical method) ────────────────────
     async _removeSingleJob(jobId, jobLabel) {
-        if (this.state.bulkLoading) return;
+        if (this.state.bulkLoading) return false;
         return new Promise((resolve) => {
-            this.dialog.add(
-                "Remove Booking",
-                `Remove ${jobLabel} from the Booking Board?\n\nThis will cancel the booking, delete any draft invoice, release capacity, and detach from departures. Posted invoices and started jobs are protected.`,
-                {
-                    confirmLabel: "Remove Booking",
-                    cancelLabel: "Cancel",
-                    confirmColor: "danger",
-                },
-                async () => {
+            let resolved = false;
+            const doResolve = (val) => { if (!resolved) { resolved = true; resolve(val); } };
+            this.dialog.add(ConfirmationDialog, {
+                title: "Remove Booking",
+                body: `Remove ${jobLabel} from the Booking Board?\n\nThis will cancel the booking, delete any draft invoice, release capacity, and detach from departures.`,
+                confirmLabel: "Remove Booking",
+                cancelLabel: "Cancel",
+                confirmClass: "btn-danger",
+                confirm: async () => {
                     this.state.bulkLoading = true;
                     try {
                         const r = await this.orm.call("prema.dispatch.job", "action_remove_from_booking_board", [jobId]);
@@ -117,24 +118,24 @@ export class BookingStatusBoard extends Component {
                             let msg = `${r.job_name || jobLabel} removed.`;
                             if (r.invoice_deleted) msg += " Draft invoice deleted.";
                             this.notification.add(msg, { type: "success" });
-                            resolve(true);
+                            doResolve(true);
                         } else if (r.skipped) {
                             this.notification.add(r.error || "Cannot remove this booking.", { type: "warning" });
-                            resolve(false);
+                            doResolve(false);
                         } else {
                             this.notification.add(r.error || "Failed to remove.", { type: "danger" });
-                            resolve(false);
+                            doResolve(false);
                         }
                     } catch (e) {
                         this.notification.add(`Error: ${e.message}`, { type: "danger" });
-                        resolve(false);
+                        doResolve(false);
                     } finally {
                         this.state.bulkLoading = false;
                     }
-                }
-            );
-            // If dialog is dismissed without confirm, resolve false
-            setTimeout(() => resolve(false), 100);
+                },
+                cancel: () => doResolve(false),
+                dismiss: () => doResolve(false),
+            });
         });
     }
 
@@ -146,15 +147,13 @@ export class BookingStatusBoard extends Component {
             const row = this.state.rows.find(r => r.job_id === id);
             return row ? row.reference : `Job #${id}`;
         });
-        this.dialog.add(
-            "Confirm Bulk Remove",
-            `Remove ${count} selected bookings?\n\nUnstarted bookings will be removed from operations. Linked draft invoices will be deleted. Capacity will be released. Posted invoices and started jobs will be skipped.`,
-            {
-                confirmLabel: `Remove ${count} Bookings`,
-                cancelLabel: "Cancel",
-                confirmColor: "danger",
-            },
-            async () => {
+        this.dialog.add(ConfirmationDialog, {
+            title: "Confirm Bulk Remove",
+            body: `Remove ${count} selected bookings?\n\nUnstarted bookings will be removed from operations. Linked draft invoices will be deleted. Capacity will be released. Posted invoices and started jobs will be skipped.`,
+            confirmLabel: `Remove ${count} Bookings`,
+            cancelLabel: "Cancel",
+            confirmClass: "btn-danger",
+            confirm: async () => {
                 this.state.bulkLoading = true;
                 let ok = 0, skipped = 0;
                 const errors = [];
@@ -176,8 +175,9 @@ export class BookingStatusBoard extends Component {
                 this.clearSelection();
                 await this.load();
                 this.state.bulkLoading = false;
-            }
-        );
+            },
+            cancel: () => {},
+        });
     }
 
     statusLabel(key) { return STATUS_LABELS[key] || key; }
