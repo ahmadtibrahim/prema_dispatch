@@ -332,7 +332,7 @@ class BookingOrchestrationService:
                 "pallets": normalized_request.physical_pallets,  # physical pallets for pricing/capacity
                 "physical_pallets": normalized_request.physical_pallets,
                 "shared_pallet_mode": normalized_request.shared_pallet_mode,
-                "weight_lbs": sum(ds.get("weight_lbs", 500) for ds in normalized_request.delivery_stops) if normalized_request.delivery_stops else normalized_request.weight_lbs,
+                "weight_lbs": normalized_request.weight_lbs,  # physical weight, NOT sum of per-stop
                 "liftgate_pickup": normalized_request.liftgate_pickup,
                 "liftgate_delivery": normalized_request.liftgate_delivery,
                 "appointment": normalized_request.appointment,
@@ -447,7 +447,7 @@ class BookingOrchestrationService:
             "pallets": normalized_request.physical_pallets,
             "physical_pallets": normalized_request.physical_pallets,
             "shared_pallet_mode": normalized_request.shared_pallet_mode,
-            "weight_lbs": sum(ds.get("weight_lbs", 500) for ds in normalized_request.delivery_stops) if normalized_request.delivery_stops else normalized_request.weight_lbs,
+            "weight_lbs": normalized_request.weight_lbs,
             "liftgate_pickup": normalized_request.liftgate_pickup,
             "liftgate_delivery": normalized_request.liftgate_delivery,
             "appointment": normalized_request.appointment,
