@@ -52,8 +52,9 @@
 <template id="portal_booking_error" name="Booking Confirmation Error">
     <t t-call="portal.portal_layout">
         <div class="container o_page_container py-5">
-            <h2>We couldn't confirm this booking</h2>
+            <h2>Something went wrong</h2>
             <p t-esc="message"/>
+            <t t-if="error_ref"><p class="text-muted small">Reference: <t t-esc="error_ref"/></p></t>
             <a class="btn btn-secondary" href="/my/booking/new">Start a new booking</a>
         </div>
     </t>
@@ -546,27 +547,26 @@
                 <!-- Hidden: legacy pallets field for backward compatibility -->
                 <input type="hidden" name="pallets" id="legacy_pallets" value="1"/>
                 <input type="hidden" name="shared_pallet_mode" id="shared_pallet_mode_input" value="0"/>
-                <!-- Shared Pallet checkbox (visible only when multi-stop) -->
-                <t t-if="delivery_locs and len(delivery_locs) > 1">
-                    <div class="col-12">
-                        <div class="form-check">
-                            <input type="checkbox" class="form-check-input" id="shared_pallet_checkbox" name="shared_pallet_mode_checkbox" value="1"
-                                   onchange="toggleSharedPalletMode()"/>
-                            <label class="form-check-label" for="shared_pallet_checkbox">
-                                <strong>Shared Pallet / Mixed Stops</strong>
-                                <small class="text-muted d-block">One physical pallet contains freight for multiple delivery stops</small>
-                            </label>
-                        </div>
-                    </div>
-                </t>
-                <!-- Delivery Stops list (multi-stop) with per-stop pallet allocation -->
+                <input type="hidden" name="pallet_allocations_json" id="pallet_allocations_json" value="[]"/>
+                <!-- Pallet Allocation (visible when multi-stop) -->
                 <t t-if="delivery_locs and len(delivery_locs) > 1">
                     <div class="col-12 mt-3">
                         <div class="card"><div class="card-header bg-light d-flex justify-content-between align-items-center">
-                            <div><strong>Delivery Stops</strong> <small class="text-muted"><t t-esc="len(delivery_locs)"/> stops</small></div>
-                            <small class="text-muted" id="pallet_allocation_summary"/>
+                            <div><strong>PALLET ALLOCATION</strong> <small class="text-muted" id="pallet_allocation_summary"/></div>
                         </div>
-                        <div class="card-body py-2" id="delivery_stops_breakdown">
+                        <div class="card-body py-2" id="pallet_allocation_body">
+                            <!-- Dynamically populated by JS -->
+                            <div class="text-muted py-2" id="pallet_alloc_placeholder">Enter total physical pallets above to configure allocations.</div>
+                        </div></div>
+                    </div>
+                </t>
+                <!-- Delivery Stops list (multi-stop) with stop summary -->
+                <t t-if="delivery_locs and len(delivery_locs) > 1">
+                    <div class="col-12 mt-3">
+                        <div class="card"><div class="card-header bg-light">
+                            <div><strong>STOP SUMMARY</strong> <small class="text-muted"><t t-esc="len(delivery_locs)"/> stops</small></div>
+                        </div>
+                        <div class="card-body py-2" id="delivery_stops_summary">
                             <t t-foreach="delivery_locs" t-as="dl">
                                 <div class="d-flex align-items-center py-2 border-bottom delivery-stop-breakdown-row">
                                     <strong class="me-2" style="min-width:20px"><t t-esc="dl_index + 1"/>.</strong>
@@ -574,18 +574,8 @@
                                         <t t-esc="dl.name"/>
                                         <small class="text-muted d-block"><t t-esc="dl.city"/> <t t-esc="dl.state_id.code or ''"/></small>
                                     </div>
-                                    <div class="per-stop-pallets-input" style="min-width:130px">
-                                        <div class="input-group input-group-sm">
-                                            <span class="input-group-text">Pallets</span>
-                                            <input type="number" class="form-control stop-pallet-input"
-                                                   t-att-name="'delivery_pallets_' + str(dl_index + 1)"
-                                                   min="1" value="1" style="max-width:60px"
-                                                   onchange="updatePalletAllocationSummary()"/>
-                                        </div>
-                                    </div>
-                                    <div class="shared-pallet-indicator ms-2" style="display:none">
-                                        <span class="badge rounded-pill" style="background:#7b1fa2;color:#fff">Shared</span>
-                                    </div>
+                                    <span class="badge bg-secondary me-2" t-att-id="'stop_pallet_badge_' + str(dl_index + 1)" style="min-width:80px">Pallets: —</span>
+                                    <span class="badge rounded-pill me-2" t-att-id="'stop_shared_badge_' + str(dl_index + 1)" style="display:none;background:#7b1fa2;color:#fff">SHARED</span>
                                     <div class="per-stop-timing ms-2" style="min-width:100px">
                                         <select class="form-select form-select-sm stop-timing-type"
                                                 t-att-name="'delivery_timing_type_' + str(dl_index + 1)"
@@ -604,7 +594,6 @@
                                                style="width:85px" step="1800"/>
                                     </div>
                                     <input type="hidden" t-att-name="'delivery_loc_id_' + str(dl_index + 1)" t-att-value="str(dl.id)"/>
-                                    <input type="hidden" t-att-name="'delivery_shared_pallet_' + str(dl_index + 1)" class="stop-shared-flag" value="0"/>
                                 </div>
                             </t>
                         </div></div>
@@ -923,67 +912,91 @@
             }
 
             // ════════════════════════════════════════════════════════════
-            // Shared Pallet Mode toggle
+            // Per-Pallet Allocation Engine
             // ════════════════════════════════════════════════════════════
-            window.toggleSharedPalletMode = function() {
-                var cb = document.getElementById('shared_pallet_checkbox');
-                var modeInput = document.getElementById('shared_pallet_mode_input');
-                var shared = cb && cb.checked;
-                if (modeInput) modeInput.value = shared ? '1' : '0';
-                var rows = document.querySelectorAll('.delivery-stop-breakdown-row');
-                rows.forEach(function(row) {
-                    var palletInput = row.querySelector('.per-stop-pallets-input');
-                    var sharedBadge = row.querySelector('.shared-pallet-indicator');
-                    var sharedFlag = row.querySelector('.stop-shared-flag');
-                    if (shared) {
-                        if (palletInput) palletInput.style.display = 'none';
-                        if (sharedBadge) sharedBadge.style.display = '';
-                        if (sharedFlag) sharedFlag.value = '1';
-                    } else {
-                        if (palletInput) palletInput.style.display = '';
-                        if (sharedBadge) sharedBadge.style.display = 'none';
-                        if (sharedFlag) sharedFlag.value = '0';
-                    }
-                });
-                updatePalletAllocationSummary();
-                // Update legacy pallets field for form compatibility
-                updateLegacyPallets();
-            };
-            window.updatePalletAllocationSummary = function() {
-                var summary = document.getElementById('pallet_allocation_summary');
-                if (!summary) return;
-                var cb = document.getElementById('shared_pallet_checkbox');
-                var shared = cb && cb.checked;
+            var deliveryStopCount = document.querySelectorAll('.delivery-stop-breakdown-row').length;
+            var palletAllocBody = document.getElementById('pallet_allocation_body');
+            var palletAllocSummary = document.getElementById('pallet_allocation_summary');
+            var allocsJsonField = document.getElementById('pallet_allocations_json');
+
+            function buildPalletAllocations() {
+                if (!palletAllocBody || deliveryStopCount <= 1) return;
                 var physInput = document.getElementById('pallets_input');
                 var physical = parseInt(physInput ? physInput.value : '1') || 1;
-                if (shared) {
-                    var stops = document.querySelectorAll('.delivery-stop-breakdown-row');
-                    summary.textContent = physical + ' physical pallet' + (physical !== 1 ? 's' : '') + ' · shared across ' + stops.length + ' stops';
-                } else {
-                    var total = 0;
-                    document.querySelectorAll('.stop-pallet-input').forEach(function(inp) {
-                        total += parseInt(inp.value) || 0;
-                    });
-                    summary.textContent = physical + ' physical pallet' + (physical !== 1 ? 's' : '') + ' → ' + total + ' total allocated to stops';
+                var html = '';
+                for (var p = 1; p <= physical; p++) {
+                    html += '<div class="d-flex align-items-center py-2 border-bottom pallet-alloc-row" data-pallet="' + p + '">';
+                    html += '<strong class="me-3" style="min-width:80px">PALLET ' + p + '</strong>';
+                    html += '<div class="flex-grow-1"><small class="text-muted">Deliver To:</small><br/>';
+                    for (var s = 1; s <= deliveryStopCount; s++) {
+                        var stopEl = document.querySelector('.delivery-stop-breakdown-row:nth-child(' + s + ') .flex-grow-1');
+                        var stopName = stopEl ? stopEl.textContent.trim().split('\\n')[0] : ('Stop ' + s);
+                        html += '<label class="me-2" style="cursor:pointer;white-space:nowrap">';
+                        html += '<input type="checkbox" class="pallet-stop-check" data-pallet="' + p + '" data-stop="' + s + '" onchange="updateAllocations()"/> ';
+                        html += stopName.substring(0, 20) + (stopName.length > 20 ? '…' : '');
+                        html += '</label>';
+                    }
+                    html += '</div>';
+                    html += '<span class="badge rounded-pill ms-2 pallet-status-badge" data-pallet="' + p + '" style="min-width:90px;background:#6c757d;color:#fff">DEDICATED</span>';
+                    html += '</div>';
                 }
-                updateLegacyPallets();
-            };
-            window.updateLegacyPallets = function() {
-                var legacyEl = document.getElementById('legacy_pallets');
+                palletAllocBody.innerHTML = html;
+                var placeholder = document.getElementById('pallet_alloc_placeholder');
+                if (placeholder) placeholder.style.display = 'none';
+                updateAllocations();
+            }
+
+            window.updateAllocations = function() {
+                if (deliveryStopCount <= 1) return;
                 var physInput = document.getElementById('pallets_input');
-                if (legacyEl && physInput) legacyEl.value = physInput.value;
+                var physical = parseInt(physInput ? physInput.value : '1') || 1;
+                var allocs = [];
+                for (var p = 1; p <= physical; p++) {
+                    var stops = [];
+                    document.querySelectorAll('.pallet-stop-check[data-pallet="' + p + '"]').forEach(function(cb) {
+                        if (cb.checked) stops.push(parseInt(cb.dataset.stop));
+                    });
+                    allocs.push({pallet: p, stops: stops, shared: stops.length > 1});
+                }
+                allocs.forEach(function(a) {
+                    var badge = document.querySelector('.pallet-status-badge[data-pallet="' + a.pallet + '"]');
+                    if (badge) {
+                        if (a.shared) { badge.textContent = 'SHARED — ' + a.stops.length + ' STOPS'; badge.style.background = '#7b1fa2'; badge.style.color = '#fff'; }
+                        else { badge.textContent = 'DEDICATED'; badge.style.background = '#6c757d'; badge.style.color = '#fff'; }
+                    }
+                });
+                for (var s = 1; s <= deliveryStopCount; s++) {
+                    var stopPallets = [];
+                    allocs.forEach(function(a) { if (a.stops.indexOf(s) >= 0) stopPallets.push(a.pallet); });
+                    var countBadge = document.getElementById('stop_pallet_badge_' + s);
+                    if (countBadge) countBadge.textContent = 'Pallets: ' + (stopPallets.length > 0 ? stopPallets.join(', ') : '—');
+                    var sharedBadge = document.getElementById('stop_shared_badge_' + s);
+                    if (sharedBadge) { sharedBadge.style.display = allocs.some(function(a) { return a.shared && a.stops.indexOf(s) >= 0; }) ? '' : 'none'; }
+                }
+                if (allocsJsonField) allocsJsonField.value = JSON.stringify(allocs);
+                var legacyEl = document.getElementById('legacy_pallets');
+                if (legacyEl) legacyEl.value = physical;
+                var modeInput = document.getElementById('shared_pallet_mode_input');
+                if (modeInput) modeInput.value = allocs.some(function(a) { return a.shared; }) ? '1' : '0';
+                if (palletAllocSummary) {
+                    var sc = allocs.filter(function(a) { return a.shared; }).length;
+                    var dc = allocs.filter(function(a) { return !a.shared; }).length;
+                    var parts = [physical + ' physical pallet' + (physical !== 1 ? 's' : '')];
+                    if (sc > 0) parts.push(sc + ' shared'); if (dc > 0) parts.push(dc + ' dedicated');
+                    palletAllocSummary.textContent = parts.join(' · ');
+                }
+                for (var s = 1; s <= deliveryStopCount; s++) {
+                    var sp = []; allocs.forEach(function(a) { if (a.stops.indexOf(s) >= 0) sp.push(a.pallet); });
+                    var hiddenInput = document.querySelector('input[name="delivery_pallets_' + s + '"]');
+                    if (hiddenInput) hiddenInput.value = sp.length || 1;
+                }
             };
-            // Hook physical pallets input change
+
             var physPalletInput = document.getElementById('pallets_input');
             if (physPalletInput) {
-                physPalletInput.addEventListener('input', function() {
-                    updatePalletAllocationSummary();
-                    autoWeight();
-                    fetchEligibleDates();
-                });
+                physPalletInput.addEventListener('input', function() { buildPalletAllocations(); autoWeight(); fetchEligibleDates(); });
             }
-            // Initial summary
-            updatePalletAllocationSummary();
+            if (deliveryStopCount > 1) buildPalletAllocations();
 
             // Fetch on load
             fetchEligibleDates();
@@ -1026,19 +1039,31 @@
                 <div class="card-header bg-light"><strong>SHIPMENT DETAILS</strong></div>
                 <div class="card-body">
                     <div class="row">
-                        <t t-if="session.shared_pallet_mode and delivery_stops">
-                            <div class="col-12 mb-2">
-                                <small class="text-muted">Physical Pallets</small><br/>
-                                <strong><t t-esc="session.physical_pallets or session.pallets"/> Physical Pallet<t t-if="(session.physical_pallets or session.pallets) != 1">s</t></strong>
-                                <span class="badge ms-2" style="background:#7b1fa2;color:#fff">Shared Across <t t-esc="len(delivery_stops)"/> Stops</span>
-                            </div>
-                        </t>
-                        <t t-if="not session.shared_pallet_mode or not delivery_stops">
-                            <div class="col-4"><small class="text-muted">Physical Pallets</small><br/><strong><t t-esc="session.physical_pallets or session.pallets"/></strong></div>
-                        </t>
+                        <div class="col-4"><small class="text-muted">Physical Pallets</small><br/><strong><t t-esc="session.physical_pallets or session.pallets"/></strong></div>
                         <div class="col-4"><small class="text-muted">Total Weight</small><br/><strong><t t-esc="'%g' % session.weight_lbs"/> lb</strong></div>
                         <div class="col-4"><small class="text-muted">Type</small><br/><strong><t t-esc="session.shipment_type.upper()"/></strong></div>
                     </div>
+                    <!-- Pallet Allocation Summary -->
+                    <t t-if="delivery_stops and len(delivery_stops) > 1">
+                        <hr/>
+                        <small class="text-muted">PALLET ALLOCATION</small>
+                        <div class="mt-2" id="review_pallet_allocs">
+                            <t t-set="allocs" t-value="session.pallet_allocations or []"/>
+                            <t t-if="allocs">
+                                <t t-foreach="allocs" t-as="pa">
+                                    <div class="mb-1">
+                                        <strong>Pallet <t t-esc="pa.get('pallet', '?')"/></strong>
+                                        <t t-if="pa.get('shared')"><span class="badge ms-1" style="background:#7b1fa2;color:#fff">SHARED — <t t-esc="len(pa.get('stops', []))"/> STOPS</span></t>
+                                        <t t-if="not pa.get('shared')"><span class="badge ms-1" style="background:#6c757d;color:#fff">DEDICATED</span></t>
+                                        <br/><small class="text-muted">→ </small>
+                                    </div>
+                                </t>
+                            </t>
+                            <t t-if="not allocs and session.shared_pallet_mode">
+                                <div><span class="badge" style="background:#7b1fa2;color:#fff">Shared Across <t t-esc="len(delivery_stops)"/> Stops</span></div>
+                            </t>
+                        </div>
+                    </t>
                     <t t-if="session.temperature_mode == 'reefer'">
                         <hr/>
                         <small class="text-muted">Temperature</small><br/>

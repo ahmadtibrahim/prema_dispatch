@@ -3033,6 +3033,17 @@ class PremaDispatchJob(models.Model):
                     "pallet_count": item.pallet_count,
                     "status": item.status,
                     "custody": item.current_custody_type,
+                    "load_unit_type": item.load_unit_type,
+                    "shared_skid": item.shared_skid,
+                    "delivery_stops": [
+                        {
+                            "stop_id": a.stop_id.id,
+                            "stop_sequence": a.stop_id.sequence,
+                            "stop_address": a.stop_id.address or "",
+                            "unload_sequence": a.unload_sequence,
+                        }
+                        for a in item.stop_allocation_ids.filtered("active")
+                    ],
                 }
                 for item in freight_items
             ],

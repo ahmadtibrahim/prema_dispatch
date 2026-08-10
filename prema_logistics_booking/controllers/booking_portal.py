@@ -370,6 +370,14 @@ class LogisticsBookingPortal(http.Controller):
             # Defaults to `pallets` (global input) for backward compatibility.
             physical_pallets = int(kwargs.get("physical_pallets") or pallets or 1)
             shared_pallet_mode = bool(kwargs.get("shared_pallet_mode"))
+            # Parse per-pallet allocations from the new portal UI
+            pallet_allocations = []
+            allocs_json = kwargs.get("pallet_allocations_json", "").strip()
+            if allocs_json:
+                try:
+                    pallet_allocations = json.loads(allocs_json)
+                except (json.JSONDecodeError, TypeError):
+                    pallet_allocations = []
         except ValueError:
             # Build error context with all required template vars
             pu_loc_for_err = SavedLocation.browse(int(pickup_loc_id)) if pickup_loc_id and SavedLocation.browse(int(pickup_loc_id)).exists() else None
@@ -481,6 +489,7 @@ class LogisticsBookingPortal(http.Controller):
                 "pallets": physical_pallets,  # use physical pallets for pricing (NOT sum of per-stop)
                 "physical_pallets": physical_pallets,
                 "shared_pallet_mode": shared_pallet_mode,
+                "pallet_allocations": pallet_allocations,
                 "weight_lbs": weight_lbs,
                 "liftgate_pickup": liftgate_pickup,
                 "liftgate_delivery": liftgate_delivery,
@@ -494,6 +503,15 @@ class LogisticsBookingPortal(http.Controller):
         except UserError as exc:
             return request.render("prema_logistics_booking.portal_not_available", {
                 "reason": str(exc),
+            })
+        except Exception:
+            import traceback, secrets, logging
+            _logger = logging.getLogger(__name__)
+            error_ref = f"ERR-{secrets.token_hex(4)[:8]}"
+            _logger.exception("booking_quote unexpected error [%s]", error_ref)
+            return request.render("prema_logistics_booking.portal_booking_error", {
+                "message": _("We couldn't calculate this shipment right now. Please try again or contact us."),
+                "error_ref": error_ref,
             })
 
         session = request.env["logistics.pricing.session"].sudo().search([

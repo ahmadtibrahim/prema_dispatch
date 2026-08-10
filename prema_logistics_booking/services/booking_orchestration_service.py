@@ -108,6 +108,7 @@ class NormalizedBookingRequest:
         self.pallets = data.get("pallets", 1)
         self.physical_pallets = data.get("physical_pallets", data.get("pallets", 1))
         self.shared_pallet_mode = data.get("shared_pallet_mode", False)
+        self.pallet_allocations = data.get("pallet_allocations") or []
         self.weight_lbs = data.get("weight_lbs", 0.0)
         self.commodity = data.get("commodity", "")
         self.stackable = data.get("stackable", True)
@@ -340,7 +341,7 @@ class BookingOrchestrationService:
                 "pickup_date": first_leg.departure_date if first_leg else None,
                 "delivery_date_estimate": est_delivery,
                 "calculated_price": final_price,
-                "price_snapshot": price_lines,
+                "price_snapshot": price_lines + [{"_pallet_allocs": normalized_request.pallet_allocations}],
                 "route_snapshot": route.routing_snapshot,
                 "pickup_saved_location_id": pu_saved_id,
                 "delivery_saved_location_id": de_saved_id,
@@ -352,9 +353,17 @@ class BookingOrchestrationService:
             for i, ds in enumerate(normalized_request.delivery_stops):
                 sl_id = ds.get("saved_location_id")
                 sl = self.env["logistics.saved.location"].browse(sl_id) if sl_id else None
+                stop_idx = i + 1  # 1-based stop index matching pallet_allocations
+                # Compute allocated pallets and shared flag from pallet_allocations
+                allocs = normalized_request.pallet_allocations or []
+                stop_pallets = [a["pallet"] for a in allocs if stop_idx in (a.get("stops") or [])]
+                stop_shared = len(stop_pallets) > 0 and any(
+                    len(a.get("stops") or []) > 1 for a in allocs
+                    if a["pallet"] in stop_pallets
+                )
                 StopModel.create({
                     "session_id": session.id,
-                    "sequence": i + 1,
+                    "sequence": stop_idx,
                     "saved_location_id": sl_id,
                     "location_name": sl.name if sl else ds.get("city", ""),
                     "street": sl.street if sl else ds.get("address", ""),
@@ -365,12 +374,11 @@ class BookingOrchestrationService:
                     "longitude": ds.get("longitude", 0),
                     "pallets": ds.get("pallets", 1),
                     "weight_lbs": ds.get("weight_lbs", 500),
-                    "shared_pallet": ds.get("shared_pallet", False),
+                    "shared_pallet": stop_shared or ds.get("shared_pallet", False),
                     "timing_type": ds.get("timing_type", "flexible"),
                     "window_start": ds.get("window_start") or False,
                     "window_end": ds.get("window_end") or False,
                     "appointment_time": ds.get("appointment_time") or False,
-                    "timezone": ds.get("timezone") or "",
                     "liftgate_delivery": ds.get("liftgate_delivery", False),
                     "appointment": ds.get("appointment", False),
                     "instructions": ds.get("instructions", ""),
@@ -448,7 +456,7 @@ class BookingOrchestrationService:
             "pickup_date": result.pickup_date,
             "delivery_date_estimate": result.delivery_date_estimate,
             "calculated_price": result.calculated_price,
-            "price_snapshot": result.price_lines,
+            "price_snapshot": list(result.price_lines) + [{"_pallet_allocs": normalized_request.pallet_allocations}],
             "route_snapshot": result.route_snapshot,
             "pickup_saved_location_id": pu_saved_id,
             "delivery_saved_location_id": de_saved_id,
@@ -460,9 +468,16 @@ class BookingOrchestrationService:
         for i, ds in enumerate(normalized_request.delivery_stops):
             sl_id = ds.get("saved_location_id")
             sl = self.env["logistics.saved.location"].browse(sl_id) if sl_id else None
+            stop_idx = i + 1
+            allocs = normalized_request.pallet_allocations or []
+            stop_pallets = [a["pallet"] for a in allocs if stop_idx in (a.get("stops") or [])]
+            stop_shared = len(stop_pallets) > 0 and any(
+                len(a.get("stops") or []) > 1 for a in allocs
+                if a["pallet"] in stop_pallets
+            )
             StopModel.create({
                 "session_id": session.id,
-                "sequence": i + 1,
+                "sequence": stop_idx,
                 "saved_location_id": sl_id,
                 "location_name": sl.name if sl else ds.get("city", ""),
                 "street": sl.street if sl else ds.get("address", ""),
@@ -473,12 +488,12 @@ class BookingOrchestrationService:
                 "longitude": ds.get("longitude", 0),
                 "pallets": ds.get("pallets", 1),
                 "weight_lbs": ds.get("weight_lbs", 500),
-                "shared_pallet": ds.get("shared_pallet", False),
+                "shared_pallet": stop_shared or ds.get("shared_pallet", False),
+                "allocated_pallets": stop_pallets,
                 "timing_type": ds.get("timing_type", "flexible"),
                 "window_start": ds.get("window_start") or False,
                 "window_end": ds.get("window_end") or False,
                 "appointment_time": ds.get("appointment_time") or False,
-                "timezone": ds.get("timezone") or "",
                 "liftgate_delivery": ds.get("liftgate_delivery", False),
                 "appointment": ds.get("appointment", False),
                 "instructions": ds.get("instructions", ""),
@@ -671,6 +686,10 @@ class BookingOrchestrationService:
         if route_snapshot:
             booking_vals["route_snapshot"] = route_snapshot
         if price_snapshot:
+            # Embed pallet_allocations into price_snapshot for zero-migration storage
+            allocs = normalized_request.pallet_allocations
+            if allocs:
+                price_snapshot = list(price_snapshot) + [{"_pallet_allocs": allocs}]
             booking_vals["price_snapshot"] = price_snapshot
         if normalized_request.departure_id:
             booking_vals["departure_id"] = normalized_request.departure_id

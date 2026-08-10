@@ -276,6 +276,20 @@ class LogisticsBooking(models.Model):
     # ------------------------------------------------------------------
     # The atomic confirmation transaction (steps mirror the approved plan).
     # ------------------------------------------------------------------
+
+    def _get_pallet_allocations(self):
+        """Extract pallet_allocations from price_snapshot (zero-migration approach).
+        Returns list of {pallet, stops, shared} dicts, or empty list."""
+        return self._extract_pallet_allocs_from_snapshot(self.price_snapshot)
+
+    @staticmethod
+    def _extract_pallet_allocs_from_snapshot(snapshot):
+        ps = snapshot or []
+        for entry in ps:
+            if isinstance(entry, dict) and "_pallet_allocs" in entry:
+                return entry["_pallet_allocs"] or []
+        return []
+
     # ── Booking Legs from Route Snapshot ──────────────────────────────
     # ------------------------------------------------------------------
 
@@ -436,6 +450,7 @@ class LogisticsBooking(models.Model):
             "pallets": session.physical_pallets or session.pallets,
             "physical_pallets": session.physical_pallets or session.pallets,
             "shared_pallet_mode": session.shared_pallet_mode or False,
+            "pallet_allocations": self._extract_pallet_allocs_from_snapshot(session.price_snapshot),
             "weight_lbs": session.weight_lbs,
             "liftgate_pickup": session.liftgate_pickup,
             "liftgate_delivery": session.liftgate_delivery,
@@ -757,13 +772,34 @@ class LogisticsBooking(models.Model):
                 })
                 dispatch_delivery_stops |= extra
 
-        # ── Create dispatch items: shared pallet or dedicated ──
+        # ── Create dispatch items: per-pallet allocations (canonical) or legacy shared/dedicated ──
         Alloc = self.env["prema.dispatch.pallet.stop.allocation"].sudo()
         physical_count = self.physical_pallets or self.pallets
+        pallet_allocs = self._get_pallet_allocations()
 
-        if self.shared_pallet_mode and dispatch_delivery_stops:
-            for p in range(physical_count):
-                label = f"Skid-{p+1}" if physical_count > 1 else "Shared Skid"
+        # Build backward-compat allocations from legacy shared_pallet_mode
+        if not pallet_allocs and self.shared_pallet_mode and dispatch_delivery_stops:
+            # Legacy: all pallets shared across all stops
+            stop_indices = list(range(1, len(dispatch_delivery_stops) + 1))
+            pallet_allocs = [
+                {"pallet": p + 1, "stops": stop_indices,
+                 "shared": len(stop_indices) > 1}
+                for p in range(physical_count)
+            ]
+
+        if pallet_allocs and dispatch_delivery_stops:
+            # Canonical per-pallet allocation: one dispatch item per physical pallet
+            for pa in pallet_allocs:
+                pallet_num = pa.get("pallet", 1)
+                stop_indices = pa.get("stops") or []
+                is_shared = len(stop_indices) > 1
+                label = f"Pallet-{pallet_num}"
+                # Map 1-based stop indices to dispatch_delivery_stops (sorted by sequence)
+                sorted_stops = dispatch_delivery_stops.sorted("sequence")
+                assigned_stops = self.env["prema.dispatch.stop"]
+                for si in stop_indices:
+                    if 1 <= si <= len(sorted_stops):
+                        assigned_stops |= sorted_stops[si - 1]
                 item = Item.create({
                     "job_id": job.id,
                     "name": label,
@@ -771,26 +807,29 @@ class LogisticsBooking(models.Model):
                     "pallet_count": 1,
                     "weight_lbs": self.weight_lbs / max(physical_count, 1),
                     "pickup_stop_id": created_origin.id if created_origin else False,
-                    "delivery_stop_id": dispatch_delivery_stops[0].id,
+                    "delivery_stop_id": assigned_stops[0].id if assigned_stops else (
+                        dispatch_delivery_stops[0].id if dispatch_delivery_stops else False
+                    ),
                     "available_after_stop_id": created_origin.id if created_origin else False,
                     "temperature_zone": "chilled" if self.temperature_mode == "reefer" else "ambient",
-                    "load_unit_type": "shared_pallet",
-                    "shared_skid": True,
+                    "load_unit_type": "shared_pallet" if is_shared else "pallet",
+                    "shared_skid": is_shared,
                 })
-                for idx, ds in enumerate(dispatch_delivery_stops):
+                for idx, ds in enumerate(assigned_stops):
                     Alloc.create({
                         "dispatch_item_id": item.id,
                         "stop_id": ds.id,
                         "unload_sequence": (idx + 1) * 10,
                     })
         elif dispatch_delivery_stops and len(dispatch_delivery_stops) > 1:
+            # Legacy: per-stop pallets (one item per pallet per stop, no sharing)
             pallet_counter = 1
             for dstop in dispatch_delivery_stops:
                 stop_pallets = dstop.pallets_out or 1
                 for _ in range(stop_pallets):
                     Item.create({
                         "job_id": job.id,
-                        "name": f"Skid-{pallet_counter}",
+                        "name": f"Pallet-{pallet_counter}",
                         "description": self.commodity or "",
                         "pallet_count": 1,
                         "weight_lbs": self.weight_lbs / max(physical_count, 1),
@@ -805,7 +844,7 @@ class LogisticsBooking(models.Model):
             for line in self.line_ids:
                 Item.create({
                     "job_id": job.id,
-                    "name": line.description or "Skid",
+                    "name": line.description or "Pallet",
                     "description": line.commodity or self.commodity or "",
                     "pallet_count": line.pallets,
                     "weight_lbs": line.weight_lbs,
