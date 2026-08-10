@@ -586,6 +586,23 @@
                                     <div class="shared-pallet-indicator ms-2" style="display:none">
                                         <span class="badge rounded-pill" style="background:#7b1fa2;color:#fff">Shared</span>
                                     </div>
+                                    <div class="per-stop-timing ms-2" style="min-width:100px">
+                                        <select class="form-select form-select-sm stop-timing-type"
+                                                t-att-name="'delivery_timing_type_' + str(dl_index + 1)"
+                                                onchange="this.closest('.delivery-stop-breakdown-row').querySelector('.stop-timing-hours').style.display=this.value==='flexible'?'none':''">
+                                            <option value="flexible">Flexible</option>
+                                            <option value="time_window">Time Window</option>
+                                            <option value="exact_appointment">Exact</option>
+                                        </select>
+                                    </div>
+                                    <div class="stop-timing-hours ms-1" style="display:none">
+                                        <input type="time" class="form-control form-control-sm"
+                                               t-att-name="'delivery_window_start_' + str(dl_index + 1)"
+                                               style="width:85px" step="1800"/>
+                                        <input type="time" class="form-control form-control-sm"
+                                               t-att-name="'delivery_window_end_' + str(dl_index + 1)"
+                                               style="width:85px" step="1800"/>
+                                    </div>
                                     <input type="hidden" t-att-name="'delivery_loc_id_' + str(dl_index + 1)" t-att-value="str(dl.id)"/>
                                     <input type="hidden" t-att-name="'delivery_shared_pallet_' + str(dl_index + 1)" class="stop-shared-flag" value="0"/>
                                 </div>

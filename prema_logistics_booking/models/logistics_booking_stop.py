@@ -58,4 +58,15 @@ class LogisticsBookingStop(models.Model):
 
     # Reference
     reference = fields.Char()
+    # Timing
+    timing_type = fields.Selection([
+        ("flexible", "Flexible"), ("time_window", "Time Window"),
+        ("exact_appointment", "Exact Appointment"),
+    ], default="flexible", string="Timing")
+    requested_service_date = fields.Date(string="Requested Date")
+    window_start = fields.Float(string="Window Start")
+    window_end = fields.Float(string="Window End")
+    appointment_time = fields.Float(string="Appointment Time")
+    timezone = fields.Char(string="Timezone")
+
     instructions = fields.Text()

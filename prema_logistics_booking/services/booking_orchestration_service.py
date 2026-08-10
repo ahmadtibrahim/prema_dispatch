@@ -366,6 +366,11 @@ class BookingOrchestrationService:
                     "pallets": ds.get("pallets", 1),
                     "weight_lbs": ds.get("weight_lbs", 500),
                     "shared_pallet": ds.get("shared_pallet", False),
+                    "timing_type": ds.get("timing_type", "flexible"),
+                    "window_start": ds.get("window_start") or False,
+                    "window_end": ds.get("window_end") or False,
+                    "appointment_time": ds.get("appointment_time") or False,
+                    "timezone": ds.get("timezone") or "",
                     "liftgate_delivery": ds.get("liftgate_delivery", False),
                     "appointment": ds.get("appointment", False),
                     "instructions": ds.get("instructions", ""),
@@ -469,6 +474,11 @@ class BookingOrchestrationService:
                 "pallets": ds.get("pallets", 1),
                 "weight_lbs": ds.get("weight_lbs", 500),
                 "shared_pallet": ds.get("shared_pallet", False),
+                "timing_type": ds.get("timing_type", "flexible"),
+                "window_start": ds.get("window_start") or False,
+                "window_end": ds.get("window_end") or False,
+                "appointment_time": ds.get("appointment_time") or False,
+                "timezone": ds.get("timezone") or "",
                 "liftgate_delivery": ds.get("liftgate_delivery", False),
                 "appointment": ds.get("appointment", False),
                 "instructions": ds.get("instructions", ""),
@@ -921,6 +931,11 @@ class BookingOrchestrationService:
                 "liftgate_required": pu.get("liftgate_required", False),
                 "instructions": pu.get("instructions", ""),
                 "reference": pu.get("reference", ""),
+                "timing_type": pu.get("timing_type", "flexible"),
+                "window_start": pu.get("window_start") or False,
+                "window_end": pu.get("window_end") or False,
+                "appointment_time": pu.get("appointment_time") or False,
+                "timezone": pu.get("timezone") or "",
             })
             seq += 10
 
@@ -947,6 +962,11 @@ class BookingOrchestrationService:
                 "liftgate_required": dl.get("liftgate_required", False),
                 "instructions": dl.get("instructions", ""),
                 "reference": dl.get("reference", ""),
+                "timing_type": dl.get("timing_type", "flexible"),
+                "window_start": dl.get("window_start") or False,
+                "window_end": dl.get("window_end") or False,
+                "appointment_time": dl.get("appointment_time") or False,
+                "timezone": dl.get("timezone") or "",
             })
             seq += 10
 

@@ -40,5 +40,15 @@ class LogisticsPricingSessionStop(models.TransientModel):
     liftgate_delivery = fields.Boolean(string="Liftgate Delivery")
     appointment = fields.Boolean(string="Appointment Required")
 
+    # Timing
+    timing_type = fields.Selection([
+        ("flexible", "Flexible"), ("time_window", "Time Window"),
+        ("exact_appointment", "Exact Appointment"),
+    ], default="flexible", string="Timing")
+    requested_service_date = fields.Date(string="Requested Date")
+    window_start = fields.Float(string="Window Start (hours)")
+    window_end = fields.Float(string="Window End (hours)")
+    appointment_time = fields.Float(string="Appointment Time (hours)")
+
     # Instructions
     instructions = fields.Text(string="Delivery Instructions")

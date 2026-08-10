@@ -124,6 +124,13 @@ class LogisticsSavedLocation(models.Model):
     # ── Operational Details ───────────────────────────────────────────
     pickup_instructions = fields.Text(string="Pickup Instructions")
     delivery_instructions = fields.Text(string="Delivery Instructions")
+    timezone = fields.Char(
+        string="Timezone", default="America/Toronto",
+        help="IANA timezone from Google Time Zone API. All hours in local time.",
+    )
+    hours_status = fields.Selection([
+        ("configured", "Configured"), ("not_configured", "Hours Not Configured"),
+    ], default="not_configured", string="Hours Status")
     dock_info = fields.Char(string="Dock Info")
     opening_hours = fields.Char(string="Opening Hours")
     receiving_hours = fields.Char(string="Receiving Hours")

@@ -383,6 +383,89 @@
                                    t-att-value="location.opening_hours if location else ''"/>
                         </div>
                     </div>
+                    <!-- Operating Hours -->
+                    <div class="mb-3">
+                        <label class="form-label fw-bold">Operating Hours</label>
+                        <div class="mb-2">
+                            <label class="form-label small">Timezone</label>
+                            <input type="text" name="timezone" class="form-control form-control-sm" style="max-width:280px"
+                                   placeholder="America/Toronto" value="America/Toronto"
+                                   t-att-value="(location.timezone if location else '') or 'America/Toronto'"/>
+                            <small class="text-muted">Auto-detected from coordinates</small>
+                        </div>
+                        <div class="mb-2 d-flex gap-1 flex-wrap">
+                            <button type="button" class="btn btn-sm btn-outline-secondary" onclick="presetHours('24/5')">24/5</button>
+                            <button type="button" class="btn btn-sm btn-outline-secondary" onclick="presetHours('24/7')">24/7</button>
+                            <button type="button" class="btn btn-sm btn-outline-secondary" onclick="presetHours('weekday_custom')">Weekdays Custom</button>
+                            <button type="button" class="btn btn-sm btn-outline-secondary" onclick="copyMonday()">Copy Mon→Fri</button>
+                        </div>
+                        <table class="table table-sm table-borderless mb-0" id="hours_table">
+                            <thead><tr><th style="width:100px"/><th style="width:80px">Status</th><th>From</th><th>To</th></tr></thead>
+                            <tbody>
+                                <script>var DAYS=['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];</script>
+                                <t t-foreach="[0,1,2,3,4,5,6]" t-as="d">
+                                <tr>
+                                    <td class="align-middle"><strong t-esc="['Mon','Tue','Wed','Thu','Fri','Sat','Sun'][d]"/></td>
+                                    <td>
+                                        <select class="form-select form-select-sm hours-status" t-att-data-day="str(d)" onchange="hoursStatusChange(this)">
+                                            <option value="open_24h">24 Hours</option>
+                                            <option value="custom">Custom</option>
+                                            <option value="closed" t-att-selected="'selected' if d >= 5 else None">Closed</option>
+                                        </select>
+                                    </td>
+                                    <td class="hours-custom-cell" style="display:none">
+                                        <input type="time" class="form-control form-control-sm hours-from" style="width:120px"
+                                               t-att-name="'hours_open_' + str(d)" step="1800" value="08:00"/>
+                                    </td>
+                                    <td class="hours-custom-cell" style="display:none">
+                                        <input type="time" class="form-control form-control-sm hours-to" style="width:120px"
+                                               t-att-name="'hours_close_' + str(d)" step="1800" value="17:00"/>
+                                    </td>
+                                </tr>
+                                </t>
+                            </tbody>
+                        </table>
+                    </div>
+                    <script>
+                        function hoursStatusChange(sel) {
+                            var row = sel.closest('tr');
+                            var cells = row.querySelectorAll('.hours-custom-cell');
+                            cells.forEach(function(c) { c.style.display = sel.value === 'custom' ? '' : 'none'; });
+                        }
+                        function presetHours(type) {
+                            var rows = document.querySelectorAll('#hours_table tbody tr');
+                            rows.forEach(function(row, i) {
+                                var sel = row.querySelector('.hours-status');
+                                var cells = row.querySelectorAll('.hours-custom-cell');
+                                if (type === '24/5') {
+                                    sel.value = i < 5 ? 'open_24h' : 'closed';
+                                    cells.forEach(function(c) { c.style.display = 'none'; });
+                                } else if (type === '24/7') {
+                                    sel.value = 'open_24h';
+                                    cells.forEach(function(c) { c.style.display = 'none'; });
+                                } else if (type === 'weekday_custom') {
+                                    sel.value = i < 5 ? 'custom' : 'closed';
+                                    cells.forEach(function(c) { c.style.display = i < 5 ? '' : 'none'; });
+                                }
+                                sel.dispatchEvent(new Event('change'));
+                            });
+                        }
+                        function copyMonday() {
+                            var rows = document.querySelectorAll('#hours_table tbody tr');
+                            var monSel = rows[0].querySelector('.hours-status');
+                            var monFrom = rows[0].querySelector('.hours-from');
+                            var monTo = rows[0].querySelector('.hours-to');
+                            for (var i = 1; i < 5; i++) {
+                                rows[i].querySelector('.hours-status').value = monSel.value;
+                                if (monSel.value === 'custom') {
+                                    rows[i].querySelector('.hours-from').value = monFrom.value;
+                                    rows[i].querySelector('.hours-to').value = monTo.value;
+                                }
+                                rows[i].querySelector('.hours-status').dispatchEvent(new Event('change'));
+                            }
+                        }
+                    </script>
+
                     <div class="mb-3 form-check">
                         <input type="checkbox" name="appointment_required" class="form-check-input" value="1"
                                t-att-checked="location and location.appointment_required and 'checked' or None"/>

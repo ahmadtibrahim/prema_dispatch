@@ -5,6 +5,16 @@ from odoo.exceptions import AccessError, UserError
 from odoo.http import request
 from werkzeug.exceptions import NotFound
 
+def _parse_time_float(val):
+    """Convert HH:MM string to float hours (e.g. '11:30' → 11.5)."""
+    if not val:
+        return None
+    try:
+        parts = val.strip().split(":")
+        return int(parts[0]) + int(parts[1]) / 60.0
+    except (ValueError, IndexError):
+        return None
+
 def _portal_enabled():
     val = request.env["ir.config_parameter"].sudo().get_param("logistics_booking.portal_enabled")
     return str(val).strip().lower() in ("true", "1")
@@ -430,6 +440,9 @@ class LogisticsBookingPortal(http.Controller):
             stop_pallets = int(kwargs.get(f"delivery_pallets_{i+1}") or 1)
             stop_weight = float(kwargs.get(f"delivery_weight_{i+1}") or stop_pallets * 500)
             stop_shared = bool(kwargs.get(f"delivery_shared_pallet_{i+1}"))
+            timing_type = kwargs.get(f"delivery_timing_type_{i+1}") or "flexible"
+            wstart = kwargs.get(f"delivery_window_start_{i+1}", "").strip()
+            wend = kwargs.get(f"delivery_window_end_{i+1}", "").strip()
             stop = {
                 "postal_code": dl.postal_code or "",
                 "latitude": dl.latitude,
@@ -440,6 +453,10 @@ class LogisticsBookingPortal(http.Controller):
                 "pallets": stop_pallets,
                 "weight_lbs": stop_weight,
                 "shared_pallet": stop_shared or shared_pallet_mode,
+                "timing_type": timing_type,
+                "window_start": _parse_time_float(wstart) if wstart else None,
+                "window_end": _parse_time_float(wend) if wend else None,
+                "timezone": dl.timezone or "America/Toronto",
                 "liftgate_delivery": bool(kwargs.get(f"delivery_liftgate_{i+1}")),
                 "appointment": bool(kwargs.get(f"delivery_appointment_{i+1}")),
                 "instructions": kwargs.get(f"delivery_instructions_{i+1}", "").strip() or "",

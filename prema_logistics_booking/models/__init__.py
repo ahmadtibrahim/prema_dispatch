@@ -1,6 +1,7 @@
 from . import res_country_extension
 from . import res_country_state_extension
 from . import logistics_saved_location
+from . import logistics_saved_location_hours
 from . import logistics_direct_delivery_rule
 from . import logistics_region
 from . import logistics_fsa
