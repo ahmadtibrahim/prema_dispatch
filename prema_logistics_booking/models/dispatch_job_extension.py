@@ -260,6 +260,122 @@ class PremaDispatchJob(models.Model):
         return super().unassign_truck(job_id)
 
     @api.model
+    def action_remove_from_booking_board(self, job_id):
+        """Canonical Booking Board removal — handles the FULL linked transaction:
+        booking → dispatch job → draft invoice → pallets → capacity → departure.
+
+        Returns {success, skipped, error, invoice_deleted, booking_cancelled}.
+        Does NOT require the departure guard to be bypassed — we detach the
+        departure link as part of the removal, not as a truck-change operation.
+        """
+        job = self.browse(job_id)
+        if not job.exists():
+            return {"success": False, "error": "Job not found"}
+
+        booking = job.logistics_booking_id
+        invoice_deleted = False
+        booking_cancelled = False
+
+        try:
+            with self.env.cr.savepoint():
+                # ── 1. Guard: started jobs cannot be destructively deleted ──
+                stops = job.stop_ids.filtered(lambda s: s.status != "cancelled")
+                started = stops.filtered(
+                    lambda s: s.status in ("completed", "arrived", "en_route")
+                )
+                has_pod = bool(stops.filtered(lambda s: s.pod_attachment_ids))
+                if started or has_pod:
+                    return {
+                        "success": False, "skipped": True,
+                        "error": "This shipment has operational activity and cannot be deleted.",
+                    }
+
+                # ── 2. Guard: posted/paid invoices cannot be deleted ──
+                invoice = job.invoice_id
+                if booking and not invoice:
+                    invoice = booking.invoice_id
+                if invoice and invoice.state != "draft":
+                    return {
+                        "success": False, "skipped": True,
+                        "error": "This booking has a posted invoice and cannot be deleted. Cancel the invoice first.",
+                    }
+
+                # ── 3. Cancel stage FIRST (blocks constraint checks) ──
+                cancel_stage = self.env["prema.dispatch.stage"].sudo().search(
+                    [("stage_type", "=", "cancelled")], limit=1,
+                )
+                draft_stage = job._default_stage()
+                target_stage = cancel_stage or draft_stage
+                # Set stage to cancelled while vehicle/corridor still present —
+                # the constraint skips cancelled jobs (stage_type not in cancelled/completed)
+                job.with_context(skip_planner_conflict_check=True).write({
+                    "stage_id": target_stage.id,
+                })
+
+                # ── 4. Detach from corridor + unassign truck ──
+                if job.corridor_departure_id:
+                    job.corridor_departure_id = False
+                if booking and booking.departure_id:
+                    booking.departure_id = False
+                job.with_context(skip_planner_conflict_check=True).write({
+                    "vehicle_id": False,
+                    "driver_id": False,
+                    "assignment_warnings": "",
+                    "feasibility_status": "unknown",
+                    "feasibility_notes": "",
+                    "assignment_override_reason": False,
+                    "assignment_override_by": False,
+                    "assignment_override_at": False,
+                    "corridor_departure_id": False,
+                })
+
+                # ── 5. Detach items from load plan + deactivate allocations ──
+                items = job.item_ids.filtered(lambda i: i.status not in ("loaded", "delivered", "in_transit"))
+                items.mapped("stop_allocation_ids").filtered("active").write({"active": False})
+                items.write({"status": "cancelled", "load_plan_id": False, "position_id": False})
+
+                # ── 6. Archive the dispatch job ──
+                job.write({"active": False})
+
+                # ── 7. Cancel the booking ──
+                if booking and booking.state not in ("cancelled", "completed", "delivered"):
+                    booking.write({
+                        "state": "cancelled",
+                        "cancelled_at": fields.Datetime.now(),
+                        "cancelled_by": self.env.user.id,
+                        "cancellation_source": "company",
+                        "cancellation_reason": "Removed from Booking Board",
+                    })
+                    booking_cancelled = True
+
+                # ── 8. Unlink draft invoice ──
+                invoice = invoice or (job.invoice_id if hasattr(job, 'invoice_id') else False)
+                if not invoice and booking:
+                    invoice = booking.invoice_id
+                if invoice and invoice.state == "draft":
+                    # Verify no payments, no reconciliation
+                    if not invoice.payment_state or invoice.payment_state == "not_paid":
+                        invoice.unlink()
+                        invoice_deleted = True
+
+                # ── 9. Release booking legs ──
+                if booking:
+                    for leg in booking.leg_ids:
+                        if leg.reservation_state in ("reserved", "pending"):
+                            leg.write({"reservation_state": "released"})
+
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+
+        return {
+            "success": True,
+            "job_name": job.name,
+            "booking_number": booking.booking_number if booking else None,
+            "invoice_deleted": invoice_deleted,
+            "booking_cancelled": booking_cancelled,
+        }
+
+    @api.model
     def optimize_truck_day_live(self, truck_id, date_string):
         """Apply one route across every pending job on the truck/day.
 

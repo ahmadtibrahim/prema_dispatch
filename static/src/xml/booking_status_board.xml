@@ -27,6 +27,7 @@
         <div class="o_bsb_table">
             <div class="o_bsb_row o_bsb_row_head">
                 <div class="o_bsb_col_check"><input type="checkbox" t-on-click="() => this.toggleSelectAll()" t-att-checked="allVisibleSelected"/></div>
+                <div class="o_bsb_col_ref">Booking #</div>
                 <div class="o_bsb_col_customer">Customer</div>
                 <div class="o_bsb_col_status">Status</div>
                 <div class="o_bsb_col_pickup">Pickup</div>

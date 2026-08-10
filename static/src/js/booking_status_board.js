@@ -97,38 +97,85 @@ export class BookingStatusBoard extends Component {
 
     clearSelection() { this.state.selectedIds = new Set(); }
 
-    // ── Bulk Remove ──────────────────────────────────────────────
+    // ── Single / Bulk Remove (canonical method) ────────────────────
+    async _removeSingleJob(jobId, jobLabel) {
+        if (this.state.bulkLoading) return;
+        return new Promise((resolve) => {
+            this.dialog.add(
+                "Remove Booking",
+                `Remove ${jobLabel} from the Booking Board?\n\nThis will cancel the booking, delete any draft invoice, release capacity, and detach from departures. Posted invoices and started jobs are protected.`,
+                {
+                    confirmLabel: "Remove Booking",
+                    cancelLabel: "Cancel",
+                    confirmColor: "danger",
+                },
+                async () => {
+                    this.state.bulkLoading = true;
+                    try {
+                        const r = await this.orm.call("prema.dispatch.job", "action_remove_from_booking_board", [jobId]);
+                        if (r.success) {
+                            let msg = `${r.job_name || jobLabel} removed.`;
+                            if (r.invoice_deleted) msg += " Draft invoice deleted.";
+                            this.notification.add(msg, { type: "success" });
+                            resolve(true);
+                        } else if (r.skipped) {
+                            this.notification.add(r.error || "Cannot remove this booking.", { type: "warning" });
+                            resolve(false);
+                        } else {
+                            this.notification.add(r.error || "Failed to remove.", { type: "danger" });
+                            resolve(false);
+                        }
+                    } catch (e) {
+                        this.notification.add(`Error: ${e.message}`, { type: "danger" });
+                        resolve(false);
+                    } finally {
+                        this.state.bulkLoading = false;
+                    }
+                }
+            );
+            // If dialog is dismissed without confirm, resolve false
+            setTimeout(() => resolve(false), 100);
+        });
+    }
+
     async bulkRemove() {
         const count = this.selectedCount;
         if (count === 0) return;
+        const ids = [...this.state.selectedIds];
+        const labels = ids.map(id => {
+            const row = this.state.rows.find(r => r.job_id === id);
+            return row ? row.reference : `Job #${id}`;
+        });
         this.dialog.add(
-            "Confirm Remove",
-            `Remove ${count} selected booking${count !== 1 ? 's' : ''} from the Booking Board?\n\nThe selected bookings will be cancelled and archived. Historical records will be preserved.`,
+            "Confirm Bulk Remove",
+            `Remove ${count} selected bookings?\n\nUnstarted bookings will be removed from operations. Linked draft invoices will be deleted. Capacity will be released. Posted invoices and started jobs will be skipped.`,
             {
-                confirmLabel: `Remove ${count} Booking${count !== 1 ? 's' : ''}`,
+                confirmLabel: `Remove ${count} Bookings`,
                 cancelLabel: "Cancel",
                 confirmColor: "danger",
             },
             async () => {
                 this.state.bulkLoading = true;
-                try {
-                    const ids = [...this.state.selectedIds];
-                    const result = await this.orm.call("prema.dispatch.job", "bulk_cancel_archive_bookings", [ids]);
-                    const ok = result.success || 0;
-                    const skipped = result.skipped || 0;
-                    const errors = result.errors || [];
-                    let msg = `${ok} removed successfully.`;
-                    if (skipped > 0) msg += ` ${skipped} could not be removed (active deliveries).`;
-                    if (errors.length > 0) msg += ` ${errors.length} errors.`;
-                    this.notification.add(msg, { type: skipped > 0 ? "warning" : "success" });
-                    if (errors.length > 0) console.warn("Bulk remove errors:", errors);
-                    this.clearSelection();
-                    await this.load();
-                } catch (e) {
-                    this.notification.add(`Error: ${e.message}`, { type: "danger" });
-                } finally {
-                    this.state.bulkLoading = false;
+                let ok = 0, skipped = 0;
+                const errors = [];
+                for (let i = 0; i < ids.length; i++) {
+                    try {
+                        const r = await this.orm.call("prema.dispatch.job", "action_remove_from_booking_board", [ids[i]]);
+                        if (r.success) ok++;
+                        else if (r.skipped) { skipped++; errors.push(`${labels[i]}: ${r.error}`); }
+                        else { errors.push(`${labels[i]}: ${r.error || 'Failed'}`); }
+                    } catch (e) {
+                        errors.push(`${labels[i]}: ${e.message}`);
+                    }
                 }
+                let msg = `${ok} removed successfully.`;
+                if (skipped > 0) msg += ` ${skipped} skipped (protected).`;
+                if (errors.length > 0) msg += ` ${errors.length} errors.`;
+                this.notification.add(msg, { type: skipped > 0 || errors.length > 0 ? "warning" : "success" });
+                if (errors.length > 0) console.warn("Bulk remove details:", errors);
+                this.clearSelection();
+                await this.load();
+                this.state.bulkLoading = false;
             }
         );
     }
@@ -145,22 +192,13 @@ export class BookingStatusBoard extends Component {
         });
     }
 
-    // Same backend action the Dispatch Planner's unassign/eject button uses
-    // (prema.dispatch.job.unassign_truck) — one shared entry point instead
-    // of a second "unassign" implementation just for this board.
+    // X button now uses the canonical remove method with confirmation
     async unassignJob(ev, jobId) {
         ev.stopPropagation();
-        try {
-            const r = await this.orm.call("prema.dispatch.job", "unassign_truck", [jobId]);
-            if (r.success) {
-                this.notification.add(`${r.job_name} returned to unassigned queue.`, { type: "info" });
-                await this.load();
-            } else {
-                this.notification.add(r.error || "Could not unassign.", { type: "danger" });
-            }
-        } catch (e) {
-            this.notification.add(`Error: ${e.message}`, { type: "danger" });
-        }
+        const row = this.state.rows.find(r => r.job_id === jobId);
+        const label = row ? row.reference : `Job #${jobId}`;
+        const removed = await this._removeSingleJob(jobId, label);
+        if (removed) await this.load();
     }
 }
 
