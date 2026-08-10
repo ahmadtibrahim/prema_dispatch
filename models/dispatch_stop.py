@@ -804,7 +804,14 @@ class PremaDispatchStop(models.Model):
         if self.stop_type == "pickup":
             return items.filtered(lambda i: i.pickup_stop_id.id == self.id)
         if self.stop_type in ("dropoff", "return"):
-            return items.filtered(lambda i: i.delivery_stop_id.id == self.id)
+            # Include items linked via delivery_stop_id OR stop_allocation_ids (shared pallets)
+            alloc_items = items.filtered(
+                lambda i: i.stop_allocation_ids.filtered(
+                    lambda a: a.active and a.stop_id.id == self.id
+                )
+            )
+            direct = items.filtered(lambda i: i.delivery_stop_id.id == self.id)
+            return (direct | alloc_items)
         if self.stop_type == "transfer":
             return items
         if self.stop_type in ("cross_dock_drop", "cross_dock_pickup"):
