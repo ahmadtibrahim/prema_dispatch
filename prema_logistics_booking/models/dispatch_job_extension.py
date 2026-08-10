@@ -271,7 +271,12 @@ class PremaDispatchJob(models.Model):
         if not job.exists():
             return {"success": False, "error": "Job not found"}
 
-        booking = job.logistics_booking_id
+        # Use sudo for booking access — the Booking Board is internal-staff only.
+        # The record rule `rule_logistics_booking_customer_own` restricts bookings
+        # to the customer's own company, which blocks dispatchers from cancelling
+        # bookings that belong to other companies. sudo() is correct here because
+        # this is an admin/dispatcher operation, not a customer self-service action.
+        booking = job.sudo().logistics_booking_id
         invoice_deleted = False
         booking_cancelled = False
 
@@ -292,7 +297,7 @@ class PremaDispatchJob(models.Model):
                 # ── 2. Guard: posted/paid invoices block removal ──
                 invoice = job.invoice_id
                 if booking and not invoice:
-                    invoice = booking.invoice_id
+                    invoice = booking.sudo().invoice_id
                 if invoice and invoice.state != "draft":
                     return {
                         "success": False, "skipped": True,
@@ -301,17 +306,17 @@ class PremaDispatchJob(models.Model):
 
                 # ── 3. Use the canonical cancel workflow (same as manual form delete) ──
                 if booking and booking.state not in ("cancelled", "completed", "delivered"):
-                    booking.action_cancel(
+                    booking.sudo().action_cancel(
                         reason="Removed from Booking Board",
                         source="company",
                     )
                     booking_cancelled = True
 
                 # ── 4. Unlink draft invoice (action_cancel only does button_cancel) ──
-                invoice = invoice or (booking.invoice_id if booking else False)
+                invoice = invoice or (booking.sudo().invoice_id if booking else False)
                 if invoice and invoice.exists() and invoice.state == "draft":
                     if not invoice.payment_state or invoice.payment_state == "not_paid":
-                        invoice.unlink()
+                        invoice.sudo().unlink()
                         invoice_deleted = True
 
                 # ── 5. Archive the dispatch job so it leaves the active board ──
