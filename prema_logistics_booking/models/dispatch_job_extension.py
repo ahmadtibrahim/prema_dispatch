@@ -312,12 +312,19 @@ class PremaDispatchJob(models.Model):
                     "stage_id": target_stage.id,
                 })
 
-                # ── 4. Detach from corridor + unassign truck ──
+                # ── 4. Detach from corridor first (must happen BEFORE vehicle_id
+                # is cleared — the write() override at line 74 blocks vehicle_id
+                # changes while corridor_departure_id is still set).
                 if job.corridor_departure_id:
                     job.corridor_departure_id = False
                 if booking and booking.departure_id:
                     booking.departure_id = False
-                job.with_context(skip_planner_conflict_check=True).write({
+                self.env.flush_all()
+                # Now safe to clear vehicle/driver — corridor is already detached
+                job.with_context(
+                    skip_planner_conflict_check=True,
+                    departure_vehicle_sync=True,
+                ).write({
                     "vehicle_id": False,
                     "driver_id": False,
                     "assignment_warnings": "",
@@ -326,7 +333,6 @@ class PremaDispatchJob(models.Model):
                     "assignment_override_reason": False,
                     "assignment_override_by": False,
                     "assignment_override_at": False,
-                    "corridor_departure_id": False,
                 })
 
                 # ── 5. Detach items from load plan + deactivate allocations ──
