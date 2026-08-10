@@ -1226,21 +1226,70 @@
 
 <template id="portal_my_bookings" name="My Bookings">
     <t t-call="portal.portal_layout">
-        <div class="container o_page_container py-5">
-            <h2>My Bookings</h2>
-            <table class="table">
-                <thead><tr><th>Booking #</th><th>Pickup</th><th>Delivery</th><th>Pickup Date</th><th>Est. Delivery</th><th>Price</th></tr></thead>
-                <tbody>
-                    <tr t-foreach="bookings" t-as="b">
-                        <td><a t-attf-href="/my/bookings/#{b.id}" t-esc="b.booking_number"/></td>
-                        <td t-esc="b.pickup_fsa_id.display_city or b.pickup_fsa_id.fsa"/>
-                        <td t-esc="b.delivery_fsa_id.display_city or b.delivery_fsa_id.fsa"/>
-                        <td t-esc="b.pickup_date"/>
-                        <td t-esc="b.estimated_delivery_date"/>
-                        <td t-esc="'%.2f' % b.calculated_price"/>
-                    </tr>
-                </tbody>
-            </table>
+        <div class="container o_page_container py-4">
+            <div class="d-flex justify-content-between align-items-center mb-3">
+                <h2 class="mb-0">My Bookings</h2>
+                <a href="/my/booking/new" class="btn btn-primary">+ Book a Shipment</a>
+            </div>
+
+            <!-- Status filters -->
+            <div class="mb-3">
+                <a t-attf-href="/my/bookings?status=all" t-att-class="'btn btn-sm me-1 ' + ('btn-primary' if filter_status == 'all' else 'btn-outline-secondary')">All</a>
+                <a t-attf-href="/my/bookings?status=ongoing" t-att-class="'btn btn-sm me-1 ' + ('btn-primary' if filter_status == 'ongoing' else 'btn-outline-secondary')">Ongoing</a>
+                <a t-attf-href="/my/bookings?status=completed" t-att-class="'btn btn-sm me-1 ' + ('btn-primary' if filter_status == 'completed' else 'btn-outline-secondary')">Completed</a>
+                <a t-attf-href="/my/bookings?status=cancelled" t-att-class="'btn btn-sm ' + ('btn-primary' if filter_status == 'cancelled' else 'btn-outline-secondary')">Cancelled</a>
+            </div>
+
+            <t t-if="not bookings">
+                <div class="text-center py-5 text-muted">
+                    <p>No bookings found.</p>
+                    <a href="/my/booking/new" class="btn btn-primary">Book Your First Shipment</a>
+                </div>
+            </t>
+            <t t-else="">
+                <div class="table-responsive">
+                <table class="table table-hover align-middle">
+                    <thead class="table-light">
+                        <tr>
+                            <th>Booking</th>
+                            <th>Status</th>
+                            <th>Pickup</th>
+                            <th>Delivery</th>
+                            <th class="text-center">Pallets</th>
+                            <th class="text-end">Price</th>
+                            <th/>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr t-foreach="bookings" t-as="b" style="cursor:pointer"
+                            onclick="window.location='/my/bookings/' + this.getAttribute('data-bid')"
+                            t-att-data-bid="str(b.id)">
+                            <td>
+                                <div class="fw-bold" t-esc="b.booking_name or b.booking_number"/>
+                                <small class="text-muted" t-esc="b.booking_number"/>
+                            </td>
+                            <td>
+                                <span t-att-class="'badge ' + ('bg-success' if b.state in ('completed','delivered') else ('bg-secondary' if b.state == 'cancelled' else 'bg-primary'))"
+                                      t-esc="b.customer_status"/>
+                            </td>
+                            <td>
+                                <small t-esc="b.pickup_address or ''"/>
+                                <small class="text-muted d-block" t-esc="b.pickup_date"/></td>
+                            <td>
+                                <small t-esc="b.delivery_address or ''"/>
+                                <t t-if="b.stop_ids">
+                                    <t t-set="del_count" t-value="len(b.stop_ids.filtered(lambda s: s.stop_type == 'delivery'))"/>
+                                    <small t-if="del_count > 1" class="text-muted d-block">+ <t t-esc="del_count - 1"/> more stop<t t-if="del_count > 2">s</t></small>
+                                </t>
+                            </td>
+                            <td class="text-center" t-esc="b.physical_pallets or b.pallets"/>
+                            <td class="text-end fw-bold">$<t t-esc="'%.2f' % (b.calculated_price or 0)"/></td>
+                            <td class="text-end"><a t-attf-href="/my/bookings/#{b.id}" class="btn btn-sm btn-outline-primary">View</a></td>
+                        </tr>
+                    </tbody>
+                </table>
+                </div>
+            </t>
         </div>
     </t>
 </template>

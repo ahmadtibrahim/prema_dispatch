@@ -587,8 +587,22 @@ class LogisticsBookingPortal(http.Controller):
         require_visible()
         if not is_approved_customer():
             return request.render("prema_logistics_booking.portal_pending_approval", {})
-        bookings = request.env["logistics.booking"].search([], order="id desc")
-        return request.render("prema_logistics_booking.portal_my_bookings", {"bookings": bookings})
+        partner = request.env.user.partner_id.commercial_partner_id
+        filter_status = kwargs.get("status", "all")
+        domain = [("commercial_partner_id", "=", partner.id)]
+        if filter_status == "ongoing":
+            domain.append(("state", "not in", ("cancelled", "completed", "delivered")))
+        elif filter_status == "completed":
+            domain.append(("state", "in", ("completed", "delivered")))
+        elif filter_status == "cancelled":
+            domain.append(("state", "=", "cancelled"))
+        bookings = request.env["logistics.booking"].sudo().with_context(active_test=False).search(
+            domain, order="pickup_date asc, id desc"
+        )
+        return request.render("prema_logistics_booking.portal_my_bookings", {
+            "bookings": bookings,
+            "filter_status": filter_status,
+        })
 
     @http.route("/my/bookings/<int:booking_id>", type="http", auth="user", website=True, sitemap=False)
     def my_booking_detail(self, booking_id, **kwargs):
@@ -605,9 +619,46 @@ class LogisticsBookingPortal(http.Controller):
     # ------------------------------------------------------------------
     # Where We Go — Customer Portal
     # ------------------------------------------------------------------
+    @http.route("/my/network-topology", type="json", auth="user")
+    def portal_network_topology(self, **kwargs):
+        """Portal-safe corridor topology. No dispatch staff required."""
+        Corridor = request.env["logistics.corridor"].sudo()
+        Hub = request.env["logistics.hub"].sudo()
+        Region = request.env["logistics.region"].sudo()
+        hub = Hub.search([("is_default", "=", True), ("active", "=", True)], limit=1)
+        if not hub:
+            return {"error": "No hub found"}
+        hp = {
+            "id": hub.id, "name": hub.public_name or hub.name,
+            "lat": hub.latitude or (hub.saved_location_id.pin_lat if hub.saved_location_id else 0),
+            "lng": hub.longitude or (hub.saved_location_id.pin_lng if hub.saved_location_id else 0),
+        }
+        stops = request.env["logistics.corridor.stop"].sudo().search(
+            [("active", "=", True), ("corridor_id.active", "=", True)],
+            order="corridor_id, sequence")
+        cids = list(set(stops.mapped("corridor_id").ids))
+        DAYS = ["monday","tuesday","wednesday","thursday","friday","saturday","sunday"]
+        clist, rids = [], set()
+        for c in Corridor.search([("id", "in", cids), ("active", "=", True)]):
+            rs = []
+            for s in stops.filtered(lambda s, cid=c.id: s.corridor_id.id == cid):
+                r = s.region_id; rids.add(r.id)
+                rs.append({"region_id":r.id,"code":r.code,"name":r.name,
+                    "lat":r.marker_latitude,"lng":r.marker_longitude})
+            od = [d[:3] for d in DAYS if getattr(c, f"operate_{d}")]
+            clist.append({"id":c.id,"name":c.name,"operating_days":od,"regions":rs})
+        regs = []
+        for r in Region.search([("id","in",list(rids))]):
+            regs.append({"id":r.id,"code":r.code,"name":r.name,
+                "lat":r.marker_latitude,"lng":r.marker_longitude,"main_city":r.main_city or ""})
+        return {"hub":hp,"corridors":clist,"regions":regs}
+
     @http.route("/my/where-we-go", type="http", auth="user", website=True, sitemap=False)
     def portal_where_we_go(self, **kwargs):
         require_visible()
         if not is_approved_customer():
             return request.render("prema_logistics_booking.portal_pending_approval", {})
-        return request.render("prema_logistics_booking.portal_where_we_go", {})
+        api_key = request.env["ir.config_parameter"].sudo().get_param("google_maps_api_key", "")
+        return request.render("prema_logistics_booking.portal_where_we_go", {
+            "google_maps_api_key": api_key,
+        })
