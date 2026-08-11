@@ -864,8 +864,8 @@ class LogisticsBooking(models.Model):
         """Create one Planner card per physical truck/day operation.
 
         A leg that picks up and delivers on different dates is intentionally
-        split into two cards.  Multiple LTL bookings on one exact departure
-        remain separate cards but share the departure truck and capacity.
+        split into two cards. Physical freight items are created once and
+        referenced by all operational jobs for this booking.
         """
         self.ensure_one()
         existing = self.env["prema.dispatch.job"].sudo().search([
@@ -878,39 +878,44 @@ class LogisticsBooking(models.Model):
 
         jobs = self.env["prema.dispatch.job"]
         sequence = 1
+        first_job = None
         for leg in self.leg_ids.sorted("sequence"):
             pickup_date = leg.pickup_date or leg.departure_id.departure_date or self.pickup_date
             delivery_date = leg.delivery_date or pickup_date or self.estimated_delivery_date
             if pickup_date and delivery_date and pickup_date != delivery_date:
-                jobs |= self._create_dispatch_operation(
-                    leg, "pickup", pickup_date, origin_stop=leg.origin_stop_id, sequence=sequence,
-                )
+                job1 = self._create_dispatch_operation(leg, "pickup", pickup_date, origin_stop=leg.origin_stop_id, sequence=sequence)
+                jobs |= job1
+                if not first_job: first_job = job1
                 sequence += 1
-                jobs |= self._create_dispatch_operation(
-                    leg, "delivery", delivery_date,
-                    destination_stop=leg.destination_stop_id, sequence=sequence,
-                )
+                jobs |= self._create_dispatch_operation(leg, "delivery", delivery_date, destination_stop=leg.destination_stop_id, sequence=sequence)
                 sequence += 1
             else:
                 role = leg.leg_type if leg.leg_type in ("feeder", "linehaul", "final_delivery") else "combined"
-                jobs |= self._create_dispatch_operation(
-                    leg, role, pickup_date or delivery_date,
-                    origin_stop=leg.origin_stop_id,
-                    destination_stop=leg.destination_stop_id,
-                    sequence=sequence,
-                )
+                job1 = self._create_dispatch_operation(leg, role, pickup_date or delivery_date, origin_stop=leg.origin_stop_id, destination_stop=leg.destination_stop_id, sequence=sequence)
+                jobs |= job1
+                if not first_job: first_job = job1
                 sequence += 1
 
         if not jobs:
-            # Use search() to avoid One2many cache staleness
             BStop = self.env["logistics.booking.stop"].sudo()
             pickups = BStop.search([("booking_id", "=", self.id), ("stop_type", "=", "pickup")], order="sequence")
             deliveries = BStop.search([("booking_id", "=", self.id), ("stop_type", "=", "delivery")], order="sequence")
             operation_date = self.pickup_date or fields.Date.context_today(self)
-            jobs |= self._create_dispatch_operation(
-                False, "custom", operation_date,
-                origin_stop=pickups[:1], destination_stop=deliveries[-1:], sequence=sequence,
-            )
+            job1 = self._create_dispatch_operation(False, "custom", operation_date, origin_stop=pickups[:1], destination_stop=deliveries[-1:], sequence=sequence)
+            jobs |= job1
+            if not first_job: first_job = job1
+
+        # Canonical pallets: subsequent jobs reference first job's items
+        canonical_items = first_job.item_ids.filtered(lambda i: i.status != 'cancelled')
+        for job in jobs:
+            if job.id == first_job.id or not canonical_items:
+                continue
+            dupes = job.item_ids.filtered(lambda i: i.status != 'cancelled')
+            # Transfer stop allocations from duplicates to canonical items
+            for dup_item, canonical in zip(dupes, canonical_items):
+                dup_item.stop_allocation_ids.write({'dispatch_item_id': canonical.id})
+            dupes.mapped('stop_allocation_ids').write({'active': False})
+            dupes.write({'status': 'cancelled'})
 
         self.dispatch_job_id = jobs[0].id
         return jobs
