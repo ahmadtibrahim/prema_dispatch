@@ -52,10 +52,10 @@ const DISPATCH_PHONE = document.getElementById("app")?.dataset.dispatchPhone || 
 const DISPATCH_VOIP_URI = document.getElementById("app")?.dataset.dispatchVoipUri || "";
 
 // ── Google Maps: canonical loader ──────────────────────────────────
-// The backend asset bundle (google_maps_loader.js, loaded in <head> by
-// web.layout) exposes window.loadGoogleMaps before this script runs. Kick
-// the load off immediately so maps are ready before the first screen
-// renders; waitForDriverMapsReady() below polls for the same readiness.
+// google_maps_loader.js ships in web.assets_backend (before this file in
+// the manifest), so window.loadGoogleMaps is already defined when this
+// script runs. Kick the load off immediately so maps are ready before the
+// first screen renders; waitForDriverMapsReady() below polls for readiness.
 if (window.loadGoogleMaps && GMAPS_KEY) {
     window.loadGoogleMaps(GMAPS_KEY, { libraries: "places,geometry" }).catch((e) => {
         console.warn("Google Maps load failed — running without maps:", e);

@@ -8,11 +8,12 @@
     <meta name="theme-color" content="#1565C0"/>
     <meta name="apple-mobile-web-app-capable" content="yes"/>
     <link t-attf-href="/prema_dispatch/static/src/css/driver_app.css?v=#{cache_ver}" rel="stylesheet"/>
-    <!-- Google Maps loads via the canonical loader (google_maps_loader.js,
-         part of web.assets_backend, which this layout includes in <head>);
-         driver_app.js calls window.loadGoogleMaps(GMAPS_KEY, ...) at boot.
-         No static <script> tag here — that caused "Google Maps API included
-         multiple times" warnings alongside the other loaders. -->
+    <!-- Canonical Google Maps loader. The Maps API itself is NOT loaded here
+         anymore — this file (also part of the web.assets_backend /
+         web.assets_frontend bundles) injects the single API script tag and
+         dedups across every component. driver_app.js calls
+         window.loadGoogleMaps(GMAPS_KEY, ...) at boot. -->
+    <script t-attf-src="/prema_dispatch/static/src/js/google_maps_loader.js?v=#{cache_ver}"/>
 </t>
 <t t-set="body_classname">da-body</t>
 
