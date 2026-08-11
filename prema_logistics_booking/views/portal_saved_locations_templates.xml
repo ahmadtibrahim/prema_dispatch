@@ -520,17 +520,19 @@
             var acResults = document.getElementById('autocomplete_results');
             var lastQuery = '';
 
-            if (acInput) {
-                acInput.addEventListener('input', function() {
-                    var q = this.value.trim();
-                    if (q === lastQuery) return;
-                    lastQuery = q;
-                    clearTimeout(acTimer);
-                    if (q.length < 2) {
-                        acResults.style.display = 'none';
-                        return;
-                    }
-                    acTimer = setTimeout(function() {
+            // Also attach autocomplete to business_name field
+            var acBizInput = document.getElementById('business_name');
+
+            function doAutocompleteSearch(inputEl) {
+                var q = inputEl.value.trim();
+                if (q === lastQuery) return;
+                lastQuery = q;
+                clearTimeout(acTimer);
+                if (q.length < 2) {
+                    acResults.style.display = 'none';
+                    return;
+                }
+                acTimer = setTimeout(function() {
                         fetch('/my/saved-locations/autocomplete?q=' + encodeURIComponent(q))
                             .then(function(r) { return r.json(); })
                             .then(function(data) {
@@ -570,16 +572,22 @@
                                 });
                                 acResults.style.display = 'block';
                             });
-                    }, 250);
-                });
-
-                // Hide results when clicking outside
-                document.addEventListener('click', function(e) {
-                    if (e.target !== acInput && !acResults.contains(e.target)) {
-                        acResults.style.display = 'none';
-                    }
-                });
+                }, 250);
             }
+
+            if (acInput) {
+                acInput.addEventListener('input', function() { doAutocompleteSearch(this); });
+            }
+            if (acBizInput) {
+                acBizInput.addEventListener('input', function() { doAutocompleteSearch(this); });
+            }
+
+            // Hide results when clicking outside
+            document.addEventListener('click', function(e) {
+                if ((!acInput || e.target !== acInput) && (!acBizInput || e.target !== acBizInput) && !acResults.contains(e.target)) {
+                    acResults.style.display = 'none';
+                }
+            });
 
             // ── Helper: set province dropdown by code (ON) or name (Ontario) ──
             function setProvinceByCode(code) {
