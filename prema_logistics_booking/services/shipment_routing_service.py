@@ -427,10 +427,20 @@ class ShipmentRoutingService:
                 if not leg2_pickup_date:
                     return {}
 
-                # Max custody hold check: freight must not sit >24h before onward departure
-                hold_days = (leg2_pickup_date - hub_ready).days
-                if hold_days > 1:
-                    return {}  # reject — would hold freight >24h
+                # Max custody hold: compute actual hours between pickup and onward departure.
+                # Use departure_time (hour float, e.g. 1.0 = 1:00 AM) from the onward departure.
+                onward_dep = self.env["logistics.corridor.departure"].sudo().search([
+                    ("departure_date", "=", leg2_pickup_date),
+                    ("corridor_id.stop_ids.region_id", "=", dest.id),
+                    ("active", "=", True),
+                    ("status", "not in", ("cancelled", "completed")),
+                ], limit=1)
+                onward_departure_hour = onward_dep.departure_time if onward_dep else 1.0
+                pickup_datetime = datetime.combine(pickup_date, datetime.min.time()) + timedelta(hours=8)  # assume 8AM pickup
+                onward_datetime = datetime.combine(leg2_pickup_date, datetime.min.time()) + timedelta(hours=onward_departure_hour)
+                hold_hours = (onward_datetime - pickup_datetime).total_seconds() / 3600.0
+                if hold_hours > 24:
+                    return {}  # reject — max 24h custody hold
 
                 leg2 = self._build_leg(
                     sequence=2, leg_type="final_mile",
