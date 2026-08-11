@@ -935,7 +935,7 @@ class RegionResolver:
                         return rec
         # 3. Known FSA prefix splits
         fsa_prefix = (fsa_code or "")[:2].upper()
-        if fsa_prefix in ("L2",):   # Niagara Falls / St. Catharines
+        if fsa_prefix in ("L2", "L3"):   # Niagara Falls / St. Catharines / Welland
             for nid in full_new_ids:
                 rec = self._region_by_id(nid)
                 if rec and "NIAGARA" in (rec.name or "").upper():
