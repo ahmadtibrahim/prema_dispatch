@@ -316,21 +316,29 @@ class PremaDispatchLoadPlan(models.Model):
             raise UserError("No layout template available for this vehicle. Create one first.")
         # Authorize auto-creation for non-staff users.
         # Dispatch staff always pass; drivers may only auto-create their
-        # own plan (driver_id must match their partner); warehouse users
+        # own plan (must be the vehicle's assigned driver); warehouse users
         # may auto-create for any truck (scoped by operational state).
         from odoo.addons.prema_dispatch.services.dispatch_auth import is_dispatch_staff, get_driver_partner
         skip_check = False
+        resolved_driver_id = driver_id
         if is_dispatch_staff(self.env):
             skip_check = True
         elif self.env.user.has_group("prema_dispatch.group_dispatch_warehouse"):
             skip_check = True
         else:
             driver_partner = get_driver_partner(self.env)
-            if driver_partner and driver_id and driver_partner.id == driver_id:
-                skip_check = True
+            if driver_partner:
+                # The driver app sends driver_id=null — resolve from the vehicle instead.
+                vehicle = self.env["fleet.vehicle"].sudo().browse(vehicle_id)
+                vehicle_driver = vehicle.driver_id or vehicle.x_current_driver_contact_id
+                if driver_id and driver_partner.id == driver_id:
+                    skip_check = True
+                elif vehicle_driver and driver_partner.id == vehicle_driver.id:
+                    skip_check = True
+                    resolved_driver_id = vehicle_driver.id
         if not skip_check:
             raise AccessError("Not authorized to create a load plan for this vehicle.")
-        self.create_load_plan(vehicle_id, operating_date, driver_id=driver_id, _skip_staff_check=True)
+        self.create_load_plan(vehicle_id, operating_date, driver_id=resolved_driver_id, _skip_staff_check=True)
         return self.search([
             ("vehicle_id", "=", vehicle_id), ("operating_date", "=", operating_date),
             ("origin_stop_id", "=", False), ("active", "=", True),
