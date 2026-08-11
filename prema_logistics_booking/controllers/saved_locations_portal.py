@@ -59,8 +59,7 @@ class LogisticsSavedLocationsPortal(http.Controller):
         )
 
     def _matches_query(self, loc, query):
-        q = query.lower()
-        fields_to_check = [
+        return self._fuzzy_match(query, [
             loc.name or "",
             loc.chain_name or "",
             loc.business_name or "",
@@ -68,12 +67,10 @@ class LogisticsSavedLocationsPortal(http.Controller):
             loc.store_number or "",
             loc.street or "",
             loc.city or "",
-        ]
-        return any(q in f.lower() for f in fields_to_check if f)
+        ])
 
     def _matches_dispatch_query(self, loc, query):
-        q = query.lower()
-        fields_to_check = [
+        return self._fuzzy_match(query, [
             loc.name or "",
             loc.chain_name or "",
             loc.business_name or "",
@@ -82,8 +79,27 @@ class LogisticsSavedLocationsPortal(http.Controller):
             loc.location_number_normalized or "",
             loc.street or "",
             loc.city or "",
-        ]
-        return any(q in f.lower() for f in fields_to_check if f)
+        ])
+
+    def _fuzzy_match(self, query, fields_to_check):
+        """Match query against fields using prefix-of-any-word or substring match.
+        'alim' matches 'Aliments', 'koyo' matches 'Koyo', 'mon' matches 'Montréal'.
+        """
+        q = query.lower().strip()
+        if len(q) < 2:
+            return False
+        for field in fields_to_check:
+            if not field:
+                continue
+            f = field.lower()
+            # Exact substring match (fast path)
+            if q in f:
+                return True
+            # Prefix match on any word in the field
+            words = f.split()
+            if any(w.startswith(q) for w in words):
+                return True
+        return False
 
     def _format_result(self, loc, source="saved"):
         return {

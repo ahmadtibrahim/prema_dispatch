@@ -41,10 +41,8 @@ def is_approved_customer():
     if user._is_public():
         return False
     partner = user.partner_id.commercial_partner_id
-    return (
-        partner.logistics_pricing_status == "approved"
-        and user.has_group("prema_logistics_booking.group_logistics_customer")
-    )
+    # Any portal user whose company is approved can book — no separate group required
+    return partner.logistics_pricing_status == "approved"
 
 
 class LogisticsBookingPortal(http.Controller):
