@@ -4,6 +4,7 @@ import { CharField, charField } from "@web/views/fields/char/char_field";
 import { registry } from "@web/core/registry";
 import { onMounted, onWillUnmount } from "@odoo/owl";
 import { useService } from "@web/core/utils/hooks";
+import { loadGoogleMaps } from "./google_maps_loader";
 
 const SUPPORTED_COUNTRIES = ["ca", "us"];
 
@@ -153,7 +154,7 @@ export class GooglePlacesChar extends CharField {
             );
             if (!key) return;
 
-            await this._loadPlacesAPI(key);
+            await loadGoogleMaps(key, { libraries: "places" });
 
             const input = this.input?.el;
             if (!input || !window.google?.maps?.places) return;
@@ -184,31 +185,6 @@ export class GooglePlacesChar extends CharField {
         }
     }
 
-    _loadPlacesAPI(key) {
-        if (window.google?.maps?.places) return Promise.resolve();
-        if (window._gmapPending) {
-            return new Promise(resolve => window._gmapPending.push(resolve));
-        }
-        return new Promise((resolve, reject) => {
-            window._gmapPending = [resolve];
-            const cbName = "_gm_board_cb";
-            if (!window[cbName]) {
-                window[cbName] = () => {
-                    delete window[cbName];
-                    (window._gmapPending || []).forEach(fn => fn());
-                    window._gmapPending = null;
-                };
-                const s = document.createElement("script");
-                s.async = true;
-                s.src = `https://maps.googleapis.com/maps/api/js?key=${key}&libraries=places&callback=${cbName}`;
-                s.onerror = reject;
-                document.head.appendChild(s);
-            } else {
-                // Script already loading; just queue our resolve
-                window._gmapPending.push(resolve);
-            }
-        });
-    }
 }
 
 // Odoo's field registry expects a descriptor object ({component,

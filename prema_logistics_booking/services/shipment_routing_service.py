@@ -53,6 +53,15 @@ class ShipmentRoutingService:
         except TypeError:
             self.env = env
 
+    # ── Region normalization ──────────────────────────────────────────
+
+    def _canonical_region(self, region):
+        """Normalize any region reference (old lane region 1-20 or new
+        official LTL region 142-159) to the canonical official-LTL record
+        via RegionResolver. Returns an empty recordset when unresolvable."""
+        from ..services.region_resolver import RegionResolver
+        return RegionResolver(self.env).canonical_region(region)
+
     # ── Public API ───────────────────────────────────────────────────
 
     def plan_route(self, pickup_lat, pickup_lng, delivery_lat, delivery_lng,
@@ -129,8 +138,15 @@ class ShipmentRoutingService:
                                  "NO_DELIVERY_REGION", [], pallets, weight_lbs,
                                  None, snapshot)
 
-        origin_region = pickup_result.matched_region
-        dest_region = delivery_result.matched_region
+        # Canonicalize through the region bridge: the polygon resolver
+        # returns official-LTL regions (142-159); any old lane region
+        # (1-20) handed in by a caller is normalized here too.
+        origin_region = region_resolver.canonical_region(pickup_result.matched_region)
+        dest_region = region_resolver.canonical_region(delivery_result.matched_region)
+        if not origin_region or not dest_region:
+            return ShipmentRoute(False, "Could not canonicalize resolved regions.",
+                                 "NO_CANONICAL_REGION", [], pallets, weight_lbs,
+                                 None, snapshot)
 
         # ── Step 3: Determine pickup day ───────────────────────────
         if requested_pickup_date:
@@ -303,8 +319,10 @@ class ShipmentRoutingService:
         if not delivery_result.matched_region:
             return []
 
-        origin = pickup_result.matched_region
-        dest = delivery_result.matched_region
+        origin = region_resolver.canonical_region(pickup_result.matched_region)
+        dest = region_resolver.canonical_region(delivery_result.matched_region)
+        if not origin or not dest:
+            return []
         hub = self._get_default_hub()
 
         # Check routing decision
@@ -374,6 +392,10 @@ class ShipmentRoutingService:
                     pallets, weight_lbs, equipment):
         """Quick-probe leg feasibility for a candidate pickup date. Returns
         dict with corridor/departure info if feasible, or empty dict."""
+        origin = self._canonical_region(origin)
+        dest = self._canonical_region(dest)
+        if not origin or not dest:
+            return {}
         result = {}
 
         if routing.decision == "DIRECT_ALLOWED":
@@ -473,6 +495,11 @@ class ShipmentRoutingService:
 
     def _is_valid_pickup_day(self, region, day_name):
         """Check if any corridor serving this region operates on the given day."""
+        # Corridor stops are keyed by official-LTL region (142-159);
+        # normalize old lane regions (1-20) before searching.
+        region = self._canonical_region(region)
+        if not region:
+            return False
         Corridor = self.env["logistics.corridor"]
         Stop = self.env["logistics.corridor.stop"]
         day_field = f"operate_{day_name.lower()}"
@@ -505,6 +532,11 @@ class ShipmentRoutingService:
 
     def _next_departure_after(self, after_date, dest_region):
         """Find the next departure serving the destination region."""
+        # Corridor stops are keyed by official-LTL region (142-159);
+        # normalize old lane regions (1-20) before searching.
+        dest_region = self._canonical_region(dest_region)
+        if not dest_region:
+            return None
         Departure = self.env["logistics.corridor.departure"]
         Stop = self.env["logistics.corridor.stop"]
         Corridor = self.env["logistics.corridor"]
@@ -534,6 +566,18 @@ class ShipmentRoutingService:
                    pallets, weight_lbs, pickup_date, pickup_day, equipment,
                    transfer_hub, pickup_lat, pickup_lng, delivery_lat, delivery_lng):
         """Build a ProposedLeg with corridor, departure, distance, and price."""
+        from ..services.region_resolver import RegionResolver
+
+        # Normalize both endpoints through the region bridge: corridor
+        # stops are keyed by official-LTL regions (142-159) while lanes
+        # are keyed by old regions (1-20).
+        origin_region = self._canonical_region(origin_region)
+        dest_region = self._canonical_region(dest_region)
+        if not origin_region or not dest_region:
+            return None
+        region_bridge = RegionResolver(self.env)
+        lanes = region_bridge.matching_lanes(origin_region, dest_region)
+
         Corridor = self.env["logistics.corridor"]
         Stop = self.env["logistics.corridor.stop"]
         Departure = self.env["logistics.corridor.departure"]
@@ -558,11 +602,19 @@ class ShipmentRoutingService:
             ("departure_date", "=", date_str),
         ], limit=1)
 
-        # Estimate distance (straight-line with road factor)
+        # Estimate distance (straight-line with road factor). When the
+        # endpoint coordinates are missing, fall back to the old-region
+        # lane's estimated road distance — the bridge's first concrete
+        # lane-based data point in corridor routing.
         import math
-        dx = (delivery_lng - pickup_lng) * 111.32 * math.cos(math.radians((pickup_lat + delivery_lat) / 2))
-        dy = (delivery_lat - pickup_lat) * 111.32
-        est_km = math.sqrt(dx**2 + dy**2) * 1.4  # road factor
+        if pickup_lat and pickup_lng and delivery_lat and delivery_lng:
+            dx = (delivery_lng - pickup_lng) * 111.32 * math.cos(math.radians((pickup_lat + delivery_lat) / 2))
+            dy = (delivery_lat - pickup_lat) * 111.32
+            est_km = math.sqrt(dx**2 + dy**2) * 1.4  # road factor
+        elif lanes and lanes[0].road_km:
+            est_km = lanes[0].road_km
+        else:
+            est_km = 0.0
 
         # Pricing
         rate_per_km = corridor.rate_per_km if corridor else 4.0

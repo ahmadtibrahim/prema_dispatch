@@ -281,6 +281,8 @@ class LogisticsSavedLocationsPortal(http.Controller):
             ("country_id.code", "=", "CA"),
         ], order="name")
 
+        api_key = request.env["ir.config_parameter"].sudo().get_param("google_maps_api_key", "")
+
         return request.render("prema_logistics_booking.portal_saved_location_form_enhanced", {
             "error": error,
             "location": None,
@@ -288,6 +290,7 @@ class LogisticsSavedLocationsPortal(http.Controller):
             "return_to": return_to,
             "states": states,
             "editing": False,
+            "google_api_key": api_key,
         })
 
     # ── Edit ──────────────────────────────────────────────────────────
@@ -357,6 +360,8 @@ class LogisticsSavedLocationsPortal(http.Controller):
             ("country_id.code", "=", "CA"),
         ], order="name")
 
+        api_key = request.env["ir.config_parameter"].sudo().get_param("google_maps_api_key", "")
+
         return request.render("prema_logistics_booking.portal_saved_location_form_enhanced", {
             "error": error,
             "location": loc,
@@ -364,6 +369,7 @@ class LogisticsSavedLocationsPortal(http.Controller):
             "return_to": "",
             "states": states,
             "editing": True,
+            "google_api_key": api_key,
         })
 
     # ── Archive ───────────────────────────────────────────────────────

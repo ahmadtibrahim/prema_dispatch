@@ -1,13 +1,27 @@
 """Canonical geographic region resolver for Prema Logistics.
 
-Single authority for matching a latitude/longitude coordinate to a
-Premafirm Service Region via Shapely point-in-polygon.
+Two responsibilities, one authority:
 
-All Odoo components MUST use this service instead of independently
-implementing polygon logic.
+1. POINT-IN-POLYGON matching — match a latitude/longitude coordinate to a
+   Premafirm Service Region via Shapely. All Odoo components MUST use this
+   service instead of independently implementing polygon logic.
+
+2. DETERMINISTIC REGION BRIDGE — normalize between the two disconnected
+   region systems in production:
+     OLD regions (IDs 1-10, 16-20; codes R1..R15) — logistics.lane,
+       service offerings, lane schedules, rate plans, corridor
+       start_hub/end_hub FKs
+     NEW official LTL regions (IDs 142-159; codes R-NIA..R-KAW) —
+       logistics.corridor.stop, logistics.direct.delivery.rule,
+       is_official_ltl_region = true
+   corridor_lane_rel is empty, so the bridge below is the read-only glue
+   that lets corridor routing reach lane-based pricing.
 
 Input:   latitude, longitude, optional country/province filters
+         — or any region-ish reference (old/new region, FSA/postal, city,
+           saved location, hub, corridor stop)
 Output:  matched region, method, candidates, ambiguity status, reason
+         — or the canonical official-LTL region record
 
 Uses Shapely 2.1.2 (already installed in venv-18).
 """
@@ -15,6 +29,7 @@ Uses Shapely 2.1.2 (already installed in venv-18).
 import hashlib
 import json
 import logging
+import re
 from collections import namedtuple
 
 from shapely.geometry import Point, shape
@@ -49,8 +64,104 @@ NO_MATCH = RegionMatch(
 )
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# Region bridge — old-lane regions (1-20) ↔ official LTL regions (142-159)
+#
+# Two disconnected region systems coexist in production:
+#   OLD (IDs 1-10, 16-20; codes R1..R15) — logistics.lane, service
+#       offerings, lane schedules, rate plans, corridor start_hub/end_hub
+#       FKs, logistics.fsa
+#   NEW (IDs 142-159; codes R-NIA..R-KAW) — logistics.corridor.stop,
+#       logistics.direct.delivery.rule, is_official_ltl_region = true
+#
+# corridor_lane_rel is EMPTY (0 rows), so the pricing engine cannot bridge
+# corridor routing to lane-based pricing. These constants ARE the bridge —
+# deterministic, read-only. The mapping is based on geographic overlap /
+# name match; regions without an approved polygon (old 2, 4, 9, 16, 19)
+# map by geography/name.
+#
+# For many-to-many relationships (one old region spans several new ones),
+# OLD_TO_NEW_PRIMARY holds the resolver's FIRST/primary choice; the full
+# sets are documented in OLD_TO_NEW_FULL.
+# ═══════════════════════════════════════════════════════════════════════════
+
+OLD_TO_NEW_PRIMARY = {
+    1: 144,   # GTA Central            → R-GTA  (Greater Toronto Area)
+    2: 148,   # Southwest Ontario      → R-WAT  (Waterloo and Wellington) + regions west
+    3: 143,   # Golden Horseshoe South → R-HAM  (Hamilton, Halton and Brant)
+    4: 147,   # Central Ont / Grey-Br  → R-HDW  (Headwaters)
+    5: 149,   # East-Central Ontario   → R-NOR  (Northumberland)
+    6: 150,   # Eastern Ontario        → R-SEO  (Southeastern Ontario)
+    7: 157,   # Ottawa Valley          → R-OTT  (Ottawa Region)
+    8: 151,   # Greater Montreal       → R-MON  (Montérégie)
+    9: 153,   # Central Quebec         → R-CDQ  (Centre-du-Québec)
+    10: 154,  # Quebec City Region     → R-QUE  (Québec city and area)
+    16: 150,  # Eastern Ontario East   → R-SEO  (Southeastern Ontario)
+    17: 157,  # Ottawa Valley (R12)    → R-OTT  (Ottawa Region)
+    18: 151,  # Greater Montreal (R13) → R-MON  (Montérégie)
+    19: 153,  # Central Quebec (R14)   → R-CDQ  (Centre-du-Québec)
+    20: 154,  # Quebec City (R15)      → R-QUE  (Québec city and area)
+}
+
+# Full old → new sets (documented; a single old region may cover several
+# official LTL regions).
+OLD_TO_NEW_FULL = {
+    1: [144, 145, 146],   # R-GTA, R-YRK, R-DUR
+    2: [148],             # R-WAT + regions west (not yet created in prod)
+    3: [143, 142],        # R-HAM, R-NIA
+    4: [147],             # R-HDW
+    5: [149, 159],        # R-NOR, R-KAW
+    6: [150],             # R-SEO
+    7: [157, 158],        # R-OTT, R-HAL
+    8: [151, 152],        # R-MON, R-LAV
+    9: [153],             # R-CDQ
+    10: [154, 155],       # R-QUE, R-CHA
+    16: [150],            # R-SEO
+    17: [157, 158],       # R-OTT, R-HAL
+    18: [151, 152],       # R-MON, R-LAV
+    19: [153],            # R-CDQ
+    20: [154, 155],       # R-QUE, R-CHA
+}
+
+# Inverse: canonical region → primary old region (function, not a set).
+# R-SEO (150) is shared by old R6 and R11 → primary old is 6 (R11 maps in
+# as a secondary via NEW_TO_OLD_FULL). R-BSL (156) has no old equivalent.
+NEW_TO_OLD_PRIMARY = {
+    142: 3, 143: 3,                 # R-NIA, R-HAM → Golden Horseshoe South
+    144: 1, 145: 1, 146: 1,         # R-GTA, R-YRK, R-DUR → GTA Central
+    147: 4,                         # R-HDW → Central Ontario / Grey-Bruce
+    148: 2,                         # R-WAT → Southwest Ontario
+    149: 5, 159: 5,                 # R-NOR, R-KAW → East-Central Ontario
+    150: 6,                         # R-SEO → Eastern Ontario (R11 secondary)
+    151: 8, 152: 8,                 # R-MON, R-LAV → Greater Montreal
+    153: 9,                         # R-CDQ → Central Quebec
+    154: 10, 155: 10,               # R-QUE, R-CHA → Quebec City Region
+    157: 7, 158: 7,                 # R-OTT, R-HAL → Ottawa Valley
+}
+
+# Inverse full sets: canonical region → every old region it covers.
+NEW_TO_OLD_FULL = {
+    142: [3], 143: [3],
+    144: [1], 145: [1], 146: [1],
+    147: [4],
+    148: [2],
+    149: [5], 159: [5],
+    150: [6, 16],
+    151: [8, 18], 152: [8, 18],
+    153: [9, 19],
+    154: [10, 20], 155: [10, 20],
+    156: [],  # R-BSL (Bas-Saint-Laurent) — no old-region equivalent
+    157: [7, 17], 158: [7, 17],
+}
+
+
 class RegionResolver:
-    """Resolve a coordinate to a Premafirm Service Region.
+    """Deterministic bridge between old-lane regions (1-20) and
+    new-official LTL regions (142-159).
+
+    Also resolves a coordinate to a Premafirm Service Region via Shapely
+    point-in-polygon. Both capabilities share one service so every Odoo
+    component normalizes region IDs through the same authority.
 
     Usage::
 
@@ -58,6 +169,10 @@ class RegionResolver:
         result = resolver.resolve(lat=43.2, lng=-79.8)
         if result.matched_region:
             print(result.matched_region.code)
+
+        canonical = resolver.canonical_region("L5M")        # → R-GTA record
+        old_id = resolver.map_new_to_old(canonical.id)      # → 1
+        lanes = resolver.matching_lanes(canonical, dest)    # old-region lanes
     """
 
     def __init__(self, env):
@@ -66,6 +181,7 @@ class RegionResolver:
         except TypeError:
             self.env = env
         self._geometry_cache = {}  # keyed by (region_id, checksum)
+        self._region_cache = {}    # region id → logistics.region record (request-scoped)
 
     # ── Public API ───────────────────────────────────────────────────
 
@@ -568,3 +684,307 @@ class RegionResolver:
                     continue
 
         return overlaps
+
+    # ═══════════════════════════════════════════════════════════════════
+    # Region bridge — canonical region resolution (old ↔ new)
+    #
+    # THE single entry point for normalizing region references between
+    # the old lane region system (IDs 1-20) and the official LTL region
+    # system (IDs 142-159). Read-only: never modifies region data.
+    # ═══════════════════════════════════════════════════════════════════
+
+    def canonical_region(self, location):
+        """Resolve ANY region-ish reference to the canonical official-LTL
+        ``logistics.region`` record (IDs 142-159).
+
+        Accepts:
+          - ``logistics.region`` record or ID (old 1-20 or new 142-159)
+          - ``logistics.saved.location`` record (override/detected region,
+            then postal, then city)
+          - ``prema.dispatch.location``, ``logistics.hub``,
+            ``logistics.fsa``, ``logistics.corridor.stop``,
+            ``logistics.booking.stop`` records
+          - FSA or full postal code string ("L5M", "L5M 2C3")
+          - region code string ("R1" .. "R15", "R-GTA")
+          - city name string ("Mississauga", "Montréal")
+
+        Returns an EMPTY recordset when nothing resolvable is found —
+        callers must never assume a match.
+        """
+        region = self._location_to_region(location)
+        if not region:
+            return self.env["logistics.region"]
+        canonical_id = self._bridge_region_id(region.id)
+        if not canonical_id:
+            return self.env["logistics.region"]
+        return self._region_by_id(canonical_id)
+
+    def map_old_to_new(self, old_region_id):
+        """Return the PRIMARY new region ID (142-159) for an old region
+        ID (1-20). Canonical IDs pass through unchanged. Returns False for
+        unknown/unmapped IDs."""
+        rid = self._as_region_id(old_region_id)
+        if rid in OLD_TO_NEW_PRIMARY:
+            return OLD_TO_NEW_PRIMARY[rid]
+        if rid in NEW_TO_OLD_PRIMARY:
+            return rid
+        return False
+
+    def map_new_to_old(self, new_region_id):
+        """Return the PRIMARY old region ID (1-20) for a new/canonical
+        region ID (142-159). Old IDs pass through unchanged. Returns False
+        for unknown/unmapped IDs (e.g. R-BSL / 156)."""
+        rid = self._as_region_id(new_region_id)
+        if rid in NEW_TO_OLD_PRIMARY:
+            return NEW_TO_OLD_PRIMARY[rid]
+        if rid in OLD_TO_NEW_PRIMARY:
+            return rid
+        return False
+
+    def resolve_lane_for_corridor_stop(self, corridor_stop):
+        """Find the appropriate old-region lane for a corridor stop.
+
+        The stop's ``region_id`` is a NEW region (142-159) while lanes are
+        keyed by OLD regions (1-20). Resolution order:
+          1. Exact lane on the corridor's deprecated start_hub/end_hub
+             old-region FKs (either direction)
+          2. Any active lane touching the stop's mapped old region,
+             preferring a lane whose other endpoint is the corridor's
+             opposite old hub region
+          3. Any active lane touching the stop's old region
+
+        Returns an EMPTY recordset when nothing matches.
+        """
+        Lane = self.env["logistics.lane"].sudo()
+        stop = corridor_stop
+        if not (hasattr(stop, "_name") and stop._name == "logistics.corridor.stop"):
+            stop = self.env["logistics.corridor.stop"].sudo().browse(int(stop or 0))
+        if not stop or not stop.exists():
+            return Lane
+
+        corridor = stop.corridor_id
+        stop_old = self.map_new_to_old(stop.region_id.id) if stop.region_id else False
+        if not stop_old:
+            return Lane
+
+        # 1. Exact corridor hub-pair lanes (legacy old-region FKs)
+        if corridor and corridor.start_hub_id and corridor.end_hub_id:
+            pair = (corridor.start_hub_id.id, corridor.end_hub_id.id)
+            for a, b in (pair, (pair[1], pair[0])):
+                lane = Lane.search([
+                    ("origin_region_id", "=", a),
+                    ("destination_region_id", "=", b),
+                    ("active", "=", True),
+                ], limit=1)
+                if lane:
+                    return lane
+
+        # 2+3. Lanes touching this stop's old region
+        lanes = Lane.search([
+            "|",
+            ("origin_region_id", "=", stop_old),
+            ("destination_region_id", "=", stop_old),
+            ("active", "=", True),
+        ])
+        if not lanes:
+            return Lane
+        other_old = False
+        if corridor:
+            if corridor.start_hub_id and corridor.start_hub_id.id != stop_old:
+                other_old = corridor.start_hub_id.id
+            elif corridor.end_hub_id and corridor.end_hub_id.id != stop_old:
+                other_old = corridor.end_hub_id.id
+        if other_old:
+            preferred = lanes.filtered(
+                lambda l: (l.destination_region_id.id if l.origin_region_id.id == stop_old
+                           else l.origin_region_id.id) == other_old
+            )
+            if preferred:
+                return preferred[:1]
+        return lanes[:1]
+
+    def matching_lanes(self, origin_region, dest_region):
+        """Find all ACTIVE ``logistics.lane`` records (keyed by OLD region
+        IDs) serving the movement between two canonical regions.
+
+        Both endpoints are run through :meth:`canonical_region`, then
+        expanded to their full old-region ID sets (e.g. R-SEO ← R6 + R11)
+        so lanes on any historical region pair are found.
+        """
+        origin = self.canonical_region(origin_region)
+        dest = self.canonical_region(dest_region)
+        if not origin or not dest:
+            return self.env["logistics.lane"]
+        old_origins = NEW_TO_OLD_FULL.get(origin.id) or [self.map_new_to_old(origin.id)]
+        old_dests = NEW_TO_OLD_FULL.get(dest.id) or [self.map_new_to_old(dest.id)]
+        old_origins = [oid for oid in old_origins if oid]
+        old_dests = [oid for oid in old_dests if oid]
+        if not old_origins or not old_dests:
+            return self.env["logistics.lane"]
+        return self.env["logistics.lane"].sudo().search([
+            ("origin_region_id", "in", old_origins),
+            ("destination_region_id", "in", old_dests),
+            ("active", "=", True),
+        ], order="road_km")
+
+    # ── Bridge internals ──────────────────────────────────────────────
+
+    def _location_to_region(self, location):
+        """Reduce any location-ish input to a logistics.region record
+        (old OR new — not yet canonicalized)."""
+        if location is None or location is False or location == 0:
+            return self.env["logistics.region"]
+        if hasattr(location, "_name"):
+            model = location._name
+            if model == "logistics.region":
+                return location if location.exists() else self.env["logistics.region"]
+            if model == "logistics.saved.location":
+                if location.override_region_id:
+                    return location.override_region_id
+                if location.detected_region_id:
+                    return location.detected_region_id
+                if location.postal_code:
+                    return self._postal_to_region(location.postal_code)
+                if location.city:
+                    return self._city_to_region(location.city)
+                return self.env["logistics.region"]
+            if model == "logistics.hub":
+                return location.canonical_region_id or self.env["logistics.region"]
+            if model == "logistics.fsa":
+                return location.region_id or self.env["logistics.region"]
+            if model == "logistics.corridor.stop":
+                return location.region_id or self.env["logistics.region"]
+            if model in ("logistics.booking.stop", "logistics.pricing.session.stop"):
+                postal = location.postal_zip or location.postal_code or ""
+                if postal:
+                    return self._postal_to_region(postal)
+                if location.city:
+                    return self._city_to_region(location.city)
+                return self.env["logistics.region"]
+            if model == "prema.dispatch.location":
+                if location.postal_code:
+                    return self._postal_to_region(location.postal_code)
+                if location.city:
+                    return self._city_to_region(location.city)
+                return self.env["logistics.region"]
+            # Generic record fallback: any model carrying postal/city fields
+            try:
+                if location._fields.get("postal_code") and location.postal_code:
+                    return self._postal_to_region(location.postal_code)
+                if location._fields.get("city") and location.city:
+                    return self._city_to_region(location.city)
+            except Exception:
+                pass
+            return self.env["logistics.region"]
+        if isinstance(location, (int, str)):
+            text = str(location).strip()
+            if text.isdigit():
+                rid = int(text)
+                return self._region_by_id(rid) if rid else self.env["logistics.region"]
+            return self._string_to_region(text)
+        return self.env["logistics.region"]
+
+    def _string_to_region(self, text):
+        """Resolve a string: region code → FSA/postal → city name."""
+        original = str(text).strip()
+        upper = original.upper()
+        if not upper:
+            return self.env["logistics.region"]
+        # 1. Region code — new-style (R-GTA) or legacy (R1..R15).
+        #    Legacy regions are archived (active=False), so the implicit
+        #    active filter must be disabled for code lookups.
+        if re.match(r"^R-[A-Z]{3}$", upper) or re.match(r"^R\d{1,2}$", upper):
+            region = self.env["logistics.region"].sudo().with_context(
+                active_test=False,
+            ).search([("code", "=ilike", upper)], limit=1)
+            if region:
+                return region
+        # 2. FSA / postal code — bare 3-char FSA ("L5M") or full postal
+        #    ("L5M 2C3", "L5M2C3")
+        compact = re.sub(r"[\s\-]", "", upper)
+        if re.match(r"^[A-Z]\d[A-Z]", compact):
+            region = self._postal_to_region(compact)
+            if region:
+                return region
+        # 3. City name
+        return self._city_to_region(original)
+
+    def _postal_to_region(self, postal):
+        """Resolve an FSA or full postal code to its mapped region."""
+        cleaned = re.sub(r"[\s\-]", "", str(postal or "")).upper()
+        fsa_code = cleaned[:3]
+        if not re.match(r"^[A-Z]\d[A-Z]$", fsa_code):
+            return self.env["logistics.region"]
+        fsa = self.env["logistics.fsa"].sudo().search(
+            [("fsa", "=", fsa_code)], limit=1)
+        if fsa and fsa.region_id:
+            return fsa.region_id
+        return self.env["logistics.region"]
+
+    def _city_to_region(self, city):
+        """Resolve a city name to a region via logistics.city, saved
+        locations, then region main_city."""
+        name = str(city or "").strip()
+        if not name:
+            return self.env["logistics.region"]
+        cities = self.env["logistics.city"].sudo().search(
+            [("name", "=ilike", name)], limit=5)
+        for city_rec in cities:
+            if city_rec.region_id:
+                return city_rec.region_id
+        locs = self.env["logistics.saved.location"].sudo().search(
+            [("city", "=ilike", name)], limit=5)
+        for loc in locs:
+            if loc.detected_region_id:
+                return loc.detected_region_id
+        # Fallback: region main_city (new regions), hub_name (old regions),
+        # then region name itself.
+        Region = self.env["logistics.region"].sudo().with_context(active_test=False)
+        region = Region.search([("main_city", "=ilike", name)], limit=1)
+        if not region:
+            region = Region.search([("hub_name", "=ilike", name)], limit=1)
+        if not region:
+            region = Region.search([("name", "=ilike", name)], limit=1)
+        return region or self.env["logistics.region"]
+
+    def _bridge_region_id(self, region_id):
+        """Map any known region ID to its canonical official-LTL ID
+        (142-159). Returns False for unknown or unmapped IDs."""
+        if not region_id:
+            return False
+        rid = int(region_id)
+        if rid in NEW_TO_OLD_PRIMARY:
+            return rid  # already canonical
+        if rid in OLD_TO_NEW_PRIMARY:
+            return OLD_TO_NEW_PRIMARY[rid]
+        rec = self._region_by_id(rid)
+        if rec and rec.is_official_ltl_region:
+            return rid  # canonical by flag
+        return False
+
+    def _region_by_id(self, region_id):
+        """Sudo-read a logistics.region record with request-level caching."""
+        if not region_id:
+            return self.env["logistics.region"]
+        rid = int(region_id)
+        if rid in self._region_cache:
+            return self._region_cache[rid]
+        rec = self.env["logistics.region"].sudo().browse(rid)
+        rec = rec if rec.exists() else self.env["logistics.region"]
+        self._region_cache[rid] = rec
+        return rec
+
+    @staticmethod
+    def _as_region_id(ref):
+        """Reduce a region record / numeric ID / numeric string to an
+        integer region ID; returns False otherwise."""
+        if ref is None or ref is False:
+            return False
+        if hasattr(ref, "_name") and ref._name == "logistics.region":
+            return int(ref.id) if ref.id and isinstance(ref.id, int) else False
+        if isinstance(ref, int):
+            return int(ref)
+        text = str(ref).strip()
+        if text.isdigit():
+            return int(text)
+        return False

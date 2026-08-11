@@ -4,6 +4,7 @@ import { Component, useState, onMounted, onWillUnmount, useRef } from "@odoo/owl
 import { registry } from "@web/core/registry";
 import { useService } from "@web/core/utils/hooks";
 import { PalletLayoutPanel } from "./pallet_layout";
+import { loadGoogleMaps } from "./google_maps_loader";
 
 const BOARD_START_HOUR = 6;
 const BOARD_END_HOUR   = 22;
@@ -1043,7 +1044,7 @@ export class DispatchBoard extends Component {
         }
         try {
             const apiKey = await this.orm.call("ir.config_parameter", "get_param", ["google_maps_api_key"]);
-            await this._loadGoogleMaps(apiKey || "");
+            await loadGoogleMaps(apiKey || "", { libraries: "places,geometry" });
             const G = window.google.maps;
             this._map = new G.Map(el, {
                 center:          { lat: 43.65, lng: -79.38 },
@@ -1070,25 +1071,6 @@ export class DispatchBoard extends Component {
         } catch (e) {
             console.warn("Board map init failed:", e);
         }
-    }
-
-    _loadGoogleMaps(apiKey) {
-        if (window.google?.maps?.places) return Promise.resolve();
-        return new Promise((resolve, reject) => {
-            if (window._gmapPending) { window._gmapPending.push(resolve); return; }
-            window._gmapPending = [resolve];
-            const cbName = "_gm_board_cb";
-            window[cbName] = () => {
-                delete window[cbName];
-                (window._gmapPending || []).forEach(fn => fn());
-                window._gmapPending = null;
-            };
-            const s = document.createElement("script");
-            s.async = true;
-            s.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&libraries=places,geometry&callback=${cbName}`;
-            s.onerror = reject;
-            document.head.appendChild(s);
-        });
     }
 
     async selectTruckOnMap(truck) {

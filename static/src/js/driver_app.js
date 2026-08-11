@@ -50,6 +50,17 @@ const isMaps = () => !!window.google?.maps;
 const GMAPS_KEY = document.getElementById("app")?.dataset.gmapsKey || "";
 const DISPATCH_PHONE = document.getElementById("app")?.dataset.dispatchPhone || "";
 const DISPATCH_VOIP_URI = document.getElementById("app")?.dataset.dispatchVoipUri || "";
+
+// ── Google Maps: canonical loader ──────────────────────────────────
+// The backend asset bundle (google_maps_loader.js, loaded in <head> by
+// web.layout) exposes window.loadGoogleMaps before this script runs. Kick
+// the load off immediately so maps are ready before the first screen
+// renders; waitForDriverMapsReady() below polls for the same readiness.
+if (window.loadGoogleMaps && GMAPS_KEY) {
+    window.loadGoogleMaps(GMAPS_KEY, { libraries: "places,geometry" }).catch((e) => {
+        console.warn("Google Maps load failed — running without maps:", e);
+    });
+}
 const DRIVER_PLACE_FIELDS = ["name", "formatted_address", "geometry", "address_components", "place_id"];
 function streetViewUrl(lat,lng){
     if(!GMAPS_KEY||!lat||!lng)return "";

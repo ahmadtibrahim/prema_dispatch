@@ -3,6 +3,7 @@ import { Component, onMounted, onWillStart, onWillUnmount, useRef, useState } fr
 import { useService } from "@web/core/utils/hooks";
 import { standardActionServiceProps } from "@web/webclient/actions/action_service";
 import { registry } from "@web/core/registry";
+import { loadGoogleMaps } from "@prema_dispatch/js/google_maps_loader";
 
 const CORRIDOR_COLORS = [
     "#3366CC", "#DC3912", "#FF9900", "#109618", "#990099",
@@ -40,7 +41,7 @@ class WhereWeGoAction extends Component {
                     const defaultHub = data.hubs.find(h => h.is_default) || data.hubs[0];
                     this.state.selectedHubId = defaultHub.id;
                 }
-                await this._loadGoogleMaps(this.state.googleApiKey);
+                await loadGoogleMaps(this.state.googleApiKey);
             } catch (error) {
                 this.state.mapError = error.message || "Google Maps could not load.";
             }
@@ -50,23 +51,8 @@ class WhereWeGoAction extends Component {
     }
 
     // ═══════════════════════════════════════════════════════════════
-    // Google Maps loading
+    // Google Maps loading — canonical loader (google_maps_loader.js)
     // ═══════════════════════════════════════════════════════════════
-    _loadGoogleMaps(apiKey) {
-        if (window.google?.maps) return Promise.resolve();
-        if (!apiKey) return Promise.reject(new Error("Google Maps API key not configured."));
-        if (window.__premaGoogleMapsPromise) return window.__premaGoogleMapsPromise;
-        window.__premaGoogleMapsPromise = new Promise((resolve, reject) => {
-            const cb = `premaWWG_${Date.now()}`;
-            window[cb] = () => { delete window[cb]; resolve(); };
-            const s = document.createElement("script");
-            s.async = true; s.defer = true;
-            s.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(apiKey)}&callback=${cb}`;
-            s.onerror = () => reject(new Error("Google Maps could not load."));
-            document.head.appendChild(s);
-        });
-        return window.__premaGoogleMapsPromise;
-    }
 
     _initializeMap() {
         if (!this.mapRef.el || !window.google?.maps) return;

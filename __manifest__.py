@@ -161,11 +161,18 @@ A full in-app user manual is available from the Prema Dispatch app menu.
             "prema_dispatch/static/src/xml/booking_status_board.xml",
             "prema_dispatch/static/src/xml/pallet_layout.xml",
             "prema_dispatch/static/src/js/dispatch_time_utils.js",
+            "prema_dispatch/static/src/js/google_maps_loader.js",
             "prema_dispatch/static/src/js/live_map.js",
             "prema_dispatch/static/src/js/pallet_layout.js",
             "prema_dispatch/static/src/js/dispatch_board.js",
             "prema_dispatch/static/src/js/booking_status_board.js",
             "prema_dispatch/static/src/js/google_places_widget.js",
+        ],
+        # The canonical loader also ships on portal pages (where-we-go map,
+        # saved-locations autocomplete) so `window.loadGoogleMaps` is
+        # available to their inline scripts.
+        "web.assets_frontend": [
+            "prema_dispatch/static/src/js/google_maps_loader.js",
         ],
     },
     "installable": True,

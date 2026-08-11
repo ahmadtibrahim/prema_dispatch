@@ -1110,6 +1110,8 @@ class BookingOrchestrationService:
         return vehicles_by_departure
 
     def _create_legs_from_snapshot(self, booking, snap, leg_snaps):
+        from ..services.region_resolver import RegionResolver
+
         Leg = self.env["logistics.booking.leg"].sudo()
         Stop = self.env["logistics.booking.stop"].sudo()
 
@@ -1158,7 +1160,7 @@ class BookingOrchestrationService:
         ).exists()
         currency = currency or booking.currency_id or self.env.company.currency_id
 
-        Region = self.env["logistics.region"].sudo()
+        region_bridge = RegionResolver(self.env)
         created_legs = self.env["logistics.booking.leg"]
         hub_stop_by_hub_id = {}
         for i, ls in enumerate(leg_snaps):
@@ -1201,16 +1203,27 @@ class BookingOrchestrationService:
             if currency:
                 frozen_price = currency.round(frozen_price)
 
-            origin_region = Region.browse(ls.get("origin_region_id") or False).exists()
-            if not origin_region:
-                origin_region = Region.search(
-                    [("code", "=", ls.get("origin_region", ""))], limit=1,
-                )
-            dest_region = Region.browse(ls.get("dest_region_id") or False).exists()
-            if not dest_region:
-                dest_region = Region.search(
-                    [("code", "=", ls.get("dest_region", ""))], limit=1,
-                )
+            # Normalize both endpoints through the region bridge: the
+            # snapshot may carry OLD lane regions (FSA-priced channels,
+            # codes R1..R15) or NEW official-LTL regions (corridor-routed
+            # channels). Legs are stored with canonical (142-159) IDs so
+            # corridor stops, direct rules, and legs share one system.
+            origin_region = region_bridge.canonical_region(
+                ls.get("origin_region_id") or ls.get("origin_region")
+            )
+            dest_region = region_bridge.canonical_region(
+                ls.get("dest_region_id") or ls.get("dest_region")
+            )
+
+            # Bridge into lane-based pricing data: attach the old-region
+            # lane served by this corridor leg when the snapshot did not
+            # freeze one (corridor_lane_rel is empty, so this is the only
+            # path from corridor routing to lanes).
+            lane_id = ls.get("lane_id", False)
+            if not lane_id and origin_region and dest_region:
+                lanes = region_bridge.matching_lanes(origin_region, dest_region)
+                if lanes:
+                    lane_id = lanes[0].id
 
             leg = Leg.create({
                 "booking_id": booking.id,
@@ -1221,7 +1234,7 @@ class BookingOrchestrationService:
                 "departure_id": ls["departure_id"],
                 "origin_region_id": origin_region.id if origin_region else False,
                 "destination_region_id": dest_region.id if dest_region else False,
-                "lane_id": ls.get("lane_id", False),
+                "lane_id": lane_id or False,
                 "offering_id": ls.get("offering_id", False),
                 "rate_plan_id": ls.get("rate_plan_id", False),
                 "rate_plan_name": ls.get("rate_plan_name", ""),

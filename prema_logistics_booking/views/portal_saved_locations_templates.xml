@@ -500,18 +500,23 @@
             </div>
         </div>
 
+        <!-- API key injected server-side (ir.config_parameter google_maps_api_key).
+             No hardcoded key, no manual script tag — the canonical
+             prema_dispatch loader (google_maps_loader.js, part of
+             web.assets_frontend) injects the Maps API exactly once. -->
+        <script type="text/javascript">window.__PREMA_GKEY__ = '<t t-esc="google_api_key or ''"/>';</script>
         <script><![CDATA[
             // ══════════════════════════════════════════════════════════════════
             // UAT-003 — Smart Saved Location Autocomplete
             // ══════════════════════════════════════════════════════════════════
 
-            // ── Load Google Maps dynamically ──
-            (function loadGoogleMaps() {
-                var gmaps = document.createElement('script');
-                gmaps.src = 'https://maps.googleapis.com/maps/api/js?key=AIzaSyALGj3dz0EYDy89J0odZscREtWGAcYkj3U&libraries=places';
-                gmaps.async = true;
-                gmaps.defer = true;
-                document.head.appendChild(gmaps);
+            // ── Load Google Maps via the canonical loader ──
+            (function loadGoogleMapsCanonical() {
+                var apiKey = window.__PREMA_GKEY__ || '';
+                if (!apiKey) return; // no key configured — autocomplete stays off
+                if (window.loadGoogleMaps) {
+                    window.loadGoogleMaps(apiKey, { libraries: 'places' }).catch(function() {});
+                }
             })();
 
             // ── Facility Name Autocomplete (UAT-003 req 1-6) ─────────────────────

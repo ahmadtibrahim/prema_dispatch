@@ -4,6 +4,7 @@ import { Component, onMounted, onWillUnmount, useRef, useState } from "@odoo/owl
 import { registry } from "@web/core/registry";
 import { useService } from "@web/core/utils/hooks";
 import { standardActionServiceProps } from "@web/webclient/actions/action_service";
+import { loadGoogleMaps } from "./google_maps_loader";
 
 // ── Colour helpers ──────────────────────────────────────────────────────────
 
@@ -111,7 +112,7 @@ export class DispatchLiveMap extends Component {
         this.state.lastRefresh = new Date().toLocaleTimeString();
 
         try {
-            await this._loadGoogleMaps(data.google_api_key || "");
+            await loadGoogleMaps(data.google_api_key || "");
         } catch (e) {
             this.state.error = "Google Maps failed to load. Check your API key.";
             return;
@@ -180,20 +181,8 @@ export class DispatchLiveMap extends Component {
     }
 
     // ── Google Maps loader ────────────────────────────────────────────────
-
-    _loadGoogleMaps(apiKey) {
-        if (window.google?.maps) return Promise.resolve();
-        return new Promise((resolve, reject) => {
-            const cbName = "_gm_cb_" + Math.random().toString(36).slice(2);
-            window[cbName] = () => { delete window[cbName]; resolve(); };
-            const s  = document.createElement("script");
-            s.async  = true;
-            s.defer  = true;
-            s.src    = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&callback=${cbName}`;
-            s.onerror = () => reject(new Error("Script load error"));
-            document.head.appendChild(s);
-        });
-    }
+    // Maps are loaded through the canonical loader (google_maps_loader.js),
+    // so the API is only ever injected once across the whole codebase.
 
     _initMap() {
         const el = this.mapRef.el;

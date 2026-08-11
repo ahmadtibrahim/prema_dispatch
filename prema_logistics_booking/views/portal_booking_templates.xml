@@ -146,18 +146,26 @@
             </div>
         </div>
     </t>
+    <!-- API key injected server-side (ir.config_parameter google_maps_api_key) -->
+    <script type="text/javascript">window.__PREMA_GKEY__ = '<t t-esc="google_maps_api_key or ''"/>';</script>
     <script><![CDATA[
         var wwgMap=null,wwgMarkers=[],wwgLines=[],wwgData=null;
         var CORRIDOR_COLORS=["#3366CC","#DC3912","#FF9900","#109618","#990099","#0099C6","#DD4477","#66AA00","#B82E2E","#316395"];
 
         function wwgPortalInit(){
-            var key=document.querySelector('meta[name="google-maps-api-key"]');
-            var apiKey=key?key.content:'';
-            if(!apiKey||!window.google){
-                var s=document.createElement('script');
-                s.src='https://maps.googleapis.com/maps/api/js?key='+encodeURIComponent(apiKey||'')+'&callback=wwgPortalMapReady';
-                s.async=true;s.defer=true;document.head.appendChild(s);
+            // No key configured → skip maps entirely. NEVER append a script
+            // tag with an empty key (it failed silently and polluted the
+            // "Google Maps included multiple times" warnings).
+            if(!wwgApiKey()) return;
+            // Canonical loader (prema_dispatch google_maps_loader.js, part of
+            // web.assets_frontend): single script tag for the whole site.
+            if(window.loadGoogleMaps){
+                window.loadGoogleMaps(wwgApiKey()).then(wwgPortalMapReady).catch(function(){});
             }else{wwgPortalMapReady();}
+        }
+
+        function wwgApiKey(){
+            return window.__PREMA_GKEY__ || '';
         }
 
         window.wwgPortalMapReady=function(){

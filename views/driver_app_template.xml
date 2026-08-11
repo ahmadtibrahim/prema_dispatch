@@ -8,7 +8,11 @@
     <meta name="theme-color" content="#1565C0"/>
     <meta name="apple-mobile-web-app-capable" content="yes"/>
     <link t-attf-href="/prema_dispatch/static/src/css/driver_app.css?v=#{cache_ver}" rel="stylesheet"/>
-    <script t-attf-src="https://maps.googleapis.com/maps/api/js?key=#{google_api_key}&amp;libraries=places,geometry" async="1" defer="1"/>
+    <!-- Google Maps loads via the canonical loader (google_maps_loader.js,
+         part of web.assets_backend, which this layout includes in <head>);
+         driver_app.js calls window.loadGoogleMaps(GMAPS_KEY, ...) at boot.
+         No static <script> tag here — that caused "Google Maps API included
+         multiple times" warnings alongside the other loaders. -->
 </t>
 <t t-set="body_classname">da-body</t>
 
