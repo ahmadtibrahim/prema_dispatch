@@ -96,20 +96,35 @@ class DispatchTrackingController(http.Controller):
         tracking_token = (kwargs.get("token") or "").strip()
 
         # Security: require token to prevent sequential-number enumeration.
-        # The tracking URL in customer emails includes ?token=...
         domain = [("tracking_number", "=", tracking_number)]
         if tracking_token:
             domain.append(("tracking_token", "=", tracking_token))
 
         job = request.env["prema.dispatch.job"].sudo().search(domain, limit=1)
+
+        # Fallback: resolve from logistics.booking.booking_number
+        # (booking number like PF-260811-000011 may not match job.tracking_number)
+        if not job:
+            booking = request.env["logistics.booking"].sudo().search(
+                [("booking_number", "=", tracking_number)], limit=1,
+            )
+            if booking and booking.dispatch_job_id:
+                job = booking.dispatch_job_id
+                # If token provided, verify it against booking
+                if tracking_token and booking.tracking_token != tracking_token:
+                    return request.render(
+                        "prema_dispatch.portal_tracking_not_found",
+                        {"tracking_number": tracking_number},
+                    )
+
         if not job:
             return request.render(
                 "prema_dispatch.portal_tracking_not_found",
                 {"tracking_number": tracking_number},
             )
-        # If no token provided, fall back to requiring the tracking token match
-        # (legacy jobs without tokens will get a not-found until tokens are backfilled)
-        if not tracking_token:
+
+        # Require token for direct dispatch-job tracking
+        if not tracking_token and not job.logistics_booking_id:
             return request.render(
                 "prema_dispatch.portal_tracking_not_found",
                 {"tracking_number": tracking_number},
