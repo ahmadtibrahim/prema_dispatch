@@ -735,8 +735,12 @@ class LogisticsBooking(models.Model):
             ("booking_id", "=", self.id), ("stop_type", "=", "delivery"),
         ], order="sequence")
 
+        # Filter out hub transfer / internal booking stops (pallet_count=0, no saved_location)
+        customer_delivery_stops = booking_delivery_stops.filtered(
+            lambda s: s.pallet_count > 0 or s.saved_location_id
+        )
         dispatch_delivery_stops = self.env["prema.dispatch.stop"]
-        for idx, bstop in enumerate(booking_delivery_stops):
+        for idx, bstop in enumerate(customer_delivery_stops):
             if created_destination and idx == 0:
                 # First delivery: update the already-created destination stop
                 created_destination.write({
