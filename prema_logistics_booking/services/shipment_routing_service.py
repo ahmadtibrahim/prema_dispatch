@@ -334,6 +334,22 @@ class ShipmentRoutingService:
             )
 
             if legs_info and legs_info.get("feasible"):
+                # Compute remaining capacity for the departure
+                remaining = 0
+                max_cap = 13
+                dep_date = legs_info.get("departure_date", date_str)
+                departure = self.env["logistics.corridor.departure"].sudo().search([
+                    ("departure_date", "=", dep_date),
+                    ("active", "=", True),
+                    ("status", "not in", ("cancelled", "completed")),
+                ], limit=1)
+                if departure and departure.vehicle_id:
+                    cap = departure.vehicle_id.pin_wheel_pallet_capacity or 13
+                    max_cap = cap
+                    peak = self.env["logistics.corridor.departure"].sudo().browse(
+                        departure.id
+                    ).peak_pallets or 0
+                    remaining = max(0, cap - peak)
                 eligible.append({
                     "date": date_str,
                     "day_name": day_name.capitalize(),
@@ -342,6 +358,8 @@ class ShipmentRoutingService:
                     "departure_date": legs_info.get("departure_date", date_str),
                     "estimated_delivery": legs_info.get("estimated_delivery", ""),
                     "leg_count": legs_info.get("leg_count", 1),
+                    "remaining_capacity": remaining,
+                    "max_capacity": max_cap,
                 })
 
             current += timedelta(days=1)
@@ -408,6 +426,11 @@ class ShipmentRoutingService:
                 leg2_pickup_date = self._next_departure_after(hub_ready, dest)
                 if not leg2_pickup_date:
                     return {}
+
+                # Max custody hold check: freight must not sit >24h before onward departure
+                hold_days = (leg2_pickup_date - hub_ready).days
+                if hold_days > 1:
+                    return {}  # reject — would hold freight >24h
 
                 leg2 = self._build_leg(
                     sequence=2, leg_type="final_mile",
