@@ -314,7 +314,23 @@ class PremaDispatchLoadPlan(models.Model):
             return existing
         if not self.get_layout_templates(vehicle_id):
             raise UserError("No layout template available for this vehicle. Create one first.")
-        self.create_load_plan(vehicle_id, operating_date, driver_id=driver_id)
+        # Authorize auto-creation for non-staff users.
+        # Dispatch staff always pass; drivers may only auto-create their
+        # own plan (driver_id must match their partner); warehouse users
+        # may auto-create for any truck (scoped by operational state).
+        from odoo.addons.prema_dispatch.services.dispatch_auth import is_dispatch_staff, get_driver_partner
+        skip_check = False
+        if is_dispatch_staff(self.env):
+            skip_check = True
+        elif self.env.user.has_group("prema_dispatch.group_dispatch_warehouse"):
+            skip_check = True
+        else:
+            driver_partner = get_driver_partner(self.env)
+            if driver_partner and driver_id and driver_partner.id == driver_id:
+                skip_check = True
+        if not skip_check:
+            raise AccessError("Not authorized to create a load plan for this vehicle.")
+        self.create_load_plan(vehicle_id, operating_date, driver_id=driver_id, _skip_staff_check=True)
         return self.search([
             ("vehicle_id", "=", vehicle_id), ("operating_date", "=", operating_date),
             ("origin_stop_id", "=", False), ("active", "=", True),
@@ -335,8 +351,9 @@ class PremaDispatchLoadPlan(models.Model):
         return self._find_or_create_plan_record(vehicle_id, operating_date).get_load_plan_for_warehouse()
 
     @api.model
-    def create_load_plan(self, vehicle_id, operating_date, layout_template_id=None, driver_id=None, origin_stop_id=None):
-        self._check_dispatch_staff_or_raise()
+    def create_load_plan(self, vehicle_id, operating_date, layout_template_id=None, driver_id=None, origin_stop_id=None, _skip_staff_check=False):
+        if not _skip_staff_check:
+            self._check_dispatch_staff_or_raise()
         if not layout_template_id:
             templates = self.get_layout_templates(vehicle_id)
             if not templates:
@@ -360,6 +377,13 @@ class PremaDispatchLoadPlan(models.Model):
         job = self.env["prema.dispatch.job"].browse(job_id)
         if not job.exists():
             raise UserError("Job not found.")
+        # Idempotent: don't create a duplicate link if this job is already
+        # on this plan (unique constraint prema_dispatch_load_plan_job_job_unique_per_plan).
+        existing = self.env["prema.dispatch.load.plan.job"].search([
+            ("load_plan_id", "=", self.id), ("job_id", "=", job.id), ("active", "=", True),
+        ], limit=1)
+        if existing:
+            return self.get_load_plan()
         self.env["prema.dispatch.load.plan.job"].create({"load_plan_id": self.id, "job_id": job.id})
         self._mark_stale("Job added to load plan")
         self._log_event("job_added", new_value={"job_id": job.id})

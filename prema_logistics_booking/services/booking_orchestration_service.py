@@ -1186,6 +1186,17 @@ class BookingOrchestrationService:
                 if is_last:
                     origin = hub_stop
 
+            if not origin or not dest:
+                raise UserError(_(
+                    "Cannot create leg %(leg)s for booking %(booking)s: "
+                    "missing %(which)s stop. The routing snapshot may be incomplete "
+                    "or missing a hub/transfer stop."
+                ) % {
+                    "leg": i + 1,
+                    "booking": booking.booking_number or booking.id,
+                    "which": "origin" if not origin else "destination",
+                })
+
             frozen_price = ls.get("price", 0.0)
             if currency:
                 frozen_price = currency.round(frozen_price)
