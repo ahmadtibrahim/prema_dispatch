@@ -909,17 +909,65 @@ class RegionResolver:
         # 3. City name
         return self._city_to_region(original)
 
+    def _disambiguate_region(self, full_new_ids, fsa_code, display_city):
+        """Pick the best canonical region from a FULL set using FSA context.
+
+        Strategy (in order):
+        1. Exact display_city ↔ main_city match
+        2. display_city keyword found in canonical region name
+           (e.g. "NIAGARA FALLS" → "Niagara Region")
+        3. FSA prefix rule for known ambiguous splits
+        """
+        city = (display_city or "").strip().upper()
+        # 1. Exact city match
+        for nid in full_new_ids:
+            rec = self._region_by_id(nid)
+            if rec and (rec.main_city or "").upper() == city:
+                return rec
+        # 2. Keyword overlap — each word in city must appear in region name
+        if city:
+            city_words = set(city.split())
+            for nid in full_new_ids:
+                rec = self._region_by_id(nid)
+                if rec:
+                    name_upper = (rec.name or "").upper()
+                    if any(w in name_upper for w in city_words if len(w) > 2):
+                        return rec
+        # 3. Known FSA prefix splits
+        fsa_prefix = (fsa_code or "")[:2].upper()
+        if fsa_prefix in ("L2",):   # Niagara Falls / St. Catharines
+            for nid in full_new_ids:
+                rec = self._region_by_id(nid)
+                if rec and "NIAGARA" in (rec.name or "").upper():
+                    return rec
+        if fsa_prefix in ("L8", "L9"):  # Hamilton / Burlington
+            for nid in full_new_ids:
+                rec = self._region_by_id(nid)
+                if rec and "HAMILTON" in (rec.name or "").upper():
+                    return rec
+        return self._region_by_id(full_new_ids[0])
+
     def _postal_to_region(self, postal):
-        """Resolve an FSA or full postal code to its mapped region."""
+        """Resolve an FSA or full postal code to its CANONICAL region.
+
+        Goes through logistics.fsa → old region_id → bridge. When an old
+        region maps to multiple canonical regions (e.g. old 3 → R-HAM +
+        R-NIA), disambiguates using display_city and FSA prefix.
+        """
         cleaned = re.sub(r"[\s\-]", "", str(postal or "")).upper()
         fsa_code = cleaned[:3]
         if not re.match(r"^[A-Z]\d[A-Z]$", fsa_code):
             return self.env["logistics.region"]
         fsa = self.env["logistics.fsa"].sudo().search(
             [("fsa", "=", fsa_code)], limit=1)
-        if fsa and fsa.region_id:
-            return fsa.region_id
-        return self.env["logistics.region"]
+        if not (fsa and fsa.region_id):
+            return self.env["logistics.region"]
+        old_id = fsa.region_id.id
+        full_new_ids = OLD_TO_NEW_FULL.get(old_id, [old_id])
+        if len(full_new_ids) == 1:
+            return self._region_by_id(full_new_ids[0])
+        return self._disambiguate_region(
+            full_new_ids, fsa_code, fsa.display_city or "")
 
     def _city_to_region(self, city):
         """Resolve a city name to a region via logistics.city, saved
