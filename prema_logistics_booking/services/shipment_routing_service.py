@@ -346,9 +346,12 @@ class ShipmentRoutingService:
                 if departure and departure.vehicle_id:
                     cap = departure.vehicle_id.pin_wheel_pallet_capacity or 13
                     max_cap = cap
-                    peak = self.env["logistics.corridor.departure"].sudo().browse(
-                        departure.id
-                    ).peak_pallets or 0
+                    # Sum physical pallets from non-cancelled bookings on this departure
+                    active_bookings = self.env["logistics.booking"].sudo().search([
+                        ("departure_id", "=", departure.id),
+                        ("state", "not in", ("cancelled", "draft")),
+                    ])
+                    peak = sum(b.physical_pallets or b.pallets for b in active_bookings)
                     remaining = max(0, cap - peak)
                 eligible.append({
                     "date": date_str,
