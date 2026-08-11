@@ -506,7 +506,11 @@
                         var input = document.getElementById('portal_required_temperature_input');
                         var reefer = select && select.value === 'reefer';
                         if (row) { row.style.display = reefer ? '' : 'none'; }
-                        if (input) { input.required = reefer; }
+                        if (input) {
+                            input.required = reefer;
+                            // Set default 15°C when Reefer is selected and value is empty
+                            if (reefer && !input.value) { input.value = '15'; }
+                        }
                     }
                 ]]></script>
                 <!-- REQUESTED PICKUP DATE -->
@@ -998,6 +1002,8 @@
             }
             if (deliveryStopCount > 1) buildPalletAllocations();
 
+            // Initialize Reefer UI on page load (not just on change)
+            togglePortalTemperature();
             // Fetch on load
             fetchEligibleDates();
             var tempSelect = document.getElementById('portal_temperature_mode');
