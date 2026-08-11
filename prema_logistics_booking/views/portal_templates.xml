@@ -621,7 +621,7 @@
                     <label class="form-check-label">Liftgate Delivery</label>
                 </div>
                 <div class="col-md-4 form-check">
-                    <input type="checkbox" class="form-check-input" name="appointment" value="1"/>
+                    <input type="checkbox" class="form-check-input" name="appointment" id="appointment_checkbox" value="1" onchange="toggleAppointmentWindow()"/>
                     <label class="form-check-label">Appointment Required</label>
                 </div>
                 <div class="col-md-4 form-check">
@@ -632,6 +632,42 @@
                     <input type="checkbox" class="form-check-input" name="same_day_requested" value="1"/>
                     <label class="form-check-label">Same-Day Express (if available)</label>
                 </div>
+
+                <!-- Appointment Window (hidden by default) -->
+                <div id="appointment_window" class="col-12 mt-3" style="display:none">
+                    <div class="card border-primary">
+                        <div class="card-header bg-primary text-white"><strong>DELIVERY APPOINTMENT WINDOW</strong></div>
+                        <div class="card-body">
+                            <div class="row mb-2">
+                                <div class="col-6"><small class="text-muted">Delivery Date</small><br/><strong id="appt_delivery_date">—</strong></div>
+                                <div class="col-6"><small class="text-muted">Timezone</small><br/><strong id="appt_timezone">—</strong></div>
+                            </div>
+                            <div class="mb-2"><small class="text-muted">Receiving Hours</small><br/><span id="appt_receiving_hours">—</span></div>
+                            <hr/>
+                            <div class="row">
+                                <div class="col-6">
+                                    <label class="form-label fw-bold">From</label>
+                                    <input type="time" id="appt_from" name="delivery_window_start_1" class="form-control" step="900"/>
+                                </div>
+                                <div class="col-6">
+                                    <label class="form-label fw-bold">To</label>
+                                    <input type="time" id="appt_to" name="delivery_window_end_1" class="form-control" step="900"/>
+                                </div>
+                            </div>
+                            <div id="appt_validation_msg" class="text-danger small mt-1" style="display:none"/>
+                            <!-- Simple visual timeline -->
+                            <div class="mt-2" id="appt_timeline" style="height:8px;background:#e9ecef;border-radius:4px;position:relative">
+                                <div id="appt_timeline_fill" style="height:100%;background:#0d6efd;border-radius:4px;position:absolute;left:0;width:0"/>
+                            </div>
+                            <div class="d-flex justify-content-between small text-muted mt-1">
+                                <span>12 AM</span><span>6 AM</span><span>12 PM</span><span>6 PM</span><span>12 AM</span>
+                            </div>
+                            <input type="hidden" name="delivery_timing_type_1" value="flexible"/>
+                            <input type="hidden" name="delivery_tz_1" value="America/Toronto"/>
+                        </div>
+                    </div>
+                </div>
+
                 <div class="col-12 mt-3">
                     <button type="submit" class="btn btn-primary btn-lg px-5">Get Price</button>
                 </div>
@@ -1008,6 +1044,87 @@
             fetchEligibleDates();
             var tempSelect = document.getElementById('portal_temperature_mode');
             if (tempSelect) tempSelect.addEventListener('change', fetchEligibleDates);
+
+            // ════════════════════════════════════════════════════════════
+            // Appointment Required Window
+            // ════════════════════════════════════════════════════════════
+            window.toggleAppointmentWindow = function() {
+                var cb = document.getElementById('appointment_checkbox');
+                var panel = document.getElementById('appointment_window');
+                var timingType = document.querySelector('input[name="delivery_timing_type_1"]');
+                if (cb && panel) {
+                    if (cb.checked) {
+                        panel.style.display = '';
+                        if (timingType) timingType.value = 'time_window';
+                        updateAppointmentInfo();
+                    } else {
+                        panel.style.display = 'none';
+                        if (timingType) timingType.value = 'flexible';
+                    }
+                }
+            };
+            function updateAppointmentInfo() {
+                var dateEl = document.getElementById('appt_delivery_date');
+                var tzEl = document.getElementById('appt_timezone');
+                var hoursEl = document.getElementById('appt_receiving_hours');
+                // Use delivery location timezone from hidden field
+                var tzField = document.querySelector('input[name="delivery_tz_1"]');
+                var tz = tzField ? tzField.value : 'America/Toronto';
+                // Friendly timezone label
+                var tzMap = {'America/Toronto':'Eastern Time (ET)','America/Vancouver':'Pacific Time (PT)','America/Edmonton':'Mountain Time (MT)','America/Winnipeg':'Central Time (CT)','America/Chicago':'Central Time (CT)','America/New_York':'Eastern Time (ET)','America/Halifax':'Atlantic Time (AT)','America/St_Johns':'Newfoundland Time (NT)'};
+                var tzFriendly = tzMap[tz] || tz;
+                if (tzEl) tzEl.textContent = tzFriendly;
+                if (hoursEl) hoursEl.textContent = 'Check with receiver'; // default if not configured
+                // Estimate delivery date: pickup date + 1 day
+                var hiddenDate = document.getElementById('requested_pickup_date');
+                if (hiddenDate && hiddenDate.value) {
+                    var pd = new Date(hiddenDate.value + 'T00:00:00');
+                    pd.setDate(pd.getDate() + 1);
+                    var days = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+                    var months = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+                    if (dateEl) dateEl.textContent = days[pd.getDay()] + ', ' + months[pd.getMonth()] + ' ' + pd.getDate() + ', ' + pd.getFullYear();
+                }
+                updateTimeline();
+            }
+            function updateTimeline() {
+                var from = document.getElementById('appt_from');
+                var to = document.getElementById('appt_to');
+                var fill = document.getElementById('appt_timeline_fill');
+                var msg = document.getElementById('appt_validation_msg');
+                if (!from || !to || !fill) return;
+                var fv = from.value, tv = to.value;
+                if (fv && tv) {
+                    var fmin = parseInt(fv.split(':')[0])*60 + parseInt(fv.split(':')[1]);
+                    var tmin = parseInt(tv.split(':')[0])*60 + parseInt(tv.split(':')[1]);
+                    if (fmin >= tmin) {
+                        if (msg) { msg.style.display = ''; msg.textContent = 'End time must be later than start time.'; }
+                        fill.style.width = '0';
+                    } else {
+                        if (msg) msg.style.display = 'none';
+                        var pctLeft = (fmin / 1440) * 100;
+                        var pctWidth = ((tmin - fmin) / 1440) * 100;
+                        fill.style.left = pctLeft + '%';
+                        fill.style.width = pctWidth + '%';
+                    }
+                }
+            }
+            // Hook From/To inputs to update timeline
+            var af = document.getElementById('appt_from'), at = document.getElementById('appt_to');
+            if (af) af.addEventListener('input', updateTimeline);
+            if (at) at.addEventListener('input', updateTimeline);
+            // Hook pickup date change to update appointment date
+            var pickupDateInput = document.getElementById('requested_pickup_date');
+            if (pickupDateInput) {
+                var origSelectDate = window.selectDate;
+                if (typeof origSelectDate === 'function') {
+                    window.selectDate = function(ds) {
+                        origSelectDate(ds);
+                        if (document.getElementById('appointment_checkbox') && document.getElementById('appointment_checkbox').checked) {
+                            updateAppointmentInfo();
+                        }
+                    };
+                }
+            }
         });
     ]]></script>
 </template>
