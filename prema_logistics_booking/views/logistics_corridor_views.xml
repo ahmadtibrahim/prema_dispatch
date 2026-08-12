@@ -134,15 +134,23 @@
                             <!-- Pallet Volume Discounts -->
                             <group string="Pallet Volume Discounts">
                                 <field name="enable_volume_discounts" widget="boolean_toggle"/>
-                                <field name="pallet_volume_tier_ids" attrs="{'invisible': [('enable_volume_discounts', '=', False)]}">
-                                    <tree editable="bottom" string="Pallet Tiers">
-                                        <field name="sequence" widget="handle"/>
+                                <field name="pallet_volume_tier_ids" attrs="{'invisible': [('enable_volume_discounts', '=', False)]}" mode="tree,form">
+                                    <tree editable="bottom" string="Pallet Tiers" default_order="min_pallets">
                                         <field name="min_pallets"/>
                                         <field name="max_pallets"/>
                                         <field name="discount_pct" string="Discount %"/>
                                         <field name="pricing_type"/>
                                         <field name="active"/>
                                     </tree>
+                                    <form>
+                                        <group>
+                                            <field name="min_pallets"/>
+                                            <field name="max_pallets"/>
+                                            <field name="discount_pct"/>
+                                            <field name="pricing_type"/>
+                                            <field name="active"/>
+                                        </group>
+                                    </form>
                                 </field>
                             </group>
 
