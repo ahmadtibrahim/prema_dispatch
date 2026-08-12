@@ -1,10 +1,18 @@
-"""Corridor-distance pricing for the scheduled LTL network.
+"""Canonical customer pricing for the scheduled corridor network.
 
-The operational Corridor is the single active authority for route topology,
-distance, $/km, planned pallets and the booking minimum.  Rate Plans remain
-readable only for historical bookings.
+Pricing authority is the configured Service Route (``logistics.corridor``).
+The engine prices the exact itinerary returned by RouteResolver / DepartureResolver,
+then applies commercial adjustments ONCE at booking level:
+
+1. transportation legs (feeder/mainline/final-mile roles)
+2. pallet-volume discount
+3. transportation minimum
+4. excess-weight charge once
+5. snapshot the exact calculation for confirmation/invoicing
+
+FTL is intentionally different from shared LTL.  An FTL shipment must resolve to
+one direct dedicated movement; a hub-transfer itinerary is not silently sold as FTL.
 """
-
 import datetime
 
 
@@ -21,7 +29,9 @@ class PricingResult:
         self.delivery_date_estimate = kwargs.get("delivery_date_estimate")
         self.price_lines = kwargs.get("price_lines", [])
         self.calculated_price = kwargs.get("calculated_price", 0.0)
-        self.route_snapshot = kwargs.get("route_snapshot", {})  # immutable at confirm
+        self.route_snapshot = kwargs.get("route_snapshot", {})
+        self.manual_review_required = kwargs.get("manual_review_required", False)
+        self.recommend_ftl = kwargs.get("recommend_ftl", False)
 
 
 class PricingService:
@@ -29,35 +39,92 @@ class PricingService:
         self.env = env(su=True)
 
     @staticmethod
+    def _round(value, currency=None):
+        return currency.round(value) if currency else round(value or 0.0, 2)
+
+    @staticmethod
     def _apply_booking_minimum(subtotal, minimum_charge, currency=None):
-        """Apply a pricing floor ONCE per booking (not once per leg).
-
-        Returns (total, adjustment_amount).
-        """
-        if currency:
-            subtotal = currency.round(subtotal)
-            minimum_charge = currency.round(minimum_charge)
-        else:
-            subtotal = round(subtotal or 0.0, 2)
-            minimum_charge = round(minimum_charge or 0.0, 2)
-
+        subtotal = PricingService._round(subtotal, currency)
+        minimum_charge = PricingService._round(minimum_charge, currency)
         if subtotal >= minimum_charge:
             return subtotal, 0.0
-
-        adjustment = minimum_charge - subtotal
-        if currency:
-            adjustment = currency.round(adjustment)
-        else:
-            adjustment = round(adjustment, 2)
+        adjustment = PricingService._round(minimum_charge - subtotal, currency)
         return minimum_charge, adjustment
+
+    @staticmethod
+    def _leg_role(index, leg_count):
+        if leg_count == 1:
+            return "mainline"
+        if index == 0:
+            return "feeder"
+        if index == leg_count - 1:
+            return "mainline" if leg_count == 2 else "final_mile"
+        return "mainline"
+
+    def _select_pricing_anchor(self, topology_legs, origin_region):
+        """Return the commercial mainline corridor, never simply 'leg 1'.
+
+        A corridor explicitly allowing the pickup region as a feeder wins.  If
+        no explicit feeder rule applies, the longest physical leg is the most
+        stable deterministic mainline fallback.
+        """
+        if len(topology_legs) == 1:
+            return topology_legs[0]["corridor"], 0
+
+        for idx, leg in enumerate(topology_legs):
+            corridor = leg["corridor"]
+            if corridor.enable_transit_pricing and origin_region in corridor.allowed_feeder_region_ids:
+                return corridor, idx
+
+        idx, leg = max(
+            enumerate(topology_legs),
+            key=lambda pair: (pair[1].get("distance_km") or 0.0, -pair[0]),
+        )
+        return leg["corridor"], idx
+
+    def _volume_discount_pct(self, corridor, pallets):
+        if not corridor.enable_volume_discounts or pallets < 2:
+            return 0.0
+        Tier = self.env["logistics.pallet.volume.tier"]
+        return max(0.0, min(100.0, Tier.get_discount_for_pallets(corridor.id, pallets)))
+
+    def _global_excess_weight_rate(self):
+        ICP = self.env["ir.config_parameter"]
+        raw = ICP.get_param("logistics.default_excess_weight_rate", "0") or "0"
+        try:
+            return max(0.0, float(raw))
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _feeder_charge(self, leg, normal_charge, mainline_corridor, pallets, currency):
+        """Apply the pricing anchor's configured feeder/final-mile policy."""
+        if not mainline_corridor.enable_transit_pricing:
+            return normal_charge, "connected_corridor"
+
+        method = mainline_corridor.feeder_pricing_method or "percentage"
+        if method == "percentage":
+            discount = max(0.0, min(100.0, mainline_corridor.feeder_discount_pct or 0.0))
+            charge = normal_charge * (1.0 - discount / 100.0)
+        elif method == "dedicated_km":
+            override_rate = mainline_corridor.feeder_rate_per_km or leg["rate_per_km"]
+            target = max(mainline_corridor.planned_pallets or leg["planned_pallets"] or 1, 1)
+            charge = (leg["distance_km"] or 0.0) * pallets * override_rate / target
+        else:  # connected_corridor
+            charge = normal_charge
+
+        charge = self._round(charge, currency)
+        feeder_min = mainline_corridor.feeder_minimum_charge or 0.0
+        if feeder_min:
+            charge = max(charge, self._round(feeder_min, currency))
+        return charge, method
 
     def calculate(self, pickup_fsa, delivery_fsa, shipment_type, temperature_mode,
                    pallets, weight_lbs, liftgate_pickup=False, liftgate_delivery=False,
                    appointment=False, residential=False, same_day_requested=False,
                    partner=None, reference_dt=None, required_temperature_c=None,
                    resolve_departures=False):
-        """Price a configured corridor itinerary and optionally freeze departures."""
-        # Validate inputs
+        del liftgate_pickup, liftgate_delivery, appointment, residential, same_day_requested
+
         if not pickup_fsa or not pickup_fsa.pickup_supported:
             return PricingResult(False, reason="pickup_fsa_not_supported")
         if not delivery_fsa or not delivery_fsa.delivery_supported:
@@ -73,18 +140,19 @@ class PricingService:
         equipment = to_canonical_temperature_mode(temperature_mode)
         if equipment == REEFER and required_temperature_c is None:
             return PricingResult(False, reason="required_temperature_c_missing")
+
         origin_region = pickup_fsa.region_id
         destination_region = delivery_fsa.region_id
         topology_legs = []
         pickup_date = delivery_date = None
+
         if resolve_departures:
             from .departure_resolver import DepartureResolver
-            dep_resolver = DepartureResolver(self.env)
             earliest = (
                 reference_dt.date() if hasattr(reference_dt, "date")
                 else reference_dt or datetime.date.today()
             )
-            resolution = dep_resolver.resolve(
+            resolution = DepartureResolver(self.env).resolve(
                 origin_region, destination_region, equipment, pallets, weight_lbs,
                 earliest_pickup_date=earliest,
             )
@@ -111,103 +179,188 @@ class PricingService:
                 return PricingResult(False, reason=route.reason)
             topology_legs = route.legs
 
-        leg_snapshots = []
-        all_lines = []
-        currency = self.env["res.currency"].browse(
-            topology_legs[0]["currency_id"]
-        ).exists() or self.env.company.currency_id
+        if not topology_legs:
+            return PricingResult(False, reason="no_pricing_legs")
 
-        # Booking minimum: corridor min + optional endpoint region overrides
-        mins = [
-            (leg.get("minimum_booking_charge") or 0.0) for leg in topology_legs
-            if isinstance(leg, dict)
-        ]
-        try:
-            mins.append(origin_region.minimum_booking_charge or 0.0)
-            mins.append(destination_region.minimum_booking_charge or 0.0)
-        except Exception:
-            # Defensive: in case region model is customized/missing the field
-            pass
-        booking_minimum_charge = max(mins or [0.0])
+        currency = self.env["res.currency"].browse(topology_legs[0]["currency_id"]).exists()
+        currency = currency or self.env.company.currency_id
+        pricing_anchor, anchor_index = self._select_pricing_anchor(topology_legs, origin_region)
 
-        for index, leg in enumerate(topology_legs):
-            breakdown = self.calculate_leg_per_km(
-                leg["distance_km"], leg["rate_per_km"], leg["planned_pallets"],
-                pallets, leg["included_weight_per_pallet"], weight_lbs, currency=currency,
+        # FTL is an exclusive direct-truck product, not a renamed shared transfer.
+        threshold_hit = bool(
+            pricing_anchor.enable_ftl
+            and pricing_anchor.ftl_threshold_pallets
+            and pallets >= pricing_anchor.ftl_threshold_pallets
+        )
+        requested_ftl = shipment_type == "ftl"
+        recommend_ftl = threshold_hit and pricing_anchor.ftl_behavior == "recommend" and not requested_ftl
+        if threshold_hit and pricing_anchor.ftl_behavior == "dispatcher_approval" and not requested_ftl:
+            return PricingResult(
+                False, reason="ftl_dispatcher_approval_required",
+                manual_review_required=True, corridor=pricing_anchor,
             )
-            lines = [{
-                "label": (
-                    f"{leg['distance_km']:.1f} km × {pallets} pallet(s) × "
-                    f"${breakdown['pallet_rate_per_km']:.4f}/pallet-km"
-                ),
-                "amount": breakdown["base_leg_charge"],
-            }]
-            if breakdown["extra_weight_charge"]:
-                lines.append({"label": "Excess weight", "amount": breakdown["extra_weight_charge"]})
-            snapshot = dict(leg)
-            for non_json_key in ("corridor", "hub", "lane", "rate_plan"):
-                snapshot.pop(non_json_key, None)
+        use_ftl = requested_ftl or (threshold_hit and pricing_anchor.ftl_behavior == "auto_price")
+        if use_ftl and len(topology_legs) != 1:
+            return PricingResult(
+                False, reason="ftl_requires_dedicated_direct_service",
+                manual_review_required=True, corridor=pricing_anchor,
+            )
+        if use_ftl and not pricing_anchor.enable_ftl:
+            return PricingResult(False, reason="ftl_not_enabled_for_corridor", corridor=pricing_anchor)
+        if use_ftl and pricing_anchor.ftl_rate_per_km <= 0:
+            return PricingResult(False, reason="ftl_rate_not_configured", corridor=pricing_anchor)
+
+        leg_snapshots = []
+        price_lines = []
+        transportation_subtotal = 0.0
+
+        if use_ftl:
+            leg = topology_legs[0]
+            charge = self._round((leg["distance_km"] or 0.0) * pricing_anchor.ftl_rate_per_km, currency)
+            transportation_subtotal = max(charge, self._round(pricing_anchor.ftl_minimum_charge or 0.0, currency))
+            snapshot = self._snapshot_leg(leg, 1, pallets, weight_lbs)
             snapshot.update({
-                "sequence": index + 1,
-                "price": breakdown["subtotal"],
-                "price_lines": lines,
-                "pricing_formula": breakdown,
-                "pallets": pallets,
-                "weight_lbs": weight_lbs,
+                "leg_role": "mainline",
+                "pricing_mode": "ftl",
+                "price": transportation_subtotal,
+                "price_lines": [{
+                    "label": f"Dedicated FTL: {leg['distance_km']:.1f} km × ${pricing_anchor.ftl_rate_per_km:.2f}/km",
+                    "amount": transportation_subtotal,
+                }],
             })
             leg_snapshots.append(snapshot)
-            if len(topology_legs) > 1:
-                all_lines.append({
-                    "label": f"Leg {index + 1}: {leg['origin_region']} → {leg['dest_region']}",
-                    "amount": breakdown["subtotal"],
+            price_lines.extend(snapshot["price_lines"])
+        else:
+            for index, leg in enumerate(topology_legs):
+                role = "mainline" if index == anchor_index else self._leg_role(index, len(topology_legs))
+                breakdown = self.calculate_leg_per_km(
+                    leg["distance_km"], leg["rate_per_km"], leg["planned_pallets"],
+                    pallets, leg["included_weight_per_pallet"], 0.0, currency=currency,
+                )
+                normal_charge = breakdown["base_leg_charge"]
+                pricing_method = "corridor_per_km"
+                charge = normal_charge
+                if index != anchor_index:
+                    charge, pricing_method = self._feeder_charge(
+                        leg, normal_charge, pricing_anchor, pallets, currency,
+                    )
+                transportation_subtotal += charge
+                line = {
+                    "label": (
+                        f"{role.replace('_', ' ').title()}: {leg['distance_km']:.1f} km × "
+                        f"{pallets} pallet(s)"
+                    ),
+                    "amount": charge,
+                }
+                snapshot = self._snapshot_leg(leg, index + 1, pallets, weight_lbs)
+                snapshot.update({
+                    "leg_role": role,
+                    "pricing_mode": pricing_method,
+                    "price": charge,
+                    "price_lines": [line],
+                    "pricing_formula": breakdown,
                 })
-            all_lines.extend(lines)
+                leg_snapshots.append(snapshot)
+                price_lines.append(line)
 
-        subtotal = currency.round(sum(leg["price"] for leg in leg_snapshots))
-        total, minimum_adjustment = self._apply_booking_minimum(
-            subtotal, booking_minimum_charge, currency=currency,
-        )
-        if minimum_adjustment:
-            leg_snapshots[-1]["price"] = currency.round(leg_snapshots[-1]["price"] + minimum_adjustment)
-            leg_snapshots[-1]["price_lines"].append({
-                "label": "Minimum booking adjustment", "amount": minimum_adjustment,
+            transportation_subtotal = self._round(transportation_subtotal, currency)
+
+            # Volume tiers are a BOOKING-level commercial discount based on
+            # physical pallet count; never apply per leg or per stop allocation.
+            discount_pct = self._volume_discount_pct(pricing_anchor, pallets)
+            discount_amount = self._round(
+                transportation_subtotal * discount_pct / 100.0, currency,
+            )
+            discounted_transport = self._round(transportation_subtotal - discount_amount, currency)
+            if discount_amount:
+                price_lines.append({
+                    "label": f"Pallet volume discount ({discount_pct:g}%)",
+                    "amount": -discount_amount,
+                })
+
+            minimum_candidates = [leg.get("minimum_booking_charge") or 0.0 for leg in topology_legs]
+            minimum_candidates.extend([
+                origin_region.minimum_booking_charge or 0.0,
+                destination_region.minimum_booking_charge or 0.0,
+            ])
+            booking_minimum = max(minimum_candidates or [0.0])
+            transportation_subtotal, minimum_adjustment = self._apply_booking_minimum(
+                discounted_transport, booking_minimum, currency,
+            )
+            if minimum_adjustment:
+                price_lines.append({
+                    "label": "Minimum transportation charge adjustment",
+                    "amount": minimum_adjustment,
+                })
+        
+        # Excess weight is intentionally charged once for the shipment, not
+        # once on every transfer leg.
+        included_weight_per_pallet = pricing_anchor.included_weight_per_pallet or 0.0
+        included_weight = pallets * included_weight_per_pallet
+        excess_weight = max(0.0, weight_lbs - included_weight)
+        excess_rate = pricing_anchor.excess_weight_rate_per_lb or self._global_excess_weight_rate()
+        excess_charge = self._round(excess_weight * excess_rate, currency)
+        if excess_charge:
+            price_lines.append({
+                "label": f"Excess weight: {excess_weight:,.0f} lb × ${excess_rate:.2f}/lb",
+                "amount": excess_charge,
             })
-            all_lines.append({"label": "Minimum booking adjustment", "amount": minimum_adjustment})
+
+        total = self._round(transportation_subtotal + excess_charge, currency)
 
         if leg_snapshots and leg_snapshots[0].get("departure_date"):
             pickup_date = datetime.date.fromisoformat(leg_snapshots[0]["pickup_date"])
             delivery_date = datetime.date.fromisoformat(leg_snapshots[-1]["delivery_date"])
 
         transfer_hub_id = next((leg.get("hub_id") for leg in leg_snapshots if leg.get("hub_id")), False)
-
         route_snapshot = {
             "legs": leg_snapshots,
             "leg_count": len(leg_snapshots),
             "calculated_price": total,
+            "transportation_subtotal": transportation_subtotal,
             "pallets": pallets,
+            "physical_pallets": pallets,
             "weight_lbs": weight_lbs,
+            "included_weight_lbs": included_weight,
+            "excess_weight_lbs": excess_weight,
+            "excess_weight_rate_per_lb": excess_rate,
+            "excess_weight_charge": excess_charge,
             "temperature_mode": equipment,
             "required_temperature_c": required_temperature_c,
-            "shipment_type": shipment_type,
+            "shipment_type": "ftl" if use_ftl else "ltl",
             "transfer_hub_id": transfer_hub_id,
-            "minimum_booking_charge": booking_minimum_charge,
-            "pricing_authority": "corridor_per_km",
+            "pricing_anchor_corridor_id": pricing_anchor.id,
+            "pricing_anchor_corridor_name": pricing_anchor.name,
+            "pricing_authority": "corridor_v2",
+            "recommend_ftl": recommend_ftl,
         }
 
-        primary_corridor = topology_legs[0]["corridor"]
         return PricingResult(
             True,
-            corridor=primary_corridor,
+            corridor=pricing_anchor,
             lane=False,
             service_offering=False,
             rate_plan=False,
             schedule=False,
             pickup_date=pickup_date,
             delivery_date_estimate=delivery_date,
-            price_lines=all_lines,
+            price_lines=price_lines,
             calculated_price=total,
             route_snapshot=route_snapshot,
+            recommend_ftl=recommend_ftl,
         )
+
+    @staticmethod
+    def _snapshot_leg(leg, sequence, pallets, weight_lbs):
+        snapshot = dict(leg)
+        for non_json_key in ("corridor", "hub", "lane", "rate_plan"):
+            snapshot.pop(non_json_key, None)
+        snapshot.update({
+            "sequence": sequence,
+            "pallets": pallets,
+            "weight_lbs": weight_lbs,
+        })
+        return snapshot
 
     @staticmethod
     def _priced_leg_source(segment, hub=None, departure=None, vehicle=None):
@@ -260,29 +413,13 @@ class PricingService:
     def calculate_leg_per_km(self, distance_km, rate_per_km, target_pallets,
                               booked_pallets, included_weight_per_pallet,
                               actual_weight_lbs, currency=None):
-        """Canonical per-km pricing formula for one booking leg.
+        """Base corridor math for one physical leg.
 
-        D = chargeable road distance in km
-        R = configured truck target rate in $/km
-        T = target pallets (default 8)
-        P = booked pallets
-        I = included weight per pallet (default 500 lb)
-        W = actual shipment weight
-
-        Pallet rate per km = R / T
-        Base leg charge = D × P × R / T
-        Weight rate per lb/km = R / (T × I)
-        Shipment included weight = P × I
-        Extra weight = MAX(0, W − P × I)
-        Extra weight charge = Extra weight × D × Weight rate per lb/km
-        Leg subtotal = Base leg charge + Extra weight charge
-
-        Uses Odoo currency rounding if currency is provided, otherwise
-        falls back to 2-decimal Python rounding.
-
-        Returns dict with all intermediate values.
+        ``actual_weight_lbs`` is accepted for API compatibility, but the
+        booking-level engine intentionally does not levy excess-weight here.
+        Callers using this helper directly still receive the intermediate
+        excess-weight values for diagnostics only.
         """
-        # Reject invalid configuration — do not silently default
         if target_pallets <= 0:
             raise ValueError("target_pallets must be positive")
         if included_weight_per_pallet <= 0:
@@ -297,27 +434,12 @@ class PricingService:
         D = distance_km
         P = max(booked_pallets, 0)
         W = max(actual_weight_lbs, 0.0)
-
         pallet_rate_per_km = rate_per_km / T
         base_leg_charge = D * P * pallet_rate_per_km
-
-        weight_rate_per_lb_km = rate_per_km / (T * I)
         shipment_included_weight = P * I
         extra_weight = max(0.0, W - shipment_included_weight)
-        extra_weight_charge = extra_weight * D * weight_rate_per_lb_km
 
-        subtotal = base_leg_charge + extra_weight_charge
-
-        # Use Odoo currency rounding when available, fall back to Python round
-        if currency:
-            base_leg_charge = currency.round(base_leg_charge)
-            extra_weight_charge = currency.round(extra_weight_charge)
-            subtotal = currency.round(subtotal)
-        else:
-            base_leg_charge = round(base_leg_charge, 2)
-            extra_weight_charge = round(extra_weight_charge, 2)
-            subtotal = round(subtotal, 2)
-
+        base_leg_charge = self._round(base_leg_charge, currency)
         return {
             "distance_km": D,
             "rate_per_km": rate_per_km,
@@ -327,23 +449,14 @@ class PricingService:
             "actual_weight_lbs": W,
             "pallet_rate_per_km": round(pallet_rate_per_km, 6),
             "base_leg_charge": base_leg_charge,
-            "weight_rate_per_lb_km": round(weight_rate_per_lb_km, 8),
             "shipment_included_weight": shipment_included_weight,
             "extra_weight_lbs": round(extra_weight, 2),
-            "extra_weight_charge": extra_weight_charge,
-            "subtotal": subtotal,
+            "extra_weight_charge": 0.0,
+            "subtotal": base_leg_charge,
             "pricing_method": "per_km_distance",
         }
 
     def calculate_itinerary_price(self, legs_data):
-        """Sum per-km leg charges for a multi-leg itinerary.
-
-        legs_data: list of dicts, each with keys:
-            distance_km, rate_per_km, target_pallets, booked_pallets,
-            included_weight_per_pallet, actual_weight_lbs
-
-        Returns total subtotal across all legs.
-        """
         total = 0.0
         leg_results = []
         for leg in legs_data:
@@ -355,6 +468,3 @@ class PricingService:
             "leg_count": len(leg_results),
             "total_subtotal": round(total, 2),
         }
-
-    # calculate_simple() and suggest_revenue_target() were removed. Corridors
-    # are the sole active pricing authority; no legacy DEFAULT_TARGETS fallback.
