@@ -33,6 +33,7 @@ invoice, canonical physical pallets and physical dispatch operations.
         "views/logistics_city_views.xml",
         "views/logistics_daily_local_views.xml",
         "views/logistics_corridor_views.xml",
+        "views/logistics_corridor_connection_views.xml",
         "views/logistics_service_level_views.xml",
         "views/logistics_service_offering_views.xml",
         "views/logistics_holiday_calendar_views.xml",
