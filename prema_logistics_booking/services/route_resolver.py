@@ -1,9 +1,11 @@
-"""Resolve configured corridor topology without creating a second route authority.
+"""Canonical network topology resolver.
 
-Corridors own movement, stop order, direction, distance and customer $/km
-pricing.  Technical ``logistics.lane`` and historical Rate Plans remain in
-the database only so old bookings keep their references; new resolution does
-not read them.
+Service Routes (``logistics.corridor``) and their Ordered Regions are the only
+live routing authority.  A movement stays on the same truck whenever origin
+and destination are valid in travel order.  Hub transfer is considered only
+when the two corridor movements are explicitly connected through configured
+feeder/final-mile policy; the resolver never invents a transfer merely because
+two routes happen to touch the same hub.
 """
 from collections import namedtuple
 
@@ -16,12 +18,9 @@ ResolvedRoute = namedtuple(
 
 VALID_SHIPMENT_TYPES = {"ltl", "ftl"}
 VALID_EQUIPMENT = {DRY, REEFER}
-LEGACY_CHILLED_FROZEN = {"chilled", "frozen"}
 
 
 class RouteResolver:
-    """Find a direct corridor segment or a proven two-leg hub connection."""
-
     def __init__(self, env):
         try:
             self.env = env(su=True)
@@ -30,7 +29,7 @@ class RouteResolver:
 
     def resolve(self, pickup_fsa, delivery_fsa, pallets, weight_lbs,
                 equipment="dry", partner=None, shipment_type="ltl", reference_dt=None):
-        del partner, reference_dt  # Corridor pricing is intentionally customer-independent.
+        del partner, reference_dt
         equipment = to_canonical_temperature_mode(equipment)
         if shipment_type not in VALID_SHIPMENT_TYPES:
             return ResolvedRoute(False, "invalid_shipment_type", [], pallets, weight_lbs)
@@ -48,10 +47,12 @@ class RouteResolver:
         direct = self.resolve_regions(origin, destination)
         if not direct.available:
             return ResolvedRoute(False, direct.reason, [], pallets, weight_lbs)
+        if shipment_type == "ftl" and len(direct.legs) != 1:
+            return ResolvedRoute(False, "ftl_requires_dedicated_direct_service", [], pallets, weight_lbs)
         return ResolvedRoute(True, None, direct.legs, pallets, weight_lbs)
 
     def resolve_regions(self, origin_region, destination_region):
-        """Topology-only resolution used by pricing, departures and the map."""
+        """Topology-only resolution: direct first, then explicit hub connection."""
         direct = self._best_direct_segment(origin_region, destination_region)
         if direct:
             return ResolvedRoute(True, None, [self._leg_dict(direct)], 0, 0.0)
@@ -67,24 +68,68 @@ class RouteResolver:
                 continue
             first = self._best_direct_segment(origin_region, hub_region)
             second = self._best_direct_segment(hub_region, destination_region)
-            if first and second:
-                transfer_candidates.append((first["distance_km"] + second["distance_km"], hub, first, second))
-        if not transfer_candidates:
-            return ResolvedRoute(False, "no_configured_corridor", [], 0, 0.0)
+            if not first or not second:
+                continue
+            if not self._connection_allowed(
+                first["corridor"], second["corridor"],
+                origin_region, destination_region,
+            ):
+                continue
+            transfer_candidates.append((
+                first["distance_km"] + second["distance_km"],
+                not hub.is_default,
+                hub.id,
+                first["corridor"].id,
+                second["corridor"].id,
+                hub, first, second,
+            ))
 
-        _, hub, first, second = min(
-            transfer_candidates,
-            key=lambda candidate: (candidate[0], not candidate[1].is_default, candidate[1].id),
-        )
+        if not transfer_candidates:
+            return ResolvedRoute(False, "no_configured_corridor_connection", [], 0, 0.0)
+
+        *_sort, hub, first, second = min(transfer_candidates)
         return ResolvedRoute(True, None, [
             self._leg_dict(first, hub=hub),
             self._leg_dict(second, hub=hub),
         ], 0, 0.0)
 
+    @staticmethod
+    def _connection_allowed(first_corridor, second_corridor, origin_region, destination_region):
+        """Require an explicit operational relationship between two movements.
+
+        Supported configuration paths intentionally reuse fields already in the
+        database so this refactor is migration-safe:
+
+        * first.feeds_corridor_id == second
+        * second mainline enables transit pricing and explicitly allows the
+          shipment origin region as a feeder region
+        * first mainline enables transit pricing and explicitly allows the
+          final destination region for a final-mile connection
+
+        Paired return service by itself is NOT a transfer relationship.
+        """
+        if first_corridor == second_corridor:
+            return False
+        if first_corridor.feeds_corridor_id == second_corridor:
+            return True
+        if (
+            second_corridor.enable_transit_pricing
+            and origin_region in second_corridor.allowed_feeder_region_ids
+        ):
+            return True
+        if (
+            first_corridor.enable_transit_pricing
+            and destination_region in first_corridor.allowed_feeder_region_ids
+        ):
+            return True
+        return False
+
     def configured_destinations(self, origin_region):
-        """All regions reachable from an origin, regardless of live capacity."""
         destinations = self.env["logistics.region"]
-        for region in self.env["logistics.region"].search([("active", "=", True)]):
+        for region in self.env["logistics.region"].search([
+            ("active", "=", True),
+            ("is_official_ltl_region", "=", True),
+        ]):
             if region != origin_region and self.resolve_regions(origin_region, region).available:
                 destinations |= region
         return destinations
@@ -96,7 +141,6 @@ class RouteResolver:
             segment = corridor.resolve_region_segment(origin_region, destination_region)
             if not segment:
                 continue
-            # Allow intra-region (distance 0) segments for local corridors.
             if origin_region == destination_region or (segment.get("distance_km") or 0) > 0:
                 segments.append(segment)
         return segments
@@ -105,6 +149,8 @@ class RouteResolver:
         segments = self._candidate_segments(origin_region, destination_region)
         if not segments:
             return False
+        # Ordered-regions topology decides eligibility.  Once eligible, choose
+        # the fastest configured service, then shortest travelled distance.
         return min(segments, key=lambda segment: (
             segment["delivery_day_offset"] - segment["pickup_day_offset"],
             segment["distance_km"],
@@ -137,7 +183,6 @@ class RouteResolver:
             "hub_id": hub.id if hub else False,
             "hub_name": hub.public_name if hub else "",
             "hub_location_id": hub.saved_location_id.id if hub and hub.saved_location_id else False,
-            # Compatibility keys intentionally empty for historical columns.
             "lane": False,
             "lane_id": False,
             "offering_id": False,
@@ -148,6 +193,5 @@ class RouteResolver:
         }
 
     def find_rate_plan_for_regions(self, *args, **kwargs):
-        """Deprecated compatibility API: new pricing never resolves a Rate Plan."""
         del args, kwargs
         return self.env["logistics.rate.plan"]
