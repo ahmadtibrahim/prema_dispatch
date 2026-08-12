@@ -111,27 +111,72 @@
                             </field>
                         </page>
                         <page string="Customer Pricing">
-                            <div class="alert alert-info" role="alert">
-                                Corridor pricing is the only active LTL pricing source. The $150 minimum is applied once per complete booking, including hub transfers.
-                            </div>
-                            <group>
+                            <!-- LTL Base Pricing -->
+                            <group string="LTL Base Pricing">
                                 <group string="Inputs">
                                     <field name="rate_per_km" string="$ / km"/>
                                     <field name="planned_pallets"/>
                                     <field name="included_weight_per_pallet"/>
                                     <field name="minimum_booking_charge" widget="monetary"/>
+                                    <field name="excess_weight_rate_per_lb" string="Excess Weight $ / lb"/>
                                     <field name="currency_id" invisible="1"/>
                                 </group>
                                 <group string="Calculated">
                                     <field name="pallet_rate_per_km" string="$ / km per Pallet" readonly="1"/>
                                     <field name="full_distance_km" readonly="1"/>
-                                    <field name="destination_hub_distance_km" readonly="1" invisible="not destination_hub_id"/>
+                                    <div class="text-muted" colspan="2">
+                                        Full Corridor Revenue Target is informational only — not used for customer pricing.
+                                    </div>
                                     <field name="full_revenue_target" widget="monetary" readonly="1"/>
                                 </group>
                             </group>
-                            <div class="text-muted">
-                                Customer leg price = distance × booked pallets × ($/km ÷ planned pallets), plus excess weight when applicable.
-                            </div>
+
+                            <!-- Pallet Volume Discounts -->
+                            <group string="Pallet Volume Discounts">
+                                <field name="enable_volume_discounts" widget="boolean_toggle"/>
+                                <field name="pallet_volume_tier_ids" attrs="{'invisible': [('enable_volume_discounts', '=', False)]}">
+                                    <tree editable="bottom" string="Pallet Tiers">
+                                        <field name="sequence" widget="handle"/>
+                                        <field name="min_pallets"/>
+                                        <field name="max_pallets"/>
+                                        <field name="discount_pct" string="Discount %"/>
+                                        <field name="pricing_type"/>
+                                        <field name="active"/>
+                                    </tree>
+                                </field>
+                            </group>
+
+                            <!-- Full Truckload -->
+                            <group string="Full Truckload">
+                                <field name="enable_ftl" widget="boolean_toggle"/>
+                                <group attrs="{'invisible': [('enable_ftl', '=', False)]}">
+                                    <group>
+                                        <field name="ftl_threshold_pallets"/>
+                                        <field name="ftl_rate_per_km" string="FTL $ / km"/>
+                                        <field name="ftl_minimum_charge" widget="monetary"/>
+                                    </group>
+                                    <group>
+                                        <field name="ftl_reserve_entire_truck"/>
+                                        <field name="ftl_behavior" string="When threshold reached"/>
+                                    </group>
+                                </group>
+                            </group>
+
+                            <!-- Transit / Feeder Pricing -->
+                            <group string="Transit / Feeder Pricing">
+                                <field name="enable_transit_pricing" widget="boolean_toggle"/>
+                                <group attrs="{'invisible': [('enable_transit_pricing', '=', False)]}">
+                                    <group>
+                                        <field name="feeder_pricing_method" string="Pricing Method"/>
+                                        <field name="feeder_discount_pct" string="Feeder Discount %" attrs="{'invisible': [('feeder_pricing_method', '!=', 'percentage')]}"/>
+                                        <field name="feeder_rate_per_km" string="Feeder $/km Override" attrs="{'invisible': [('feeder_pricing_method', '!=', 'dedicated_km')]}"/>
+                                        <field name="feeder_minimum_charge" widget="monetary"/>
+                                    </group>
+                                    <group string="Allowed Feeder Regions">
+                                        <field name="allowed_feeder_region_ids" widget="many2many_tags"/>
+                                    </group>
+                                </group>
+                            </group>
                         </page>
                     </notebook>
                 </sheet>

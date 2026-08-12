@@ -149,6 +149,46 @@ class LogisticsCorridor(models.Model):
     )
     truck_capacity = fields.Integer(string="Truck Capacity [DEPRECATED]", default=12)
 
+    # ── Phase 3: Customer Pricing ───────────────────────────────────
+    excess_weight_rate_per_lb = fields.Float(
+        string="Excess Weight $ / lb",
+        default=0.10,
+        help="Charge per pound over included weight. Corridor override; "
+             "falls back to global default (Dispatch Settings) if 0.",
+    )
+    enable_volume_discounts = fields.Boolean(string="Enable Volume Discounts")
+    pallet_volume_tier_ids = fields.One2many(
+        "logistics.pallet.volume.tier", "corridor_id", string="Pallet Volume Tiers",
+        copy=True,
+    )
+    enable_ftl = fields.Boolean(string="Enable FTL")
+    ftl_threshold_pallets = fields.Integer(
+        string="FTL Threshold", default=10,
+        help="Physical pallets at or above this count trigger FTL pricing.",
+    )
+    ftl_rate_per_km = fields.Float(string="FTL $ / km", default=0.0)
+    ftl_minimum_charge = fields.Monetary(string="Minimum FTL Charge", default=0.0)
+    ftl_reserve_entire_truck = fields.Boolean(string="Reserve Entire Truck", default=True)
+    ftl_behavior = fields.Selection([
+        ("recommend", "Recommend FTL"),
+        ("auto_price", "Automatically Price as FTL"),
+        ("dispatcher_approval", "Dispatcher Approval Required"),
+    ], string="FTL Threshold Behavior", default="auto_price")
+    enable_transit_pricing = fields.Boolean(string="Enable Transit / Feeder Pricing")
+    feeder_pricing_method = fields.Selection([
+        ("percentage", "Percentage Discount"),
+        ("dedicated_km", "Dedicated Feeder $/km"),
+        ("connected_corridor", "Connected Corridor Rate"),
+    ], string="Feeder Pricing Method", default="percentage")
+    feeder_discount_pct = fields.Float(string="Feeder Discount %", default=0.0)
+    feeder_rate_per_km = fields.Float(string="Feeder $/km Override", default=0.0)
+    feeder_minimum_charge = fields.Monetary(string="Minimum Feeder Charge", default=0.0)
+    allowed_feeder_region_ids = fields.Many2many(
+        "logistics.region", "corridor_feeder_region_rel",
+        "corridor_id", "region_id", string="Allowed Feeder Regions",
+        domain="[('is_official_ltl_region', '=', True), ('active', '=', True)]",
+    )
+
     # ── Equipment (absorbed from route.template) ────────────────────
     equipment_profile_id = fields.Many2one(
         "logistics.equipment.profile", string="Equipment Requirement",

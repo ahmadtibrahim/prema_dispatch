@@ -17,6 +17,7 @@ from . import logistics_holiday_calendar
 from . import logistics_lane_schedule
 from . import logistics_rate_plan
 from . import logistics_rate_tier
+from . import logistics_pallet_volume_tier
 from . import logistics_fsa_rate_adjustment
 from . import logistics_surcharge_type
 from . import logistics_customer_rate

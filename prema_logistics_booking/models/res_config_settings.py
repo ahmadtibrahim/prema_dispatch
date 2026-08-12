@@ -77,6 +77,16 @@ class ResConfigSettings(models.TransientModel):
         help="Zero-rated tax for qualifying international freight shipments.",
     )
 
+    # ── Phase 3: Default excess weight rate ──────────────────────────
+
+    logistics_default_excess_weight_rate = fields.Float(
+        string="Default Excess Weight $ / lb",
+        config_parameter="logistics.default_excess_weight_rate",
+        default=0.10,
+        help="Global default excess weight charge per pound. Individual "
+             "corridors can override this on their Customer Pricing tab.",
+    )
+
     # ── Validation ──────────────────────────────────────────────────────
 
     @api.model
