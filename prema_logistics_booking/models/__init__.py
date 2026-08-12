@@ -29,6 +29,7 @@ from . import logistics_booking_leg
 from . import logistics_booking
 from . import account_move_booking
 from . import logistics_corridor
+from . import logistics_corridor_connection
 from . import dispatch_job_extension
 from . import logistics_route_run
 from . import logistics_route_template
