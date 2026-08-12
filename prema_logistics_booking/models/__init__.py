@@ -38,3 +38,5 @@ from . import logistics_daily_local
 from . import res_partner_logistics
 from . import res_config_settings
 from . import logistics_hub
+# Must load after both commercial and dispatch models so its overrides are final.
+from . import flow_refactor
