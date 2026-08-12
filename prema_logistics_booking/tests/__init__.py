@@ -10,3 +10,4 @@ from . import test_ordered_lane_pricing
 from . import test_pricing_integration
 from . import test_where_we_go
 from . import test_v5_dispatch_unification
+from . import test_flow_refactor
