@@ -1,9 +1,4 @@
-"""Pallet volume discount tiers for corridor Customer Pricing.
-
-Each corridor can have multiple non-overlapping tier ranges. A booking's
-physical pallet count determines which tier applies. Discount is applied
-ONCE per complete customer shipment, not per leg.
-"""
+"""Pallet volume discount tiers for corridor Customer Pricing."""
 from odoo import _, api, fields, models
 from odoo.exceptions import ValidationError
 
@@ -11,12 +6,10 @@ from odoo.exceptions import ValidationError
 class LogisticsPalletVolumeTier(models.Model):
     _name = "logistics.pallet.volume.tier"
     _description = "Pallet Volume Discount Tier"
-    _order = "sequence, min_pallets"
 
     corridor_id = fields.Many2one(
         "logistics.corridor", string="Corridor", required=True, ondelete="cascade",
     )
-    sequence = fields.Integer(default=10)
     min_pallets = fields.Integer(string="Min Pallets", required=True, default=2)
     max_pallets = fields.Integer(string="Max Pallets", required=True, default=3)
     discount_pct = fields.Float(string="Discount %", default=0.0)
@@ -27,11 +20,9 @@ class LogisticsPalletVolumeTier(models.Model):
     active = fields.Boolean(default=True)
 
     _sql_constraints = [
-        (
-            "check_min_max",
-            "CHECK(min_pallets >= 1 AND max_pallets >= min_pallets)",
-            "Min Pallets must be >= 1 and Max Pallets must be >= Min Pallets.",
-        ),
+        ("check_min_max",
+         "CHECK(min_pallets >= 1 AND max_pallets >= min_pallets)",
+         "Min Pallets must be >= 1 and Max Pallets must be >= Min Pallets."),
     ]
 
     @api.constrains("min_pallets", "max_pallets", "active", "corridor_id")
@@ -52,8 +43,7 @@ class LogisticsPalletVolumeTier(models.Model):
                     "Pallet range %(min)s–%(max)s overlaps with existing "
                     "active tier(s): %(tiers)s"
                 ) % {
-                    "min": tier.min_pallets,
-                    "max": tier.max_pallets,
+                    "min": tier.min_pallets, "max": tier.max_pallets,
                     "tiers": ", ".join(
                         f"{t.min_pallets}–{t.max_pallets}" for t in overlapping
                     ),
@@ -61,8 +51,6 @@ class LogisticsPalletVolumeTier(models.Model):
 
     @api.model
     def get_discount_for_pallets(self, corridor_id, physical_pallets):
-        """Return the discount_pct for a given pallet count, or 0 if no
-        tier matches. Physical count of 1 always returns 0%."""
         if physical_pallets < 2:
             return 0.0
         tier = self.search([
