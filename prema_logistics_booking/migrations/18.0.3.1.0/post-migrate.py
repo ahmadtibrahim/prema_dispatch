@@ -39,32 +39,47 @@ def migrate(cr, version):
         """, [r1_id, hub_id])
         _logger.info("  YYZ-HUB.canonical_region_id → R1 (%s)", r1_id)
 
-        # Backfill origin_hub_id where start_hub_id = R1
-        cr.execute("""
-            UPDATE logistics_corridor SET origin_hub_id = %s
-            WHERE start_hub_id = %s AND origin_hub_id IS NULL
-        """, [hub_id, r1_id])
-        _logger.info("  Backfilled %d origin_hub_id from R1→YYZ-HUB", cr.rowcount)
-
-        # Backfill destination_hub_id where end_hub_id = R1
-        cr.execute("""
-            UPDATE logistics_corridor SET destination_hub_id = %s
-            WHERE end_hub_id = %s AND destination_hub_id IS NULL
-        """, [hub_id, r1_id])
-        _logger.info("  Backfilled %d destination_hub_id from R1→YYZ-HUB", cr.rowcount)
-    else:
-        _logger.warning("R1 region or YYZ-HUB not found — skipping hub backfill")
-
-    # Log ambiguous corridors
+    # The start_hub_id/end_hub_id columns were removed in 18.0.6.0.0. On an
+    # upgrade chain through that version this post-migration runs AFTER the
+    # schema sync drops them — guard, and let the 18.0.6.0.0 pre-migrate do
+    # the hub backfill while the columns still exist.
     cr.execute("""
-        SELECT c.id, c.name, sr.code, er.code
-        FROM logistics_corridor c
-        LEFT JOIN logistics_region sr ON c.start_hub_id = sr.id
-        LEFT JOIN logistics_region er ON c.end_hub_id = er.id
-        WHERE c.origin_hub_id IS NULL OR c.destination_hub_id IS NULL
+        SELECT count(*) FROM information_schema.columns
+        WHERE table_name = 'logistics_corridor' AND column_name = 'start_hub_id'
     """)
-    for row in cr.fetchall():
-        _logger.info("  Ambiguous corridor %s (%s): start=%s end=%s — needs hub record",
-                     row[0], row[1], row[2] or 'NULL', row[3] or 'NULL')
+    if cr.fetchone()[0]:
+        if r1_row and hub_row:
+            r1_id = r1_row[0]
+            hub_id, hub_code = hub_row
+
+            # Backfill origin_hub_id where start_hub_id = R1
+            cr.execute("""
+                UPDATE logistics_corridor SET origin_hub_id = %s
+                WHERE start_hub_id = %s AND origin_hub_id IS NULL
+            """, [hub_id, r1_id])
+            _logger.info("  Backfilled %d origin_hub_id from R1→YYZ-HUB", cr.rowcount)
+
+            # Backfill destination_hub_id where end_hub_id = R1
+            cr.execute("""
+                UPDATE logistics_corridor SET destination_hub_id = %s
+                WHERE end_hub_id = %s AND destination_hub_id IS NULL
+            """, [hub_id, r1_id])
+            _logger.info("  Backfilled %d destination_hub_id from R1→YYZ-HUB", cr.rowcount)
+        else:
+            _logger.warning("R1 region or YYZ-HUB not found — skipping hub backfill")
+
+        # Log ambiguous corridors
+        cr.execute("""
+            SELECT c.id, c.name, sr.code, er.code
+            FROM logistics_corridor c
+            LEFT JOIN logistics_region sr ON c.start_hub_id = sr.id
+            LEFT JOIN logistics_region er ON c.end_hub_id = er.id
+            WHERE c.origin_hub_id IS NULL OR c.destination_hub_id IS NULL
+        """)
+        for row in cr.fetchall():
+            _logger.info("  Ambiguous corridor %s (%s): start=%s end=%s — needs hub record",
+                         row[0], row[1], row[2] or 'NULL', row[3] or 'NULL')
+    else:
+        _logger.info("  start_hub_id column gone — hub backfill handled by 18.0.6.0.0 pre-migrate")
 
     _logger.info("prema_logistics_booking 18.0.3.1.0: post-migration complete")

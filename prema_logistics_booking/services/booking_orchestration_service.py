@@ -1217,8 +1217,8 @@ class BookingOrchestrationService:
 
             # Bridge into lane-based pricing data: attach the old-region
             # lane served by this corridor leg when the snapshot did not
-            # freeze one (corridor_lane_rel is empty, so this is the only
-            # path from corridor routing to lanes).
+            # freeze one (the corridor↔lane link table was removed, so this
+            # is the only path from corridor routing to lanes).
             lane_id = ls.get("lane_id", False)
             if not lane_id and origin_region and dest_region:
                 lanes = region_bridge.matching_lanes(origin_region, dest_region)

@@ -147,16 +147,20 @@ class TestHubMigration(TransactionCase):
         self.assertTrue(hub.active, "YYZ-HUB not active")
 
     def test_03_r1_origin_corridors_have_yyz_hub(self):
-        """Every R1-origin corridor must have origin_hub_id == YYZ-HUB."""
+        """Every corridor whose first stop is R1 must have origin_hub_id == YYZ-HUB."""
         r1 = self.env['logistics.region'].search([('code', '=', 'R1')], limit=1)
         self.assertTrue(r1, "Region R1 not found")
         yyz = self.env['logistics.hub'].search([('code', '=', 'YYZ-HUB')], limit=1)
         self.assertTrue(yyz, "Hub YYZ-HUB not found")
+        # "Origin" is defined by the first ordered stop (start_hub_id removed).
         r1_corridors = self.env['logistics.corridor'].search([
-            ('start_hub_id', '=', r1.id),
+            ('stop_ids.region_id', '=', r1.id),
         ])
         self.assertTrue(r1_corridors, "No R1-origin corridors found")
         for cor in r1_corridors:
+            first = cor.stop_ids.sorted('sequence')[:1]
+            if not first.region_id == r1:
+                continue
             self.assertEqual(
                 cor.origin_hub_id, yyz,
                 f"Corridor {cor.name} origin_hub_id={cor.origin_hub_id.name!r}, "
@@ -164,14 +168,17 @@ class TestHubMigration(TransactionCase):
             )
 
     def test_04_r15_origin_corridor_has_no_hub(self):
-        """R15-origin corridor must have origin_hub_id empty — no hub exists."""
+        """R15-first-stop corridor must have origin_hub_id empty — no hub exists."""
         r15 = self.env['logistics.region'].search([('code', '=', 'R15')], limit=1)
         self.assertTrue(r15, "Region R15 not found")
         r15_corridors = self.env['logistics.corridor'].search([
-            ('start_hub_id', '=', r15.id),
+            ('stop_ids.region_id', '=', r15.id),
         ])
         self.assertTrue(r15_corridors, "No R15-origin corridors found")
         for cor in r15_corridors:
+            first = cor.stop_ids.sorted('sequence')[:1]
+            if not first.region_id == r15:
+                continue
             self.assertFalse(
                 cor.origin_hub_id,
                 f"Corridor {cor.name} has origin_hub_id={cor.origin_hub_id.name!r} "

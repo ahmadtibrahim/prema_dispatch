@@ -11,7 +11,6 @@ from . import dispatch_chat_invite_wizard
 from . import voip_call_extension
 from . import account_move_dispatch
 from . import sale_order_dispatch
-from . import booking_template
 from . import dispatch_consolidation
 from . import dispatch_crossdock
 from . import dispatch_timeline

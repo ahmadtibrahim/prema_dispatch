@@ -36,8 +36,6 @@ class TestV3Architecture(common.TransactionCase):
         cls.City = cls.env["logistics.city"]
         cls.DailyLocal = cls.env["logistics.daily.local.operation"]
         cls.Recurring = cls.env["logistics.recurring.agreement"]
-        cls.RouteRun = cls.env["logistics.route.run"]
-        cls.RouteTemplate = cls.env["logistics.route.template"]
         cls.Equipment = cls.env["logistics.equipment.profile"]
 
         # Resolve existing regions
@@ -59,7 +57,6 @@ class TestV3Architecture(common.TransactionCase):
         cor = self.Corridor
         self.assertIn("phase", cor._fields)
         self.assertIn("truck_slot", cor._fields)
-        self.assertIn("weekday", cor._fields)
         self.assertIn("start_time", cor._fields)
         self.assertIn("overnight", cor._fields)
 
@@ -71,36 +68,6 @@ class TestV3Architecture(common.TransactionCase):
         self.assertIn("departure_date", dep._fields)
         self.assertIn("status", dep._fields)
         self.assertIn("max_capacity", dep._fields)
-
-    def test_03_deprecated_route_template_still_loads(self):
-        """Deprecated route.template model still loads for backward compat."""
-        self.assertTrue(self.RouteTemplate._name)
-
-    def test_04_deprecated_route_run_still_loads(self):
-        """Deprecated route.run model still loads for backward compat."""
-        self.assertTrue(self.RouteRun._name)
-
-    @mute_logger("odoo.addons.prema_logistics_booking.models.logistics_route_template")
-    def test_05_deprecated_template_create_warns(self):
-        """Creating a route.template logs a deprecation warning but succeeds."""
-        tmpl = self.RouteTemplate.create({
-            "name": "TEST-V3-DEPRECATED-TEMPLATE",
-            "phase": 1, "truck_slot": 99, "weekday": "0",
-        })
-        self.assertTrue(tmpl.exists())
-        # Cleanup
-        tmpl.unlink()
-
-    @mute_logger("odoo.addons.prema_logistics_booking.models.logistics_route_run")
-    def test_06_deprecated_run_create_warns(self):
-        """Creating a route.run logs a deprecation warning but succeeds."""
-        run = self.RouteRun.create({
-            "run_date": datetime.date.today(),
-            "corridor_name": "TEST-V3-DEPRECATED-RUN",
-            "max_pallets": 12,
-        })
-        self.assertTrue(run.exists())
-        run.unlink()
 
     # ── ROUTING RESOLUTION TESTS ────────────────────────────────────
     # (test_10_routing_mississauga_to_montreal removed — exercised the
@@ -177,10 +144,6 @@ class TestV3Architecture(common.TransactionCase):
     def test_32_rate_plan_pricing_mode(self):
         """Rate plan has pricing_mode field (simple vs tiered)."""
         self.assertIn("pricing_mode", self.env["logistics.rate.plan"]._fields)
-
-    def test_33_region_rate_per_km(self):
-        """Region has rate_per_km for auto-suggest pricing."""
-        self.assertIn("rate_per_km", self.Region._fields)
 
     def test_34_rate_plan_is_pricing_authority(self):
         """Rate Plans are the sole pricing authority; no suggest/calculate_simple."""
@@ -348,14 +311,12 @@ class TestV3Architecture(common.TransactionCase):
         self.assertIn("departure_id", self.Booking._fields)
         self.assertIn("corridor_id", self.Booking._fields)
 
-    def test_96_recurring_has_departure_id(self):
-        """Recurring agreement links to corridor departure (V3 canonical)."""
-        self.assertIn("departure_id", self.Recurring._fields)
-        self.assertIn("corridor_id", self.Recurring._fields)
-
-    def test_97_lane_has_corridor_ids(self):
-        """Lane links to corridors via M2M."""
-        self.assertIn("corridor_ids", self.Lane._fields)
+    def test_96_recurring_links_corridors_via_bookings(self):
+        """Recurring agreement reaches corridors through its bookings'
+        canonical departure link (agreement-level legacy links removed)."""
+        self.assertIn("booking_ids", self.Recurring._fields)
+        self.assertIn("departure_id", self.Booking._fields)
+        self.assertIn("corridor_id", self.Booking._fields)
 
     def test_98_dispatch_job_has_local_operation(self):
         """Dispatch job can link to daily local operation."""
@@ -372,7 +333,6 @@ class TestV3Integration(common.TransactionCase):
         cls.Corridor = cls.env["logistics.corridor"]
         cls.Departure = cls.env["logistics.corridor.departure"]
         cls.Booking = cls.env["logistics.booking"]
-        cls.RouteRun = cls.env["logistics.route.run"]
 
     def test_capacity_engine_peak_computation(self):
         """compute_departure_peak runs without error."""
@@ -394,29 +354,14 @@ class TestV3Integration(common.TransactionCase):
         self.assertIn("reason", result)
 
 
-@tagged("post_install", "-at_install", "prema_v3_legacy")
-class TestV3LegacyCompatibility(common.TransactionCase):
-    """Verify legacy record compatibility."""
+@tagged("post_install", "-at_install", "prema_v3_booking_links")
+class TestV3BookingLinkFields(common.TransactionCase):
+    """Verify canonical booking linkage fields."""
 
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
         cls.Booking = cls.env["logistics.booking"]
-        cls.RouteRun = cls.env["logistics.route.run"]
-        cls.Corridor = cls.env["logistics.corridor"]
-
-    @mute_logger("odoo.addons.prema_logistics_booking.models.logistics_route_run")
-    def test_old_booking_route_run_still_readable(self):
-        """A booking with deprecated route_run_id still opens correctly."""
-        # Create legacy route.run
-        run = self.RouteRun.create({
-            "run_date": datetime.date.today(),
-            "corridor_name": "TEST-V3-LEGACY",
-            "max_pallets": 12, "state": "scheduled",
-        })
-        # Booking model has route_run_id as readonly FK
-        self.assertIn("route_run_id", self.Booking._fields)
-        run.unlink()
 
     def test_new_booking_uses_departure_id(self):
         """New bookings link via departure_id (V3 canonical)."""

@@ -78,13 +78,6 @@ class PremaDispatchJob(models.Model):
     booking_confirmed_at = fields.Datetime(
         string="Booking Confirmed At", readonly=True, copy=False,
     )
-    template_id = fields.Many2one(
-        "prema.dispatch.booking.template", string="Booking Template",
-        ondelete="set null", readonly=True, copy=False, index=True,
-        help="Recurring template that auto-generated this booking. "
-             "DEPRECATED — use logistics.recurring.agreement instead.",
-    )
-
     # ── Phase 13: Local Operations link ────────────────────────────
     local_operation_id = fields.Many2one(
         "logistics.daily.local.operation", string="Local Operation",
@@ -484,15 +477,13 @@ class PremaDispatchJob(models.Model):
             else:
                 job.tracking_url = False
 
-    @api.depends("invoice_id", "sale_order_id", "template_id")
+    @api.depends("invoice_id", "sale_order_id")
     def _compute_source_doc(self):
         for job in self:
             if job.invoice_id:
                 job.source_document_name = job.invoice_id.name or job.invoice_id.ref
             elif job.sale_order_id:
                 job.source_document_name = job.sale_order_id.name
-            elif job.template_id:
-                job.source_document_name = f"Template: {job.template_id.name}"
             else:
                 job.source_document_name = False
 
@@ -756,15 +747,10 @@ class PremaDispatchJob(models.Model):
         records = super().create(vals_list)
         for job in records:
             self._post_timeline(job, "booking_created")
-            if job.source_model and job.source_model != "prema.dispatch.booking.template":
+            if job.source_model:
                 self._post_timeline(
                     job, "imported_from",
                     notes=f"Imported from {job.source_document_name or job.source_model}",
-                )
-            elif job.template_id:
-                self._post_timeline(
-                    job, "imported_from",
-                    notes=f"Auto-generated from template: {job.template_id.name}",
                 )
         return records
 
@@ -2241,7 +2227,7 @@ class PremaDispatchJob(models.Model):
         feasibility_status/notes computed for that truck, assignment
         warnings, and any compatibility override — and moves the stage
         back to the pre-assignment stage (the same "Draft" stage new
-        bookings are created in, see _default_stage / booking_template.py),
+        bookings are created in, see _default_stage),
         but only while the job is still in the booking phase. A job that's
         already been dispatched to a driver keeps its stage untouched.
         """

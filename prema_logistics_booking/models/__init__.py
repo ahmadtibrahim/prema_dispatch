@@ -30,8 +30,6 @@ from . import logistics_booking
 from . import account_move_booking
 from . import logistics_corridor
 from . import dispatch_job_extension
-from . import logistics_route_run
-from . import logistics_route_template
 from . import logistics_custom_quote
 from . import logistics_recurring_agreement
 from . import logistics_daily_local

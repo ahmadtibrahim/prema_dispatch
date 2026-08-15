@@ -1,6 +1,6 @@
 # V3: Phase 1-4 Corridor + Stop loader (canonical models).
 # Run: cd /opt/odoo/odoo18 && sudo -u odoo18 python3 odoo-bin shell -c /etc/odoo18.conf -d Prod-db --no-http < this_file
-# IDEMPOTENT: uses stable business keys (phase, truck_slot, weekday, name) to avoid duplicates.
+# IDEMPOTENT: uses stable business keys (name, truck_slot) to avoid duplicates.
 
 Corridor = env["logistics.corridor"]
 CorridorStop = env["logistics.corridor.stop"]
@@ -16,26 +16,26 @@ def _load_corridor(name, direction, weekday, truck_slot, phase, overnight,
                    conditional, start_code, end_code, stops_csv, target, **extra):
     """Create or update a corridor with idempotent business-key lookup.
     stops_csv: comma-separated region codes in route order, e.g. "R1,R8,R10,R11,R13,R14,R15"
+    weekday: 0-5 legacy positional day, converted to the operate_* scheduling booleans.
     """
-    s = _r(start_code) if start_code else False
-    e = _r(end_code) if end_code else False
-
-    # Stable business key: (phase, truck_slot, weekday)
+    # Stable business key: (name, truck_slot)
     existing = Corridor.search([
-        ("phase", "=", phase), ("truck_slot", "=", truck_slot),
-        ("weekday", "=", str(weekday)),
+        ("name", "=", name), ("truck_slot", "=", truck_slot),
     ], limit=1)
 
     vals = {
         "name": name, "direction": direction, "phase": phase,
-        "truck_slot": truck_slot, "weekday": str(weekday),
-        "start_hub_id": s.id if s else False,
-        "end_hub_id": e.id if e else False,
+        "truck_slot": truck_slot,
         "overnight": overnight, "conditional": conditional,
         "min_departure_revenue": float(target) if conditional else 0.0,
         "full_revenue_target": float(target),
         "active": True,
     }
+    for idx, field_name in enumerate((
+        "operate_monday", "operate_tuesday", "operate_wednesday",
+        "operate_thursday", "operate_friday", "operate_saturday", "operate_sunday",
+    )):
+        vals[field_name] = (weekday == idx)
     vals.update(extra)
 
     if existing:

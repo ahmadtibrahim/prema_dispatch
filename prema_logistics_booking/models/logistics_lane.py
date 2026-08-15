@@ -92,11 +92,6 @@ class LogisticsLane(models.Model):
 
     via_hub_id = fields.Many2one("logistics.region", string="Via Hub", help="If set, this lane routes through a hub region (hub-and-spoke).")
 
-    # ── Corridor linkage (Phase 2) ──────────────────────────────────
-    corridor_ids = fields.Many2many("logistics.corridor", "corridor_lane_rel",
-                                    "lane_id", "corridor_id", string="Serving Corridors",
-                                    help="Operational corridors that serve this commercial lane.")
-
     phase = fields.Char(string="Phase", default="1", help="Deployment phase: 1=active, 2=planned, etc.")
     name = fields.Char(compute="_compute_name", store=True)
 

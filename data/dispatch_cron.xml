@@ -1,18 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <odoo>
-    <!-- DEPRECATED V3: Replaced by logistics_recurring_agreement cron in prema_logistics_booking.
-         Kept disabled for backward compatibility — do not re-enable. -->
-    <record id="ir_cron_dispatch_generate_bookings" model="ir.cron">
-        <field name="name">Prema Dispatch: Generate Recurring Bookings [DEPRECATED V3]</field>
-        <field name="model_id" ref="model_prema_dispatch_booking_template"/>
-        <field name="state">code</field>
-        <field name="code">model._generate_due_bookings()</field>
-        <field name="interval_number">1</field>
-        <field name="interval_type">days</field>
-        <field name="active" eval="False"/>
-        <field name="priority">10</field>
-    </record>
-
     <record id="ir_cron_dispatch_close_worksheets" model="ir.cron">
         <field name="name">Prema Dispatch: Close Completed Driver Worksheets</field>
         <field name="model_id" ref="model_prema_dispatch_driver_worksheet"/>

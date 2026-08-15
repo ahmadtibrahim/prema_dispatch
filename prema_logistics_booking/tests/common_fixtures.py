@@ -159,10 +159,9 @@ class LogisticsTestFixtures:
         if not cls.cor_quebec:
             cls.cor_quebec = env["logistics.corridor"].create({
                 "name": "TEST-Eastbound-Quebec", "direction": "eastbound",
-                "phase": 1, "truck_slot": 1, "weekday": "1",
-                "start_hub_id": cls.r1.id, "end_hub_id": cls.r8.id,
+                "phase": 1, "truck_slot": 1, "operate_tuesday": True,
                 "full_distance_km": 600.0, "full_revenue_target": 2300.0,
-                "planned_pallets": 8, "truck_capacity": 12,
+                "planned_pallets": 8,
             })
             # Create stops
             env["logistics.corridor.stop"].create([

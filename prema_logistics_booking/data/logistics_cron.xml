@@ -1,7 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <odoo>
-    <!-- V3: Recurring booking generation from logistics.recurring.agreement
-         Replaces the deprecated prema.dispatch.booking.template cron. -->
+    <!-- V3: Recurring booking generation from logistics.recurring.agreement. -->
     <record id="ir_cron_logistics_generate_recurring_bookings" model="ir.cron">
         <field name="name">Logistics: Generate Recurring Bookings (V3)</field>
         <field name="model_id" ref="model_logistics_recurring_agreement"/>

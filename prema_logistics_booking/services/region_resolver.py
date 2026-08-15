@@ -14,8 +14,8 @@ Two responsibilities, one authority:
      NEW official LTL regions (IDs 142-159; codes R-NIA..R-KAW) —
        logistics.corridor.stop, logistics.direct.delivery.rule,
        is_official_ltl_region = true
-   corridor_lane_rel is empty, so the bridge below is the read-only glue
-   that lets corridor routing reach lane-based pricing.
+   The corridor↔lane link table was removed, so the bridge below is the
+   read-only glue that lets corridor routing reach lane-based pricing.
 
 Input:   latitude, longitude, optional country/province filters
          — or any region-ish reference (old/new region, FSA/postal, city,
@@ -69,14 +69,13 @@ NO_MATCH = RegionMatch(
 #
 # Two disconnected region systems coexist in production:
 #   OLD (IDs 1-10, 16-20; codes R1..R15) — logistics.lane, service
-#       offerings, lane schedules, rate plans, corridor start_hub/end_hub
-#       FKs, logistics.fsa
+#       offerings, lane schedules, rate plans, logistics.fsa
 #   NEW (IDs 142-159; codes R-NIA..R-KAW) — logistics.corridor.stop,
 #       logistics.direct.delivery.rule, is_official_ltl_region = true
 #
-# corridor_lane_rel is EMPTY (0 rows), so the pricing engine cannot bridge
-# corridor routing to lane-based pricing. These constants ARE the bridge —
-# deterministic, read-only. The mapping is based on geographic overlap /
+# The corridor↔lane link table was removed, so the pricing engine cannot
+# bridge corridor routing to lane-based pricing. These constants ARE the
+# bridge — deterministic, read-only. The mapping is based on geographic overlap /
 # name match; regions without an approved polygon (old 2, 4, 9, 16, 19)
 # map by geography/name.
 #
@@ -740,68 +739,6 @@ class RegionResolver:
         if rid in OLD_TO_NEW_PRIMARY:
             return rid
         return False
-
-    def resolve_lane_for_corridor_stop(self, corridor_stop):
-        """Find the appropriate old-region lane for a corridor stop.
-
-        The stop's ``region_id`` is a NEW region (142-159) while lanes are
-        keyed by OLD regions (1-20). Resolution order:
-          1. Exact lane on the corridor's deprecated start_hub/end_hub
-             old-region FKs (either direction)
-          2. Any active lane touching the stop's mapped old region,
-             preferring a lane whose other endpoint is the corridor's
-             opposite old hub region
-          3. Any active lane touching the stop's old region
-
-        Returns an EMPTY recordset when nothing matches.
-        """
-        Lane = self.env["logistics.lane"].sudo()
-        stop = corridor_stop
-        if not (hasattr(stop, "_name") and stop._name == "logistics.corridor.stop"):
-            stop = self.env["logistics.corridor.stop"].sudo().browse(int(stop or 0))
-        if not stop or not stop.exists():
-            return Lane
-
-        corridor = stop.corridor_id
-        stop_old = self.map_new_to_old(stop.region_id.id) if stop.region_id else False
-        if not stop_old:
-            return Lane
-
-        # 1. Exact corridor hub-pair lanes (legacy old-region FKs)
-        if corridor and corridor.start_hub_id and corridor.end_hub_id:
-            pair = (corridor.start_hub_id.id, corridor.end_hub_id.id)
-            for a, b in (pair, (pair[1], pair[0])):
-                lane = Lane.search([
-                    ("origin_region_id", "=", a),
-                    ("destination_region_id", "=", b),
-                    ("active", "=", True),
-                ], limit=1)
-                if lane:
-                    return lane
-
-        # 2+3. Lanes touching this stop's old region
-        lanes = Lane.search([
-            "|",
-            ("origin_region_id", "=", stop_old),
-            ("destination_region_id", "=", stop_old),
-            ("active", "=", True),
-        ])
-        if not lanes:
-            return Lane
-        other_old = False
-        if corridor:
-            if corridor.start_hub_id and corridor.start_hub_id.id != stop_old:
-                other_old = corridor.start_hub_id.id
-            elif corridor.end_hub_id and corridor.end_hub_id.id != stop_old:
-                other_old = corridor.end_hub_id.id
-        if other_old:
-            preferred = lanes.filtered(
-                lambda l: (l.destination_region_id.id if l.origin_region_id.id == stop_old
-                           else l.origin_region_id.id) == other_old
-            )
-            if preferred:
-                return preferred[:1]
-        return lanes[:1]
 
     def matching_lanes(self, origin_region, dest_region):
         """Find all ACTIVE ``logistics.lane`` records (keyed by OLD region

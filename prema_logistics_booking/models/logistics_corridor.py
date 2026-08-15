@@ -1,11 +1,11 @@
 """Operating Corridor — THE single source of truth for operational routes.
 
-This model absorbs the previously-separate logistics.route.template and
-logistics.route.run concepts (now deprecated). A corridor defines the ordered
-stop sequence, recurrence rules, and scheduled departures in ONE place.
+This model absorbed the previously-separate logistics.route.template and
+logistics.route.run concepts (removed in 18.0.6.0.0). A corridor defines the
+ordered stop sequence, recurrence rules, and scheduled departures in ONE place.
 
-@deprecated models replaced by this one:
-    - logistics.route.template  → corridor fields (phase, truck_slot, weekday, etc.)
+@removed models this one replaced:
+    - logistics.route.template  → corridor fields (phase, truck_slot, operate_*)
     - logistics.route.run       → logistics.corridor.departure
 """
 
@@ -13,11 +13,6 @@ import logging as _logging
 import datetime
 from odoo import _, api, fields, models
 from odoo.exceptions import ValidationError
-
-WEEKDAY_SELECTION = [
-    ("0", "Monday"), ("1", "Tuesday"), ("2", "Wednesday"),
-    ("3", "Thursday"), ("4", "Friday"), ("5", "Saturday"), ("6", "Sunday"),
-]
 
 
 class LogisticsCorridor(models.Model):
@@ -43,9 +38,6 @@ class LogisticsCorridor(models.Model):
     default_vehicle_id = fields.Many2one("fleet.vehicle", string="Default Truck",
                                           help="Default truck assigned to this weekly service. "
                                                "Copied to new departures on generation.")
-    default_driver_id = fields.Many2one("res.partner", string="Default Driver")
-    weekday = fields.Selection(WEEKDAY_SELECTION, string="Primary Operating Day")
-    recurring_weekdays = fields.Char(string="Recurring Weekdays")
     start_time = fields.Float(string="Start Time", default=7.0, help="24h float, e.g. 7.0 = 7:00 AM")
     destination_hub_arrival_time = fields.Float(
         string="Hub Arrival Time",
@@ -83,15 +75,15 @@ class LogisticsCorridor(models.Model):
     # NEW: canonical hub references (M2o logistics.hub)
     origin_hub_id = fields.Many2one(
         "logistics.hub", string="Origin Hub", index=True,
-        help="Departure hub for this weekly service. Replaces start_hub_id."
+        help="Departure hub for this weekly service."
     )
     destination_hub_id = fields.Many2one(
         "logistics.hub", string="Destination Hub",
-        help="Arrival hub for this weekly service. Replaces end_hub_id."
+        help="Arrival hub for this weekly service."
     )
     transfer_hub_id = fields.Many2one(
         "logistics.hub", string="Transfer Hub",
-        help="Intermediate transfer hub. Replaces via_hub_id."
+        help="Intermediate transfer hub."
     )
     same_day_return = fields.Boolean(
         string="Same-Day Return",
@@ -101,20 +93,6 @@ class LogisticsCorridor(models.Model):
         "logistics.corridor", string="Paired Return Service",
         help="The return-direction weekly service paired with this outbound service."
     )
-
-    # DEPRECATED: legacy region-valued hub references — kept for migration,
-    # superseded by origin_hub_id / destination_hub_id / transfer_hub_id.
-    start_hub_id = fields.Many2one("logistics.region", string="Start Region", index=True)
-    end_hub_id = fields.Many2one("logistics.region", string="End Region")
-    via_hub_id = fields.Many2one("logistics.region", string="Via Region")
-
-    # ── Lane linkage (Phase 2) ──────────────────────────────────────
-    lane_ids = fields.Many2many("logistics.lane", "corridor_lane_rel",
-                                "corridor_id", "lane_id", string="Lanes Served")
-
-    # ── Round-trip pairing (Phase 12) ───────────────────────────────
-    return_corridor_id = fields.Many2one("logistics.corridor", string="Return Corridor")
-    feeds_corridor_id = fields.Many2one("logistics.corridor", string="Feeds Corridor")
 
     # ── Distance & customer pricing authority ──────────────────────
     rate_per_km = fields.Float(
@@ -147,7 +125,6 @@ class LogisticsCorridor(models.Model):
     full_revenue_target = fields.Monetary(
         string="Full-Corridor Revenue Target", compute="_compute_corridor_pricing", store=True,
     )
-    truck_capacity = fields.Integer(string="Truck Capacity", default=12)
 
     # ── Phase 3: Customer Pricing ───────────────────────────────────
     excess_weight_rate_per_lb = fields.Float(
@@ -202,25 +179,19 @@ class LogisticsCorridor(models.Model):
 
     is_two_way = fields.Boolean(
         string="Two-Way Service", compute="_compute_is_two_way",
-        help="True only when return_corridor_id is set AND that paired "
+        help="True only when paired_return_service_id is set AND that paired "
              "corridor's stop order is the exact reverse of this one's — "
              "never inferred from the two corridors merely sharing regions.",
     )
-    effective_rate_plan_ids = fields.Many2many(
-        "logistics.rate.plan", compute="_compute_effective_rate_plans",
-        string="Effective Rate Plans",
-        help="Historical compatibility only. Corridor $/km is the active pricing authority.",
-    )
 
     @api.depends(
-        "paired_return_service_id", "return_corridor_id",
+        "paired_return_service_id",
         "stop_ids.sequence", "stop_ids.region_id",
         "paired_return_service_id.stop_ids.sequence", "paired_return_service_id.stop_ids.region_id",
-        "return_corridor_id.stop_ids.sequence", "return_corridor_id.stop_ids.region_id",
     )
     def _compute_is_two_way(self):
         for rec in self:
-            paired = rec.paired_return_service_id or rec.return_corridor_id
+            paired = rec.paired_return_service_id
             if not paired:
                 rec.is_two_way = False
                 continue
@@ -232,11 +203,6 @@ class LogisticsCorridor(models.Model):
             this_order = [s.region_id.id for s in rec.stop_ids.sorted("sequence")]
             paired_order = [s.region_id.id for s in paired.stop_ids.sorted("sequence")]
             rec.is_two_way = bool(this_order) and this_order == list(reversed(paired_order))
-
-    @api.depends("stop_ids.sequence", "stop_ids.region_id", "stop_ids.pickup_allowed", "stop_ids.delivery_allowed")
-    def _compute_effective_rate_plans(self):
-        for rec in self:
-            rec.effective_rate_plan_ids = self.env["logistics.rate.plan"]
 
     @api.depends(
         "operate_monday", "operate_tuesday", "operate_wednesday",
@@ -288,8 +254,7 @@ class LogisticsCorridor(models.Model):
             "operate_monday", "operate_tuesday", "operate_wednesday",
             "operate_thursday", "operate_friday", "operate_saturday", "operate_sunday",
         )
-        # Legacy weekday/recurring_weekdays columns are historical only. The
-        # visible Every Week checkboxes are the sole scheduling authority.
+        # The visible Every Week checkboxes are the sole scheduling authority.
         return {idx for idx, field_name in enumerate(names) if self[field_name]}
 
     def _excluded_departure_dates(self):

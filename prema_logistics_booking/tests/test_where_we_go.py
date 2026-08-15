@@ -29,7 +29,7 @@ class TestNetworkAvailabilityService(TransactionCase):
         })
 
         cls.corridor = cls.env["logistics.corridor"].create({
-            "name": "WWG-Test-Corridor", "direction": "eastbound", "phase": 1, "truck_slot": 1, "weekday": "1",
+            "name": "WWG-Test-Corridor", "direction": "eastbound", "phase": 1, "truck_slot": 1, "operate_tuesday": True,
         })
         cls.env["logistics.corridor.stop"].create([
             {"corridor_id": cls.corridor.id, "sequence": 10, "region_id": cls.origin.id,
@@ -90,15 +90,14 @@ class TestNetworkAvailabilityService(TransactionCase):
         self.assertIn("regions", data)
         self.assertIn("hubs", data)
 
-    def test_corridor_two_way_and_rate_plan_fields_default_safely(self):
-        """is_two_way / effective_rate_plan_ids must never crash and must
-        default to False/empty when no pairing or rate plan exists."""
+    def test_corridor_two_way_defaults_safely(self):
+        """is_two_way must never crash and must default to False when no
+        paired return service exists."""
         self.assertFalse(self.corridor.is_two_way)
-        self.assertFalse(self.corridor.effective_rate_plan_ids)
 
         reverse_corridor = self.env["logistics.corridor"].create({
             "name": "WWG-Test-Corridor-Return", "direction": "westbound",
-            "phase": 1, "truck_slot": 1, "weekday": "2",
+            "phase": 1, "truck_slot": 1, "operate_wednesday": True,
         })
         self.env["logistics.corridor.stop"].create([
             {"corridor_id": reverse_corridor.id, "sequence": 10, "region_id": self.direct_dest.id,
@@ -106,5 +105,5 @@ class TestNetworkAvailabilityService(TransactionCase):
             {"corridor_id": reverse_corridor.id, "sequence": 20, "region_id": self.origin.id,
              "pickup_allowed": False, "delivery_allowed": True},
         ])
-        self.corridor.return_corridor_id = reverse_corridor.id
+        self.corridor.paired_return_service_id = reverse_corridor.id
         self.assertTrue(self.corridor.is_two_way)

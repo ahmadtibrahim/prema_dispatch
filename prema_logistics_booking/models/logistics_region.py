@@ -27,11 +27,6 @@ class LogisticsRegion(models.Model):
     main_city = fields.Char(string="Main City")
     hub_name = fields.Char(string="Hub")
 
-    rate_per_km = fields.Float(
-        string="Rate per km", default=3.00,
-        help="Historical only. Customer pricing is configured on Corridors.",
-    )
-
     # ── Pricing overrides ────────────────────────────────────────────
     currency_id = fields.Many2one(
         "res.currency", default=lambda self: self.env.company.currency_id,

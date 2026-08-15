@@ -55,9 +55,6 @@ class LogisticsRecurringAgreement(models.Model):
     booking_ids = fields.One2many("logistics.booking", "recurring_agreement_id", string="Bookings")
     booking_count = fields.Integer(compute="_compute_counts")
 
-    # Historical columns retained for old agreements; hidden from active UI.
-    pickup_fsa_id = fields.Many2one("logistics.fsa", string="Pickup FSA")
-    delivery_fsa_id = fields.Many2one("logistics.fsa", string="Delivery FSA")
     pallets = fields.Integer(default=1)
     weight_lbs = fields.Float(default=500.0)
     temperature_mode = fields.Selection([("dry", "Dry"), ("reefer", "Reefer")], default="dry")
@@ -66,12 +63,7 @@ class LogisticsRecurringAgreement(models.Model):
     commodity = fields.Char()
     frequency = fields.Selection(FREQUENCY, default="weekly")
     preferred_weekday = fields.Integer(default=0)
-    rate_per_shipment = fields.Float(string="Historical Rate")
     currency_id = fields.Many2one("res.currency", default=lambda self: self.env.company.currency_id)
-    next_shipment_date = fields.Date(string="Legacy Next Shipment")
-    route_run_id = fields.Many2one("logistics.route.run", string="Route Run")
-    departure_id = fields.Many2one("logistics.corridor.departure", string="Departure")
-    corridor_id = fields.Many2one("logistics.corridor", related="departure_id.corridor_id", store=True)
     committed_pallets = fields.Integer(default=0)
     committed_weight_lbs = fields.Float(default=0.0)
 

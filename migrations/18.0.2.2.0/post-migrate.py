@@ -23,10 +23,17 @@ def migrate(cr, version):
         if record:
             record.unlink()
 
-    templates = env["prema.dispatch.booking.template"].with_context(active_test=False).search([])
-    if templates:
-        templates.write({"active": False})
-    _logger.info(
-        "Removed obsolete Booking Templates UI/cron and archived %d historical template(s)",
-        len(templates),
-    )
+    # The booking.template model was removed in 18.0.3.0.0 — on an upgrade
+    # chain through that version the model is gone from the registry by the
+    # time this post-migration runs. Skip gracefully (its table is dropped
+    # at _process_end of the same upgrade).
+    if "prema.dispatch.booking.template" in env:
+        templates = env["prema.dispatch.booking.template"].with_context(active_test=False).search([])
+        if templates:
+            templates.write({"active": False})
+        _logger.info(
+            "Removed obsolete Booking Templates UI/cron and archived %d historical template(s)",
+            len(templates),
+        )
+    else:
+        _logger.info("prema.dispatch.booking.template model removed — nothing to archive")

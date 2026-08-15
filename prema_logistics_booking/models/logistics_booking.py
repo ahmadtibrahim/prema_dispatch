@@ -160,8 +160,6 @@ class LogisticsBooking(models.Model):
     invoice_id = fields.Many2one("account.move", readonly=True, copy=False, string="Draft Invoice")
     wa_negotiation_id = fields.Many2one("premafirm.wa.negotiation", readonly=True, copy=False, string="WA Negotiation")
     sale_order_id = fields.Many2one("sale.order", readonly=True, copy=False, string="Sale Order")
-    route_run_id = fields.Many2one("logistics.route.run", readonly=True, copy=False, string="Route Run",
-                                    help="DEPRECATED — use departure_id instead.")
     departure_id = fields.Many2one("logistics.corridor.departure", readonly=True, copy=False,
                                     string="Corridor Departure",
                                     help="The scheduled corridor departure this booking is assigned to.")

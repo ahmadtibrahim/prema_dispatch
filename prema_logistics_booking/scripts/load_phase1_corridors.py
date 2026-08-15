@@ -47,9 +47,9 @@ print("=== Phase 14: Phase 1 Corridor Seed ===\n")
 # 1. Monday Local GTA
 mon_local = get_or_create_corridor(
     "Monday Local GTA", direction="local", equipment_type="dry",
-    phase=1, truck_slot=1, weekday="0", start_time=7.0,
+    phase=1, truck_slot=1, operate_monday=True, start_time=7.0,
     full_distance_km=120.0, full_revenue_target=800.0,
-    planned_pallets=8, truck_capacity=12,
+    planned_pallets=8,
 )
 add_stops(mon_local, [
     ("R1", "Mississauga Hub", True, True, 0),
@@ -60,9 +60,9 @@ add_stops(mon_local, [
 # 2. Tuesday Eastbound Quebec
 tue_eb = get_or_create_corridor(
     "Tuesday Eastbound Quebec", direction="eastbound", equipment_type="dry",
-    phase=1, truck_slot=1, weekday="1", start_time=1.0, overnight=True,
+    phase=1, truck_slot=1, operate_tuesday=True, start_time=1.0, overnight=True,
     full_distance_km=1050.0, full_revenue_target=2300.0,
-    planned_pallets=8, truck_capacity=12,
+    planned_pallets=8,
 )
 add_stops(tue_eb, [
     ("R1", "Mississauga Hub", True, True, 0),
@@ -78,12 +78,12 @@ add_stops(tue_eb, [
 # 3. Wednesday Westbound Return
 wed_wb = get_or_create_corridor(
     "Wednesday Westbound Return", direction="westbound", equipment_type="dry",
-    phase=1, truck_slot=1, weekday="2", start_time=8.0, overnight=True,
+    phase=1, truck_slot=1, operate_wednesday=True, start_time=8.0, overnight=True,
     full_distance_km=1050.0, full_revenue_target=2300.0,
-    planned_pallets=8, truck_capacity=12,
-    return_corridor_id=tue_eb.id,
+    planned_pallets=8,
+    paired_return_service_id=tue_eb.id,
 )
-tue_eb.write({"return_corridor_id": wed_wb.id})
+tue_eb.write({"paired_return_service_id": wed_wb.id})
 add_stops(wed_wb, [
     ("R10", "Quebec City", True, True, 0),
     ("R9", "Drummondville", True, True, 270),
@@ -97,9 +97,9 @@ add_stops(wed_wb, [
 # 4. Thursday Local GTA
 thu_local = get_or_create_corridor(
     "Thursday Local GTA", direction="local", equipment_type="dry",
-    phase=1, truck_slot=1, weekday="3", start_time=7.0,
+    phase=1, truck_slot=1, operate_thursday=True, start_time=7.0,
     full_distance_km=120.0, full_revenue_target=800.0,
-    planned_pallets=8, truck_capacity=12,
+    planned_pallets=8,
 )
 add_stops(thu_local, [
     ("R1", "Mississauga Hub", True, True, 0),
@@ -110,11 +110,10 @@ add_stops(thu_local, [
 # 5. Friday Ottawa Direct
 fri_ott = get_or_create_corridor(
     "Friday Ottawa Direct", direction="bidirectional", equipment_type="dry",
-    phase=1, truck_slot=1, weekday="4", start_time=6.0,
+    phase=1, truck_slot=1, operate_friday=True, start_time=6.0,
     full_distance_km=920.0, full_revenue_target=1200.0,
-    planned_pallets=8, truck_capacity=12,
+    planned_pallets=8,
 )
-thu_local.write({"feeds_corridor_id": fri_ott.id})
 add_stops(fri_ott, [
     ("R1", "Mississauga Hub", True, True, 0),
     ("R6", "Kingston", False, True, 280),
@@ -126,10 +125,10 @@ add_stops(fri_ott, [
 # 6. Saturday Optional
 get_or_create_corridor(
     "Saturday Optional Deliveries", direction="local", equipment_type="dry",
-    phase=1, truck_slot=1, weekday="5", start_time=8.0,
+    phase=1, truck_slot=1, operate_saturday=True, start_time=8.0,
     conditional=True, min_departure_revenue=300.0,
     full_distance_km=200.0, full_revenue_target=500.0,
-    planned_pallets=4, truck_capacity=12,
+    planned_pallets=4,
 )
 
 env.cr.commit()

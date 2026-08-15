@@ -111,7 +111,7 @@ def migrate(cr, version):
         if not corridor:
             _logger.warning("Official schedule corridor not found: %s", name)
             continue
-        values = dict(day_fields, weekday=False, recurring_weekdays=False,
+        values = dict(day_fields,
                       departure_horizon_weeks=8, rate_per_km=corridor.rate_per_km or 4.0,
                       planned_pallets=corridor.planned_pallets or 8,
                       included_weight_per_pallet=corridor.included_weight_per_pallet or 500.0,
@@ -136,32 +136,58 @@ def migrate(cr, version):
         local_job.write({"operation_date": local_date})
 
     # Convert each legacy one-route agreement into its first recurring job.
+    # The pickup_fsa_id/delivery_fsa_id columns were removed in 18.0.6.0.0 —
+    # this post-migration runs AFTER the schema sync drops them, so read them
+    # via raw SQL guarded on column existence (the 18.0.6.0.0 pre-migrate
+    # performs the same migration while the columns still exist).
     Job = env["logistics.recurring.job"]
-    for agreement in env["logistics.recurring.agreement"].with_context(active_test=False).search([]):
-        if agreement.job_ids:
-            continue
-        pickup_region = agreement.pickup_fsa_id.region_id
-        delivery_region = agreement.delivery_fsa_id.region_id
-        if not pickup_region or not delivery_region:
-            _logger.warning("Agreement %s needs manual endpoint migration", agreement.id)
-            continue
-        Job.create({
-            "agreement_id": agreement.id,
-            "name": "Migrated recurring route",
-            "pickup_kind": "region", "pickup_region_id": pickup_region.id,
-            "delivery_kind": "region", "delivery_region_id": delivery_region.id,
-            "frequency": agreement.frequency or "weekly",
-            "preferred_weekday": str(agreement.preferred_weekday or 0),
-            "monthly_week": "1",
-            "pallets": agreement.pallets or 1,
-            "weight_lbs": agreement.weight_lbs or 0.0,
-            "load_type": agreement.load_type or "ltl",
-            "temperature_mode": agreement.temperature_mode or "dry",
-            "required_temperature_c": agreement.required_temperature_c,
-            "temperature_confirmed": agreement.temperature_mode != "reefer",
-            "commodity": agreement.commodity or "",
-            "auto_generate": False,
-        })
+    env.cr.execute("""
+        SELECT count(*) FROM information_schema.columns
+        WHERE table_name = 'logistics_recurring_agreement' AND column_name = 'pickup_fsa_id'
+    """)
+    if env.cr.fetchone()[0]:
+        env.cr.execute("""
+            SELECT a.id, fp.region_id, fd.region_id,
+                   COALESCE(a.frequency, 'weekly'),
+                   COALESCE(a.preferred_weekday, 0),
+                   COALESCE(a.pallets, 1), COALESCE(a.weight_lbs, 0.0),
+                   COALESCE(a.load_type, 'ltl'),
+                   COALESCE(a.temperature_mode, 'dry'),
+                   a.required_temperature_c, a.commodity
+            FROM logistics_recurring_agreement a
+            LEFT JOIN logistics_fsa fp ON a.pickup_fsa_id = fp.id
+            LEFT JOIN logistics_fsa fd ON a.delivery_fsa_id = fd.id
+            WHERE a.pickup_fsa_id IS NOT NULL OR a.delivery_fsa_id IS NOT NULL
+        """)
+        rows = env.cr.fetchall()
+        for row in rows:
+            (agreement_id, pickup_region_id, delivery_region_id, frequency,
+             preferred_weekday, pallets, weight_lbs, load_type,
+             temperature_mode, required_temperature_c, commodity) = row
+            if env["logistics.recurring.job"].search_count([("agreement_id", "=", agreement_id)]):
+                continue
+            if not pickup_region_id or not delivery_region_id:
+                _logger.warning("Agreement %s needs manual endpoint migration", agreement_id)
+                continue
+            Job.create({
+                "agreement_id": agreement_id,
+                "name": "Migrated recurring route",
+                "pickup_kind": "region", "pickup_region_id": pickup_region_id,
+                "delivery_kind": "region", "delivery_region_id": delivery_region_id,
+                "frequency": frequency,
+                "preferred_weekday": str(preferred_weekday or 0),
+                "monthly_week": "1",
+                "pallets": pallets,
+                "weight_lbs": weight_lbs,
+                "load_type": load_type,
+                "temperature_mode": temperature_mode,
+                "required_temperature_c": required_temperature_c,
+                "temperature_confirmed": temperature_mode != "reefer",
+                "commodity": commodity or "",
+                "auto_generate": False,
+            })
+    else:
+        _logger.info("pickup_fsa_id column gone — legacy agreement migration handled by 18.0.6.0.0 pre-migrate")
 
     # Rebuild only future unbooked schedule rows after the new weekly rules
     # are in place; booked/completed records are preserved by the model.
