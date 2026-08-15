@@ -438,14 +438,14 @@
                                 var sel = row.querySelector('.hours-status');
                                 var cells = row.querySelectorAll('.hours-custom-cell');
                                 if (type === '24/5') {
-                                    sel.value = i < 5 ? 'open_24h' : 'closed';
+                                    sel.value = i &lt; 5 ? 'open_24h' : 'closed';
                                     cells.forEach(function(c) { c.style.display = 'none'; });
                                 } else if (type === '24/7') {
                                     sel.value = 'open_24h';
                                     cells.forEach(function(c) { c.style.display = 'none'; });
                                 } else if (type === 'weekday_custom') {
-                                    sel.value = i < 5 ? 'custom' : 'closed';
-                                    cells.forEach(function(c) { c.style.display = i < 5 ? '' : 'none'; });
+                                    sel.value = i &lt; 5 ? 'custom' : 'closed';
+                                    cells.forEach(function(c) { c.style.display = i &lt; 5 ? '' : 'none'; });
                                 }
                                 sel.dispatchEvent(new Event('change'));
                             });
@@ -455,7 +455,7 @@
                             var monSel = rows[0].querySelector('.hours-status');
                             var monFrom = rows[0].querySelector('.hours-from');
                             var monTo = rows[0].querySelector('.hours-to');
-                            for (var i = 1; i < 5; i++) {
+                            for (var i = 1; i &lt; 5; i++) {
                                 rows[i].querySelector('.hours-status').value = monSel.value;
                                 if (monSel.value === 'custom') {
                                     rows[i].querySelector('.hours-from').value = monFrom.value;

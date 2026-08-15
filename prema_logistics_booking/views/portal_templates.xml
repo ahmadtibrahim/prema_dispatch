@@ -79,9 +79,7 @@
                     <button type="submit" class="btn btn-primary">Continue</button>
                 </div>
             </form>
-            </div><!-- col -->
-        </div><!-- row -->
-        </div><!-- container-fluid -->
+        </div>
     </t>
 </template>
 
@@ -402,6 +400,7 @@
                     </script>
                 </t>
             </div>
+        </div>
         </div>
     </t>
 </template>
