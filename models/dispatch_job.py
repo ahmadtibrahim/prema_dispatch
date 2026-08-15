@@ -79,7 +79,7 @@ class PremaDispatchJob(models.Model):
         string="Booking Confirmed At", readonly=True, copy=False,
     )
     template_id = fields.Many2one(
-        "prema.dispatch.booking.template", string="Booking Template [DEPRECATED]",
+        "prema.dispatch.booking.template", string="Booking Template",
         ondelete="set null", readonly=True, copy=False, index=True,
         help="Recurring template that auto-generated this booking. "
              "DEPRECATED — use logistics.recurring.agreement instead.",

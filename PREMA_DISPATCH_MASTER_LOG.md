@@ -1,10 +1,10 @@
 # Prema Dispatch — Consolidated Master Log
 
 **Repository:** `github.com/ahmadtibrahim/prema_dispatch` (private)
-**Modules:** `prema_dispatch` (v18.0.2.3.0), `prema_logistics_booking` (v18.0.5.1.0)
+**Modules:** `prema_dispatch` (v18.0.3.0.0), `prema_logistics_booking` (v18.0.6.0.0)
 **Database:** Prod-db (production), Prod-db-test1a (test)
 **Odoo Config:** `/etc/odoo18.conf`
-**Version:** 6.1 · **Last Updated:** 2026-08-09
+**Version:** 6.2 · **Last Updated:** 2026-08-15
 
 > This is the SINGLE authoritative file for everything Prema Dispatch. All architecture, business rules, pricing, capacity, deployment procedures, file index, booking module notes, decision history, and test results live here. No other Prema Dispatch .md files should exist outside `docs/archive/`.
 
@@ -681,6 +681,7 @@ systemctl restart odoo18
 | 2026-08-02 | Pre-existing tests fixed (target_load_quantity, weight values) | Superseded |
 | 2026-08-02 | "Lanes & Pricing" menu relabeled → "Service Routes" in Stage 5 | Pending |
 | 2026-08-02 | Public website pricing bug (hardcoded pallets=1, weight=0) — Stage 1 fix | Fixed |
+| 2026-08-15 | Remove ALL [DEPRECATED] fields/models; archive route.run/route.template data; corridor hubs backfilled | Active |
 
 ---
 
@@ -705,6 +706,7 @@ systemctl restart odoo18
 | 2026-08-04 | User Manual and master reference | docs/views | Updated to current Corridor schedule and pricing |
 | 2026-08-04 | Focused V5 regressions | test_v5_dispatch_unification.py | Pricing, eight-week schedule, recurring job limit |
 | 2026-08-09 | UAT-014: Physical Pallet & Stop Allocation | 7 files | Dedicated + shared pallet modes; pricing uses physical_pallets; per-stop allocation UI; dispatch item bridge; Mike Johnson demo contacts cleared |
+| 2026-08-15 | Deprecated field/model removal | ~20 files + migrations 18.0.3.0.0/18.0.6.0.0 | All [DEPRECATED] fields, booking.template/route.run/route.template models, cron, ACLs removed; archives + backfills in pre-migrate; full test suite green |
 
 ## 30. Historical Dispatch Unification (18.0.4.6.0) — 2026-08-03
 
@@ -811,6 +813,33 @@ This is the current architecture and supersedes Section 30 wherever they conflic
   recurring endpoints, rebuilds future departures, and forces `public_test_mode=False`.
 - Deferred for launch budget: live en-route re-optimization, automatic region/FSA import,
   broad public map/portal rollout, and unrelated legacy test-fixture cleanup.
+
+---
+
+## 32. Deprecated Field and Model Removal (18.0.6.0.0 / 18.0.3.0.0) — 2026-08-15
+
+Full pre-removal dependency audit (see `docs/archive/deprecated_dependency_report_2026-08-15.md`),
+then phased removal of everything labelled `[DEPRECATED]` / `(deprecated)`.
+
+- **Removed fields (corridor):** start_hub_id, end_hub_id, via_hub_id, lane_ids (+ `corridor_lane_rel`),
+  return_corridor_id, feeds_corridor_id, truck_capacity, effective_rate_plan_ids, default_driver_id,
+  weekday, recurring_weekdays. `is_two_way` now derives solely from `paired_return_service_id`.
+- **Removed fields (other models):** logistics.booking.route_run_id; recurring.agreement pickup_fsa_id,
+  delivery_fsa_id, rate_per_shipment, next_shipment_date, route_run_id, departure_id, corridor_id
+  (stored related); logistics.region.rate_per_km; logistics.lane.corridor_ids;
+  prema.dispatch.job.template_id.
+- **Removed models/artifacts:** prema.dispatch.booking.template (+ ACLs + disabled cron
+  `ir_cron_dispatch_generate_bookings` + manual-page heading), logistics.route.run, logistics.route.template
+  (+ ACLs). `resolve_lane_for_corridor_stop` (region_resolver) deleted — zero callers.
+- **Migration 18.0.6.0.0 pre-migrate (raw SQL, idempotent):** backfills
+  `paired_return_service_id ← return_corridor_id`; backfills origin/destination_hub_id from
+  start/end_hub_id via the old→canonical region map (non-blocking when no hub exists — e.g. R-QUE/R-OTT);
+  **archives** `logistics_route_run_archive` (28 rows) and `logistics_route_template_archive` (27 rows) —
+  mandatory, because Odoo 18 auto-drops removed-model tables at `_process_end`.
+- Old migrations 18.0.5.0.0 / 18.0.2.2.0 hardened to guarded raw SQL (defensive for DBs upgrading
+  from older versions; both live DBs were already past them).
+- Deploy order: scratch-DB dry run → full test suite on Prod-db-test1a → Prod-db with `pg_dump -Fc` backup.
+  Rollback = DB restore + `git revert`.
 
 ---
 

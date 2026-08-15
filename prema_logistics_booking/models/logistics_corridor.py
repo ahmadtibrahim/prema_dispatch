@@ -43,9 +43,9 @@ class LogisticsCorridor(models.Model):
     default_vehicle_id = fields.Many2one("fleet.vehicle", string="Default Truck",
                                           help="Default truck assigned to this weekly service. "
                                                "Copied to new departures on generation.")
-    default_driver_id = fields.Many2one("res.partner", string="Default Driver [DEPRECATED]")
-    weekday = fields.Selection(WEEKDAY_SELECTION, string="Primary Operating Day [DEPRECATED]")
-    recurring_weekdays = fields.Char(string="Recurring Weekdays [DEPRECATED]")
+    default_driver_id = fields.Many2one("res.partner", string="Default Driver")
+    weekday = fields.Selection(WEEKDAY_SELECTION, string="Primary Operating Day")
+    recurring_weekdays = fields.Char(string="Recurring Weekdays")
     start_time = fields.Float(string="Start Time", default=7.0, help="24h float, e.g. 7.0 = 7:00 AM")
     destination_hub_arrival_time = fields.Float(
         string="Hub Arrival Time",
@@ -104,17 +104,17 @@ class LogisticsCorridor(models.Model):
 
     # DEPRECATED: legacy region-valued hub references — kept for migration,
     # superseded by origin_hub_id / destination_hub_id / transfer_hub_id.
-    start_hub_id = fields.Many2one("logistics.region", string="Start Region (deprecated)", index=True)
-    end_hub_id = fields.Many2one("logistics.region", string="End Region (deprecated)")
-    via_hub_id = fields.Many2one("logistics.region", string="Via Region (deprecated)")
+    start_hub_id = fields.Many2one("logistics.region", string="Start Region", index=True)
+    end_hub_id = fields.Many2one("logistics.region", string="End Region")
+    via_hub_id = fields.Many2one("logistics.region", string="Via Region")
 
     # ── Lane linkage (Phase 2) ──────────────────────────────────────
     lane_ids = fields.Many2many("logistics.lane", "corridor_lane_rel",
-                                "corridor_id", "lane_id", string="Lanes Served [DEPRECATED]")
+                                "corridor_id", "lane_id", string="Lanes Served")
 
     # ── Round-trip pairing (Phase 12) ───────────────────────────────
-    return_corridor_id = fields.Many2one("logistics.corridor", string="Return Corridor [DEPRECATED]")
-    feeds_corridor_id = fields.Many2one("logistics.corridor", string="Feeds Corridor [DEPRECATED]")
+    return_corridor_id = fields.Many2one("logistics.corridor", string="Return Corridor")
+    feeds_corridor_id = fields.Many2one("logistics.corridor", string="Feeds Corridor")
 
     # ── Distance & customer pricing authority ──────────────────────
     rate_per_km = fields.Float(
@@ -147,7 +147,7 @@ class LogisticsCorridor(models.Model):
     full_revenue_target = fields.Monetary(
         string="Full-Corridor Revenue Target", compute="_compute_corridor_pricing", store=True,
     )
-    truck_capacity = fields.Integer(string="Truck Capacity [DEPRECATED]", default=12)
+    truck_capacity = fields.Integer(string="Truck Capacity", default=12)
 
     # ── Phase 3: Customer Pricing ───────────────────────────────────
     excess_weight_rate_per_lb = fields.Float(
@@ -208,7 +208,7 @@ class LogisticsCorridor(models.Model):
     )
     effective_rate_plan_ids = fields.Many2many(
         "logistics.rate.plan", compute="_compute_effective_rate_plans",
-        string="Effective Rate Plans [DEPRECATED]",
+        string="Effective Rate Plans",
         help="Historical compatibility only. Corridor $/km is the active pricing authority.",
     )
 

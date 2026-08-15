@@ -122,7 +122,7 @@
         <li><b>User Manual</b> — This page</li>
         <li><b>Settings</b> — Stages and system configuration</li>
     </ul>
-    <div class="dm-info">Rate Plans, technical lanes, route runs, duplicate weekly boards, and Booking Templates are historical only and are removed from normal navigation.</div>
+    <div class="dm-info">Rate Plans and technical lanes are historical only and are removed from normal navigation.</div>
 </div>
 
 <!-- ================================================================ -->
@@ -642,8 +642,6 @@
     <p>16 stages: Draft → New Booking → Planning → Assigned → Ready to Dispatch → Sent to Driver → En Route Pickup → At Pickup → Picked Up → In Transit → At Delivery → Delivered → POD Received → Completed / Exception / Cancelled.</p>
     <h3>Freight Tax Configuration</h3>
     <p>Navigate: <b>Settings → Technical → System Parameters</b> or <b>Settings → Prema Logistics → Freight Tax Configuration</b>. Map account.tax records for each province.</p>
-    <h3>Booking Templates [DEPRECATED]</h3>
-    <p>Replaced by Recurring Agreements. Use <b>Bookings → Recurring Agreements</b> instead.</p>
     <h3>Vehicle Layout Templates</h3>
     <p>Under Fleet → Equipment Profiles → Vehicle Layout Templates. Define pallet positions for each truck layout.</p>
 </div>

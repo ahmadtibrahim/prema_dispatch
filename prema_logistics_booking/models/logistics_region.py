@@ -28,7 +28,7 @@ class LogisticsRegion(models.Model):
     hub_name = fields.Char(string="Hub")
 
     rate_per_km = fields.Float(
-        string="Rate per km [DEPRECATED]", default=3.00,
+        string="Rate per km", default=3.00,
         help="Historical only. Customer pricing is configured on Corridors.",
     )
 
