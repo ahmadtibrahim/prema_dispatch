@@ -16,7 +16,7 @@
     <field name="name">prema.dispatch.error.log.tree</field>
     <field name="model">prema.dispatch.error.log</field>
     <field name="arch" type="xml">
-        <tree decoration-danger="severity=='critical'" decoration-warning="severity=='error'" default_order="id desc">
+        <list decoration-danger="severity=='critical'" decoration-warning="severity=='error'" default_order="id desc">
             <field name="reference"/>
             <field name="timestamp"/>
             <field name="severity"/>
@@ -27,7 +27,7 @@
             <field name="error_message"/>
             <field name="user_id"/>
             <field name="state"/>
-        </tree>
+        </list>
     </field>
 </record>
 
@@ -70,10 +70,10 @@
     <field name="arch" type="xml">
         <form>
             <header>
-                <button name="action_investigate" string="Investigate" type="object" class="btn-primary" states="new"/>
-                <button name="action_resolve" string="Resolve" type="object" class="btn-success" states="new,investigating"/>
-                <button name="action_ignore" string="Ignore" type="object" class="btn-secondary" states="new,investigating"/>
-                <button name="action_reopen" string="Reopen" type="object" states="resolved,ignored"/>
+                <button name="action_investigate" string="Investigate" type="object" class="btn-primary" invisible="state != 'new'"/>
+                <button name="action_resolve" string="Resolve" type="object" class="btn-success" invisible="state not in ('new', 'investigating')"/>
+                <button name="action_ignore" string="Ignore" type="object" class="btn-secondary" invisible="state not in ('new', 'investigating')"/>
+                <button name="action_reopen" string="Reopen" type="object" invisible="state not in ('resolved', 'ignored')"/>
                 <field name="state" widget="statusbar"/>
             </header>
             <sheet>
@@ -128,7 +128,7 @@
 <record id="action_error_log" model="ir.actions.act_window">
     <field name="name">Error Logs</field>
     <field name="res_model">prema.dispatch.error.log</field>
-    <field name="view_mode">tree,form</field>
+    <field name="view_mode">list,form</field>
     <field name="search_view_id" ref="view_error_log_search"/>
 </record>
 
