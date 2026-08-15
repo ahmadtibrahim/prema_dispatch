@@ -51,7 +51,10 @@ class PremaDispatchErrorLog(models.Model):
     record_name = fields.Char(string="Record Name")
 
     booking_id = fields.Many2one("logistics.booking", string="Booking")
-    booking_number = fields.Char(related="booking_id.booking_number", string="Booking #")
+    # Computed (not related=) — logistics.booking lives in
+    # prema_logistics_booking, which depends on THIS module, so a related
+    # field here breaks the registry when prema_dispatch is upgraded alone.
+    booking_number = fields.Char(string="Booking #", compute="_compute_booking_number")
     dispatch_job_id = fields.Many2one("prema.dispatch.job", string="Dispatch Job")
     dispatch_job_number = fields.Char(related="dispatch_job_id.name", string="Job #")
     invoice_id = fields.Many2one("account.move", string="Invoice")
@@ -85,6 +88,14 @@ class PremaDispatchErrorLog(models.Model):
         today = fields.Date.today().strftime("%Y%m%d")
         seq = self.env["ir.sequence"].sudo().next_by_code("prema.dispatch.error.log") or "1"
         return f"ERR-{today}-{int(seq):04d}"
+
+    @api.depends("booking_id")
+    def _compute_booking_number(self):
+        # Runtime read only (no dotted depends) — booking_number is
+        # immutable once the booking is created, so re-triggering on the
+        # booking record itself is unnecessary.
+        for rec in self:
+            rec.booking_number = rec.booking_id.booking_number or False
 
     @api.model
     def log_error(self, source, action, error_message, **kwargs):
