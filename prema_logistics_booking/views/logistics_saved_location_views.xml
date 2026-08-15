@@ -166,10 +166,4 @@
         <field name="view_mode">list,form</field>
     </record>
 
-    <!-- Menu -->
-    <menuitem id="menu_saved_locations"
-              name="Customer Locations"
-              parent="prema_logistics_booking.menu_v4_locations"
-              action="action_logistics_saved_location"
-              sequence="10"/>
 </odoo>
