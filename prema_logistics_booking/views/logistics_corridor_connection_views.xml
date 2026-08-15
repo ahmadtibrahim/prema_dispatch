@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_logistics_corridor_form_connections" model="ir.ui.view">
+        <field name="name">logistics.corridor.form.connections</field>
+        <field name="model">logistics.corridor</field>
+        <field name="inherit_id" ref="prema_logistics_booking.view_logistics_corridor_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//page[@string='Route']" position="inside">
+                <group string="Approved Hub Connections">
+                    <div class="alert alert-warning" role="alert" colspan="2">
+                        Hub transfer is allowed only into an explicitly connected Service Route.
+                        Same-route freight always stays on the current truck when the Ordered Regions support it.
+                    </div>
+                    <field name="connected_corridor_ids" widget="many2many_tags"
+                           options="{'no_create': True}"/>
+                    <field name="connection_notes" placeholder="Example: Local/Regional feeds Quebec Eastbound after Mississauga cross-dock."/>
+                </group>
+            </xpath>
+        </field>
+    </record>
+</odoo>

@@ -1,11 +1,8 @@
-"""Customer calendar adapter over the canonical corridor pricing/resolver flow.
+"""Customer calendar adapter over the canonical pricing/resolver flow.
 
-This service deliberately contains no routing, capacity, pricing, hub or
-legacy route-run logic of its own.  It only asks ``PricingService`` for the
-first exact itinerary in a requested calendar week and adapts the result for
-the existing website templates.
+No routing, pricing or capacity policy is duplicated here.  The calendar asks
+PricingService for the exact itinerary and CapacityEngine for remaining space.
 """
-
 import datetime
 from zoneinfo import ZoneInfo
 
@@ -17,8 +14,6 @@ MAX_WEEKS_AHEAD = 8
 
 
 class DeliveryOption:
-    """One exact, corridor-priced customer option."""
-
     def __init__(self, priority, delivery_date, pickup_date, price,
                  service_label="", routing_strategy="", departure=None,
                  transfer_departure=None, temperature_mode="dry",
@@ -29,7 +24,7 @@ class DeliveryOption:
         self.price = price
         self.service_label = service_label
         self.routing_strategy = routing_strategy
-        self.route_run = None  # historical API compatibility only
+        self.route_run = None
         self.departure = departure
         self.transfer_departure = transfer_departure
         self.departure_ids = [
@@ -49,8 +44,6 @@ class SchedulerAvailabilityResult:
 
 
 class ScheduledAvailabilityService:
-    """Expose exact corridor departures without becoming another resolver."""
-
     def __init__(self, env):
         self.env = env(su=True)
 
@@ -71,11 +64,7 @@ class ScheduledAvailabilityService:
             return result
 
         from .pricing_service import PricingService
-
-        # The current calendar week starts before "today" on every day but
-        # Monday. Never surface a still-scheduled row whose date has passed.
         earliest = max(target["start"], datetime.datetime.now(tz=BUSINESS_TZ).date())
-
         priced = PricingService(self.env).calculate(
             pickup_fsa, delivery_fsa, "ltl", temperature_mode,
             pallets, weight_lbs,
@@ -95,14 +84,15 @@ class ScheduledAvailabilityService:
             return result
 
         leg_snapshots = (priced.route_snapshot or {}).get("legs") or []
-        departures = self.env["logistics.corridor.departure"].browse([
-            leg.get("departure_id") for leg in leg_snapshots if leg.get("departure_id")
-        ]).exists()
-        ordered_departures = [
-            departures.filtered(lambda departure, dep_id=leg.get("departure_id"): departure.id == dep_id)[:1]
-            for leg in leg_snapshots
-        ]
-        ordered_departures = [departure for departure in ordered_departures if departure]
+        dep_ids = [leg.get("departure_id") for leg in leg_snapshots if leg.get("departure_id")]
+        departures = self.env["logistics.corridor.departure"].browse(dep_ids).exists()
+        ordered_departures = []
+        for leg in leg_snapshots:
+            dep_id = leg.get("departure_id")
+            dep = departures.filtered(lambda d, wanted=dep_id: d.id == wanted)[:1] if dep_id else False
+            if dep:
+                ordered_departures.append(dep)
+
         remaining = self._immediately_bookable_pallets(ordered_departures)
         is_transfer = len(ordered_departures) > 1
         result.options.append(DeliveryOption(
@@ -143,15 +133,15 @@ class ScheduledAvailabilityService:
         if not departures:
             return 0
         from .capacity_engine import CapacityEngine
-
         engine = CapacityEngine(self.env)
         remaining = []
         for departure in departures:
             vehicle = departure.vehicle_id
             if not vehicle:
                 return 0
+            capacity = engine.vehicle_booking_capacity(vehicle, allow_pinwheel_override=False)
+            if not capacity:
+                return 0
             peak = engine.compute_departure_peak(departure)
-            # Normal customer bookings may use straight layout. Pin-wheel
-            # capacity still requires explicit dispatcher override.
-            remaining.append(max(0, (vehicle.straight_pallet_capacity or 0) - peak["peak_pallets"]))
+            remaining.append(max(0, capacity - peak["peak_pallets"]))
         return min(remaining) if remaining else 0
