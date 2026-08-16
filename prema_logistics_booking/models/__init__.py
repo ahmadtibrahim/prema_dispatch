@@ -18,6 +18,8 @@ from . import logistics_lane_schedule
 from . import logistics_rate_plan
 from . import logistics_rate_tier
 from . import logistics_pallet_volume_tier
+from . import logistics_ftl_regional_minimum
+from . import fleet_vehicle_pallet_layout
 from . import logistics_fsa_rate_adjustment
 from . import logistics_surcharge_type
 from . import logistics_customer_rate
@@ -30,6 +32,7 @@ from . import logistics_booking
 from . import account_move_booking
 from . import logistics_corridor
 from . import dispatch_job_extension
+from . import dispatch_load_plan_extension
 from . import logistics_custom_quote
 from . import logistics_recurring_agreement
 from . import logistics_daily_local

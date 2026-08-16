@@ -398,6 +398,7 @@
                             <button type="button" class="btn btn-sm btn-outline-secondary" onclick="presetHours('24/7')">24/7</button>
                             <button type="button" class="btn btn-sm btn-outline-secondary" onclick="presetHours('weekday_custom')">Weekdays Custom</button>
                             <button type="button" class="btn btn-sm btn-outline-secondary" onclick="copyMonday()">Copy Mon→Fri</button>
+                            <button type="button" class="btn btn-sm btn-outline-secondary" onclick="copyMondayAll()">Copy Mon→All</button>
                         </div>
                         <table class="table table-sm table-borderless mb-0" id="hours_table">
                             <thead><tr><th style="width:100px"/><th style="width:80px">Status</th><th>From</th><th>To</th></tr></thead>
@@ -456,6 +457,20 @@
                             var monFrom = rows[0].querySelector('.hours-from');
                             var monTo = rows[0].querySelector('.hours-to');
                             for (var i = 1; i &lt; 5; i++) {
+                                rows[i].querySelector('.hours-status').value = monSel.value;
+                                if (monSel.value === 'custom') {
+                                    rows[i].querySelector('.hours-from').value = monFrom.value;
+                                    rows[i].querySelector('.hours-to').value = monTo.value;
+                                }
+                                rows[i].querySelector('.hours-status').dispatchEvent(new Event('change'));
+                            }
+                        }
+                        function copyMondayAll() {
+                            var rows = document.querySelectorAll('#hours_table tbody tr');
+                            var monSel = rows[0].querySelector('.hours-status');
+                            var monFrom = rows[0].querySelector('.hours-from');
+                            var monTo = rows[0].querySelector('.hours-to');
+                            for (var i = 1; i &lt; 7; i++) {
                                 rows[i].querySelector('.hours-status').value = monSel.value;
                                 if (monSel.value === 'custom') {
                                     rows[i].querySelector('.hours-from').value = monFrom.value;

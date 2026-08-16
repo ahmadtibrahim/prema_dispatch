@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- Pallet layout modes per vehicle — the configuration source for
+         VehicleCapacityService. -->
+    <record id="view_fleet_vehicle_form_inherit_pallet_layouts" model="ir.ui.view">
+        <field name="name">fleet.vehicle.form.inherit.pallet.layouts</field>
+        <field name="model">fleet.vehicle</field>
+        <field name="inherit_id" ref="fleet.fleet_vehicle_view_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//sheet" position="inside">
+                <group string="Pallet Layout Modes" colspan="4">
+                    <field name="pallet_layout_ids" nolabel="1">
+                        <list editable="bottom" string="Pallet Layout Modes">
+                            <field name="layout_type"/>
+                            <field name="name"/>
+                            <field name="code"/>
+                            <field name="max_pallets"/>
+                            <field name="is_default"/>
+                            <field name="active"/>
+                        </list>
+                    </field>
+                </group>
+            </xpath>
+        </field>
+    </record>
+</odoo>

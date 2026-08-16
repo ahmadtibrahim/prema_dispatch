@@ -9,8 +9,15 @@ Single entry point for all booking channels.
 import logging
 from collections import namedtuple
 from datetime import datetime, timedelta
+from decimal import Decimal, ROUND_HALF_UP
 
 _logger = logging.getLogger(__name__)
+
+
+def _round_half_up(value):
+    """Currency-style rounding (Odoo's ROUND_HALF_UP) for booking-level
+    adjustments, so $1,332.45 × 0.90 = $1,199.205 → $1,199.21."""
+    return float(Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
 
 # ── Result types ────────────────────────────────────────────────────────
 ShipmentRoute = namedtuple("ShipmentRoute", [
@@ -67,7 +74,7 @@ class ShipmentRoutingService:
     def plan_route(self, pickup_lat, pickup_lng, delivery_lat, delivery_lng,
                    pallets=1, weight_lbs=0, requested_pickup_date=None,
                    equipment="dry", pickup_country=None, pickup_state=None,
-                   delivery_country=None, delivery_state=None):
+                   delivery_country=None, delivery_state=None, shipment_type="ltl"):
         """Plan a complete shipment route from pickup to delivery coordinates.
 
         Returns ShipmentRoute with proposed legs, pricing, and audit trail.
@@ -221,6 +228,20 @@ class ShipmentRoutingService:
                 )
                 if leg:
                     legs.append(leg)
+            elif origin_region == hub.canonical_region_id:
+                # Pickup is already inside the Hub's own region — no phantom
+                # feeder leg. One corridor segment: pickup region → delivery.
+                leg = self._build_leg(
+                    sequence=1, leg_type="final_mile",
+                    origin_region=origin_region, dest_region=dest_region,
+                    pallets=pallets, weight_lbs=weight_lbs,
+                    pickup_date=pickup_date, pickup_day=pickup_day,
+                    equipment=equipment, transfer_hub=hub,
+                    pickup_lat=pickup_lat, pickup_lng=pickup_lng,
+                    delivery_lat=delivery_lat, delivery_lng=delivery_lng,
+                )
+                if leg:
+                    legs.append(leg)
             else:
                 # Leg 1: pickup → Hub
                 hub_ready = pickup_date  # simplified — same day arrival
@@ -259,9 +280,88 @@ class ShipmentRoutingService:
                                  "NO_LEGS", [], pallets, weight_lbs, None, snapshot)
 
         # ── Step 7: Price legs ─────────────────────────────────────
-        total_price = sum(leg.leg_price for leg in legs)
-        booking_min = 150.0
-        final_price = max(total_price, booking_min)
+        # FTL classification mirrors the pricing engine: the corridor's
+        # Enable Full Truckload / FTL Threshold / "When threshold reached"
+        # configuration is the sole authority. FTL pricing always calls the
+        # corridor's compute_ftl_price() — one source of truth.
+        corridor = (
+            self.env["logistics.corridor"].browse(legs[0].corridor_id)
+            if legs and legs[0].corridor_id else self.env["logistics.corridor"]
+        )
+        requested_ftl = shipment_type == "ftl"
+        threshold_hit = bool(
+            corridor and corridor.enable_ftl and corridor.ftl_threshold_pallets
+            and pallets >= corridor.ftl_threshold_pallets
+        )
+        use_ftl = bool(corridor) and corridor.enable_ftl and (
+            requested_ftl or (threshold_hit and corridor.ftl_behavior == "auto_price")
+        )
+        if corridor and corridor.enable_ftl and threshold_hit \
+                and corridor.ftl_behavior == "dispatcher_approval" and not requested_ftl:
+            return ShipmentRoute(
+                False, "FTL threshold reached — dispatcher approval is required.",
+                "FTL_DISPATCHER_APPROVAL", [], pallets, weight_lbs, None, snapshot,
+            )
+        if use_ftl and len(legs) != 1:
+            return ShipmentRoute(
+                False, "FTL requires a dedicated direct corridor movement.",
+                "FTL_REQUIRES_DIRECT", [], pallets, weight_lbs, None, snapshot,
+            )
+        # Minimum Booking Charge comes from the selected corridor's own
+        # configuration — never a hardcoded value.
+        booking_min = corridor.minimum_booking_charge if corridor else 150.0
+        leg_total_raw = sum(leg.leg_price for leg in legs)
+        if use_ftl:
+            # Billable distance = the corridor's own segment distance — the
+            # same source the pricing engine freezes into booking snapshots —
+            # never the full corridor length.
+            segment = corridor.resolve_region_segment(origin_region, dest_region)
+            distance = segment["distance_km"] if segment else (legs[0].estimated_distance_km or 0.0)
+            ftl = corridor.compute_ftl_price(origin_region, dest_region, distance)
+            if ftl["pricing_type"] == "flat_rate":
+                if not ftl["regional_rule"] or ftl["regional_rule"].flat_rate <= 0:
+                    return ShipmentRoute(
+                        False, "FTL rate is not configured on this corridor.",
+                        "FTL_RATE_NOT_CONFIGURED", [], pallets, weight_lbs, None, snapshot,
+                    )
+            elif ftl["rate_per_km"] <= 0:
+                return ShipmentRoute(
+                    False, "FTL rate is not configured on this corridor.",
+                    "FTL_RATE_NOT_CONFIGURED", [], pallets, weight_lbs, None, snapshot,
+                )
+            legs[0] = legs[0]._replace(
+                estimated_distance_km=round(distance, 1),
+                rate_per_km=round(ftl["rate_per_km"], 4),
+                pallet_rate_per_km=0.0,
+                leg_price=round(ftl["price"], 2),
+            )
+            leg_total_raw = legs[0].leg_price
+            total_price = leg_total_raw
+            final_price = total_price
+            snapshot["pricing_mode"] = "ftl"
+            snapshot["ftl_pricing"] = {
+                "distance_km": round(distance, 1),
+                "rate_per_km": ftl["rate_per_km"],
+                "distance_price": ftl["distance_price"],
+                "pricing_type": ftl["pricing_type"],
+                "regional_rule_id": ftl["regional_rule"].id if ftl["regional_rule"] else False,
+            }
+        else:
+            total_price = leg_total_raw
+            # Pallet-volume discount: applied ONCE on the booking's LTL
+            # freight total, never per leg and never to FTL. The anchor
+            # corridor (first leg) owns the tier configuration.
+            volume_discount_pct = 0.0
+            if corridor and corridor.enable_volume_discounts:
+                volume_discount_pct = self.env["logistics.pallet.volume.tier"].get_discount_for_pallets(
+                    corridor.id, pallets,
+                )
+            if volume_discount_pct:
+                total_price = _round_half_up(total_price * (100.0 - volume_discount_pct) / 100.0)
+                snapshot["volume_discount_pct"] = volume_discount_pct
+                snapshot["volume_discount_amount"] = round(total_price - leg_total_raw, 2)
+            final_price = max(total_price, booking_min)
+            snapshot["pricing_mode"] = "corridor_per_km"
 
         # ── Step 8: Estimate delivery ──────────────────────────────
         if legs:
@@ -274,8 +374,10 @@ class ShipmentRoutingService:
         snapshot["pricing_authority"] = "corridor_per_km"
         snapshot["pricing_version"] = "current"
         snapshot["pricing"] = {
-            "leg_total": round(total_price, 2),
-            "booking_minimum": booking_min,
+            "leg_total": round(leg_total_raw, 2),
+            "volume_discount_pct": snapshot.get("volume_discount_pct", 0.0),
+            "volume_discount_amount": snapshot.get("volume_discount_amount", 0.0),
+            "booking_minimum": 0.0 if use_ftl else booking_min,
             "final_transportation": round(final_price, 2),
         }
 
@@ -433,6 +535,25 @@ class ShipmentRoutingService:
                     result["departure_date"] = leg1.departure_date
                     result["estimated_delivery"] = leg1.departure_date
                     result["leg_count"] = 1
+            elif origin == hub.canonical_region_id:
+                # Pickup is already inside the Hub's own region — no phantom
+                # feeder leg; one corridor segment serves the movement.
+                leg1 = self._build_leg(
+                    sequence=1, leg_type="final_mile",
+                    origin_region=origin, dest_region=dest,
+                    pallets=pallets, weight_lbs=weight_lbs,
+                    pickup_date=pickup_date, pickup_day=pickup_day,
+                    equipment=equipment, transfer_hub=hub,
+                    pickup_lat=pickup_lat, pickup_lng=pickup_lng,
+                    delivery_lat=delivery_lat, delivery_lng=delivery_lng,
+                )
+                if leg1 and leg1.corridor_id:
+                    result["feasible"] = True
+                    result["feeder_corridor"] = ""
+                    result["onward_corridor"] = leg1.corridor_name
+                    result["departure_date"] = leg1.departure_date
+                    result["estimated_delivery"] = leg1.departure_date
+                    result["leg_count"] = 1
             else:
                 leg1 = self._build_leg(
                     sequence=1, leg_type="feeder_to_hub",
@@ -492,6 +613,29 @@ class ShipmentRoutingService:
 
     def _get_default_hub(self):
         return self.env["logistics.hub"].search([("is_default", "=", True)], limit=1)
+
+    def _directionally_compatible(self, corridor, origin_region, dest_region):
+        """A direction-ordered corridor may only serve a shipment whose
+        origin appears BEFORE its destination in the corridor's ordered
+        stop sequence. Same-region movements and corridors that serve both
+        directions (bidirectional / round-trip / local) keep the existing
+        permissive behavior."""
+        if origin_region == dest_region:
+            return True
+        if corridor.direction in ("bidirectional", "round_trip", "local", "local_loop"):
+            return True
+        ordered = corridor.stop_ids.filtered(
+            lambda stop: stop.active and stop.region_id
+        ).sorted("sequence")
+        origin_index = next(
+            (index for index, stop in enumerate(ordered) if stop.region_id == origin_region),
+            None,
+        )
+        dest_index = next(
+            (index for index, stop in enumerate(ordered) if stop.region_id == dest_region),
+            None,
+        )
+        return origin_index is not None and dest_index is not None and origin_index < dest_index
 
     def _is_valid_pickup_day(self, region, day_name):
         """Check if any corridor serving this region operates on the given day."""
@@ -582,18 +726,31 @@ class ShipmentRoutingService:
         Stop = self.env["logistics.corridor.stop"]
         Departure = self.env["logistics.corridor.departure"]
 
-        # Find corridor serving this origin→dest
+        # Find corridor serving this origin→dest. Direction compatibility is
+        # checked BEFORE day availability: a reverse-direction corridor must
+        # never be substituted merely because it operates on the requested
+        # day.
         day_field = f"operate_{pickup_day.lower()}"
         stops = Stop.search([
             ("region_id", "in", [origin_region.id, dest_region.id]),
             ("active", "=", True),
         ])
         corridor_ids = stops.mapped("corridor_id").ids
-        corridor = Corridor.search([
+        candidates = Corridor.search([
             ("id", "in", corridor_ids),
             ("active", "=", True),
             (day_field, "=", True),
-        ], limit=1)
+        ], order="id")
+        corridor = False
+        for candidate in candidates:
+            if self._directionally_compatible(candidate, origin_region, dest_region):
+                corridor = candidate
+                break
+        if not corridor:
+            # No directionally-compatible corridor operates on this day.
+            # Never fall back to a reverse-direction corridor or a
+            # corridor-less synthetic leg.
+            return None
 
         # Find departure
         date_str = pickup_date.strftime("%Y-%m-%d") if hasattr(pickup_date, 'strftime') else str(pickup_date)[:10]
@@ -602,12 +759,15 @@ class ShipmentRoutingService:
             ("departure_date", "=", date_str),
         ], limit=1)
 
-        # Estimate distance (straight-line with road factor). When the
-        # endpoint coordinates are missing, fall back to the old-region
-        # lane's estimated road distance — the bridge's first concrete
-        # lane-based data point in corridor routing.
+        # Distance priority: the corridor's canonical ordered segment
+        # distance, then the legacy straight-line × 1.4 estimate when the
+        # endpoint coordinates are available, then the old-region lane's
+        # road distance. Never the full corridor length.
         import math
-        if pickup_lat and pickup_lng and delivery_lat and delivery_lng:
+        segment = corridor.resolve_region_segment(origin_region, dest_region) if corridor else False
+        if segment:
+            est_km = segment["distance_km"]
+        elif pickup_lat and pickup_lng and delivery_lat and delivery_lng:
             dx = (delivery_lng - pickup_lng) * 111.32 * math.cos(math.radians((pickup_lat + delivery_lat) / 2))
             dy = (delivery_lat - pickup_lat) * 111.32
             est_km = math.sqrt(dx**2 + dy**2) * 1.4  # road factor

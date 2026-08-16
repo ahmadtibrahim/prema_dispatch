@@ -192,6 +192,32 @@ class BookingOrchestrationService:
 
         return NormalizedBookingRequest(values)
 
+    def _ltl_additional_stop_charge(self, normalized_request, corridor):
+        """LTL additional-stop charge, corridor-configured.
+
+        Delivery stops are grouped by their saved-location city. Each city
+        with N stops adds (N - 1) charges; the totals are summed across
+        cities (e.g. 3 Ottawa stops → 2 charges; 4 stops in one city →
+        3 charges; a lone Belleville stop beside two Ottawa stops → only
+        the extra Ottawa stop is charged).
+
+        Returns (additional_stop_count, additional_stop_rate,
+                 additional_stop_total). Always (0, 0.0, 0.0) for FTL or
+        when the corridor has no configured charge.
+        """
+        if normalized_request.load_type != "ltl" or not corridor:
+            return 0, 0.0, 0.0
+        rate = corridor.ltl_additional_stop_charge or 0.0
+        city_counts = {}
+        for stop in normalized_request.delivery_stops or []:
+            city = (stop.get("city") or "").strip().lower()
+            if city:
+                city_counts[city] = city_counts.get(city, 0) + 1
+        count = sum(max(n - 1, 0) for n in city_counts.values())
+        if not count:
+            return 0, rate, 0.0
+        return count, rate, round(count * rate, 2) if rate else 0.0
+
     def prepare_quote(self, normalized_request: NormalizedBookingRequest, session_ttl_minutes: int = 20) -> dict:
         """Create a pricing session / quote for the customer to review.
 
@@ -251,6 +277,7 @@ class BookingOrchestrationService:
                 weight_lbs=normalized_request.weight_lbs,
                 requested_pickup_date=normalized_request.requested_pickup_date,
                 equipment=normalized_request.equipment_type,
+                shipment_type=normalized_request.load_type,
             )
 
             if not route.available:
@@ -278,6 +305,9 @@ class BookingOrchestrationService:
                     "AMBIGUOUS_DELIVERY": "Delivery region could not be determined precisely.",
                     "MANUAL_REVIEW": "This shipment requires manual scheduling. Please request a quote.",
                     "INVALID_DATE": "The requested pickup date is not valid.",
+                    "FTL_DISPATCHER_APPROVAL": "This load qualifies for Full Truckload and needs dispatcher approval. Please contact us for pricing.",
+                    "FTL_REQUIRES_DIRECT": "Full Truckload service requires a direct corridor between pickup and delivery. Please contact us for pricing.",
+                    "FTL_RATE_NOT_CONFIGURED": "Full Truckload pricing is not configured for this lane. Please contact us for pricing.",
                 }.get(route.reason_code, "This shipment requires manual scheduling. Please request a quote.")
                 raise UserError(_(friendly_reason))
 
@@ -300,9 +330,27 @@ class BookingOrchestrationService:
                     "departure_date": leg.departure_date,
                 })
             route_total = sum(leg.leg_price for leg in route.legs)
-            booking_min = 150.0
-            final_price = max(route_total, booking_min)
-            if route_total < booking_min:
+            is_ftl = route.routing_snapshot.get("pricing_mode") == "ftl"
+            # Minimum Booking Charge comes from the selected corridor's own
+            # configuration — never a hardcoded value.
+            booking_min = corridor.minimum_booking_charge if corridor else 150.0
+            # The routing snapshot is the authoritative LTL total: it already
+            # contains the booking-level pallet-volume discount and the
+            # minimum-charge floor. Never recompute from raw leg prices —
+            # that would silently drop the discount.
+            pricing = route.routing_snapshot.get("pricing") or {}
+            final_price = pricing.get("final_transportation")
+            if final_price is None:
+                final_price = route_total if is_ftl else max(route_total, booking_min)
+            if not is_ftl and pricing.get("volume_discount_pct"):
+                price_lines.append({
+                    "label": "Volume discount (%g%%)" % pricing["volume_discount_pct"],
+                    "distance_km": 0, "pallets": 0,
+                    "rate_per_km": 0, "pallet_rate_per_km": 0,
+                    "amount": round(pricing.get("volume_discount_amount", 0.0) or 0.0, 2),
+                    "departure_date": None,
+                })
+            elif not is_ftl and route_total < booking_min:
                 price_lines.append({
                     "label": "Minimum booking adjustment",
                     "distance_km": 0, "pallets": 0,
@@ -310,6 +358,68 @@ class BookingOrchestrationService:
                     "amount": round(final_price - route_total, 2),
                     "departure_date": None,
                 })
+
+            # LTL additional-stop charge (same-city extra stops, corridor-
+            # configured). Applied after the volume discount and before the
+            # booking-minimum floor; never for FTL.
+            additional_stop_count, additional_stop_rate, additional_stop_total = (
+                0, 0.0, 0.0,
+            )
+            if not is_ftl:
+                additional_stop_count, additional_stop_rate, additional_stop_total = (
+                    self._ltl_additional_stop_charge(normalized_request, corridor)
+                )
+                if additional_stop_total:
+                    final_price = final_price + additional_stop_total
+                    final_price = max(final_price, booking_min)
+                    price_lines.append({
+                        "label": "Additional Stop (%d × $%.2f)" % (
+                            additional_stop_count, additional_stop_rate,
+                        ),
+                        "distance_km": 0, "pallets": 0,
+                        "rate_per_km": 0, "pallet_rate_per_km": 0,
+                        "amount": additional_stop_total,
+                        "departure_date": None,
+                    })
+
+            # Snapshot for the session carries the additional-stop fields
+            # and the final transportation including the charge.
+            route_snapshot_for_session = dict(route.routing_snapshot)
+            session_pricing = dict(route_snapshot_for_session.get("pricing") or {})
+            session_pricing.update({
+                "additional_stop_count": additional_stop_count,
+                "additional_stop_rate": additional_stop_rate,
+                "additional_stop_total": additional_stop_total,
+                "final_transportation": round(final_price, 2),
+            })
+            route_snapshot_for_session["pricing"] = session_pricing
+
+            # Frozen departure capacity for the customer quote page: the
+            # canonical VehicleCapacityService answer for the exact truck
+            # and departure this quote is reserved on.
+            capacity_info = {}
+            try:
+                frozen_departure = (
+                    self.env["logistics.corridor.departure"].sudo().browse(
+                        first_leg.departure_id)
+                    if first_leg and first_leg.departure_id else False
+                )
+            except Exception:
+                frozen_departure = False
+            if frozen_departure and frozen_departure.vehicle_id:
+                from .vehicle_capacity_service import VehicleCapacityService
+                capacity_result = VehicleCapacityService(self.env).evaluate(
+                    frozen_departure.vehicle_id, frozen_departure, 0,
+                )
+                capacity_info = {
+                    "vehicle_name": frozen_departure.vehicle_id.name or "",
+                    "layout_code": (capacity_result["selected_layout"] or {}).get("code", ""),
+                    "layout_name": (capacity_result["selected_layout"] or {}).get("name", ""),
+                    "max_pallets": capacity_result["maximum_capacity"],
+                    "reserved_pallets": capacity_result["reserved_pallets"],
+                    "remaining_pallets": capacity_result["remaining_pallets"],
+                }
+            route_snapshot_for_session["capacity"] = capacity_info
 
             # Create pricing session
             Session = self.env["logistics.pricing.session"].sudo()
@@ -342,7 +452,7 @@ class BookingOrchestrationService:
                 "delivery_date_estimate": est_delivery,
                 "calculated_price": final_price,
                 "price_snapshot": price_lines + [{"_pallet_allocs": normalized_request.pallet_allocations}],
-                "route_snapshot": route.routing_snapshot,
+                "route_snapshot": route_snapshot_for_session,
                 "pickup_saved_location_id": pu_saved_id,
                 "delivery_saved_location_id": de_saved_id,
                 "expires_at": fields.Datetime.now() + datetime.timedelta(minutes=session_ttl_minutes),
@@ -394,6 +504,7 @@ class BookingOrchestrationService:
                 "service_offering_name": "Scheduled LTL" if len(route.legs) == 1 else f"Hub Transfer ({len(route.legs)} legs)",
                 "expires_at": session.expires_at.isoformat() if session.expires_at else None,
                 "legs": len(route.legs),
+                "capacity": capacity_info,
             }
 
         # ── Route B: FSA-only fallback (legacy) ──
@@ -434,6 +545,31 @@ class BookingOrchestrationService:
         if normalized_request.delivery_stops:
             de_saved_id = normalized_request.delivery_stops[0].get("saved_location_id")
 
+        # LTL additional-stop charge (same-city extra stops, corridor-
+        # configured). Applied after the engine total; never for FTL.
+        additional_stop_count, additional_stop_rate, additional_stop_total = (
+            self._ltl_additional_stop_charge(normalized_request, result.corridor)
+        )
+        calculated_price = result.calculated_price
+        price_lines = list(result.price_lines)
+        route_snapshot_for_session = dict(result.route_snapshot or {})
+        session_pricing = dict(route_snapshot_for_session.get("pricing") or {})
+        if additional_stop_total:
+            calculated_price += additional_stop_total
+            price_lines.append({
+                "label": "Additional Stop (%d × $%.2f)" % (
+                    additional_stop_count, additional_stop_rate,
+                ),
+                "amount": additional_stop_total,
+            })
+        session_pricing.update({
+            "additional_stop_count": additional_stop_count,
+            "additional_stop_rate": additional_stop_rate,
+            "additional_stop_total": additional_stop_total,
+            "final_transportation": round(calculated_price, 2),
+        })
+        route_snapshot_for_session["pricing"] = session_pricing
+
         # Create pricing session
         Session = self.env["logistics.pricing.session"].sudo()
         session = Session.create({
@@ -455,9 +591,9 @@ class BookingOrchestrationService:
             "same_day_requested": normalized_request.same_day_requested,
             "pickup_date": result.pickup_date,
             "delivery_date_estimate": result.delivery_date_estimate,
-            "calculated_price": result.calculated_price,
-            "price_snapshot": list(result.price_lines) + [{"_pallet_allocs": normalized_request.pallet_allocations}],
-            "route_snapshot": result.route_snapshot,
+            "calculated_price": calculated_price,
+            "price_snapshot": price_lines + [{"_pallet_allocs": normalized_request.pallet_allocations}],
+            "route_snapshot": route_snapshot_for_session,
             "pickup_saved_location_id": pu_saved_id,
             "delivery_saved_location_id": de_saved_id,
             "expires_at": fields.Datetime.now() + datetime.timedelta(minutes=session_ttl_minutes),
@@ -503,8 +639,8 @@ class BookingOrchestrationService:
             "quote_token": session.token,
             "pickup_date": str(result.pickup_date),
             "delivery_date": str(result.delivery_date_estimate),
-            "calculated_price": result.calculated_price,
-            "price_lines": result.price_lines,
+            "calculated_price": calculated_price,
+            "price_lines": price_lines,
             "lane_name": result.corridor.name,
             "service_offering_name": "Scheduled LTL Corridor",
             "expires_at": session.expires_at.isoformat() if session.expires_at else None,
@@ -1076,10 +1212,13 @@ class BookingOrchestrationService:
                     "temperature mode. Please get a new price."
                 ) % dep.name)
 
-            straight = vehicle.straight_pallet_capacity or 0
-            pinwheel = vehicle.pin_wheel_pallet_capacity or 0
+            # Canonical dynamic capacity: the assigned vehicle's active
+            # pallet layouts decide fit — pinwheel (or any configured
+            # layout) activates automatically, nothing hardcoded.
+            from .vehicle_capacity_service import VehicleCapacityService
+            capacity = VehicleCapacityService(self.env)
             payload = vehicle.x_max_payload_lbs or 0.0
-            if not straight or not pinwheel or not payload:
+            if capacity.maximum_capacity(vehicle) <= 0 or not payload:
                 raise UserError(_(
                     "Departure %s's vehicle capacity is not configured and cannot be booked."
                 ) % dep.name)
@@ -1087,22 +1226,20 @@ class BookingOrchestrationService:
             peak = engine.compute_departure_peak(dep)
             projected_pallets = peak["peak_pallets"] + pallets
             projected_weight = peak["peak_weight"] + weight_lbs
+            remaining = max(capacity.maximum_capacity(vehicle) - peak["peak_pallets"], 0)
 
             if projected_weight > payload:
                 raise UserError(_(
                     "Weight capacity exceeded on %(dep)s: %(cur).0f lb + %(new).0f lb > %(max).0f lb.",
                     dep=dep.name, cur=peak["peak_weight"], new=weight_lbs, max=payload,
                 ))
-            if projected_pallets > pinwheel:
+            valid, _layout = capacity.select_layout(vehicle, projected_pallets)
+            if not valid:
                 raise UserError(_(
-                    "Pallet capacity exceeded on %(dep)s: %(cur)d + %(new)d = %(total)d > %(max)d.",
-                    dep=dep.name, cur=peak["peak_pallets"], new=pallets,
-                    total=projected_pallets, max=pinwheel,
-                ))
-            if projected_pallets > straight and not allow_pinwheel_override:
-                raise UserError(_(
-                    "%(total)d pallets on %(dep)s requires dispatcher override (pinwheel mode).",
-                    total=projected_pallets, dep=dep.name,
+                    "Only %(remaining)s pallet position(s) remain on the "
+                    "selected departure. Please reduce the pallet quantity "
+                    "or choose another departure.",
+                    remaining=remaining,
                 ))
 
             vehicles_by_departure[did] = vehicle

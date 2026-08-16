@@ -10,3 +10,13 @@ from . import test_ordered_lane_pricing
 from . import test_pricing_integration
 from . import test_where_we_go
 from . import test_v5_dispatch_unification
+from . import test_ftl_regional_minimums
+from . import test_ftl_production_integration
+from . import test_ftl_regional_order
+from . import test_ltl_routing_fixes
+from . import test_portal_discount
+from . import test_corridor_dynamic_pricing
+from . import test_ltl_additional_stops
+from . import test_vehicle_capacity
+from . import test_portal_pallet_capacity
+from . import test_pallet_state_sync

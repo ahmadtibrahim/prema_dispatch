@@ -22,6 +22,8 @@ class PricingResult:
         self.price_lines = kwargs.get("price_lines", [])
         self.calculated_price = kwargs.get("calculated_price", 0.0)
         self.route_snapshot = kwargs.get("route_snapshot", {})  # immutable at confirm
+        self.manual_review_required = kwargs.get("manual_review_required", False)
+        self.recommend_ftl = kwargs.get("recommend_ftl", False)
 
 
 class PricingService:
@@ -50,6 +52,18 @@ class PricingService:
         else:
             adjustment = round(adjustment, 2)
         return minimum_charge, adjustment
+
+    @staticmethod
+    def _select_pricing_anchor(topology_legs, origin_region):
+        """Pick the corridor that owns pricing for this shipment: the leg
+        serving the origin region, otherwise the first leg."""
+        for index, leg in enumerate(topology_legs):
+            if origin_region and (
+                leg.get("origin_region_id") == origin_region.id
+                or leg.get("dest_region_id") == origin_region.id
+            ):
+                return leg["corridor"], index
+        return topology_legs[0]["corridor"], 0
 
     def calculate(self, pickup_fsa, delivery_fsa, shipment_type, temperature_mode,
                    pallets, weight_lbs, liftgate_pickup=False, liftgate_delivery=False,
@@ -130,7 +144,106 @@ class PricingService:
             pass
         booking_minimum_charge = max(mins or [0.0])
 
+        # ── FTL classification ────────────────────────────────────────────
+        # The corridor's Enable Full Truckload / FTL Threshold / "When
+        # threshold reached" configuration is the sole authority here.
+        # FTL is an exclusive direct-truck product: a hub-transfer itinerary
+        # is never silently sold as FTL. When Full Truckload is disabled the
+        # booking continues through normal LTL pricing untouched.
+        pricing_anchor, _anchor_index = self._select_pricing_anchor(topology_legs, origin_region)
+        requested_ftl = shipment_type == "ftl"
+        threshold_hit = bool(
+            pricing_anchor.enable_ftl
+            and pricing_anchor.ftl_threshold_pallets
+            and pallets >= pricing_anchor.ftl_threshold_pallets
+        )
+        recommend_ftl = False
+        use_ftl = False
+        if pricing_anchor.enable_ftl:
+            if threshold_hit and pricing_anchor.ftl_behavior == "dispatcher_approval" and not requested_ftl:
+                return PricingResult(
+                    False, reason="ftl_dispatcher_approval_required",
+                    manual_review_required=True, corridor=pricing_anchor,
+                )
+            recommend_ftl = bool(
+                threshold_hit and pricing_anchor.ftl_behavior == "recommend" and not requested_ftl
+            )
+            use_ftl = requested_ftl or (threshold_hit and pricing_anchor.ftl_behavior == "auto_price")
+        if use_ftl and len(topology_legs) != 1:
+            return PricingResult(
+                False, reason="ftl_requires_dedicated_direct_service",
+                manual_review_required=True, corridor=pricing_anchor,
+            )
+
         for index, leg in enumerate(topology_legs):
+            if use_ftl:
+                # One source of truth: the corridor's FTL regional pricing
+                # method owns the calculation, including rule lookup and the
+                # flat-rate / per-km / corridor-default logic. Legacy
+                # minimum-charge fields are never consulted.
+                ftl = pricing_anchor.compute_ftl_price(
+                    origin_region, destination_region, leg["distance_km"] or 0.0,
+                )
+                if ftl["pricing_type"] == "flat_rate":
+                    if not ftl["regional_rule"] or ftl["regional_rule"].flat_rate <= 0:
+                        return PricingResult(
+                            False, reason="ftl_rate_not_configured", corridor=pricing_anchor,
+                        )
+                elif ftl["rate_per_km"] <= 0:
+                    return PricingResult(
+                        False, reason="ftl_rate_not_configured", corridor=pricing_anchor,
+                    )
+                price = ftl["price"]
+                if ftl["pricing_type"] == "flat_rate":
+                    lines = [{"label": "Dedicated FTL (flat rate)", "amount": price}]
+                else:
+                    lines = [{
+                        "label": (
+                            f"Dedicated FTL: {leg['distance_km']:.1f} km × "
+                            f"${ftl['rate_per_km']:.2f}/km"
+                        ),
+                        "amount": price,
+                    }]
+                if ftl["regional_rule"]:
+                    if ftl["pricing_type"] == "flat_rate":
+                        rule_label = "Flat Rate ${:,.2f}".format(ftl["regional_rule"].flat_rate)
+                    elif ftl["pricing_type"] == "per_km":
+                        rule_label = "${:.2f}/km".format(ftl["regional_rule"].ftl_rate_per_km_override)
+                    else:
+                        rule_label = "Corridor Default"
+                    lines.append({
+                        "label": (
+                            f"FTL regional pricing "
+                            f"({ftl['regional_rule'].origin_region_id.code} → "
+                            f"{ftl['regional_rule'].destination_region_id.code}): "
+                            f"{rule_label}"
+                        ),
+                        "amount": 0.0,
+                    })
+                snapshot = dict(leg)
+                for non_json_key in ("corridor", "hub", "lane", "rate_plan"):
+                    snapshot.pop(non_json_key, None)
+                snapshot.update({
+                    "sequence": index + 1,
+                    "price": price,
+                    "price_lines": lines,
+                    "pricing_formula": {
+                        "pricing_method": "ftl_regional_minimum",
+                        "distance_km": leg["distance_km"],
+                        "rate_per_km": ftl["rate_per_km"],
+                        "distance_price": ftl["distance_price"],
+                        "regional_rule_id": ftl["regional_rule"].id if ftl["regional_rule"] else False,
+                        "pricing_type": ftl["pricing_type"],
+                        "flat_rate": (
+                            ftl["regional_rule"].flat_rate if ftl["regional_rule"] else 0.0
+                        ),
+                    },
+                    "pallets": pallets,
+                    "weight_lbs": weight_lbs,
+                })
+                leg_snapshots.append(snapshot)
+                all_lines.extend(lines)
+                continue
             breakdown = self.calculate_leg_per_km(
                 leg["distance_km"], leg["rate_per_km"], leg["planned_pallets"],
                 pallets, leg["included_weight_per_pallet"], weight_lbs, currency=currency,
@@ -164,8 +277,27 @@ class PricingService:
             all_lines.extend(lines)
 
         subtotal = currency.round(sum(leg["price"] for leg in leg_snapshots))
+        # Pallet-volume discount: applied ONCE on the booking's LTL freight
+        # total (never per leg, never to FTL). The pricing-anchor corridor
+        # owns the tier configuration.
+        volume_discount_pct = 0.0
+        volume_discount_amount = 0.0
+        if not use_ftl and pricing_anchor.enable_volume_discounts:
+            volume_discount_pct = self.env["logistics.pallet.volume.tier"].get_discount_for_pallets(
+                pricing_anchor.id, pallets,
+            )
+            if volume_discount_pct:
+                discount_amount = currency.round(subtotal * volume_discount_pct / 100.0)
+                volume_discount_amount = -discount_amount
+                subtotal = currency.round(subtotal - discount_amount)
+                all_lines.append({
+                    "label": "Pallet volume discount (%g%%)" % volume_discount_pct,
+                    "amount": -discount_amount,
+                })
+        # FTL price carries its own floor (the regional minimum) and never
+        # the LTL booking minimum.
         total, minimum_adjustment = self._apply_booking_minimum(
-            subtotal, booking_minimum_charge, currency=currency,
+            subtotal, 0.0 if use_ftl else booking_minimum_charge, currency=currency,
         )
         if minimum_adjustment:
             leg_snapshots[-1]["price"] = currency.round(leg_snapshots[-1]["price"] + minimum_adjustment)
@@ -190,8 +322,12 @@ class PricingService:
             "required_temperature_c": required_temperature_c,
             "shipment_type": shipment_type,
             "transfer_hub_id": transfer_hub_id,
-            "minimum_booking_charge": booking_minimum_charge,
+            "minimum_booking_charge": 0.0 if use_ftl else booking_minimum_charge,
             "pricing_authority": "corridor_per_km",
+            "ftl_priced": use_ftl,
+            "recommend_ftl": recommend_ftl,
+            "volume_discount_pct": volume_discount_pct,
+            "volume_discount_amount": volume_discount_amount,
         }
 
         primary_corridor = topology_legs[0]["corridor"]
@@ -207,6 +343,7 @@ class PricingService:
             price_lines=all_lines,
             calculated_price=total,
             route_snapshot=route_snapshot,
+            recommend_ftl=recommend_ftl,
         )
 
     @staticmethod

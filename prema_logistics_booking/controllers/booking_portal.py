@@ -5,6 +5,187 @@ from odoo.exceptions import AccessError, UserError
 from odoo.http import request
 from werkzeug.exceptions import NotFound
 
+def _allocate_transportation(route_total, cumulative_distances, onboard_counts):
+    """Display-only explanatory allocation of an EXISTING route-level
+    transportation total across stops.
+
+    segment_weight_i = incremental_distance_i × pallets_onboard_i
+    stop_amount_i    = route_total × segment_weight_i / Σ segment_weights
+
+    Falls back to distance-share (onboard ignored) when onboard counts are
+    incomplete. Residual rounding goes to the final stop. Never changes the
+    authoritative total."""
+    amounts = [0.0] * len(cumulative_distances)
+    if not cumulative_distances or route_total <= 0:
+        return amounts
+    increments = []
+    previous = 0.0
+    for cumulative in cumulative_distances:
+        increments.append(max(0.0, cumulative - previous))
+        previous = cumulative
+    has_onboard = len(onboard_counts) == len(increments) and all(
+        count > 0 for count in onboard_counts)
+    weights = []
+    for index, increment in enumerate(increments):
+        onboard = onboard_counts[index] if has_onboard else 1
+        weights.append(increment * onboard)
+    total_weight = sum(weights)
+    if total_weight <= 0:
+        return amounts
+    remaining = route_total
+    for index in range(len(amounts) - 1):
+        share = round(route_total * weights[index] / total_weight, 2)
+        amounts[index] = share
+        remaining -= share
+    amounts[-1] = round(remaining, 2)
+    return amounts
+
+
+def _allocated_stop_weights(session, delivery_stops):
+    """Display-only stop weights derived from the actual session values:
+    average_pallet_weight = total_weight_lbs / physical_pallets, then
+    stop_weight = average × pallets assigned to that stop. Shared pallets
+    are counted once, at their first assigned stop (no physical weight
+    duplication). Falls back to the stop dicts' own values when no
+    allocation data exists."""
+    stops = []
+    for index, stop in enumerate(delivery_stops or []):
+        if not isinstance(stop, dict):
+            # Records pass through untouched — the template renders them
+            # with their own fields.
+            stops.append(stop)
+            continue
+        entry = dict(stop)
+        entry.setdefault("sequence", index + 1)
+        stops.append(entry)
+    if not stops:
+        return stops
+    physical = session.physical_pallets or session.pallets or 1
+    allocations = session.pallet_allocations or []
+    if not allocations:
+        return stops
+    average = (session.weight_lbs or 0.0) / float(physical)
+    assigned = {index + 1: 0 for index in range(len(stops))}
+    for alloc in allocations:
+        stops_of_pallet = alloc.get("stops") or []
+        if stops_of_pallet:
+            # Shared pallets count once, at their first stop.
+            target = min(stops_of_pallet)
+            assigned[target] = assigned.get(target, 0) + 1
+    for index, stop in enumerate(stops):
+        count = assigned.get(index + 1, 0)
+        if count:
+            stop["weight_lbs"] = round(average * count, 1)
+    return stops
+
+
+def _build_stop_pricing(session):
+    """Customer-facing pricing breakdown built ONLY from the session's
+    existing price_snapshot lines. No pricing is computed here; the
+    components reconcile to calculated_price by construction.
+
+    Attribution rule:
+    - One leg per stop → leg amounts map to stops directly.
+    - ONE route-level leg for MULTIPLE stops → show a single "Route
+      Transportation" line and mark every stop "Included in Route"
+      (never assign the whole route price to one arbitrary stop)."""
+    stops = []
+    for index, stop in enumerate(session.delivery_stop_ids.sorted("sequence")):
+        stops.append({
+            "index": index + 1,
+            "name": stop.location_name or stop.city or ("Stop %d" % (index + 1)),
+            "city": stop.city or "",
+            "amount": 0.0,
+        })
+    booking_level = []
+    route_transportation = 0.0
+    leg_lines = []
+    for line in session.price_snapshot or []:
+        if not isinstance(line, dict):
+            continue
+        label = line.get("label", "")
+        amount = line.get("amount", 0.0) or 0.0
+        if label.startswith("Leg "):
+            leg_lines.append(amount)
+        elif any(key in label for key in ("Volume discount", "Additional Stop", "Minimum booking")):
+            booking_level.append({"label": label, "amount": amount})
+    if leg_lines and len(stops) > 1 and len(leg_lines) == 1:
+        route_transportation = round(sum(leg_lines), 2)
+        # Explanatory per-stop allocation (display-only): corridor segment
+        # distances from each stop's resolved region × pallets onboard.
+        try:
+            from ..services.region_resolver import RegionResolver
+            resolver = RegionResolver(session.env)
+            corridor = session.corridor_id
+            corridor_stops = corridor.stop_ids.filtered(
+                lambda s: s.active and s.region_id).sorted("sequence") if corridor else []
+            cumulative = []
+            onboard = []
+            allocations = session.pallet_allocations or []
+            for stop in session.delivery_stop_ids.sorted("sequence"):
+                region = False
+                if stop.latitude and stop.longitude:
+                    match = resolver.resolve(stop.latitude, stop.longitude)
+                    region = match.matched_region
+                matched = next(
+                    (s for s in corridor_stops if region and s.region_id == region),
+                    None,
+                )
+                cumulative.append(
+                    matched.distance_from_origin_km if matched else 0.0)
+                delivered = len([
+                    a for a in allocations
+                    if a.get("stops") and stop.sequence in a.get("stops", [])
+                ])
+                onboard.append(delivered if delivered else 0)
+            if all(cumulative):
+                amounts = _allocate_transportation(
+                    route_transportation, cumulative, onboard)
+                for index, stop in enumerate(stops):
+                    stop["amount"] = amounts[index]
+        except Exception:
+            pass
+    else:
+        for leg_no, amount in enumerate(leg_lines):
+            if stops:
+                target = min(leg_no, len(stops) - 1)
+                stops[target]["amount"] = round(stops[target]["amount"] + amount, 2)
+    # Route label: pickup city → stop cities (display only).
+    route_label = ""
+    if route_transportation:
+        pickup_city = (session.pickup_saved_location_id.city
+                       if session.pickup_saved_location_id else "")
+        cities = [s["city"] for s in stops if s["city"]]
+        route_label = " → ".join([c for c in [pickup_city] + cities if c])
+    return {
+        "stops": stops,
+        "booking_level": booking_level,
+        "route_transportation": route_transportation,
+        "route_label": route_label,
+        "total": session.calculated_price or 0.0,
+    }
+
+
+def _reconcile_pallet_allocations(physical_pallets, allocations):
+    """Make the allocation list length match the submitted physical pallet
+    count. Missing pallets are padded with default unallocated records
+    (pallet N, no stops, dedicated); extra records are dropped. This keeps
+    the quote payload, pricing session, and booking consistent even when
+    frontend state is stale — never a silent mismatch, never a 500."""
+    reconciled = []
+    for index in range(1, physical_pallets + 1):
+        record = next(
+            (a for a in (allocations or [])
+             if isinstance(a, dict) and a.get("pallet") == index),
+            None,
+        )
+        if record:
+            reconciled.append(record)
+        else:
+            reconciled.append({"pallet": index, "stops": [], "shared": False})
+    return reconciled
+
+
 def _parse_time_float(val):
     """Convert HH:MM string to float hours (e.g. '11:30' → 11.5)."""
     if not val:
@@ -379,6 +560,10 @@ class LogisticsBookingPortal(http.Controller):
                     pallet_allocations = json.loads(allocs_json)
                 except (json.JSONDecodeError, TypeError):
                     pallet_allocations = []
+            # Hard consistency: the submitted allocation records must match
+            # the submitted physical pallet count exactly.
+            pallet_allocations = _reconcile_pallet_allocations(
+                physical_pallets, pallet_allocations)
         except ValueError:
             # Build error context with all required template vars
             pu_loc_for_err = SavedLocation.browse(int(pickup_loc_id)) if pickup_loc_id and SavedLocation.browse(int(pickup_loc_id)).exists() else None
@@ -393,6 +578,43 @@ class LogisticsBookingPortal(http.Controller):
                 "pickup_loc_id": pickup_loc_id, "delivery_loc_id": delivery_loc_id,
                 "error": _("Please enter a valid pallet count and weight."),
             })
+
+        # ── Server-side capacity pre-check (Get Price) ─────────────────
+        # The customer can never quote more pallets than the selected
+        # departure's truck can carry. The authoritative locked re-check
+        # still runs at confirmation.
+        requested_pickup_date = kwargs.get("requested_pickup_date", "").strip() or None
+        if pickup_fsa or (kwargs.get("pickup_lat") and kwargs.get("pickup_lng")):
+            try:
+                from ..services.region_resolver import RegionResolver
+                from ..services.vehicle_capacity_service import VehicleCapacityService
+                pickup_region = pickup_fsa.region_id if pickup_fsa else False
+                if not pickup_region and kwargs.get("pickup_lat") and kwargs.get("pickup_lng"):
+                    match = RegionResolver(request.env).resolve(
+                        float(kwargs["pickup_lat"]), float(kwargs["pickup_lng"]))
+                    pickup_region = match.matched_region
+                capacity = VehicleCapacityService.for_pickup_date(
+                    request.env, pickup_region, requested_pickup_date)
+                if capacity.get("available") and physical_pallets > capacity["remaining_pallets"]:
+                    pu_loc_for_err = SavedLocation.browse(int(pickup_loc_id)) if pickup_loc_id and SavedLocation.browse(int(pickup_loc_id)).exists() else None
+                    de_loc_for_err = SavedLocation.browse(int(delivery_loc_id)) if delivery_loc_id and SavedLocation.browse(int(delivery_loc_id)).exists() else None
+                    return request.render("prema_logistics_booking.portal_step2_shipment", {
+                        "pickup_fsa": pickup_fsa, "delivery_fsa": delivery_fsa,
+                        "pickup_loc": pu_loc_for_err, "delivery_loc": de_loc_for_err,
+                        "pickup_lat": float(kwargs.get("pickup_lat") or 0) if kwargs.get("pickup_lat") else 0,
+                        "pickup_lng": float(kwargs.get("pickup_lng") or 0) if kwargs.get("pickup_lng") else 0,
+                        "delivery_lat": float(kwargs.get("delivery_lat") or 0) if kwargs.get("delivery_lat") else 0,
+                        "delivery_lng": float(kwargs.get("delivery_lng") or 0) if kwargs.get("delivery_lng") else 0,
+                        "pickup_loc_id": pickup_loc_id, "delivery_loc_id": delivery_loc_id,
+                        "error": _(
+                            "Only %(remaining)s pallet positions remain on the "
+                            "selected departure. Please reduce the pallet "
+                            "quantity or choose another pickup date.",
+                            remaining=capacity["remaining_pallets"],
+                        ),
+                    })
+            except (ValueError, TypeError):
+                pass
 
         shipment_type = kwargs.get("shipment_type") or "ltl"
         temperature_mode = kwargs.get("temperature_mode") or "dry"
@@ -530,12 +752,40 @@ class LogisticsBookingPortal(http.Controller):
         return request.render("prema_logistics_booking.portal_step3_result", {
             "session": session,
             "pickup_fsa": pickup_fsa, "delivery_fsa": delivery_fsa,
-            "pickup_loc": pickup_loc, "delivery_stops": delivery_stops,
+            "pickup_loc": pickup_loc,
+            "delivery_stops": _allocated_stop_weights(session, delivery_stops),
+            "stop_pricing": _build_stop_pricing(session),
         })
 
     # ------------------------------------------------------------------
     # Step 4: confirm (full addresses -> atomic transaction)
     # ------------------------------------------------------------------
+    @http.route("/my/booking/capacity", type="http", auth="user", website=True, sitemap=False, methods=["GET"])
+    def booking_capacity(self, **kwargs):
+        """Dynamic remaining pallet capacity for the departure serving the
+        pickup region on the requested date. Consumed by the Total Physical
+        Pallets stepper (max, helper text, disabled state)."""
+        from ..services.region_resolver import RegionResolver
+        from ..services.vehicle_capacity_service import VehicleCapacityService
+
+        region = False
+        if kwargs.get("pickup_lat") and kwargs.get("pickup_lng"):
+            try:
+                match = RegionResolver(request.env).resolve(
+                    float(kwargs["pickup_lat"]), float(kwargs["pickup_lng"]))
+                region = match.matched_region
+            except (ValueError, TypeError):
+                region = False
+        if not region and kwargs.get("pickup_fsa"):
+            fsa = request.env["logistics.fsa"].sudo().search(
+                [("fsa", "=", str(kwargs["pickup_fsa"]).strip().upper()[:3])],
+                limit=1,
+            )
+            region = fsa.region_id
+        data = VehicleCapacityService.for_pickup_date(
+            request.env, region, kwargs.get("pickup_date"))
+        return request.make_json_response(data)
+
     @http.route("/my/booking/confirm", type="http", auth="user", website=True, sitemap=False, methods=["POST"])
     def booking_confirm(self, **kwargs):
         require_visible()

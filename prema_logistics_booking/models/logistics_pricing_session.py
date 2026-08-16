@@ -88,6 +88,21 @@ class LogisticsPricingSession(models.TransientModel):
         self.ensure_one()
         return fields.Datetime.now() > self.expires_at
 
+    def _get_pallet_allocations(self):
+        """Extract pallet_allocations from price_snapshot (zero-migration
+        approach, same convention as logistics.booking). The quote page
+        renders session.pallet_allocations directly."""
+        return self.env["logistics.booking"]._extract_pallet_allocs_from_snapshot(
+            self.price_snapshot,
+        )
+
+    pallet_allocations = fields.Json(compute="_compute_pallet_allocations")
+
+    @api.depends("price_snapshot")
+    def _compute_pallet_allocations(self):
+        for session in self:
+            session.pallet_allocations = session._get_pallet_allocations()
+
     @api.autovacuum
     def _gc_expired_sessions(self):
         # Belt-and-suspenders on top of Odoo's own TransientModel vacuum —

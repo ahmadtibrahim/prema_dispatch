@@ -118,6 +118,7 @@
                                     <field name="planned_pallets"/>
                                     <field name="included_weight_per_pallet"/>
                                     <field name="minimum_booking_charge" widget="monetary"/>
+                                    <field name="ltl_additional_stop_charge" widget="monetary"/>
                                     <field name="excess_weight_rate_per_lb" string="Excess Weight $ / lb"/>
                                     <field name="currency_id" invisible="1"/>
                                 </group>
@@ -147,16 +148,32 @@
 
                             <!-- Full Truckload -->
                             <group string="Full Truckload">
-                                <field name="enable_ftl" widget="boolean_toggle"/>
+                                <field name="enable_ftl" string="Enable Full Truckload" widget="boolean_toggle"/>
                                 <group invisible="enable_ftl == False">
                                     <group>
                                         <field name="ftl_threshold_pallets"/>
                                         <field name="ftl_rate_per_km" string="FTL $ / km"/>
-                                        <field name="ftl_minimum_charge" widget="monetary"/>
                                     </group>
                                     <group>
                                         <field name="ftl_reserve_entire_truck"/>
                                         <field name="ftl_behavior" string="When threshold reached"/>
+                                    </group>
+                                    <group string="FTL Regional Pricing" colspan="4">
+                                        <field name="ftl_regional_minimum_ids" nolabel="1">
+                                            <list editable="bottom" string="FTL Regional Pricing">
+                                                <field name="sequence" widget="handle"/>
+                                                <field name="origin_region_id" options="{'no_create': True}"/>
+                                                <field name="destination_region_id" options="{'no_create': True}"/>
+                                                <field name="pricing_type"/>
+                                                <!-- Both columns stay visible: Odoo 18 evaluates
+                                                     column_invisible without a row context inside
+                                                     embedded one2many lists and crashes the form.
+                                                     Backend validation enforces per-type values. -->
+                                                <field name="flat_rate" widget="monetary"/>
+                                                <field name="ftl_rate_per_km_override"/>
+                                                <field name="active"/>
+                                            </list>
+                                        </field>
                                     </group>
                                 </group>
                             </group>
@@ -209,6 +226,16 @@
                         <field name="computed_peak_pallets" readonly="1"/>
                         <field name="computed_total_handled" readonly="1"/>
                         <field name="computed_peak_weight" readonly="1"/>
+                    </group>
+                    <group string="Pallet Capacity &amp; Layout" col="6">
+                        <field name="capacity_layout_code" readonly="1"/>
+                        <field name="capacity_layout_name" readonly="1"/>
+                        <field name="capacity_max_pallets" readonly="1"/>
+                        <field name="capacity_reserved_pallets" readonly="1"/>
+                        <field name="capacity_remaining_pallets" readonly="1"/>
+                        <field name="capacity_layout_override_id"
+                               domain="[('vehicle_id', '=', vehicle_id), ('active', '=', True)]"
+                               options="{'no_create': True}"/>
                     </group>
                 </sheet>
             </form>

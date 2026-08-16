@@ -537,8 +537,13 @@
                 </div>
                 <div class="col-md-3">
                     <label class="form-label">Total Physical Pallets *</label>
-                    <input type="number" id="pallets_input" name="physical_pallets" class="form-control" min="1" value="1" required="required"/>
-                    <div class="form-text">Actual pallet/skid units on the truck</div>
+                    <div class="input-group" style="max-width:220px">
+                        <button type="button" class="btn btn-outline-secondary btn-sm" id="pallets_minus">−</button>
+                        <input type="number" id="pallets_input" name="physical_pallets" class="form-control text-center" min="1" value="1" required="required"/>
+                        <button type="button" class="btn btn-outline-secondary btn-sm" id="pallets_plus">+</button>
+                    </div>
+                    <div class="form-text" id="pallets_capacity_hint">Actual pallet/skid units on the truck</div>
+                    <div class="form-text text-danger" id="pallets_capacity_error" style="display:none"/>
                 </div>
                 <div class="col-md-3">
                     <label class="form-label">Total Weight (lbs)</label>
@@ -685,7 +690,7 @@
             var weightHint = document.getElementById('weight_hint');
             var resetLink = document.getElementById('reset_weight_link');
             var weightManual = false;
-            var WEIGHT_PER_PALLET = 500;
+            var WEIGHT_PER_PALLET = 500;  // initial fallback; updated from the corridor config via the capacity endpoint
 
             function autoWeight() {
                 if (weightManual) return;
@@ -693,6 +698,11 @@
                 weightEl.value = p * WEIGHT_PER_PALLET;
                 weightHint.style.display = 'none';
             }
+            // Exposed for the stepper and capacity-refresh paths so the
+            // weight always tracks pallet changes (programmatic writes do
+            // not fire 'input' events).
+            function syncCalculatedWeight() { autoWeight(); }
+            if (palletsEl && weightEl) { syncCalculatedWeight(); }  // initial load
             if (palletsEl && weightEl) {
                 palletsEl.addEventListener('input', function() { autoWeight(); fetchEligibleDates(); });
                 weightEl.addEventListener('input', function() { if (document.activeElement === weightEl) { weightManual = true; weightHint.style.display = ''; } });
@@ -743,7 +753,143 @@
                 displayEl.textContent = fmtDisplay(ds);
                 renderCards();
                 if (calExpanded.style.display !== 'none') renderCalendarGrid();
+                refreshPalletCapacity();
             }
+
+            // ════════════════════════════════════════════════════════════
+            // Dynamic pallet capacity (canonical VehicleCapacityService)
+            // ════════════════════════════════════════════════════════════
+            var palletsMax = 0;        // dynamic remaining capacity for the selected departure
+            var palletsInput = document.getElementById('pallets_input');
+            var capacityHint = document.getElementById('pallets_capacity_hint');
+            var capacityError = document.getElementById('pallets_capacity_error');
+            var getPriceBtn = document.querySelector('button[type="submit"]');
+
+            function showCapacityError(msg) {
+                capacityError.textContent = msg;
+                capacityError.style.display = msg ? '' : 'none';
+            }
+
+            function applyPalletMax() {
+                if (palletsMax >= 1) {
+                    palletsInput.max = palletsMax;
+                    palletsInput.min = 1;
+                    var cur = parseInt(palletsInput.value || '1', 10);
+                    if (isNaN(cur) || cur < 1) { palletsInput.value = 1; }
+                    else if (cur > palletsMax) { palletsInput.value = palletsMax; }
+                    capacityHint.textContent = palletsMax + ' pallet position' + (palletsMax === 1 ? '' : 's') + ' available on this departure';
+                    palletsInput.disabled = false;
+                    if (getPriceBtn) { getPriceBtn.disabled = false; }
+                    showCapacityError('');
+                    syncCalculatedWeight();
+                    if (typeof buildPalletAllocations === 'function') { buildPalletAllocations(); }
+                } else {
+                    palletsInput.max = 1;
+                    palletsInput.value = '';
+                    palletsInput.disabled = true;
+                    capacityHint.textContent = 'This departure is fully booked. Please choose another pickup date.';
+                    if (getPriceBtn) { getPriceBtn.disabled = true; }
+                    showCapacityError('');
+                }
+            }
+
+            function refreshPalletCapacity() {
+                var date = hiddenDate.value;
+                var puLat = parseFloat(document.querySelector('input[name="pickup_lat"]')?.value || 0);
+                var puLng = parseFloat(document.querySelector('input[name="pickup_lng"]')?.value || 0);
+                if (!date) return;
+                capacityHint.textContent = 'Checking capacity…';
+                var params = 'pickup_date=' + encodeURIComponent(date) +
+                    '&pickup_lat=' + puLat + '&pickup_lng=' + puLng;
+                fetch('/my/booking/capacity?' + params, {credentials: 'same-origin'})
+                    .then(function(r) { return r.json(); })
+                    .then(function(data) {
+                        if (data && data.available) {
+                            palletsMax = data.remaining_pallets;
+                        } else if (data && !data.available) {
+                            palletsMax = 0;   // no service on this date
+                        } else {
+                            palletsMax = 0;
+                        }
+                        if (data && data.per_pallet_weight) {
+                            WEIGHT_PER_PALLET = data.per_pallet_weight;
+                            if (resetLink) { resetLink.textContent = 'Reset to ' + WEIGHT_PER_PALLET + ' lb/pallet'; }
+                        }
+                        applyPalletMax();
+                        syncCalculatedWeight();
+                    })
+                    .catch(function() {
+                        palletsMax = 0;
+                        capacityHint.textContent = 'Could not check capacity. Please try again.';
+                    });
+            }
+
+            function stepPallets(delta) {
+                if (palletsInput.disabled) return;
+                var cur = parseInt(palletsInput.value || '1', 10);
+                if (isNaN(cur)) { cur = 1; }
+                var next = cur + delta;
+                if (delta > 0 && cur >= palletsMax) {
+                    showCapacityError('You have reached the maximum available capacity for this departure.');
+                    return;
+                }
+                if (next < 1) { next = 1; }
+                if (next > palletsMax) { next = palletsMax; }
+                palletsInput.value = next;
+                showCapacityError('');
+                syncCalculatedWeight();
+                if (typeof buildPalletAllocations === 'function') { buildPalletAllocations(); }
+            }
+
+            function validatePalletInput() {
+                if (palletsInput.disabled) return true;
+                var raw = palletsInput.value;
+                var cur = parseInt(raw, 10);
+                if (raw === '' || isNaN(cur) || cur < 1) {
+                    showCapacityError('Please enter a valid pallet quantity (1 or more).');
+                    return false;
+                }
+                if (cur > palletsMax) {
+                    showCapacityError('Only ' + palletsMax + ' pallet positions are available on this departure.');
+                    return false;
+                }
+                showCapacityError('');
+                return true;
+            }
+            if (palletsInput) {
+                palletsInput.addEventListener('blur', validatePalletInput);
+                palletsInput.addEventListener('input', function() {
+                    var cur = parseInt(palletsInput.value, 10);
+                    if (!isNaN(cur) && palletsMax >= 1 && cur > palletsMax) {
+                        showCapacityError('Only ' + palletsMax + ' pallet positions are available on this departure.');
+                    } else {
+                        showCapacityError('');
+                    }
+                });
+                palletsInput.addEventListener('wheel', function(ev) {
+                    // Browser spinner cannot exceed the dynamic max.
+                    if (palletCapacityAtMax()) { ev.preventDefault(); }
+                });
+            }
+            function palletCapacityAtMax() {
+                return parseInt(palletsInput.value || '0', 10) >= palletsMax;
+            }
+            if (palletsInput) {
+                var palletForm = palletsInput.closest('form');
+                if (palletForm) {
+                    palletForm.addEventListener('submit', function(ev) {
+                        if (!validatePalletInput()) { ev.preventDefault(); }
+                    });
+                }
+            }
+            // Stepper buttons: bound listeners instead of inline onclick, so
+            // the control never depends on global function resolution.
+            (function bindStepperButtons() {
+                var plus = document.getElementById('pallets_plus');
+                var minus = document.getElementById('pallets_minus');
+                if (plus) { plus.addEventListener('click', function() { stepPallets(1); }); }
+                if (minus) { minus.addEventListener('click', function() { stepPallets(-1); }); }
+            })();
 
             // ════════════════════════════════════════════════════════════
             // Fetch eligible dates from backend
@@ -780,6 +926,7 @@
                         }
                         renderCards();
                         if (calExpanded.style.display !== 'none') renderCalendarGrid();
+                        refreshPalletCapacity();
                     })
                     .catch(function() {
                         cardsDiv.innerHTML = '<div class="col-12 text-danger py-2">Could not load availability. Please try again.</div>';
@@ -860,7 +1007,9 @@
                     var startDay = first.getDay(); // 0=Sun
                     var totalDays = last.getDate();
                     var today = new Date(); today.setHours(0,0,0,0);
-                    var sel = hiddenDate.value;
+                    // Normalized YYYY-MM-DD comparison — never let a
+                    // datetime value or timezone drift break the highlight.
+                    var sel = String(hiddenDate.value || '').slice(0, 10);
 
                     var h = '';
                     // Header with nav arrows
@@ -1177,7 +1326,19 @@
                                         <strong>Pallet <t t-esc="pa.get('pallet', '?')"/></strong>
                                         <t t-if="pa.get('shared')"><span class="badge ms-1" style="background:#7b1fa2;color:#fff">SHARED — <t t-esc="len(pa.get('stops', []))"/> STOPS</span></t>
                                         <t t-if="not pa.get('shared')"><span class="badge ms-1" style="background:#6c757d;color:#fff">DEDICATED</span></t>
-                                        <br/><small class="text-muted">→ </small>
+                                        <br/><small class="text-muted">→
+                                            <t t-if="pa.get('stops')">
+                                                <t t-foreach="pa.get('stops')" t-as="si">
+                                                    <t t-foreach="session.delivery_stop_ids" t-as="st">
+                                                        <t t-if="st.sequence == si">
+                                                            <t t-esc="st.location_name or st.city"/>
+                                                            <t t-if="si != pa.get('stops')[len(pa.get('stops')) - 1]">, </t>
+                                                        </t>
+                                                    </t>
+                                                </t>
+                                            </t>
+                                            <t t-if="not pa.get('stops')">Flexible / unassigned</t>
+                                        </small>
                                     </div>
                                 </t>
                             </t>
@@ -1329,6 +1490,44 @@
             <div class="card mb-4">
                 <div class="card-header bg-light"><strong>PRICING SUMMARY</strong></div>
                 <div class="card-body">
+                    <!-- Per-stop breakdown built from the session's own
+                         priced components; reconciles to calculated_price. -->
+                    <t t-if="stop_pricing and len(stop_pricing['stops']) > 1">
+                        <t t-if="stop_pricing['route_transportation'] > 0">
+                            <small class="text-muted">Allocated Transportation</small>
+                        </t>
+                        <t t-foreach="stop_pricing['stops']" t-as="sp">
+                            <div class="d-flex justify-content-between align-items-center py-1">
+                                <span><strong t-esc="sp['index']"/>.
+                                    <t t-esc="sp['name']"/>
+                                    <t t-if="sp['city']"><small class="text-muted"> — <t t-esc="sp['city']"/></small></t>
+                                </span>
+                                <t t-if="sp['amount'] > 0">
+                                    <span>$<t t-esc="'%.2f' % sp['amount']"/></span>
+                                </t>
+                                <t t-if="sp['amount'] &lt;= 0">
+                                    <small class="text-muted">Included in Route</small>
+                                </t>
+                            </div>
+                        </t>
+                        <t t-if="stop_pricing['route_transportation'] > 0">
+                            <div class="d-flex justify-content-between align-items-center py-1 border-top">
+                                <span><strong>Transportation Subtotal</strong>
+                                    <t t-if="stop_pricing['route_label']">
+                                        <small class="text-muted"> — <t t-esc="stop_pricing['route_label']"/></small>
+                                    </t>
+                                </span>
+                                <span>$<t t-esc="'%.2f' % stop_pricing['route_transportation']"/></span>
+                            </div>
+                        </t>
+                        <t t-foreach="stop_pricing['booking_level']" t-as="bl">
+                            <div class="d-flex justify-content-between align-items-center py-1 border-top">
+                                <small class="text-muted"><t t-esc="bl['label']"/></small>
+                                <span>$<t t-esc="'%.2f' % bl['amount']"/></span>
+                            </div>
+                        </t>
+                        <hr/>
+                    </t>
                     <div class="d-flex justify-content-between align-items-center mb-2">
                         <t t-if="session.shared_pallet_mode and delivery_stops">
                             <span><t t-esc="session.physical_pallets or session.pallets"/> Physical Pallet<t t-if="(session.physical_pallets or session.pallets) != 1">s</t> · Shared Across <t t-esc="len(delivery_stops)"/> Stops × LTL Scheduled Service</span>

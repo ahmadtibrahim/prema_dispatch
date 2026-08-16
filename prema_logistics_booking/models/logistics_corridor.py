@@ -107,6 +107,11 @@ class LogisticsCorridor(models.Model):
         string="Minimum Booking Charge", default=150.0,
         help="Applied once to the complete booking, never once per transfer leg.",
     )
+    ltl_additional_stop_charge = fields.Monetary(
+        string="Additional Stop Charge", default=0.0,
+        help="Charge applied for each additional delivery stop within the "
+             "same destination city/region after the first stop.",
+    )
     currency_id = fields.Many2one(
         "res.currency", default=lambda self: self.env.company.currency_id,
     )
@@ -144,7 +149,15 @@ class LogisticsCorridor(models.Model):
         help="Physical pallets at or above this count trigger FTL pricing.",
     )
     ftl_rate_per_km = fields.Float(string="FTL $ / km", default=0.0)
+    # Retired from pricing and UI — replaced by FTL Regional Minimums
+    # (ftl_regional_minimum_ids). Kept as a database column for migration
+    # compatibility with existing corridor records; never read by any new
+    # FTL calculation.
     ftl_minimum_charge = fields.Monetary(string="Minimum FTL Charge", default=0.0)
+    ftl_regional_minimum_ids = fields.One2many(
+        "logistics.ftl.regional.minimum", "corridor_id",
+        string="FTL Regional Pricing", copy=True,
+    )
     ftl_reserve_entire_truck = fields.Boolean(string="Reserve Entire Truck", default=True)
     ftl_behavior = fields.Selection([
         ("recommend", "Recommend FTL"),
@@ -247,6 +260,54 @@ class LogisticsCorridor(models.Model):
                 raise ValidationError(_("Included weight per pallet must be greater than zero."))
             if not 1 <= (rec.departure_horizon_weeks or 0) <= 8:
                 raise ValidationError(_("Customer booking horizon must be between 1 and 8 weeks."))
+
+    def get_ftl_regional_rule(self, origin_region, destination_region):
+        """Return the active FTL Regional Pricing rule for an exact
+        origin → destination region pair (empty recordset when none)."""
+        self.ensure_one()
+        return self.ftl_regional_minimum_ids.filtered(
+            lambda rule: rule.active
+            and rule.origin_region_id == origin_region
+            and rule.destination_region_id == destination_region
+        )[:1]
+
+    def compute_ftl_price(self, origin_region, destination_region, distance_km):
+        """FTL regional pricing for one dedicated truck movement.
+
+        No exact active rule        → distance × corridor FTL $ / km.
+        pricing_type corridor_default → distance × corridor FTL $ / km.
+        pricing_type flat_rate        → rule.flat_rate (distance-independent,
+                                         no minimum comparison).
+        pricing_type per_km          → distance × rule.ftl_rate_per_km_override.
+
+        The retired Minimum FTL Charge fields (regional and corridor-wide)
+        never participate in any calculation.
+        """
+        self.ensure_one()
+        rule = self.get_ftl_regional_rule(origin_region, destination_region)
+        currency = self.currency_id
+        distance_km = distance_km or 0.0
+        pricing_type = rule.pricing_type if rule else "corridor_default"
+        if rule and pricing_type == "flat_rate":
+            final_price = rule.flat_rate
+            rate_per_km = 0.0
+            distance_price = 0.0
+        else:
+            rate_per_km = (
+                rule.ftl_rate_per_km_override
+                if rule and pricing_type == "per_km"
+                else self.ftl_rate_per_km
+            )
+            distance_price = currency.round(distance_km * rate_per_km) if currency \
+                else round(distance_km * rate_per_km, 2)
+            final_price = distance_price
+        return {
+            "price": final_price,
+            "distance_price": distance_price,
+            "rate_per_km": rate_per_km,
+            "regional_rule": rule,
+            "pricing_type": pricing_type,
+        }
 
     def _operating_weekdays(self):
         self.ensure_one()
@@ -783,6 +844,49 @@ class LogisticsCorridorDeparture(models.Model):
     service_offering_id = fields.Many2one("logistics.service.offering")
     cutoff_time = fields.Float()
 
+    # ── Dynamic capacity / layout (VehicleCapacityService) ─────────────
+    capacity_layout_override_id = fields.Many2one(
+        "fleet.vehicle.pallet.layout", string="Layout Override",
+        help="Optional dispatcher override. Must belong to the assigned "
+             "truck and fit the currently reserved pallet positions.",
+    )
+    capacity_layout_code = fields.Char(compute="_compute_capacity_display")
+    capacity_layout_name = fields.Char(compute="_compute_capacity_display")
+    capacity_max_pallets = fields.Integer(compute="_compute_capacity_display")
+    capacity_reserved_pallets = fields.Integer(compute="_compute_capacity_display")
+    capacity_remaining_pallets = fields.Integer(compute="_compute_capacity_display")
+
+    def _compute_capacity_display(self):
+        from ..services.vehicle_capacity_service import VehicleCapacityService
+        service = VehicleCapacityService(self.env)
+        for departure in self:
+            result = service.evaluate(departure.vehicle_id, departure, 0)
+            layout = result["selected_layout"] or {}
+            departure.capacity_layout_code = layout.get("code", "")
+            departure.capacity_layout_name = layout.get("name", "")
+            departure.capacity_max_pallets = result["maximum_capacity"]
+            departure.capacity_reserved_pallets = result["reserved_pallets"]
+            departure.capacity_remaining_pallets = result["remaining_pallets"]
+
+    @api.constrains("capacity_layout_override_id", "vehicle_id")
+    def _check_layout_override_valid(self):
+        from ..services.vehicle_capacity_service import VehicleCapacityService
+        service = VehicleCapacityService(self.env)
+        for departure in self:
+            override = departure.capacity_layout_override_id
+            if not override:
+                continue
+            if override.vehicle_id != departure.vehicle_id:
+                raise ValidationError(_(
+                    "The layout override must belong to the assigned truck."))
+            reserved = service.reserved_pallets(departure)
+            if override.max_pallets < reserved:
+                raise ValidationError(_(
+                    "Layout %(layout)s cannot carry the %(reserved)s reserved "
+                    "pallet positions.",
+                    layout=override.display_name, reserved=reserved,
+                ))
+
     @api.model_create_multi
     def create(self, vals_list):
         for vals in vals_list:
@@ -818,6 +922,20 @@ class LogisticsCorridorDeparture(models.Model):
             vehicle = self.env["fleet.vehicle"].browse(vals.get("vehicle_id"))
             corridor = self[:1].corridor_id if self else self.env["logistics.corridor"]
             vals["max_capacity"] = corridor._vehicle_capacity(vehicle) if corridor else 0
+            # Truck reassignment guard: the new truck must be able to carry
+            # the pallets already reserved on this departure.
+            from ..services.vehicle_capacity_service import VehicleCapacityService
+            service = VehicleCapacityService(self.env)
+            maximum = service.maximum_capacity(vehicle)
+            for departure in self:
+                reserved = service.reserved_pallets(departure)
+                if reserved > maximum:
+                    raise ValidationError(_(
+                        "Truck cannot be assigned: %(reserved)s pallets are "
+                        "reserved but this vehicle supports a maximum of "
+                        "%(max)s pallet positions.",
+                        reserved=reserved, max=maximum,
+                    ))
         result = super().write(vals)
         if {"vehicle_id", "departure_date", "active", "status"}.intersection(vals):
             self._check_vehicle_day_conflicts()

@@ -1,6 +1,6 @@
 {
     "name": "Prema Logistics Booking",
-    "version": "18.0.6.0.0",
+    "version": "18.0.10.0.0",
     "summary": "Private customer LTL/FTL pricing, scheduling, and booking engine "
                "for PremaFirm Logistics — integrates with Prema Dispatch.",
     "category": "Logistics",
@@ -36,6 +36,7 @@ root for architecture notes, decisions, and phase status.
         "views/logistics_city_views.xml",
         "views/logistics_daily_local_views.xml",
         "views/logistics_corridor_views.xml",
+        "views/fleet_vehicle_pallet_layout_views.xml",
         # "views/logistics_equipment_profile_views.xml",  # ARCHIVED — fleet.vehicle is sole authority
         "views/logistics_service_level_views.xml",
         "views/logistics_service_offering_views.xml",

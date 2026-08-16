@@ -290,10 +290,13 @@ class DepartureResolver:
         if not vehicle_accepts(vehicle_is_reefer=bool(vehicle.x_reefer), requested_mode=equipment):
             return False, "temperature_incompatible", None
 
-        straight = vehicle.straight_pallet_capacity or 0
-        pinwheel = vehicle.pin_wheel_pallet_capacity or 0
+        # Canonical dynamic capacity: the assigned vehicle's active pallet
+        # layouts decide whether the projected total fits, and pinwheel (or
+        # any future layout) is selected automatically — nothing hardcoded.
+        from .vehicle_capacity_service import VehicleCapacityService
+        capacity = VehicleCapacityService(self.env)
         payload = vehicle.x_max_payload_lbs or 0.0
-        if not straight or not pinwheel or not payload:
+        if capacity.maximum_capacity(vehicle) <= 0 or not payload:
             return False, "vehicle_capacity_not_configured", None
 
         from .capacity_engine import CapacityEngine
@@ -304,9 +307,8 @@ class DepartureResolver:
 
         if projected_weight > payload:
             return False, "payload_exceeded", None
-        if projected_pallets > pinwheel:
+        valid, _layout = capacity.select_layout(vehicle, projected_pallets)
+        if not valid:
             return False, "pallet_capacity_exceeded", None
-        if projected_pallets > straight and not allow_pinwheel_override:
-            return False, "pinwheel_override_required", None
 
         return True, None, vehicle
