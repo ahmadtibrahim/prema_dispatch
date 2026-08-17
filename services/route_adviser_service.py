@@ -20,6 +20,7 @@ so legacy jobs are never blocked retroactively.
 import logging
 from datetime import datetime, timedelta
 
+from odoo import fields
 from pytz import timezone as pytz_timezone
 
 _logger = logging.getLogger(__name__)
@@ -118,16 +119,27 @@ class RouteAdviserService:
         return movements
 
     def start_context(self, job):
-        """(start_dt, start_position) for the route simulation."""
-        start_dt = job.scheduled_pickup or None
-        if not start_dt and job.operation_date:
+        """(start_dt, start_position) for the route simulation.
+
+        The anchor is the job's operation day at 08:00 local (LTL
+        departure convention). scheduled_pickup is used only when it
+        falls on that operation day — otherwise planning would anchor
+        on the creation timestamp (e.g. a Sunday while facilities are
+        closed)."""
+        start_dt = None
+        if ("operation_date" in job._fields and job.operation_date
+                and job.scheduled_pickup
+                and fields.Date.to_date(job.scheduled_pickup) == job.operation_date):
+            start_dt = job.scheduled_pickup
+        if not start_dt and "operation_date" in job._fields and job.operation_date:
             start_dt = datetime.combine(
                 job.operation_date, datetime.min.time(),
             ) + timedelta(hours=8)
             local = pytz_timezone(DEFAULT_TZ)
-            start_dt = local.localize(start_dt).astimezone(pytz_timezone("UTC")).replace(tzinfo=None)
+            start_dt = local.localize(start_dt).astimezone(
+                pytz_timezone("UTC")).replace(tzinfo=None)
         if not start_dt:
-            start_dt = datetime.utcnow()
+            start_dt = job.scheduled_pickup or datetime.utcnow()
         position = None
         stops = job.stop_ids.sorted("sequence")
         if stops:

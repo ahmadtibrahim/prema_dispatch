@@ -872,6 +872,9 @@ class LogisticsBooking(models.Model):
             "source_res_id": self.id,
             "logistics_booking_id": self.id,
             "operation_date": operation_date,
+            # Route anchor: the operation day at 08:00 local — time-aware
+            # planning must never anchor on the creation timestamp.
+            "scheduled_pickup": self._dispatch_datetime(operation_date, 8.0),
             "operation_role": "combined",
             "tracking_number": "%s-01" % self.booking_number,
             "company_id": self.env.company.id,
