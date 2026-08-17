@@ -593,7 +593,8 @@ class LogisticsBooking(models.Model):
         stops_display = []
         # Keyed stops only — hub/transfer leg placeholders are pricing
         # artifacts, never customer-facing route stops.
-        visible_stops = self.stop_ids.filtered(lambda s: s.stop_key) \
+        visible_stops = self.stop_ids.filtered(
+            lambda s: s.stop_key and not s.hub_transfer_stop) \
             if self.route_model_version == "movement_v1" else self.stop_ids
         for bstop in visible_stops.sorted("sequence"):
             twin = dispatch_stops_by_booking_stop.get(bstop.id)
@@ -798,7 +799,19 @@ class LogisticsBooking(models.Model):
 
     @staticmethod
     def _booking_stop_address(stop):
-        return stop.formatted_address or ", ".join(
+        """Full canonical address of a booking stop.
+
+        The snapshot's formatted_address may be a truncated Google short
+        form without a city ("290 North Front Street") — geocoding THAT
+        resolves ambiguously (Booking 185's Healthy Planet stop geocoded to
+        New Bedford, MA). Build the full street, city, province, postal
+        form whenever the city is missing. This address feeds the dispatch
+        stop, the route adviser, Google routing and the driver app.
+        """
+        if stop.formatted_address and (
+                not stop.city or stop.city in stop.formatted_address):
+            return stop.formatted_address
+        return ", ".join(
             value for value in (
                 stop.street, stop.city, stop.province_state, stop.postal_zip,
             ) if value
@@ -1035,11 +1048,13 @@ class LogisticsBooking(models.Model):
                 "sequence": 10,
                 "partner_id": self.partner_id.id,
                 "saved_location_id": origin_stop.saved_location_id.id or False,
+                "logistics_booking_stop_id": origin_stop.id,
                 "address": self._booking_stop_address(origin_stop),
                 "contact_name": origin_stop.contact_name or "",
                 "contact_phone": origin_stop.phone or "",
                 "latitude": origin_stop.latitude,
                 "longitude": origin_stop.longitude,
+                "coordinate_source": "booking_stop",
                 "scheduled_time": scheduled_at,
                 "time_window_type": "flexible",
                 "exact_time": False,
@@ -1054,11 +1069,13 @@ class LogisticsBooking(models.Model):
                 "sequence": 20,
                 "partner_id": self.partner_id.id,
                 "saved_location_id": destination_stop.saved_location_id.id or False,
+                "logistics_booking_stop_id": destination_stop.id,
                 "address": self._booking_stop_address(destination_stop),
                 "contact_name": destination_stop.contact_name or "",
                 "contact_phone": destination_stop.phone or "",
                 "latitude": destination_stop.latitude,
                 "longitude": destination_stop.longitude,
+                "coordinate_source": "booking_stop",
                 "scheduled_time": delivery_at,
                 "time_window_type": "flexible",
                 "exact_time": False,
@@ -1072,9 +1089,11 @@ class LogisticsBooking(models.Model):
             ("booking_id", "=", self.id), ("stop_type", "=", "delivery"),
         ], order="sequence")
 
-        # Filter out hub transfer / internal booking stops (pallet_count=0, no saved_location)
+        # Filter out hub transfer / internal booking stops (pallet_count=0,
+        # no saved_location, or explicitly flagged as pricing-only placeholders)
         customer_delivery_stops = booking_delivery_stops.filtered(
-            lambda s: s.pallet_count > 0 or s.saved_location_id
+            lambda s: not s.hub_transfer_stop
+            and (s.pallet_count > 0 or s.saved_location_id)
         )
         dispatch_delivery_stops = self.env["prema.dispatch.stop"]
         for idx, bstop in enumerate(customer_delivery_stops):
@@ -1082,11 +1101,13 @@ class LogisticsBooking(models.Model):
                 # First delivery: update the already-created destination stop
                 created_destination.write({
                     "saved_location_id": bstop.saved_location_id.id if bstop.saved_location_id else False,
-                    "address": bstop.formatted_address or bstop.street or "",
+                    "logistics_booking_stop_id": bstop.id,
+                    "address": self._booking_stop_address(bstop),
                     "contact_name": bstop.contact_name or "",
                     "contact_phone": bstop.phone or "",
                     "latitude": bstop.latitude,
                     "longitude": bstop.longitude,
+                    "coordinate_source": "booking_stop",
                     "pallets_out": bstop.pallet_count,
                     "weight_out_lbs": bstop.weight_lb,
                     "dispatcher_notes": bstop.instructions or "",
@@ -1099,11 +1120,13 @@ class LogisticsBooking(models.Model):
                     "sequence": 20 + idx * 10,
                     "partner_id": self.partner_id.id,
                     "saved_location_id": bstop.saved_location_id.id if bstop.saved_location_id else False,
-                    "address": bstop.formatted_address or bstop.street or "",
+                    "logistics_booking_stop_id": bstop.id,
+                    "address": self._booking_stop_address(bstop),
                     "contact_name": bstop.contact_name or "",
                     "contact_phone": bstop.phone or "",
                     "latitude": bstop.latitude,
                     "longitude": bstop.longitude,
+                    "coordinate_source": "booking_stop",
                     "scheduled_time": delivery_at,
                     "time_window_type": "flexible",
                     "exact_time": False,
@@ -1477,7 +1500,8 @@ class LogisticsBooking(models.Model):
         # hub/transfer leg placeholders are not invoiced as stops).
         if self.stop_ids:
             if self.route_model_version == "movement_v1":
-                stops = self.stop_ids.filtered(lambda s: s.stop_key)
+                stops = self.stop_ids.filtered(
+                    lambda s: s.stop_key and not s.hub_transfer_stop)
             else:
                 stops = self.stop_ids
             pickups = stops.filtered(lambda s: s.stop_type == "pickup")

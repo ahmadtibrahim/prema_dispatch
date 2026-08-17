@@ -1,5 +1,7 @@
 """Multi-stop booking stop — one record per pickup or delivery on a logistics.booking."""
-from odoo import fields, models
+import math
+
+from odoo import api, fields, models
 
 
 class LogisticsBookingStop(models.Model):
@@ -14,6 +16,13 @@ class LogisticsBookingStop(models.Model):
         string="Stable Stop Key", index=True,
         help="Client/session stable identifier mapped to this persistent "
              "stop at confirmation (never a transient array index).")
+    hub_transfer_stop = fields.Boolean(
+        string="Hub Transfer Placeholder",
+        default=False,
+        help="True for corridor-hub placeholder stops created purely for "
+             "multi-leg transfer topology. NEVER an operational stop, "
+             "never customer-facing: excluded from dispatch bridges, "
+             "tracking, route display and invoice descriptions.")
     liftgate_required = fields.Boolean(string="Liftgate Required")
     dock_available = fields.Boolean(string="Dock Available")
     appointment_required = fields.Boolean(string="Appointment Required")
@@ -94,3 +103,50 @@ class LogisticsBookingStop(models.Model):
     timezone = fields.Char(string="Timezone")
 
     instructions = fields.Text()
+
+    # ── Facility/coordinate integrity ──────────────────────────────────
+    # This snapshot (company, street, city, postal, lat/lng) is the
+    # historical authority. The linked master location may only supplement
+    # it (dock, entrance pin, metadata) — never silently replace it. This
+    # computed flag surfaces a master link that points at a different
+    # facility so the portal/session can flag it before confirmation.
+    location_mismatch_warning = fields.Char(
+        string="Location Mismatch", compute="_compute_location_mismatch_warning",
+        help="Set when the linked master saved location's pin is a "
+             "materially different place from this stop's confirmed "
+             "coordinates (Booking 185: United Dairy's pickup was linked "
+             "to 'Demo Logistics Customer'). Empty = consistent.")
+
+    @api.depends("saved_location_id.pin_lat", "saved_location_id.pin_lng",
+                 "saved_location_id.address", "latitude", "longitude")
+    def _compute_location_mismatch_warning(self):
+        for stop in self:
+            loc = stop.saved_location_id
+            warning = False
+            if loc and stop.latitude and stop.longitude:
+                if loc.pin_lat and loc.pin_lng:
+                    lat1, lng1 = stop.latitude, stop.longitude
+                    lat2, lng2 = loc.pin_lat, loc.pin_lng
+                    radius = 6371.0
+                    dlat = math.radians(lat2 - lat1)
+                    dlng = math.radians(lng2 - lng1)
+                    a = (math.sin(dlat / 2) ** 2
+                         + math.cos(math.radians(lat1))
+                         * math.cos(math.radians(lat2))
+                         * math.sin(dlng / 2) ** 2)
+                    dist = 2 * radius * math.asin(min(1.0, math.sqrt(a)))
+                    if dist > 2.0:
+                        warning = (
+                            "Saved location '%s' is %.0f km from this stop's "
+                            "confirmed address — verify the company link "
+                            "before confirming." % (loc.name, dist))
+                elif loc.address and stop.city:
+                    # Location without a pin — compare address text (the
+                    # real Demo Logistics record had no pin either).
+                    if stop.city.lower() not in (loc.address or "").lower():
+                        warning = (
+                            "Saved location '%s' ('%s') does not match this "
+                            "stop's confirmed city '%s' — verify the company "
+                            "link before confirming."
+                            % (loc.name, loc.address, stop.city))
+            stop.location_mismatch_warning = warning

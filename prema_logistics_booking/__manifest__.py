@@ -42,6 +42,7 @@ root for architecture notes, decisions, and phase status.
         "views/logistics_service_offering_views.xml",
         "views/logistics_holiday_calendar_views.xml",
         "views/logistics_saved_location_views.xml",
+        "views/dispatch_stop_integrity_views.xml",
         "views/logistics_direct_delivery_views.xml",
         "views/logistics_booking_views.xml",
         "views/logistics_custom_quote_views.xml",

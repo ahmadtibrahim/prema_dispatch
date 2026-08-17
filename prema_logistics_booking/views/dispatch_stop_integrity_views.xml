@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Coordinate / facility integrity UI on the dispatch stop form.
+     Lives HERE (prema_logistics_booking) because logistics_booking_stop_id
+     and the booking bridge only exist once this module loads — a view
+     referencing it from prema_dispatch itself breaks the partial registry.
+     The confirmed booking-stop snapshot is the authority: these controls
+     surface any divergence and let the dispatcher repair it in one click. -->
+<odoo>
+    <record id="view_dispatch_stop_form_integrity" model="ir.ui.view">
+        <field name="name">prema.dispatch.stop.form.integrity</field>
+        <field name="model">prema.dispatch.stop</field>
+        <field name="inherit_id" ref="prema_dispatch.view_dispatch_stop_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//header/button[@name='action_authorize_hours_override']" position="before">
+                <button name="action_regeocode_from_confirmed_address"
+                        string="Re-geocode from Confirmed Address"
+                        type="object" class="btn-secondary"
+                        icon="fa-map-marker"
+                        title="Restore this stop from its confirmed booking address — full address, coordinates and pin — and re-geocode when the snapshot lacks coordinates. Repairs wrong-facility picks and cross-city pins."
+                        invisible="not logistics_booking_stop_id or status in ('completed','cancelled')"/>
+            </xpath>
+            <xpath expr="//div[contains(@class, 'alert-warning')][@role='alert'][1]" position="after">
+                <div class="alert alert-danger" role="alert" invisible="not coordinate_warning">
+                    <i class="fa fa-map-marker me-1"/>
+                    <b>Coordinate / facility integrity:</b>
+                    <field name="coordinate_warning" nolabel="1" readonly="1" class="d-inline"/>
+                    <button name="action_regeocode_from_confirmed_address"
+                            string="Re-geocode from Confirmed Address"
+                            type="object" class="btn btn-sm btn-primary ms-2"
+                            invisible="not logistics_booking_stop_id"/>
+                </div>
+                <div class="alert alert-warning" role="alert" invisible="not facility_mismatch or coordinate_warning">
+                    <i class="fa fa-exclamation-triangle me-1"/>
+                    <b>Facility mismatch:</b> the linked master location does
+                    not match this stop's confirmed booking address — review
+                    the Company field.
+                </div>
+            </xpath>
+            <xpath expr="//group/group[1]" position="inside">
+                <field name="coordinate_source" readonly="1" groups="base.group_no_one"/>
+                <field name="coordinate_validated" readonly="1" groups="base.group_no_one"/>
+                <field name="facility_mismatch" readonly="1" groups="base.group_no_one"/>
+            </xpath>
+        </field>
+    </record>
+</odoo>

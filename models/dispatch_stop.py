@@ -23,6 +23,47 @@ def tz_from_longitude_band(lat, lng):
     return "America/Halifax"
 
 
+# ── Coordinate integrity helpers ────────────────────────────────────────
+# The confirmed booking-stop snapshot is the authority for milk-run pins.
+# Master-location pins and geocodes may only supplement it. _COORD_TOLERANCE_KM
+# separates "same facility, slightly different pin" from "different place":
+# neighbouring Belleville stops are ~0.8 km apart, so 2.0 km keeps neighbours
+# while catching cross-city/cross-country corruption (Booking 185's Healthy
+# Planet pin was 760 km away in New Bedford, MA).
+_COORD_TOLERANCE_KM = 2.0
+
+
+def _haversine_km(lat1, lng1, lat2, lng2):
+    """Great-circle distance between two coordinates in kilometres."""
+    import math
+    lat1, lng1, lat2, lng2 = map(float, (lat1, lng1, lat2, lng2))
+    radius = 6371.0
+    dlat = math.radians(lat2 - lat1)
+    dlng = math.radians(lng2 - lng1)
+    a = (math.sin(dlat / 2) ** 2
+         + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2))
+         * math.sin(dlng / 2) ** 2)
+    return 2 * radius * math.asin(min(1.0, math.sqrt(a)))
+
+
+def _booking_snapshot_address(bstop):
+    """Full canonical address of a logistics.booking.stop snapshot.
+
+    The snapshot's formatted_address may be a truncated Google short form
+    ("290 North Front Street" with no city) — geocoding THAT resolves to
+    the wrong place. Build the full street, city, province, postal form
+    whenever the city is missing, and always prefer the longer form.
+    """
+    if bstop.formatted_address and (
+            not bstop.city or bstop.city in bstop.formatted_address):
+        return bstop.formatted_address
+    return ", ".join(
+        value for value in (
+            bstop.street, bstop.city, bstop.province_state, bstop.postal_zip,
+        ) if value
+    )
+
+
 class PremaDispatchStop(models.Model):
     _name = "prema.dispatch.stop"
     _description = "Dispatch Stop"
@@ -121,6 +162,44 @@ class PremaDispatchStop(models.Model):
         ondelete="set null",
         help="Links to a saved location record that stores the precise parking pin and entrance photo.",
     )
+    # ── Coordinate / facility integrity (milk-run authority) ──────────
+    # The CONFIRMED BOOKING STOP SNAPSHOT (logistics_booking_stop_id +
+    # address/lat/lng frozen at confirmation) is the historical authority.
+    # Master dispatch locations may only SUPPLEMENT (dock door, entrance
+    # pin, metadata) — they must never silently replace the confirmed
+    # facility (Booking 185: United Dairy became "Demo Logistics Customer
+    # 994 Westport Crescent, Mississauga"; Healthy Planet's pin was
+    # geocoded to New Bedford, MA). coordinate_source records where the
+    # current pin came from; coordinate_validated/warning expose any
+    # divergence so Map, Route Adviser and Driver navigation all use the
+    # SAME verified pin.
+    coordinate_source = fields.Selection([
+        ("booking_stop", "Confirmed Booking Address"),
+        ("master_location", "Master Location Pin"),
+        ("geocode", "Address Geocode"),
+        ("manual", "Manual"),
+    ], string="Coordinate Source", default="manual",
+        help="Where the stop's current latitude/longitude came from. "
+             "'Confirmed Booking Address' is the authority for milk-run "
+             "stops — a master-location pin or geocode may never replace it.")
+    coordinate_validated = fields.Boolean(
+        string="Coordinates Validated", default=False,
+        help="True once the stored pin has been checked against the "
+             "confirmed booking-stop address (within tolerance) or the "
+             "stop has no confirmed snapshot to check against.")
+    coordinate_warning = fields.Char(
+        string="Coordinate Warning", readonly=True,
+        help="Set when the stored pin conflicts with the confirmed "
+             "booking address (e.g. a master-location pin or ambiguous "
+             "geocode landed in a different city). Empty = clean. "
+             "Use 'Re-geocode from Confirmed Address' to repair.")
+    facility_mismatch = fields.Boolean(
+        string="Facility Mismatch", readonly=True, default=False,
+        help="True when the linked master location (saved location) is a "
+             "materially different facility from the confirmed booking "
+             "stop. The confirmed booking snapshot stays authoritative; "
+             "this flag just tells the dispatcher the master link needs "
+             "review.")
     allow_cross_dock = fields.Boolean(
         related="saved_location_id.allow_cross_dock", string="Cross-Dock", readonly=True,
         help="From the Saved Location — this stop's address can be used to temporarily "
@@ -435,10 +514,60 @@ class PremaDispatchStop(models.Model):
 
 
     def _apply_saved_location(self, location):
+        """Apply a saved location to this stop — SUPPLEMENT, never replace.
+
+        For milk-run stops the confirmed booking-stop snapshot (address +
+        lat/lng passed in at create) is the historical authority: a master
+        location may add dock door, entrance pin or contact metadata, but
+        must NOT silently swap the facility or its pin (Booking 185: United
+        Dairy became "Demo Logistics Customer"; Healthy Planet's pin was
+        geocoded to the USA). When the location's pin is a materially
+        different place, keep the confirmed pin and flag the mismatch.
+        """
         self.ensure_one()
         if not location:
             return False
+        confirmed_address = self.address
+        confirmed_lat = self.latitude
+        confirmed_lng = self.longitude
         vals = self._saved_location_values(location)
+        warning = ""
+        mismatch = False
+        if (confirmed_lat or confirmed_lng) and (location.pin_lat or location.pin_lng):
+            dist = _haversine_km(confirmed_lat, confirmed_lng,
+                                 location.pin_lat, location.pin_lng)
+            if dist > _COORD_TOLERANCE_KM:
+                # Master pin is a different place — keep the confirmed pin.
+                vals["latitude"] = confirmed_lat
+                vals["longitude"] = confirmed_lng
+                vals["pin_lat"] = confirmed_lat
+                vals["pin_lng"] = confirmed_lng
+                vals["pin_set"] = False
+                mismatch = True
+                warning = (
+                    "Master location '%s' has a pin %.0f km from the confirmed "
+                    "booking address — confirmed pin kept. Review the master "
+                    "location link." % (location.name, dist)
+                )
+        if self.logistics_booking_stop_id:
+            # Booking-sourced stop: always keep the FULL confirmed snapshot
+            # address — never the master location's short form, and never a
+            # truncated Google short name (no-city addresses geocode wrong).
+            full = _booking_snapshot_address(self.logistics_booking_stop_id)
+            if full:
+                vals["address"] = full
+        elif confirmed_address and location.address and not mismatch:
+            # Same facility? Keep the canonical full address when the master
+            # location only holds a short form (or vice versa) — coordinates
+            # decide the facility match, not the address string.
+            vals["address"] = confirmed_address
+        if mismatch:
+            vals["coordinate_source"] = "booking_stop"
+            vals["coordinate_validated"] = True
+            vals["coordinate_warning"] = warning
+            vals["facility_mismatch"] = True
+        elif self.coordinate_source == "manual" and not self.logistics_booking_stop_id:
+            vals["coordinate_source"] = "master_location"
         self.write(vals)
         return True
 
@@ -1299,6 +1428,10 @@ class PremaDispatchStop(models.Model):
                 rec._geocode_address()
             if rec.address and not rec.address_validated:
                 rec._validate_address()
+        # Confirmed booking-stop snapshot is the authority: any pin that
+        # drifted from it (wrong master-location pin, ambiguous geocode
+        # resolving to another city) is restored and flagged.
+        records._validate_coordinate_integrity()
         # Re-estimate every pickup on the affected job(s), not just pickups
         # in this batch — stops are often created one-by-one (AI extraction,
         # estimator promotion), so a dropoff created after its pickup must
@@ -1359,6 +1492,15 @@ class PremaDispatchStop(models.Model):
                 stop.job_id.item_ids.filtered(
                     lambda i: i.pickup_stop_id.id == stop.id or i.delivery_stop_id.id == stop.id
                 ).write({"status": "cancelled"})
+
+        # Coordinate/facility integrity: any write that could change where
+        # the driver goes is re-validated against the confirmed booking-stop
+        # snapshot (skipped on our own restore writes via the context flag).
+        if not self.env.context.get("_coord_integrity_restore") and any(
+                k in vals for k in (
+                    "address", "latitude", "longitude", "saved_location_id",
+                    "pin_lat", "pin_lng", "logistics_booking_stop_id")):
+            self._validate_coordinate_integrity()
 
         if any(k in vals for k in ("sequence", "status", "address", "scheduled_time",
                                     "pin_lat", "pin_lng", "pallets_in", "pallets_out", "shared_pallet_number")):
@@ -1422,21 +1564,50 @@ class PremaDispatchStop(models.Model):
         "Reset pin to address" action to undo a bad manual pin placement).
         Returns True on success, False otherwise (failures are logged, not
         swallowed, so a misconfigured/disabled Geocoding API is visible).
+
+        Milk-run safety: for stops bridged from a confirmed booking stop
+        whose snapshot carries coordinates, the snapshot is the AUTHORITY —
+        geocoding may never replace it (an ambiguous address like
+        "290 North Front Street" without a city once resolved to New
+        Bedford, MA, routing the Ontario route through the USA). Those
+        stops geocode — only when force=True — from the FULL confirmed
+        address (street, city, province, postal), never the truncated
+        short form.
         """
         api_key = self.env["ir.config_parameter"].sudo().get_param("google_maps_api_key")
-        if not api_key or not self.address:
+        if not api_key:
             return False
+        bstop = self.logistics_booking_stop_id
+        if bstop and bstop.latitude and bstop.longitude and not force:
+            # Snapshot is authority — just make sure the stored pin still
+            # matches it (restores it if a geocode/location ever drifted).
+            self._validate_coordinate_integrity()
+            return self.coordinate_validated
+        if not self.address:
+            return False
+        geocode_address = self.address
+        if bstop:
+            # Geocode the FULL confirmed address — a bare "290 North Front
+            # Street" is ambiguous and can resolve to a US city.
+            full = _booking_snapshot_address(bstop)
+            if full:
+                geocode_address = full
         try:
             import requests
             r = requests.get(
                 "https://maps.googleapis.com/maps/api/geocode/json",
-                params={"address": self.address, "key": api_key},
+                params={"address": geocode_address, "key": api_key},
                 timeout=5,
             )
             data = r.json()
             if data.get("status") == "OK" and data.get("results"):
                 loc = data["results"][0]["geometry"]["location"]
-                vals = {"latitude": loc["lat"], "longitude": loc["lng"]}
+                vals = {
+                    "latitude": loc["lat"],
+                    "longitude": loc["lng"],
+                    "coordinate_source": "booking_stop" if bstop else "geocode",
+                    "coordinate_validated": bool(bstop),
+                }
                 if force or not self.pin_set:
                     vals["pin_lat"] = loc["lat"]
                     vals["pin_lng"] = loc["lng"]
@@ -1447,11 +1618,11 @@ class PremaDispatchStop(models.Model):
                 return True
             _logger.warning(
                 "Geocoding failed for stop %s (%r): %s — %s",
-                self.id, self.address, data.get("status"), data.get("error_message", ""),
+                self.id, geocode_address, data.get("status"), data.get("error_message", ""),
             )
             return False
         except Exception:
-            _logger.exception("Geocoding request failed for stop %s (%r)", self.id, self.address)
+            _logger.exception("Geocoding request failed for stop %s (%r)", self.id, geocode_address)
             return False
 
     def _auto_link_saved_location(self):
@@ -1469,6 +1640,133 @@ class PremaDispatchStop(models.Model):
         )
         if loc:
             self.sudo().saved_location_id = loc.id
+
+    def _validate_coordinate_integrity(self):
+        """Validate stored pins against the confirmed booking-stop snapshot.
+
+        The CONFIRMED BOOKING STOP SNAPSHOT is the historical authority for
+        milk-run stops (business, street, city, postal, coordinates). A
+        master-location pin or an ambiguous geocode may never replace it.
+        When the stored pin is materially far from the confirmed address
+        (Booking 185: Healthy Planet's pin geocoded 760 km away to New
+        Bedford, MA), the pin is RESTORED from the snapshot and flagged via
+        coordinate_warning, so Map, Route Adviser and Driver navigation all
+        use the same verified pin. The linked master location is checked
+        too — a wrong facility link is flagged (facility_mismatch) without
+        touching the stop's own address.
+        """
+        for stop in self:
+            bstop = stop.logistics_booking_stop_id
+            if not bstop or not bstop.latitude or not bstop.longitude:
+                continue  # no confirmed snapshot to validate against
+            vals = {}
+            if not (stop.latitude and stop.longitude):
+                # Pin missing entirely — adopt the confirmed snapshot.
+                vals = {
+                    "latitude": bstop.latitude,
+                    "longitude": bstop.longitude,
+                    "pin_lat": bstop.latitude,
+                    "pin_lng": bstop.longitude,
+                    "pin_set": False,
+                    "coordinate_source": "booking_stop",
+                    "coordinate_validated": True,
+                }
+            else:
+                dist = _haversine_km(
+                    stop.latitude, stop.longitude,
+                    bstop.latitude, bstop.longitude)
+                if dist > _COORD_TOLERANCE_KM:
+                    vals = {
+                        "latitude": bstop.latitude,
+                        "longitude": bstop.longitude,
+                        "pin_lat": bstop.latitude,
+                        "pin_lng": bstop.longitude,
+                        "pin_set": False,
+                        "coordinate_source": "booking_stop",
+                        "coordinate_validated": True,
+                        "coordinate_warning": (
+                            "Pin was %.0f km from the confirmed booking "
+                            "address — restored from the booking snapshot."
+                            % dist),
+                    }
+                elif not stop.coordinate_validated or stop.coordinate_source == "manual":
+                    vals = {
+                        "coordinate_validated": True,
+                        "coordinate_source": "booking_stop",
+                    }
+            # Facility link check: the linked master location must be the
+            # same place as the confirmed booking stop — never let a wrong
+            # location silently change what the driver sees.
+            loc = stop.saved_location_id
+            if loc:
+                if loc.pin_lat and loc.pin_lng:
+                    dloc = _haversine_km(
+                        bstop.latitude, bstop.longitude,
+                        loc.pin_lat, loc.pin_lng)
+                    if dloc > _COORD_TOLERANCE_KM:
+                        vals["facility_mismatch"] = True
+                        vals["coordinate_warning"] = (
+                            (vals.get("coordinate_warning") or "")
+                            + "Linked master location '%s' is %.0f km from "
+                              "the confirmed booking address — review the "
+                              "company link." % (loc.name, dloc)
+                        )
+                elif loc.address and bstop.city:
+                    # No pin to compare — fall back to the address text
+                    # (Booking 185's Demo Logistics location had no pin but
+                    # its Mississauga address gave the driver the wrong city).
+                    if bstop.city.lower() not in (loc.address or "").lower():
+                        vals["facility_mismatch"] = True
+                        vals["coordinate_warning"] = (
+                            (vals.get("coordinate_warning") or "")
+                            + "Master location '%s' ('%s') does not match "
+                              "the confirmed city '%s' — review the company "
+                              "link." % (loc.name, loc.address, bstop.city)
+                        )
+            if vals:
+                stop.with_context(_coord_integrity_restore=True).write(vals)
+
+    def action_regeocode_from_confirmed_address(self):
+        """Dispatcher repair action: restore this stop from its CONFIRMED
+        booking-stop snapshot — full canonical address, coordinates, pin,
+        contact, hours — and re-geocode from that full address when the
+        snapshot itself carries no coordinates. Repairs wrong-facility
+        picks (a master location replacing the booking facility) and
+        cross-city pins (an ambiguous geocode resolving to the USA).
+        """
+        for stop in self:
+            bstop = stop.logistics_booking_stop_id
+            if not bstop:
+                raise exceptions.UserError(
+                    "This stop has no confirmed booking address to restore "
+                    "from — it was not created from a booking stop.")
+            address = _booking_snapshot_address(bstop)
+            vals = {
+                "address": address,
+                "contact_name": bstop.contact_name or stop.contact_name,
+                "contact_phone": bstop.phone or stop.contact_phone,
+                "coordinate_source": "booking_stop",
+                "coordinate_warning": "",
+                "facility_mismatch": False,
+            }
+            if bstop.latitude and bstop.longitude:
+                vals.update({
+                    "latitude": bstop.latitude,
+                    "longitude": bstop.longitude,
+                    "pin_lat": bstop.latitude,
+                    "pin_lng": bstop.longitude,
+                    "pin_set": False,
+                    "coordinate_validated": True,
+                    "tz_name": bstop.timezone or stop.tz_name,
+                })
+            stop.with_context(_coord_integrity_restore=True).write(vals)
+            if not (bstop.latitude and bstop.longitude):
+                # Snapshot without coordinates — geocode the FULL confirmed
+                # address (never the truncated short form).
+                stop._geocode_address(force=True)
+            stop._validate_coordinate_integrity()
+        self._notify_driver_route_changed()
+        return True
 
     def _validate_address(self):
         """Check address accuracy via Google's Address Validation API.

@@ -1493,7 +1493,14 @@ class BookingOrchestrationService:
             dest = delivery_stop if is_last else None
 
             hub_id = ls.get("hub_id") or ls.get("transfer_hub_id")
-            if hub_id:
+            # Hub stops only exist for REAL multi-leg transfer topology.
+            # A single-leg (direct/final_mile) snapshot carries the hub id
+            # as corridor-internal metadata — treating it as a transfer
+            # pointed BOTH leg endpoints at the hub placeholder, which then
+            # replaced the customer's confirmed pickup facility in dispatch
+            # (Booking 185: United Dairy became "994 Westport Crescent,
+            # Mississauga"). Never let that happen again.
+            if hub_id and len(leg_snaps) > 1:
                 hub_stop = hub_stop_by_hub_id.get(hub_id)
                 if not hub_stop:
                     Hub = self.env["logistics.hub"].sudo().browse(hub_id)
@@ -1505,6 +1512,9 @@ class BookingOrchestrationService:
                         "street": Hub.saved_location_id.street or Hub.saved_location_id.address or "",
                         "city": Hub.saved_location_id.city or "",
                         "saved_location_id": ls.get("hub_location_id") or False,
+                        # Explicit marker: placeholder, never an
+                        # operational stop, never customer-facing.
+                        "hub_transfer_stop": True,
                     })
                     hub_stop_by_hub_id[hub_id] = hub_stop
                 if is_first:
