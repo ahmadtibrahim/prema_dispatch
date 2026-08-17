@@ -484,7 +484,15 @@ class BookingOrchestrationService:
             if normalized_request.pickup_stops:
                 pu_saved_id = normalized_request.pickup_stops[0].get("saved_location_id")
             if normalized_request.delivery_stops:
-                de_saved_id = normalized_request.delivery_stops[0].get("saved_location_id")
+                if normalized_request.route_stops:
+                    # Generalized milk-run: the session's canonical
+                    # delivery anchor is the LAST delivery in route order —
+                    # the same stop whose FSA defines delivery_fsa_id.
+                    # (The first delivery would break the confirm-time
+                    # postal re-check against the last stop's FSA.)
+                    de_saved_id = normalized_request.delivery_stops[-1].get("saved_location_id")
+                else:
+                    de_saved_id = normalized_request.delivery_stops[0].get("saved_location_id")
 
             session = Session.create({
                 "partner_id": normalized_request.partner_id,
