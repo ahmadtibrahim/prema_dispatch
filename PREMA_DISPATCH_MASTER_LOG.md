@@ -1,10 +1,11 @@
 # Prema Dispatch — Consolidated Master Log
 
 **Repository:** `github.com/ahmadtibrahim/prema_dispatch` (private)
-**Modules:** `prema_dispatch` (v18.0.3.0.0), `prema_logistics_booking` (v18.0.6.0.0)
+**Modules:** `prema_dispatch` (v18.0.3.1.0), `prema_logistics_booking` (v18.0.11.0.0)
+**Branch:** `feature/multi-pickup-multi-delivery` (milk-run implementation, NOT yet deployed to production)
 **Database:** Prod-db (production), Prod-db-test1a (test)
 **Odoo Config:** `/etc/odoo18.conf`
-**Version:** 6.2 · **Last Updated:** 2026-08-15
+**Version:** 6.3 · **Last Updated:** 2026-08-17
 
 > This is the SINGLE authoritative file for everything Prema Dispatch. All architecture, business rules, pricing, capacity, deployment procedures, file index, booking module notes, decision history, and test results live here. No other Prema Dispatch .md files should exist outside `docs/archive/`.
 
@@ -474,6 +475,20 @@ Tracking requires both booking_number + tracking_token (prevents sequential enum
 
 ## 20. Tests and Expected Results
 
+### Current Status (2026-08-17, milk-run branch)
+- **Fresh-prod-clone regression baselines (authoritative):** booking main = 47 failures +
+  5 errors / 217; branch = 47F + 5E / 239 — IDENTICAL failure sets. prema_dispatch main =
+  106 errors / 172; branch = 106 errors / 192 — IDENTICAL error sets (all pre-existing
+  `install_google_mocks`-era). Zero new failures; all 62 milk-run tests pass
+  (TestMilkRun 11, TestMilkRunPortal 5, TestRouteAdviser 10, TestMilkRunOperations 10,
+  TestMilkRunOperationsBooking 6).
+- Fresh-clone upgrade of both modules: exit 0 (18.0.3.1.0 / 18.0.11.0.0).
+- End-to-end workflow verified through the real portal HTTP controllers on a fresh clone
+  (quote → confirm → dispatch → adviser → POP/POD → actuals → completed → frozen invoice
+  → public tracking). See §33.7.
+- Test command uses `--no-http` (prod holds 8069); passing suites log nothing at
+  `--log-level=warn`.
+
 ### Current Status (2026-08-04)
 - Source compilation, XML parsing, JavaScript syntax, and `git diff --check` pass locally
 - Focused `prema_v5` regression tests cover Corridor pricing, eight-week schedule rebuild,
@@ -536,6 +551,12 @@ explicit agreed rate.
 | Stage 1 | Bug fixes, test fixture correction | Aug 2026 | ✅ Test DB verified |
 | Network Map | Replace Where-We-Go with Network Map availability engine | Aug 2026 | ✅ Production |
 | V4.7 | Migration 18.0.4.7.0: network availability schema, corridor/region updates | Aug 2026 | ✅ Production |
+| Milk-Run 1 | route_model_version discriminator; legacy stays legacy (regression fixed) | 2026-08-17 | ✅ Tested, not deployed |
+| Milk-Run 2 | Portal route builder + pallet movement UI + hours snapshots | 2026-08-17 | ✅ Tested, not deployed |
+| Milk-Run 3 | Route Adviser + manual validation + hours override | 2026-08-17 | ✅ Tested, not deployed |
+| Milk-Run 4 | Per-stop actuals, POP/POD enforcement, capacity check, load plan summary | 2026-08-17 | ✅ Tested, not deployed |
+| Milk-Run 5 | Shared custody, mixed visits, state machine, tracking privacy, accounting | 2026-08-17 | ✅ Tested, not deployed |
+| Milk-Run 6 | E2E-driven hardening (ACLs, anchors, hub-stop filter, operating-day hours) | 2026-08-17 | ✅ E2E verified, not deployed |
 
 ---
 
@@ -573,6 +594,11 @@ explicit agreed rate.
 4. Live en-route re-optimization is deferred; dispatchers continue to review and run the
    existing Optimize action manually.
 5. Automatic external region/FSA importing is deferred; region/FSA review remains manual.
+6. The 106 pre-existing prema_dispatch test errors (missing `install_google_mocks` import in
+   legacy test classes) remain unfixed — unrelated to the milk-run work; cleanup ticket.
+7. Milk-run (branch `feature/multi-pickup-multi-delivery`) is NOT in production yet; the
+   new portal builder JS is validated at the HTTP-contract level — a real browser pass on
+   the builder UI is recommended before the production deployment.
 
 ---
 
@@ -584,6 +610,13 @@ explicit agreed rate.
   booking, a Hub transfer, departure truck override, and capacity release after cancellation.
 - Review official region FSAs/map anchors, configure Corridor distances/prices/default trucks,
   and then enable only reviewed regions for customers.
+
+### Required before production deployment (milk-run branch)
+- Merge/review `feature/multi-pickup-multi-delivery` (16 commits, §33); run both module
+  upgrades on a disposable production copy and re-validate the exact baselines (§33.7).
+- Browser-test the Route Builder UI (Add Pickup / Add Delivery, pallet grid) and the Route
+  Adviser wizard on the deployment clone.
+- Deploy only with the established stop → `-u` → restart sequence (Section 25).
 
 ### Deferred to protect launch budget
 - Live en-route route re-optimization.
@@ -640,6 +673,35 @@ systemctl restart odoo18
 ---
 
 ## 27. File Change Manifest
+
+### Milk-Run Files (2026-08-16/17, branch feature/multi-pickup-multi-delivery)
+| File | Change |
+|---|---|
+| `prema_logistics_booking/models/logistics_booking_pallet.py` | NEW — canonical pallet movement + stop allocation models |
+| `prema_logistics_booking/models/logistics_booking_stop.py` | stop_key, liftgate/appointment/timing, service time, hours snapshot |
+| `prema_logistics_booking/models/logistics_booking.py` | route_model_version, pallet_movements(), movement bridge, confirm stop building, sync_state_from_dispatch, _tracking_stops_display |
+| `prema_logistics_booking/models/dispatch_stop_extension.py` / `dispatch_item_extension.py` | NEW — upward Many2one bridges (registry-safe) |
+| `prema_logistics_booking/models/logistics_pricing_session.py` | stop_ids One2many (all route stops) |
+| `prema_logistics_booking/models/logistics_pricing_session_stop.py` | stop_key/stop_type/stop-level requirement fields |
+| `prema_logistics_booking/models/logistics_corridor.py` | ltl_additional_pickup_charge |
+| `prema_logistics_booking/services/itinerary_planner.py` | NEW — planner + snapshot_saved_location_hours() |
+| `prema_logistics_booking/services/booking_orchestration_service.py` | route_stops/pallet_movements plumbing, generalized quote branch, additional-pickup charge, _create_booking_pallets, stop-field copies |
+| `prema_logistics_booking/controllers/booking_portal.py` | generalized payload parsing, saved-locations builder payload, ownership re-validation |
+| `prema_logistics_booking/controllers/tracking_portal.py` | own-stops display |
+| `prema_logistics_booking/views/portal_templates.xml` | Route Builder card + movement grid + builder JS |
+| `prema_logistics_booking/views/request_quote_templates.xml` | tracking stop list |
+| `prema_logistics_booking/migrations/18.0.11.0.0/post-migrate.py` | compatibility backfill, re-asserts legacy |
+| `prema_logistics_booking/security/logistics_security.xml` + `ir.model.access.csv` | hours/exception ACLs + record rules |
+| `models/dispatch_stop.py` | pop_required, hours snapshot, actuals fields, proof override, confirmation enforcement, custody/state sync hooks |
+| `models/dispatch_item.py` | _sync_booking_pallet_custody() |
+| `models/dispatch_job.py` | route adviser actions, capacity check, load plan summary, mixed visits, driver payload + operating-day hours |
+| `models/dispatch_route_visit.py` | mixed_action_order |
+| `models/dispatch_hours_override.py` / `dispatch_route_adviser.py` / `dispatch_proof_override.py` | NEW — override, adviser wizard, proof-override wizard |
+| `services/route_adviser_service.py` | NEW — current/recommended/validation engine |
+| `views/dispatch_route_adviser_views.xml` | NEW — wizard + override views |
+| `views/dispatch_job_views.xml` / `dispatch_stop_views.xml` / `dispatch_route_visit_views.xml` | buttons + actuals/override fields + visit columns |
+| `static/src/js/driver_app.js` | facility hours/appointment/liftgate/instructions display |
+| Tests | NEW: test_milk_run.py, test_milk_run_portal.py, test_milk_run_operations_booking.py (booking); test_route_adviser.py, test_milk_run_operations.py (dispatch) |
 
 ### Stage 1 Files Changed (2026-08-02)
 | File | Change |
@@ -707,6 +769,15 @@ systemctl restart odoo18
 | 2026-08-04 | Focused V5 regressions | test_v5_dispatch_unification.py | Pricing, eight-week schedule, recurring job limit |
 | 2026-08-09 | UAT-014: Physical Pallet & Stop Allocation | 7 files | Dedicated + shared pallet modes; pricing uses physical_pallets; per-stop allocation UI; dispatch item bridge; Mike Johnson demo contacts cleared |
 | 2026-08-15 | Deprecated field/model removal | ~20 files + migrations 18.0.3.0.0/18.0.6.0.0 | All [DEPRECATED] fields, booking.template/route.run/route.template models, cron, ACLs removed; archives + backfills in pre-migrate; full test suite green |
+| 2026-08-16 | Milk-run Gate 2: canonical pallet movement model | `logistics.booking.pallet` + stop requirements | Models + migration 18.0.11.0.0 (commit 5c73cdd) |
+| 2026-08-16 | Milk-run Gates 4-5: itinerary planner + booking→dispatch bridge | services/itinerary_planner.py + bridge | commit 4e318a5 |
+| 2026-08-16 | Milk-run tests (movement simulation, windows, peak) | tests/test_milk_run.py | commit 3be120d |
+| 2026-08-17 | route_model_version discriminator — regression fix | 11 files | Legacy bookings never flip bridges; upward Many2ones moved to booking-module extensions; 21-failure regression eliminated (commit 8e48f4f) |
+| 2026-08-17 | Portal route builder + pallet UI + hours snapshots | 8 files | Generalized quote/confirm; session stops with stop_keys; frozen hours (commit 83e9d92) |
+| 2026-08-17 | Route Adviser + manual validation | 14 files | Current vs recommended, apply with locked-slot merge, hours override, wizard (commit 1584768) |
+| 2026-08-17 | Actuals, POP/POD, capacity, load plan, driver payload | 10 files | Per-stop actuals, proof enforcement + override, route_capacity_check, load_plan_summary (commit 7cd7278) |
+| 2026-08-17 | Custody, mixed visits, states, tracking, accounting | 10 files | Shared partial custody, mixed visits, state ladder, own-stops tracking (commit b75c00d) |
+| 2026-08-17 | E2E hardening (5 real defects fixed) | 6 commits | Hours ACLs, delivery anchor, hub-stop filter, route-day anchoring, operating-day hours, locked-stop apply (commits ad61f22→03f17a2) |
 
 ## 30. Historical Dispatch Unification (18.0.4.6.0) — 2026-08-03
 
@@ -842,6 +913,160 @@ then phased removal of everything labelled `[DEPRECATED]` / `(deprecated)`.
   Rollback = DB restore + `git revert`.
 
 ---
+
+## 33. Milk-Run Multi-Pickup / Multi-Delivery (18.0.11.0.0 / 18.0.3.1.0) — 2026-08-17
+
+**Status: feature-complete, verified end-to-end on fresh prod clones. NOT deployed to
+production (awaiting approval).** Branch `feature/multi-pickup-multi-delivery` (16 commits;
+base main @ b27826b). One truck/day route can be
+United Dairy PICKUP → TerraFreska PICKUP → Belleville DELIVERY → Ottawa DELIVERY as ONE
+route job — never independent trips. Each physical pallet knows its pickup stop, delivery
+stop(s), weight, custody, current truck/location and status.
+
+### 33.1 Architecture discriminator (regression fix)
+
+- `logistics.booking.route_model_version` — `legacy` (default, all existing bookings) /
+  `movement_v1` (new generalized bookings). **The ONLY bridge selector.**
+- Portal confirm passes `movement_v1` only when the session price snapshot carries
+  `_pallet_movements`; every other channel defaults to `legacy`.
+- Migration `18.0.11.0.0` backfill is compatibility-only: it creates pallet rows + a pickup
+  stop for historical bookings, re-asserts `legacy` on every row, and never converts
+  bookings. Pallet rows alone are NEVER a bridge selector.
+- Root cause of the 21-test regression: the bridge had selected on pallet-row presence, so
+  backfilled legacy bookings silently switched bridges. Fixed in commit `8e48f4f`.
+- Upward Many2one fields (`logistics_booking_stop_id`, `logistics_booking_pallet_id`) live
+  in `_inherit` extensions in prema_logistics_booking (`dispatch_stop_extension.py`,
+  `dispatch_item_extension.py`) — defining them directly in prema_dispatch degrades them to
+  `_unknown` during partial registry upgrades (comodel not in pool at field-setup time).
+  Same pattern as the pre-existing `dispatch_job_extension.py`.
+
+### 33.2 Canonical models
+
+- `logistics.booking.pallet` + `logistics.booking.pallet.stop.allocation` — one row per
+  physical pallet: exactly one pickup stop, one-or-more delivery allocations, weight,
+  shared flag, custody state (`pending_pickup` → `onboard` → `partially_delivered` →
+  `delivered`), active.
+- `logistics.booking.stop` — `stop_key` (stable identity, never array indices), stop-level
+  liftgate/appointment/dock, timing fields, `service_time_minutes`, `operating_hours_snapshot`
+  (frozen at confirmation), timezone, instructions.
+- `logistics.pricing.session.stop` — same stop-level fields + `stop_type`; generalized
+  sessions carry ALL ordered stops (pickups + deliveries) via `session.stop_ids`.
+
+### 33.3 Portal route builder
+
+- Step 2 gains a Milk-Run Route Builder card: Add Pickup / Add Delivery stop cards
+  (saved-location select, stop-level liftgate/appointment, timing type, window, service
+  time, instructions, live facility-hours display), and a pallet-movement grid (one Pickup
+  From selector + Deliver To checkboxes per physical pallet, keyed by stable stop keys).
+- Generalized payload (`route_stops_json` + `pallet_movements_json`) is submitted ONLY when
+  the booking has >1 pickup or a pallet shared across multiple deliveries — every existing
+  flow (simple 1+1, 1 pickup + N deliveries) keeps the legacy payload bit-for-bit.
+- `prepare_quote` generalized branch: session stops for ALL route stops with hours
+  snapshots, `_pallet_movements` in the price snapshot, additional-pickup charge
+  (corridor `ltl_additional_pickup_charge`, LTL only), additional-stop charges unchanged.
+  Session's canonical delivery anchor = LAST delivery in route order (matches
+  `delivery_fsa_id` for the confirm-time postal re-check).
+- `confirm_from_session` builds pickup AND delivery stops from the ordered session stops;
+  hours re-snapshotted from the CURRENT master location at confirmation, then frozen.
+- ACLs: `logistics.saved.location.hours` has read/write ACLs + record rules mirroring the
+  saved-location pattern (portal users see own facilities' hours; internal users see all).
+
+### 33.4 ItineraryPlanner + Route Adviser (dispatch side)
+
+- `prema_logistics_booking/services/itinerary_planner.py` — deterministic (no AI):
+  movement simulation (per-stop pallet/weight deltas, peak), effective windows
+  (facility hours ∩ booking window, per-stop timezone), arrival plans (waiting/service/
+  departure), greedy feasibility-first sequencing with limited look-ahead so a nearby
+  flexible stop never breaks a later hard-window stop.
+- `prema_dispatch/services/route_adviser_service.py` — builds movements from dispatch items
+  (booking pallet links when present), CURRENT vs RECOMMENDED metrics (distance, drive
+  time, waiting, finish ETA, peak, warnings), per-stop recommended plan; wizard
+  (`prema.dispatch.route.adviser` + lines) with Apply Recommended Route / Keep Current
+  Route; Apply stable-merges the recommendation so completed/locked stops keep their exact
+  slots (mid-day reoptimization never rewrites driven history); manual drag stays.
+- Manual route validation BLOCKS: delivery-before-pickup, peak > vehicle layout,
+  impossible hard appointment, closed facility without a valid window, moving completed/
+  locked stops. Valid-but-worse routes pass with quantified warnings (added km/minutes/
+  waiting). Authorized hours override: `prema.dispatch.hours.override`
+  (reason/user/timestamp) unblocks a specific stop.
+- Route anchor: milk-run jobs get `scheduled_pickup` = operation day 08:00 local; the
+  adviser prefers the operation-day anchor (never the creation timestamp).
+
+### 33.5 Capacity / Load Plan / Driver
+
+- Capacity = MAXIMUM SIMULTANEOUS ONBOARD, order-dependent. `VehicleCapacityService`
+  remains canonical (no hardcoded 12/13/14). `job.route_capacity_check()` returns
+  peak/vehicle_max/ok/layout; shared pallets hold one position until their final allocation.
+  Verified shape: +8, −5, +8 → 16 handled, peak 11, fits 13 positions, blocked on 8.
+- Load Plan: future-pickup architecture (`available_after_stop_id` set by the bridge);
+  `job.load_plan_summary()` = current onboard / future pickups / planned peak / layout.
+  TF pallets exist as planned items before TerraFreska pickup and the SAME rows become
+  onboard at pickup — never duplicated.
+- Driver app payload: facility hours (frozen snapshot, keyed to the OPERATING day),
+  appointment/window, stop-level liftgate, POP/POD flags, per-stop expected pallets,
+  instructions, onboard before/after; rendered in the stop detail card.
+
+### 33.6 Operations
+
+- Per-stop pickup/delivery actuals on `prema.dispatch.stop` (actual pallets/weight in/out,
+  confirmed_at/by, variance_notes). A TerraFreska variance never alters United Dairy
+  actuals; uncollected items are cancelled and downstream delivery expectations recomputed
+  from remaining active items. Job-level pickup values remain computed summaries.
+- POP/POD: `pop_required`/`pod_required` block stop completion without proof;
+  proof-override wizard records reason/user/timestamp + a job-timeline audit event.
+  Legacy stops (no required proof) keep the existing non-blocking behavior.
+- Shared custody: dispatch item statuses mirror onto the booking pallet —
+  `partially_delivered` after the first allocation, `delivered` only at the final active
+  allocation (allocations matched by unload_sequence, preserved 1:1 by the bridge).
+- Mixed visits: `job.combine_physical_visit()` merges logical pickup+delivery stops at one
+  physical facility into ONE `prema.dispatch.route.visit` (`visit_type=mixed`, default
+  action order `unload_then_load`); stops/jobs/items/evidence preserved.
+- Booking state machine (movement_v1 only, server-side, advance-only): confirmed → planned
+  → in_execution (first pickup actuals / stop en-route) → delivered (all delivery stops
+  complete) → completed (delivered + proofs present/overridden + per-stop actuals
+  confirmed). `sync_state_from_dispatch()` never touches legacy bookings.
+- Tracking privacy: public tracking page lists only the customer's OWN stops (status/ETA/
+  proof indicators) via `booking._tracking_stops_display()`; hub-leg placeholder stops are
+  excluded from the bridge, tracking and invoice descriptions.
+- Accounting: confirmed price stays frozen (dispatcher reordering never reprices);
+  invoice descriptions support multiple pickups AND deliveries.
+
+### 33.7 Tests, baselines, E2E
+
+- **Regression baselines on fresh prod clones (authoritative):** booking main =
+  47 failures + 5 errors / 217 tests; branch = **47F + 5E / 239 — identical failure sets**.
+  prema_dispatch main = 106 errors / 172 (all pre-existing `install_google_mocks`-era);
+  branch = **106 errors / 192 — identical error sets**. Zero new failures; all 62 new
+  milk-run tests pass.
+- New suites: `TestMilkRun` (11), `TestMilkRunPortal` (5), `TestRouteAdviser` (10),
+  `TestMilkRunOperations` (10), `TestMilkRunOperationsBooking` (6).
+- **Fresh-clone upgrade:** both modules upgrade exit 0 on a fresh Prod-db clone
+  (prema_dispatch 18.0.3.1.0 / prema_logistics_booking 18.0.11.0.0, migration applied).
+- **End-to-end (real HTTP through the actual portal controllers on a dev server, port
+  8070, fresh clone):** login → step 1 → generalized quote (Step-3 price page) → confirm →
+  movement_v1 booking → 1 route job / 4 ordered stops (4-in, 3-in, 3-out, 4-out) / 7
+  unique items → Route Adviser 560 km + Apply → Load Plan 7 future pickups → driver
+  payload → UD+TF POP → Belleville+Ottawa POD → per-stop actuals → **completed** →
+  draft invoice $932.72 (frozen) → public `/track/search` shows exactly the customer's own
+  4 stops. The E2E found and fixed five real defects (hours ACLs, delivery anchor,
+  hub-stop leakage, route-day anchoring, operating-day hours display).
+- Gotchas recorded: passing suites log nothing at `--log-level=warn`; `--workers 0` +
+  `--no-http` conflicts with the prod port; prema_dispatch tests run in a partial registry
+  BEFORE booking-extension fields exist (guard with `"field" in model._fields`);
+  `odoo-bin shell` rolls back on exit unless `env.cr.commit()`.
+
+### 33.8 Commits and risks
+
+- 16 commits on the branch (3 prior-session + 13 this session): `8e48f4f` (discriminator),
+  `83e9d92` (portal builder), `1584768` (Route Adviser), `7cd7278` (actuals/POP-POD/
+  capacity/load plan), `b75c00d` (custody/visits/states/tracking), `ad61f22`→`03f17a2`
+  (hardening + E2E fixes). 42 files, ~4,600 insertions.
+- Risks: not deployed (touches live portal/pricing/dispatch — deploy with the established
+  stop→`-u`→start sequence and prod re-validation); Route Adviser uses straight-line ×1.4
+  estimates (Google Maps layer can be added); greedy recommendation is deterministic but
+  not globally optimal (look-ahead protects hard windows); the 106 pre-existing dispatch
+  test errors remain a cleanup ticket unrelated to this work; the new builder JS is
+  validated at the HTTP-contract level — a real browser pass is recommended before prod.
 
 ## Appendix A: File Index (CLAUDE.md)
 
