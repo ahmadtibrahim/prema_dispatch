@@ -662,7 +662,7 @@ class LogisticsBooking(models.Model):
             "source_res_id": self.id,
             "logistics_booking_id": self.id,
             "operation_date": operation_date,
-            "operation_role": "route",
+            "operation_role": "combined",
             "tracking_number": "%s-01" % self.booking_number,
             "company_id": self.env.company.id,
             "service_type": "ltl" if self.shipment_type == "ltl" else "ftl",
@@ -676,8 +676,6 @@ class LogisticsBooking(models.Model):
             "route_definition_mode": "exact_stops",
             "stops_confirmation_state": "confirmed",
             "planned_route_name": self.booking_number,
-            "pickup_saved_location_id": self.pickup_saved_location_id.id
-            if self.pickup_saved_location_id else False,
         })
         stop_records = {}
         for index, stop in enumerate(stops):

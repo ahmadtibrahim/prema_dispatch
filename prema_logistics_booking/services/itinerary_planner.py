@@ -12,6 +12,8 @@ in each stop's timezone.
 import math
 from datetime import datetime, timedelta
 
+from pytz import timezone as tz
+
 REASON_HARD_WINDOW = "hard_window_protected"
 REASON_PRECEDENCE = "pickup_before_delivery"
 REASON_HOURS = "facility_operating_hours"
@@ -87,8 +89,7 @@ class ItineraryPlanner:
         """Effective [open, close] floats for a stop on a given UTC datetime,
         evaluated in the stop's timezone. Returns (open, close) or None."""
         timezone = stop.get("timezone") if isinstance(stop, dict) else stop.timezone
-        timezone = timezone or "America/Toronto"
-        local = service_dt.astimezone(timezone)
+        local = service_dt.astimezone(tz(timezone or "America/Toronto"))
         hours = self._hours_for(stop, local.weekday())
         if hours is None:
             return None  # closed day
@@ -116,8 +117,8 @@ class ItineraryPlanner:
         if window is None:
             return False, 0, arrival_dt, arrival_dt
         timezone = stop.get("timezone") if isinstance(stop, dict) else stop.timezone
-        timezone = timezone or "America/Toronto"
-        local = arrival_dt.astimezone(timezone)
+        tz_obj = tz(timezone or "America/Toronto")
+        local = arrival_dt.astimezone(tz_obj)
         arrival_hour = local.hour + local.minute / 60.0 + local.second / 3600.0
         if arrival_hour > window[1]:
             return False, 0, arrival_dt, arrival_dt

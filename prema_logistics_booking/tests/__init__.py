@@ -18,5 +18,6 @@ from . import test_portal_discount
 from . import test_corridor_dynamic_pricing
 from . import test_ltl_additional_stops
 from . import test_vehicle_capacity
+from . import test_milk_run
 from . import test_portal_pallet_capacity
 from . import test_pallet_state_sync
