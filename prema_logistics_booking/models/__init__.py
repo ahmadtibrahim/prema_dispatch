@@ -34,6 +34,8 @@ from . import account_move_booking
 from . import logistics_corridor
 from . import dispatch_job_extension
 from . import dispatch_load_plan_extension
+from . import dispatch_stop_extension
+from . import dispatch_item_extension
 from . import logistics_custom_quote
 from . import logistics_recurring_agreement
 from . import logistics_daily_local

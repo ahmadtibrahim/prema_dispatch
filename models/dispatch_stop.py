@@ -212,6 +212,14 @@ class PremaDispatchStop(models.Model):
     hard_deadline = fields.Boolean(string="Hard Deadline",
         help="Missing this deadline is unacceptable. System will block or warn if ETA exceeds it.")
     appointment_confirmed = fields.Boolean(string="Appointment Confirmed")
+    requires_liftgate = fields.Boolean(
+        string="Liftgate Required",
+        help="Stop-level liftgate requirement (milk-run stops carry their "
+             "own requirement — not the job-level flag).")
+    appointment_required = fields.Boolean(
+        string="Appointment Required",
+        help="Stop-level appointment requirement (milk-run stops carry "
+             "their own requirement — not the job-level flag).")
 
     # Schedule
     scheduled_time = fields.Datetime()
@@ -275,11 +283,6 @@ class PremaDispatchStop(models.Model):
     )
     pod_required = fields.Boolean(string="POD Required", default=False)
     pop_required = fields.Boolean(string="POP Required", default=False)
-    logistics_booking_stop_id = fields.Many2one(
-        "logistics.booking.stop", string="Booking Stop",
-        ondelete="set null", index=True,
-        help="Stable bridge to the commercial booking stop (idempotency, "
-             "sync, audit).")
     pod_uploaded = fields.Boolean(
         string="POD Uploaded", compute="_compute_pod_uploaded", store=True
     )

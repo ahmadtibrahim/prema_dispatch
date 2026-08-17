@@ -109,6 +109,10 @@ class NormalizedBookingRequest:
         self.physical_pallets = data.get("physical_pallets", data.get("pallets", 1))
         self.shared_pallet_mode = data.get("shared_pallet_mode", False)
         self.pallet_allocations = data.get("pallet_allocations") or []
+        # Architecture discriminator — explicit at creation. Default legacy
+        # so no existing channel silently flips to the movement bridge.
+        self.route_model_version = data.get("route_model_version", "legacy")
+        self.pallet_movements = data.get("pallet_movements") or []
         self.weight_lbs = data.get("weight_lbs", 0.0)
         self.commodity = data.get("commodity", "")
         self.stackable = data.get("stackable", True)
@@ -154,6 +158,8 @@ class NormalizedBookingRequest:
             raise ValidationError(_("weight_lbs must be >= 0"))
         if self.load_type not in VALID_LOAD_TYPES:
             raise ValidationError(_("Invalid load_type: %s") % self.load_type)
+        if self.route_model_version not in ("legacy", "movement_v1"):
+            raise ValidationError(_("Invalid route_model_version: %s") % self.route_model_version)
         validate_temperature_request(self.equipment_type, self.required_temperature_c)
 
 
@@ -790,6 +796,11 @@ class BookingOrchestrationService:
             "customer_reference": normalized_request.customer_reference or "",
             "booking_number": self.env["logistics.booking"]._generate_booking_number(),
             "state": "confirmed",
+            # Explicit architecture discriminator, frozen at creation.
+            # Default is legacy; only requests built by the generalized
+            # movement-aware flow carry movement_v1 (never inferred from
+            # pallet rows or allocations).
+            "route_model_version": normalized_request.route_model_version or "legacy",
             "confirmed_at": fields.Datetime.now(),
             "liftgate_pickup": normalized_request.liftgate_pickup,
             "liftgate_delivery": normalized_request.liftgate_delivery,
@@ -887,6 +898,15 @@ class BookingOrchestrationService:
                 # then invalidate One2many cache so downstream methods see them.
                 self.env.flush_all()
                 booking.invalidate_recordset(['stop_ids'])
+
+                # movement_v1: canonical physical pallet rows, created ONLY
+                # for explicitly movement-architected bookings. Legacy
+                # bookings never get operational movement rows from this
+                # path (migration backfill rows are compatibility-only).
+                if booking.route_model_version == "movement_v1":
+                    self._create_booking_pallets(
+                        booking, normalized_request.pallet_movements,
+                    )
 
                 # Create booking lines
                 self._create_booking_lines(booking, normalized_request)
@@ -1068,6 +1088,7 @@ class BookingOrchestrationService:
                 "booking_id": booking.id,
                 "sequence": seq,
                 "stop_type": "pickup",
+                "stop_key": pu.get("stop_key") or "",
                 "saved_location_id": pu.get("saved_location_id") or False,
                 "logistics_saved_location_id": pu.get("logistics_saved_location_id") or False,
                 "company_name": pu.get("company_name", ""),
@@ -1099,6 +1120,7 @@ class BookingOrchestrationService:
                 "booking_id": booking.id,
                 "sequence": seq,
                 "stop_type": "delivery",
+                "stop_key": dl.get("stop_key") or "",
                 "saved_location_id": dl.get("saved_location_id") or False,
                 "logistics_saved_location_id": dl.get("logistics_saved_location_id") or False,
                 "company_name": dl.get("company_name", ""),
@@ -1124,6 +1146,56 @@ class BookingOrchestrationService:
                 "timezone": dl.get("timezone") or "",
             })
             seq += 10
+
+    def _create_booking_pallets(self, booking, pallet_movements):
+        """Create canonical physical pallet rows for movement_v1 bookings.
+
+        pallet_movements: list of dicts with stable stop keys
+        {key, label, weight_lbs, shared, pickup_stop_key,
+        delivery_stop_keys, commodity, temperature_notes, reference}.
+        Stop keys resolve against the booking stops created in the same
+        transaction — never positional indices.
+        """
+        Pallet = self.env["logistics.booking.pallet"].sudo()
+        Allocation = self.env["logistics.booking.pallet.stop.allocation"].sudo()
+        stops_by_key = {
+            stop.stop_key: stop
+            for stop in booking.stop_ids
+            if stop.stop_key
+        }
+        sequence = 10
+        for movement in pallet_movements:
+            pickup_key = movement.get("pickup_stop_key")
+            pickup_stop = stops_by_key.get(pickup_key) if pickup_key else booking.stop_ids.filtered(
+                lambda s: s.stop_type == "pickup")[:1]
+            if not pickup_stop:
+                raise UserError(_(
+                    "Pallet movement %s references unknown pickup stop %s."
+                ) % (movement.get("key", "?"), pickup_key or "(none)"))
+            pallet = Pallet.create({
+                "booking_id": booking.id,
+                "sequence": sequence,
+                "label": movement.get("label") or "",
+                "weight_lbs": movement.get("weight_lbs") or 0.0,
+                "commodity": movement.get("commodity") or "",
+                "temperature_notes": movement.get("temperature_notes") or "",
+                "reference": movement.get("reference") or "",
+                "shared": bool(movement.get("shared")),
+                "pickup_stop_id": pickup_stop.id,
+                "state": "pending_pickup",
+            })
+            sequence += 10
+            for unload_index, delivery_key in enumerate(movement.get("delivery_stop_keys") or []):
+                delivery_stop = stops_by_key.get(delivery_key)
+                if not delivery_stop:
+                    raise UserError(_(
+                        "Pallet movement %s references unknown delivery stop %s."
+                    ) % (movement.get("key", "?"), delivery_key))
+                Allocation.create({
+                    "pallet_id": pallet.id,
+                    "delivery_stop_id": delivery_stop.id,
+                    "unload_sequence": (unload_index + 1) * 10,
+                })
 
     def _create_booking_lines(self, booking, normalized_request: NormalizedBookingRequest):
         """Create booking lines from normalized request."""

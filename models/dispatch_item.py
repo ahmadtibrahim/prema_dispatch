@@ -115,10 +115,6 @@ class PremaDispatchItem(models.Model):
     position_id = fields.Many2one("prema.dispatch.vehicle.layout.position", ondelete="set null", index=True)
     stop_allocation_ids = fields.One2many("prema.dispatch.pallet.stop.allocation", "dispatch_item_id")
     shared_skid = fields.Boolean(default=False)
-    logistics_booking_pallet_id = fields.Many2one(
-        "logistics.booking.pallet", string="Booking Pallet",
-        ondelete="set null", index=True,
-        help="Stable bridge to the canonical booking pallet movement.")
     four_way_entry = fields.Boolean(default=False)
     stackable = fields.Boolean(default=True)
     temperature_zone = fields.Selection([

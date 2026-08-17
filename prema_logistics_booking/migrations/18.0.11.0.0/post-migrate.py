@@ -1,14 +1,19 @@
-"""18.0.11.0.0 post-migration — backfill physical pallet movement records.
+"""18.0.11.0.0 post-migration — backfill COMPATIBILITY pallet rows.
 
 For non-completed bookings that predate the canonical pallet model:
 create one pickup stop (from the booking's pickup fields) when missing,
 one logistics.booking.pallet per physical pallet, and delivery-allocation
 rows from the legacy `_pallet_allocs` JSON in price_snapshot.
 
+COMPATIBILITY-ONLY: these rows are a derived view for UI/reporting. They
+NEVER change the booking's architecture — every historical booking stays
+route_model_version='legacy' (schema default) and keeps using the legacy
+dispatch bridge. Pallet rows alone are not a bridge selector; only the
+explicit route_model_version discriminator is.
+
 Idempotent + guarded: never touches completed/cancelled bookings and
 never duplicates existing pallet rows or dispatch items.
 """
-import json
 import logging
 
 _logger = logging.getLogger(__name__)
@@ -16,6 +21,14 @@ _logger = logging.getLogger(__name__)
 
 def backfill_booking_pallets(env):
     Booking = env["logistics.booking"]
+    # Schema-only safety: the discriminator column defaults to legacy for
+    # every row the ORM ever created before this field existed. Re-assert
+    # it so no stray NULL can ever slip a historical booking into the
+    # movement bridge.
+    env.cr.execute(
+        "UPDATE logistics_booking SET route_model_version = 'legacy' "
+        "WHERE route_model_version IS NULL"
+    )
     bookings = Booking.search([("state", "not in", ("completed", "cancelled"))])
     for booking in bookings:
         if env["logistics.booking.pallet"].search_count(
@@ -32,7 +45,7 @@ def backfill_booking_pallets(env):
                 "sequence": 5,
                 "stop_type": "pickup",
                 "location_name": booking.pickup_address or "Pickup",
-                "postal_code": booking.pickup_fsa_id.fsa if booking.pickup_fsa_id else "",
+                "postal_zip": booking.pickup_fsa_id.fsa if booking.pickup_fsa_id else "",
             })
         # Legacy allocation JSON lives in price_snapshot.
         allocs = []

@@ -153,6 +153,33 @@ class LogisticsBooking(models.Model):
         help="Reason for exceeding standard capacity (e.g., pinwheel layout, light freight)."
     )
 
+    # ── Booking architecture discriminator ──────────────────────────
+    # legacy: booking created before/without the canonical pallet-movement
+    #         architecture. Dispatch uses the legacy leg/snapshot bridge,
+    #         EVEN IF compatibility pallet rows were backfilled by
+    #         migration 18.0.11.0.0. Pallet rows alone are never a bridge
+    #         selector.
+    # movement_v1: booking created through the generalized milk-run flow
+    #         (portal route builder / movement-aware channels). Dispatch
+    #         uses the canonical movement bridge: ONE route job, ordered
+    #         operational stops, per-pallet items with pickup/delivery
+    #         stop references.
+    route_model_version = fields.Selection(
+        [("legacy", "Legacy"), ("movement_v1", "Movement V1")],
+        string="Route Model Version", default="legacy", required=True, index=True,
+        help="Architecture discriminator for dispatch creation. Existing "
+             "bookings are legacy by default; only new generalized "
+             "milk-run bookings are movement_v1. Compatibility pallet "
+             "rows never change this on their own.",
+    )
+    pallet_ids = fields.One2many(
+        "logistics.booking.pallet", "booking_id",
+        string="Physical Pallet Movements",
+        help="Canonical physical pallet movements (movement_v1). For "
+             "legacy bookings these rows — when present — are a "
+             "compatibility view only and never drive dispatch.",
+    )
+
     dispatch_job_id = fields.Many2one("prema.dispatch.job", readonly=True, copy=False)
     dispatch_job_ids = fields.One2many(
         "prema.dispatch.job", "logistics_booking_id", string="Dispatch Planner Jobs", readonly=True,
@@ -286,6 +313,18 @@ class LogisticsBooking(models.Model):
         for entry in ps:
             if isinstance(entry, dict) and "_pallet_allocs" in entry:
                 return entry["_pallet_allocs"] or []
+        return []
+
+    @staticmethod
+    def _extract_pallet_movements_from_snapshot(snapshot):
+        """Canonical pallet movements stored in the pricing snapshot by the
+        generalized portal route builder. Presence (not merely pallet rows)
+        is what marks a NEW booking as movement_v1. Sessions without this
+        entry are legacy, period."""
+        ps = snapshot or []
+        for entry in ps:
+            if isinstance(entry, dict) and "_pallet_movements" in entry:
+                return entry["_pallet_movements"] or []
         return []
 
     # ── Booking Legs from Route Snapshot ──────────────────────────────
@@ -449,6 +488,14 @@ class LogisticsBooking(models.Model):
             "physical_pallets": session.physical_pallets or session.pallets,
             "shared_pallet_mode": session.shared_pallet_mode or False,
             "pallet_allocations": self._extract_pallet_allocs_from_snapshot(session.price_snapshot),
+            # Architecture discriminator: only sessions built by the
+            # generalized route builder carry canonical movements.
+            "route_model_version": (
+                "movement_v1"
+                if self._extract_pallet_movements_from_snapshot(session.price_snapshot)
+                else "legacy"
+            ),
+            "pallet_movements": self._extract_pallet_movements_from_snapshot(session.price_snapshot),
             "weight_lbs": session.weight_lbs,
             "liftgate_pickup": session.liftgate_pickup,
             "liftgate_delivery": session.liftgate_delivery,
@@ -689,22 +736,31 @@ class LogisticsBooking(models.Model):
                 "logistics_booking_stop_id": stop.id,
                 "pallets_in": delta.get("pickup", 0),
                 "pallets_out": delta.get("delivery", 0),
-                "weight_in_lbs": 0.0,
-                "weight_out_lbs": 0.0,
+                "weight_in_lbs": delta.get("weight_in") or 0.0,
+                "weight_out_lbs": delta.get("weight_out") or 0.0,
                 "pod_required": stop.stop_type == "delivery",
                 "pop_required": stop.stop_type == "pickup",
                 "tz_name": stop.timezone or "America/Toronto",
+                # Stop-level operational requirements come from the booking
+                # stop, not from booking-level legacy flags.
+                "requires_liftgate": stop.liftgate_required,
+                "appointment_required": stop.appointment_required,
+                "exact_time": stop.timing_type == "exact_appointment",
+                "service_time_minutes": stop.service_time_minutes or 15,
+                "dispatcher_notes": stop.instructions or "",
             })
         for pallet in pallets:
             deliveries = pallet.delivery_allocation_ids.filtered("active")
+            pickup_dispatch_stop = stop_records.get(
+                pallet.pickup_stop_id.id) if pallet.pickup_stop_id else False
+            first_delivery = deliveries[:1].delivery_stop_id
             item = Item.create({
                 "job_id": job.id,
                 "logistics_booking_pallet_id": pallet.id,
                 "load_unit_type": "shared_pallet" if pallet.shared else "pallet",
-                "pickup_stop_id": stop_records[pallet.pickup_stop_id.id]
-                if pallet.pickup_stop_id else False,
-                "delivery_stop_id": stop_records[deliveries[:1].delivery_stop_id.id]
-                if deliveries and deliveries[:1].delivery_stop_id else False,
+                "pickup_stop_id": pickup_dispatch_stop.id if pickup_dispatch_stop else False,
+                "delivery_stop_id": stop_records[first_delivery.id].id
+                if first_delivery and first_delivery.id in stop_records else False,
                 "weight_lbs": pallet.weight_lbs or 0.0,
                 "shared_skid": pallet.shared,
             })
@@ -973,10 +1029,13 @@ class LogisticsBooking(models.Model):
                 self.dispatch_job_id = existing[0].id
             return existing
 
-        # Milk-run generalization: bookings with canonical pallet movement
-        # records bridge to ONE route job with ordered stops and items.
-        if self.env["logistics.booking.pallet"].search_count(
-                [("booking_id", "=", self.id)]):
+        # Milk-run generalization: ONLY bookings explicitly created as
+        # movement_v1 use the canonical movement bridge. Legacy bookings
+        # keep the legacy leg/snapshot bridge even when compatibility
+        # pallet rows exist (migration 18.0.11.0.0 backfills those rows
+        # for historical bookings WITHOUT changing their architecture).
+        # Pallet rows alone are never a bridge selector.
+        if self.route_model_version == "movement_v1":
             route_job = self._create_dispatch_route_from_movements()
             if route_job:
                 self.dispatch_job_id = route_job.id

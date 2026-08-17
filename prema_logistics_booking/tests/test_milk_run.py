@@ -180,3 +180,207 @@ class TestMilkRun(TransactionCase):
             ["s%d" % ud.id, "s%d" % ott.id], movements)
         self.assertEqual(result["peak"], 2)
         self.assertEqual(result["onboard_after"], 0)
+
+    # ── Architecture discriminator: pallet rows are NOT a selector ───
+
+    def _make_booking_with_stops_pallets(self, route_model_version):
+        partner = self.env["res.partner"].search([], limit=1)
+        booking = self.env["logistics.booking"].create({
+            "partner_id": partner.id,
+            "booking_number": "MR-DISC-%s" % route_model_version,
+            "shipment_type": "ltl", "temperature_mode": "dry",
+            "pallets": 2, "physical_pallets": 2, "weight_lbs": 1000.0,
+            "state": "confirmed",
+            "calculated_price": 300.0,
+            "route_model_version": route_model_version,
+        })
+        ud = self.env["logistics.booking.stop"].create({
+            "booking_id": booking.id, "sequence": 10, "stop_type": "pickup",
+            "location_name": "United Dairy"})
+        ott = self.env["logistics.booking.stop"].create({
+            "booking_id": booking.id, "sequence": 20, "stop_type": "delivery",
+            "location_name": "Ottawa"})
+        for i in range(2):
+            pallet = self.env["logistics.booking.pallet"].create({
+                "booking_id": booking.id, "sequence": i * 10,
+                "label": "U-%02d" % (i + 1), "weight_lbs": 500.0,
+                "pickup_stop_id": ud.id,
+            })
+            self.env["logistics.booking.pallet.stop.allocation"].create({
+                "pallet_id": pallet.id, "delivery_stop_id": ott.id,
+                "unload_sequence": 10})
+        return booking
+
+    def test_08_legacy_booking_with_pallet_rows_uses_legacy_bridge(self):
+        """Compatibility pallet rows must NOT flip a legacy booking onto the
+        movement bridge — dispatch bridge selection is the explicit
+        route_model_version discriminator, never pallet-row presence."""
+        booking = self._make_booking_with_stops_pallets("legacy")
+        self.assertEqual(booking.route_model_version, "legacy")
+        job = booking._create_dispatch_job()
+        self.assertTrue(job)
+        # Legacy bridge: no canonical movement job, no booking-stop links.
+        self.assertNotEqual(job.name.split("—")[0].strip(), "Milk Run")
+        self.assertFalse(job.stop_ids.mapped("logistics_booking_stop_id"))
+        self.assertFalse(job.item_ids.mapped("logistics_booking_pallet_id"))
+
+    def test_09_movement_v1_booking_uses_movement_bridge(self):
+        booking = self._make_booking_with_stops_pallets("movement_v1")
+        job = booking._create_dispatch_job()
+        self.assertTrue(job)
+        self.assertIn("Milk Run", job.name)
+        # 2 operational stops bridged to the booking stops.
+        self.assertEqual(len(job.stop_ids), 2)
+        self.assertTrue(all(job.stop_ids.mapped("logistics_booking_stop_id")))
+        # 2 canonical items — one per physical pallet, no duplicates.
+        self.assertEqual(len(job.item_ids), 2)
+        self.assertTrue(all(job.item_ids.mapped("logistics_booking_pallet_id")))
+        pickup_stop = job.stop_ids.filtered(lambda s: s.stop_type == "pickup")
+        drop_stop = job.stop_ids.filtered(lambda s: s.stop_type == "dropoff")
+        self.assertEqual(pickup_stop.pallets_in, 2)
+        self.assertEqual(drop_stop.pallets_out, 2)
+        self.assertTrue(pickup_stop.pop_required)
+        self.assertTrue(drop_stop.pod_required)
+        for item in job.item_ids:
+            self.assertEqual(item.pickup_stop_id, pickup_stop)
+            self.assertEqual(item.delivery_stop_id, drop_stop)
+
+    # ── REAL ORM bridge: booking confirmation → dispatch route job ───
+
+    def test_10_real_orm_booking_to_dispatch_bridge(self):
+        """Canonical milk-run flow through confirm_from_internal:
+        UD pickup (4 → Ottawa), TerraFreska pickup (3 → Belleville)
+        → ONE same-day dispatch route job with 4 operational stops and 7
+        canonical items; correct pickup/delivery stop references; no
+        duplicate physical items."""
+        partner = self.env["res.partner"].search([], limit=1)
+        from odoo.addons.prema_logistics_booking.services.booking_orchestration_service import (
+            BookingOrchestrationService,
+        )
+        orchestration = BookingOrchestrationService(self.env)
+        stops_spec = {
+            "stp-ud": {
+                "stop_key": "stp-ud", "stop_type": "pickup",
+                "company_name": "United Dairy", "postal_code": "K7M",
+                "city": "Kingston", "latitude": 44.23, "longitude": -76.49,
+            },
+            "stp-tf": {
+                "stop_key": "stp-tf", "stop_type": "pickup",
+                "company_name": "TerraFreska", "postal_code": "L6T",
+                "city": "Brampton", "latitude": 43.73, "longitude": -79.76,
+            },
+            "stp-blv": {
+                "stop_key": "stp-blv", "stop_type": "delivery",
+                "company_name": "Belleville Depot", "postal_code": "K8N",
+                "city": "Belleville", "latitude": 44.16, "longitude": -77.38,
+            },
+            "stp-ott": {
+                "stop_key": "stp-ott", "stop_type": "delivery",
+                "company_name": "Ottawa DC", "postal_code": "K1A",
+                "city": "Ottawa", "latitude": 45.42, "longitude": -75.70,
+            },
+        }
+        movements = []
+        for i in range(4):
+            movements.append({
+                "key": "u%d" % (i + 1), "label": "U-%02d" % (i + 1),
+                "weight_lbs": 500.0, "shared": False,
+                "pickup_stop_key": "stp-ud", "delivery_stop_keys": ["stp-ott"],
+            })
+        for i in range(3):
+            movements.append({
+                "key": "t%d" % (i + 1), "label": "TF-%02d" % (i + 1),
+                "weight_lbs": 400.0, "shared": False,
+                "pickup_stop_key": "stp-tf", "delivery_stop_keys": ["stp-blv"],
+            })
+        norm = orchestration.normalize_request({
+            "partner_id": partner.id,
+            "pricing_method": "manual",
+            "agreed_rate": 500.0,
+            "load_type": "ltl",
+            "equipment_type": "dry",
+            "pallets": 7, "physical_pallets": 7,
+            "weight_lbs": 3200.0,
+            "pickup_stops": [stops_spec["stp-ud"], stops_spec["stp-tf"]],
+            "delivery_stops": [stops_spec["stp-blv"], stops_spec["stp-ott"]],
+            "route_model_version": "movement_v1",
+            "pallet_movements": movements,
+            "idempotency_key": "test:milkrun:canonical",
+        }, source_channel="internal")
+        booking = orchestration.confirm_from_internal(norm, skip_invoice=True)
+        self.assertEqual(booking.route_model_version, "movement_v1")
+        self.assertEqual(len(booking.pallet_ids), 7)
+        self.assertEqual(len(booking.stop_ids), 4)
+        # Exactly one same-day route job.
+        jobs = booking.dispatch_job_ids
+        self.assertEqual(len(jobs), 1)
+        job = jobs[0]
+        # Ordered operational stops: UD → TF → Belleville → Ottawa.
+        stops = job.stop_ids.sorted("sequence")
+        self.assertEqual(
+            [s.logistics_booking_stop_id.stop_key for s in stops],
+            ["stp-ud", "stp-tf", "stp-blv", "stp-ott"],
+        )
+        self.assertEqual([s.pallets_in for s in stops], [4, 3, 0, 0])
+        self.assertEqual([s.pallets_out for s in stops], [0, 0, 3, 4])
+        self.assertTrue(stops[0].pop_required)
+        self.assertTrue(stops[1].pop_required)
+        self.assertTrue(stops[2].pod_required)
+        self.assertTrue(stops[3].pod_required)
+        # Canonical items — 7 physical pallets, correct stop references.
+        items = job.item_ids
+        self.assertEqual(len(items), 7)
+        by_key = {i.logistics_booking_pallet_id.label: i for i in items}
+        for label in ("U-01", "U-02", "U-03", "U-04"):
+            self.assertEqual(by_key[label].pickup_stop_id, stops[0])
+            self.assertEqual(by_key[label].delivery_stop_id, stops[3])
+        for label in ("TF-01", "TF-02", "TF-03"):
+            self.assertEqual(by_key[label].pickup_stop_id, stops[1])
+            self.assertEqual(by_key[label].delivery_stop_id, stops[2])
+        self.assertEqual(len(items.mapped("logistics_booking_pallet_id")), 7)
+
+    # ── Migration backfill: compatibility rows keep legacy bridge ────
+
+    def test_11_migration_backfill_keeps_legacy_architecture(self):
+        """18.0.11.0.0 backfill creates compatibility pallet rows for a
+        historical booking but the booking stays legacy and its dispatch
+        keeps the legacy bridge."""
+        import importlib.util
+        import os
+        migration_path = os.path.join(
+            os.path.dirname(__file__), "..", "migrations", "18.0.11.0.0",
+            "post-migrate.py")
+        spec = importlib.util.spec_from_file_location(
+            "post_migrate_18_0_11_0_0", migration_path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        partner = self.env["res.partner"].search([], limit=1)
+        booking = self.env["logistics.booking"].create({
+            "partner_id": partner.id,
+            "booking_number": "MR-MIG-01",
+            "shipment_type": "ltl", "temperature_mode": "dry",
+            "pallets": 2, "physical_pallets": 2, "weight_lbs": 1000.0,
+            "state": "confirmed",
+            "calculated_price": 300.0,
+            "price_snapshot": [{"_pallet_allocs": [
+                {"pallet": 1, "stops": [1]},
+                {"pallet": 2, "stops": [1]},
+            ]}],
+        })
+        # Historical bookings predate the discriminator field — the model
+        # default and the migration both keep them legacy.
+        self.assertEqual(booking.route_model_version, "legacy")
+        delivery = self.env["logistics.booking.stop"].create({
+            "booking_id": booking.id, "sequence": 10, "stop_type": "delivery",
+            "location_name": "Ottawa"})
+        module.backfill_booking_pallets(self.env)
+        booking.invalidate_recordset(["pallet_ids", "stop_ids"])
+        self.assertEqual(booking.route_model_version, "legacy")
+        self.assertEqual(len(booking.pallet_ids), 2)
+        self.assertEqual(len(booking.stop_ids), 2)  # pickup + delivery
+        job = booking._create_dispatch_job()
+        self.assertTrue(job)
+        self.assertNotIn("Milk Run", job.name)
+        self.assertFalse(job.stop_ids.mapped("logistics_booking_stop_id"))
+        self.assertFalse(job.item_ids.mapped("logistics_booking_pallet_id"))

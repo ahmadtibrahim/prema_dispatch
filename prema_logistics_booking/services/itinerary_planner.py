@@ -69,6 +69,8 @@ class ItineraryPlanner:
                 "pickup": pickup,
                 "delivery": delivery,
                 "after": onboard,
+                "weight_in": pickup_w,
+                "weight_out": delivery_w,
                 "weight_before": onboard_weight - pickup_w + delivery_w,
                 "weight_after": onboard_weight,
             })
