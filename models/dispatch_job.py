@@ -3326,8 +3326,22 @@ class PremaDispatchJob(models.Model):
             return ""
         from datetime import datetime
         import pytz
-        now = datetime.now(pytz.timezone(s.tz_name or "America/Toronto"))
-        hours = snapshot.get(str(now.weekday()))
+        # Hours for the stop's OPERATING day (route day), not today —
+        # a driver looking at Sunday's route must see Sunday's hours.
+        operating = None
+        if s.scheduled_time:
+            operating = s.scheduled_time
+        elif "operation_date" in s.job_id._fields and s.job_id.operation_date:
+            operating = datetime.combine(
+                s.job_id.operation_date, datetime.min.time())
+        if operating is None:
+            now = datetime.now(pytz.timezone(s.tz_name or "America/Toronto"))
+            hours = snapshot.get(str(now.weekday()))
+        else:
+            if operating.tzinfo is None:
+                operating = pytz.timezone(
+                    s.tz_name or "America/Toronto").localize(operating)
+            hours = snapshot.get(str(operating.weekday()))
         if hours is None:
             return "Closed today"
         def _fmt(h):
