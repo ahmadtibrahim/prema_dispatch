@@ -247,11 +247,24 @@ class DispatchAvailabilityService:
             truck_stop_payloads = []
             for j in v_jobs:
                 segs = job_segments_map[j.id]
-                my_seg = next(
-                    (s for s in segs if s["vehicle"] and s["vehicle"].id == vehicle.id), None
-                )
+                my_segs = [s for s in segs if s["vehicle"] and s["vehicle"].id == vehicle.id]
+                my_seg = my_segs[0] if my_segs else None
+                # Same-truck collapse: when a Driver Transfer / Cross-Dock
+                # handoff hasn't been executed yet (no transfer_to_* captured
+                # on the boundary stop), every segment falls back to this
+                # job's own vehicle — picking only the FIRST segment would
+                # hide the reload + remaining stops from this truck's board
+                # (Auto-Plan creates the drop + reload as one truck's whole
+                # route). Fold all same-truck segments into the display set,
+                # deduping the boundary stop that appears at both ends, and
+                # keep the first segment's giving/receiving roles.
                 role_by_stop_id = {st.id: role for st, role in my_seg["stops"]} if my_seg else {}
-                seg_stop_ids = set(role_by_stop_id) if my_seg else None
+                if my_seg:
+                    seg_stop_ids = set(role_by_stop_id)
+                    for seg in my_segs[1:]:
+                        seg_stop_ids.update(st.id for st, _role in seg["stops"])
+                else:
+                    seg_stop_ids = None
 
                 last = j.stop_ids.sorted("sequence")[-1:] if j.stop_ids else None
                 stops_data = []

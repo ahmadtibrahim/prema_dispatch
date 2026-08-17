@@ -28,14 +28,18 @@ class TestNetworkAvailabilityService(TransactionCase):
             "straight_pallet_capacity": 12, "pin_wheel_pallet_capacity": 13, "turned_pallet_capacity": 14,
         })
 
-        cls.corridor = cls.env["logistics.corridor"].create({
+        cls.corridor = cls.env["logistics.corridor"].with_context(
+            skip_departure_reconcile=True
+        ).create({
             "name": "WWG-Test-Corridor", "direction": "eastbound", "phase": 1, "truck_slot": 1, "operate_tuesday": True,
         })
         cls.env["logistics.corridor.stop"].create([
             {"corridor_id": cls.corridor.id, "sequence": 10, "region_id": cls.origin.id,
-             "pickup_allowed": True, "delivery_allowed": False},
+             "pickup_allowed": True, "delivery_allowed": False,
+             "distance_from_origin_km": 0.0, "day_offset": 0},
             {"corridor_id": cls.corridor.id, "sequence": 20, "region_id": cls.direct_dest.id,
-             "pickup_allowed": False, "delivery_allowed": True},
+             "pickup_allowed": False, "delivery_allowed": True,
+             "distance_from_origin_km": 100.0, "day_offset": 0},
         ])
         cls.env["logistics.corridor.departure"].create({
             "corridor_id": cls.corridor.id,
@@ -59,12 +63,14 @@ class TestNetworkAvailabilityService(TransactionCase):
         self.assertEqual(len(by_id[self.direct_dest.id]["legs"]), 1)
 
     def test_unreachable_destination_reports_reason(self):
+        """Corridor-era contract: the map lists only configured routes —
+        a region with no configured corridor is simply absent (it is never
+        shown with an 'unavailable' status; configured-but-not-bookable
+        routes carry the departure reason instead)."""
         svc = NetworkAvailabilityService(self.env)
         results = svc.list_destinations_from(self.origin)
         by_id = {r["region_id"]: r for r in results}
-        self.assertIn(self.unreachable_dest.id, by_id)
-        self.assertEqual(by_id[self.unreachable_dest.id]["status"], "unavailable")
-        self.assertTrue(by_id[self.unreachable_dest.id]["reason"])
+        self.assertNotIn(self.unreachable_dest.id, by_id)
 
     def test_rpc_requires_dispatch_group(self):
         plain_user = self.env["res.users"].create({

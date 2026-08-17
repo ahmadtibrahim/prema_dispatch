@@ -98,14 +98,19 @@ class TestWhereWeGoAndPriceMatrixAccess(HttpCase):
         self.assertEqual(res.status_code, 200)
 
     def test_where_we_go_data_requires_dispatch_group(self):
-        self._assert_forbidden_for_plain_user("/logistics/where-we-go/data")
-        self._assert_ok_for_dispatcher("/logistics/where-we-go/data")
+        # /logistics/network-map is the maintained Where We Go entry point
+        # (the old /logistics/where-we-go/data route was retired).
+        self._assert_forbidden_for_plain_user("/logistics/network-map")
+        self._assert_ok_for_dispatcher("/logistics/network-map")
 
     def test_price_matrix_requires_dispatch_group(self):
         self._assert_forbidden_for_plain_user("/logistics/price-matrix")
         self._assert_ok_for_dispatcher("/logistics/price-matrix")
 
     def test_where_we_go_data_rejects_anonymous(self):
-        self.logout()
-        res = self.url_open("/logistics/where-we-go/data")
-        self.assertNotEqual(res.status_code, 200)
+        self.authenticate(None, None)
+        res = self.url_open("/logistics/network-map", allow_redirects=False)
+        # auth="user" routes redirect anonymous callers to the login page
+        # (303 See Other in Odoo 18) instead of answering 200.
+        self.assertIn(res.status_code, (302, 303, 403),
+                      "Anonymous access must redirect to login or be forbidden")

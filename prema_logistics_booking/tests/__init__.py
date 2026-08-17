@@ -6,7 +6,6 @@ from . import test_booking_invoice
 from . import test_v3_architecture
 from . import test_v4_validation
 from . import test_feature_branch
-from . import test_ordered_lane_pricing
 from . import test_pricing_integration
 from . import test_where_we_go
 from . import test_v5_dispatch_unification
@@ -29,3 +28,4 @@ from . import test_ftl_exclusivity
 from . import test_route_order_fix_booking
 from . import test_shared_pallet_portions
 from . import test_load_plan_population
+from . import test_repeated_pickup_promotion

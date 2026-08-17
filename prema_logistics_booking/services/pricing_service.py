@@ -394,9 +394,10 @@ class PricingService:
             "rate_plan_version": 0,
         }
 
-    def calculate_leg_per_km(self, distance_km, rate_per_km, target_pallets,
-                              booked_pallets, included_weight_per_pallet,
-                              actual_weight_lbs, currency=None):
+    @staticmethod
+    def calculate_leg_per_km(distance_km, rate_per_km, target_pallets,
+                             booked_pallets, included_weight_per_pallet,
+                             actual_weight_lbs, currency=None):
         """Canonical per-km pricing formula for one booking leg.
 
         D = chargeable road distance in km

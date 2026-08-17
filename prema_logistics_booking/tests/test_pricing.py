@@ -1,6 +1,9 @@
-"""Pricing engine tests — simplified formula: Revenue Target / Planned Pallets × Pallets."""
-from datetime import date, timedelta
+"""Pricing engine tests — corridor $/km formula: distance × pallets × ($/km ÷ planned pallets).
 
+Corridor: 100 km × 16 $/km ÷ 8 planned pallets = $2/pallet-km → $200/pallet
+(the same clean numbers the legacy rate-plan fixture produced, so the
+per-pallet assertions read identically to the original suite).
+"""
 from odoo.tests import TransactionCase
 from odoo.addons.prema_logistics_booking.services.pricing_service import PricingService
 
@@ -11,43 +14,8 @@ class TestPricing(TransactionCase):
         super().setUpClass()
         cls.Region = cls.env["logistics.region"]
         cls.Fsa = cls.env["logistics.fsa"]
-        cls.Lane = cls.env["logistics.lane"]
-        cls.SLevel = cls.env["logistics.service.level"]
-        cls.SOffering = cls.env["logistics.service.offering"]
-        cls.RatePlan = cls.env["logistics.rate.plan"]
-        cls.Schedule = cls.env["logistics.lane.schedule"]
-        cls.SurchargeType = cls.env["logistics.surcharge.type"]
-
-        # Create operational vehicle for capacity engine (required for pricing)
-        Vehicle = cls.env["fleet.vehicle"]
-        VehicleModel = cls.env["fleet.vehicle.model"]
-        cls.vehicle = Vehicle.search([("x_operational_logistics", "=", True)], limit=1)
-        if not cls.vehicle:
-            model = VehicleModel.search([], limit=1)
-            if not model:
-                brand = cls.env["fleet.vehicle.model.brand"].search([], limit=1)
-                if not brand:
-                    brand = cls.env["fleet.vehicle.model.brand"].create({"name": "TEST-Brand"})
-                model = VehicleModel.create({"name": "TEST-Model", "brand_id": brand.id})
-            cls.vehicle = Vehicle.create({
-                "name": "TEST-V3-Truck",
-                "license_plate": "TESTV3",
-                "model_id": model.id,
-                "x_operational_logistics": True,
-                "x_max_pallets": 14,
-                "straight_pallet_capacity": 12,
-                "pin_wheel_pallet_capacity": 13,
-                "turned_pallet_capacity": 14,
-            })
-        # Equipment profile linked to operational vehicle
-        EquipProfile = cls.env["logistics.equipment.profile"]
-        cls.equipment = EquipProfile.with_context(active_test=False).search([("fleet_vehicle_id", "=", cls.vehicle.id)], limit=1)
-        if not cls.equipment:
-            cls.equipment = EquipProfile.create({
-                "name": "TEST-V3-Equip-Profile",
-                "fleet_vehicle_id": cls.vehicle.id,
-                "max_pallets": 14,
-            })
+        cls.Corridor = cls.env["logistics.corridor"]
+        cls.CStop = cls.env["logistics.corridor.stop"]
 
         # Regions
         cls.r1 = cls.Region.create({"code": "T1", "name": "Test Region 1"})
@@ -63,53 +31,33 @@ class TestPricing(TransactionCase):
             "pickup_supported": True, "delivery_supported": True,
         })
 
-        # Lane
-        cls.lane = cls.Lane.create({
-            "origin_region_id": cls.r1.id, "destination_region_id": cls.r2.id,
-            "active": True, "ltl_capable": True, "ftl_capable": True,
-            "reefer_supported": True,
-            "max_pallets": 12, "equipment_profile_id": cls.equipment.id,
-        })
-
-        # Service level
-        cls.slevel = cls.SLevel.create({
-            "code": "TEST_NEXT_DAY", "name": "Test Next Day",
-            "reefer_food_eligible": True,
-        })
-
-        # Offering
-        cls.offering = cls.SOffering.create({
-            "lane_id": cls.lane.id, "service_level_id": cls.slevel.id,
-            "temperature_mode": "dry", "shipment_type": "ltl",
-        })
-
-        # Schedule
-        cls.Schedule.create({
-            "service_offering_id": cls.offering.id, "cutoff_time": 16.0,
-            "pickup_monday": True, "pickup_tuesday": True, "pickup_wednesday": True,
-            "pickup_thursday": True, "pickup_friday": True,
-            "delivery_offset_type": "next_day", "active": True,
-        })
-
-        # Rate Plan: $1600 revenue target ÷ 8 target_load_quantity = $200/pallet
-        # V4 LTL Hub formula uses target_load_quantity as the pricing denominator.
-        # included_weight_per_pallet = 500 lb (default), safe_weight_capacity = 11000 lb (default).
-        cls.plan = cls.RatePlan.create({
-            "service_offering_id": cls.offering.id,
-            "revenue_target": 1600.0,
+        # Corridor: 100 km × 16 $/km ÷ 8 planned pallets = 2 $/pallet-km.
+        # included_weight_per_pallet = 500 lb (corridor default).
+        # LTL-only on purpose: with enable_ftl the FTL threshold (default
+        # 10 pallets, auto_price) would convert every ≥10-pallet load to a
+        # flat FTL price — the LTL math below must stay pure. FTL behavior
+        # is exercised on dedicated corridors in test_14/test_14b/test_16.
+        cls.corridor = cls.Corridor.with_context(skip_departure_reconcile=True).create({
+            "name": "TEST-PRC Corridor",
+            "direction": "eastbound",
+            "rate_per_km": 16.0,
             "planned_pallets": 8,
-            "target_load_quantity": 8,
+            "included_weight_per_pallet": 500.0,
+            "minimum_booking_charge": 0.0,
+            "departure_horizon_weeks": 8,
+        })
+        cls.CStop.create({
+            "corridor_id": cls.corridor.id, "sequence": 10,
+            "region_id": cls.r1.id, "distance_from_origin_km": 0.0,
+            "day_offset": 0,
+        })
+        cls.CStop.create({
+            "corridor_id": cls.corridor.id, "sequence": 20,
+            "region_id": cls.r2.id, "distance_from_origin_km": 100.0,
+            "day_offset": 0,
         })
 
-        # TEMP_REEFER surcharge at 0% (search-or-create to avoid unique-constraint collisions)
-        cls.reefer_st = cls.SurchargeType.search([("code", "=", "TEMP_REEFER")], limit=1)
-        if not cls.reefer_st:
-            cls.reefer_st = cls.SurchargeType.create({
-                "code": "TEMP_REEFER", "name": "Reefer",
-                "calc_type": "percent", "default_amount": 0.0, "is_global": True,
-            })
-
-    # ── Simple formula tests (matching spec: $1600/8 = $200/pallet) ──
+    # ── Corridor formula tests ($2/pallet-km × 100 km = $200/pallet) ──
 
     def test_01_one_pallet_dry(self):
         result = PricingService(self.env).calculate(self.fsa1, self.fsa2, "ltl", "dry", 1, 500)
@@ -131,48 +79,63 @@ class TestPricing(TransactionCase):
         self.assertTrue(result.available)
         self.assertAlmostEqual(result.calculated_price, 1600.00, places=2)
 
-    def test_05_thirteen_pallets_dry(self):
-        """13+ pallets must return Request Quote — above standard capacity."""
+    def test_05_large_ltl_load_still_prices(self):
+        """13+ pallets: corridor pricing is not capped — capacity is
+        enforced at dispatch/load-plan level (shared-capacity tests,
+        Task #10), never silently at the quote."""
         result = PricingService(self.env).calculate(self.fsa1, self.fsa2, "ltl", "dry", 13, 6500)
-        self.assertFalse(result.available, "13 pallets must not be auto-priced")
-        self.assertIn("pallets", result.reason or "")
+        self.assertTrue(result.available)
+        # 100 km × 13 × $2/pallet-km = 2600; 6500 lb > 13×500 included → excess
+        expected = PricingService.calculate_leg_per_km(
+            100.0, 16.0, 8, 13, 500.0, 6500.0)["subtotal"]
+        self.assertAlmostEqual(result.calculated_price, expected, places=2)
 
     # ── Reefer tests ──
 
-    def test_06_one_pallet_reefer_zero_percent(self):
-        """Reefer at 0% surcharge = same as dry."""
-        result = PricingService(self.env).calculate(self.fsa1, self.fsa2, "ltl", "reefer", 1, 500)
+    def test_06_one_pallet_reefer(self):
+        """Reefer books at the same corridor rate (no surcharge in
+        corridor pricing), but requires an explicit temperature."""
+        result = PricingService(self.env).calculate(
+            self.fsa1, self.fsa2, "ltl", "reefer", 1, 500, required_temperature_c=2.0)
         self.assertTrue(result.available)
         self.assertAlmostEqual(result.calculated_price, 200.00, places=2)
 
-    def test_07_eight_pallets_reefer_zero_percent(self):
-        result = PricingService(self.env).calculate(self.fsa1, self.fsa2, "ltl", "reefer", 8, 4000)
+    def test_07_eight_pallets_reefer(self):
+        result = PricingService(self.env).calculate(
+            self.fsa1, self.fsa2, "ltl", "reefer", 8, 4000, required_temperature_c=2.0)
         self.assertTrue(result.available)
         self.assertAlmostEqual(result.calculated_price, 1600.00, places=2)
 
-    # ── Chilled / Frozen: no surcharge applied (surcharges deactivated) ──
+    def test_06b_reefer_without_temperature_rejected(self):
+        """Reefer without required_temperature_c must never auto-price."""
+        result = PricingService(self.env).calculate(self.fsa1, self.fsa2, "ltl", "reefer", 1, 500)
+        self.assertFalse(result.available)
+        self.assertEqual(result.reason, "required_temperature_c_missing")
 
-    def test_08_chilled_no_surcharge(self):
-        """With TEMP_CHILLED deactivated, chilled = same as dry."""
-        result = PricingService(self.env).calculate(self.fsa1, self.fsa2, "ltl", "chilled", 1, 500)
+    # ── Chilled / Frozen canonicalize to Reefer ──
+
+    def test_08_chilled_prices_as_reefer(self):
+        """chilled → reefer via temperature_compat; temperature required."""
+        result = PricingService(self.env).calculate(
+            self.fsa1, self.fsa2, "ltl", "chilled", 1, 500, required_temperature_c=2.0)
         self.assertTrue(result.available)
         self.assertAlmostEqual(result.calculated_price, 200.00, places=2)
 
-    def test_09_frozen_no_surcharge(self):
-        """With TEMP_FROZEN deactivated, frozen = same as dry."""
-        result = PricingService(self.env).calculate(self.fsa1, self.fsa2, "ltl", "frozen", 1, 500)
+    def test_09_frozen_prices_as_reefer(self):
+        result = PricingService(self.env).calculate(
+            self.fsa1, self.fsa2, "ltl", "frozen", 1, 500, required_temperature_c=2.0)
         self.assertTrue(result.available)
         self.assertAlmostEqual(result.calculated_price, 200.00, places=2)
 
     # ── No legacy additions ──
 
-    def test_10_no_zone_adjustment(self):
+    def test_10_no_additional_charges(self):
         """Price must be exactly formula-based, no extra amounts."""
         result = PricingService(self.env).calculate(self.fsa1, self.fsa2, "ltl", "dry", 1, 500)
         self.assertAlmostEqual(result.calculated_price, 200.00, places=2)
 
     def test_11_same_price_different_pickup_fsa_same_region(self):
-        """Two FSAs in same region must give same price (no zone/FSA adjustment)."""
+        """Two FSAs in same region must give same price (region-level pricing)."""
         fsa1b = self.Fsa.create({
             "fsa": "T1B", "region_id": self.r1.id, "display_city": "Test City 1B",
             "pickup_supported": True, "delivery_supported": True,
@@ -184,7 +147,7 @@ class TestPricing(TransactionCase):
 
     # ── Edge cases ──
 
-    def test_12_lane_not_supported(self):
+    def test_12_fsa_not_supported(self):
         unsupported = self.Fsa.create({
             "fsa": "Z9Z", "pickup_supported": False, "delivery_supported": False,
         })
@@ -192,20 +155,88 @@ class TestPricing(TransactionCase):
         self.assertFalse(result.available)
         self.assertEqual(result.reason, "pickup_fsa_not_supported")
 
-    def test_13_pallets_over_cap(self):
+    def test_13_heavy_load_excess_weight_charge(self):
+        """Weight above pallets × included_weight_per_pallet is charged."""
         result = PricingService(self.env).calculate(self.fsa1, self.fsa2, "ltl", "dry", 15, 12000)
-        self.assertFalse(result.available)
-
-    def test_14_ftl_available_if_lane_supports(self):
-        result = PricingService(self.env).calculate(self.fsa1, self.fsa2, "ftl", "dry", 12, 9600)
         self.assertTrue(result.available)
+        # 100 km × 15 × $2 = 3000 base; 12000 − 15×500 = 4500 excess lb ×
+        # 100 km × (16 ÷ (8×500)) $/lb-km = 1800 → 4800 total.
+        expected = PricingService.calculate_leg_per_km(
+            100.0, 16.0, 8, 15, 500.0, 12000.0)["subtotal"]
+        self.assertAlmostEqual(result.calculated_price, expected, places=2)
+
+    def test_14_ftl_available_when_corridor_ftl_configured(self):
+        """FTL prices on a corridor with FTL $/km configured (corridor
+        default pricing: distance × ftl_rate_per_km). Dedicated region pair
+        so this corridor is the sole pricing anchor for the request."""
+        r3, r4, fsa3, fsa4, corridor = self._dedicated_pair(
+            "T3", "T4", "T3A", "T4B", "TEST-PRC FTL Corridor",
+            enable_ftl=True, ftl_rate_per_km=16.0,
+        )
+        result = PricingService(self.env).calculate(fsa3, fsa4, "ftl", "dry", 12, 9600)
+        self.assertTrue(result.available, result.reason or "not available")
+        self.assertAlmostEqual(result.calculated_price, 1600.00, places=2)
+
+    def test_14b_ftl_on_corridor_without_ftl_rate_rejected(self):
+        r5, r6, fsa5, fsa6, corridor = self._dedicated_pair(
+            "T5", "T6", "T5A", "T6B", "TEST-PRC No-FTL-Rate Corridor",
+            enable_ftl=True, ftl_rate_per_km=0.0,
+        )
+        result = PricingService(self.env).calculate(fsa5, fsa6, "ftl", "dry", 12, 9600)
+        self.assertFalse(result.available)
+        self.assertEqual(result.reason, "ftl_rate_not_configured")
+
+    def test_16_ftl_threshold_auto_prices_large_load(self):
+        """Corridor contract (Task #10): at/above the FTL threshold with
+        auto_price behavior, an LTL request prices as FTL — never as the
+        larger LTL total."""
+        r7, r8, fsa7, fsa8, corridor = self._dedicated_pair(
+            "T7", "T8", "T7A", "T8B", "TEST-PRC Threshold Corridor",
+            enable_ftl=True, ftl_rate_per_km=16.0,
+            ftl_threshold_pallets=10, ftl_behavior="auto_price",
+        )
+        result = PricingService(self.env).calculate(fsa7, fsa8, "ltl", "dry", 12, 9600)
+        self.assertTrue(result.available, result.reason or "not available")
+        self.assertTrue(result.route_snapshot["ftl_priced"])
+        # FTL corridor default: distance × ftl_rate_per_km = 1600.
+        self.assertAlmostEqual(result.calculated_price, 1600.00, places=2)
+
+    def _dedicated_pair(self, rcode1, rcode2, fcode1, fcode2, name, **corridor_extra):
+        """Build a corridor on its own region pair (sole pricing anchor)."""
+        r1 = self.Region.create({"code": rcode1, "name": f"Test {rcode1}"})
+        r2 = self.Region.create({"code": rcode2, "name": f"Test {rcode2}"})
+        fsa1 = self.Fsa.create({
+            "fsa": fcode1, "region_id": r1.id, "display_city": f"City {fcode1}",
+            "pickup_supported": True, "delivery_supported": True,
+        })
+        fsa2 = self.Fsa.create({
+            "fsa": fcode2, "region_id": r2.id, "display_city": f"City {fcode2}",
+            "pickup_supported": True, "delivery_supported": True,
+        })
+        corridor = self.Corridor.with_context(skip_departure_reconcile=True).create(dict({
+            "name": name,
+            "direction": "eastbound",
+            "rate_per_km": 16.0,
+            "planned_pallets": 8,
+            "included_weight_per_pallet": 500.0,
+            "minimum_booking_charge": 0.0,
+            "departure_horizon_weeks": 8,
+        }, **corridor_extra))
+        self.CStop.create({
+            "corridor_id": corridor.id, "sequence": 10,
+            "region_id": r1.id, "distance_from_origin_km": 0.0, "day_offset": 0,
+        })
+        self.CStop.create({
+            "corridor_id": corridor.id, "sequence": 20,
+            "region_id": r2.id, "distance_from_origin_km": 100.0, "day_offset": 0,
+        })
+        return r1, r2, fsa1, fsa2, corridor
 
     # ── Immutable quote: final line amount matches calculated price ──
 
     def test_15_price_lines_match_total(self):
         result = PricingService(self.env).calculate(self.fsa1, self.fsa2, "ltl", "dry", 3, 1500)
         self.assertTrue(result.available)
-        # Final Freight Price line must match the calculated_price
         final_line = result.price_lines[-1]["amount"]
         self.assertAlmostEqual(final_line, result.calculated_price, places=2)
         self.assertAlmostEqual(result.calculated_price, 600.00, places=2)

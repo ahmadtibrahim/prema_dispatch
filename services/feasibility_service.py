@@ -76,6 +76,17 @@ class DispatchFeasibilityService:
         delivery_deadline = self._parse_time(payload.get("delivery_deadline"), check_date)
 
         now = datetime.utcnow()
+        # The "no earlier than now" clamp below (eta_at_pickup =
+        # max(eta_at_pickup, now)) only makes sense when the check is for
+        # TODAY. For a future or past check_date the real wall clock would
+        # clamp the ETA to the wrong instant — a re-check on an old date
+        # (e.g. a July 6 route re-validated in August) would get every ETA
+        # shifted to the actual current date and falsely report "misses
+        # pickup window by ~40,000 min". Anchor now to the start of
+        # check_date so the clamp is a no-op for non-today checks.
+        real_today = datetime.now(pytz.utc).date()
+        if check_date != real_today:
+            now = datetime.combine(check_date, datetime.min.time())
 
         avail_svc = DispatchAvailabilityService(self.env)
         route_svc = DispatchRouteService(self.env)

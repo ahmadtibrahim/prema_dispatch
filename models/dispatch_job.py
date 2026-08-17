@@ -4361,7 +4361,7 @@ class PremaDispatchJob(models.Model):
         stop.freight_item_ids.write({"delivery_stop_id": False})
         job.item_ids.mapped("stop_allocation_ids").filtered(lambda a: a.stop_id.id == stop.id and a.active).write({"active": False})
         if stop.status != "cancelled":
-            stop.action_cancel()
+            stop.action_cancel_stop()
         if job.route_definition_mode == "stops_pending" and job.stops_confirmation_state == "confirmed":
             job.write({"stops_confirmation_state": "partial"})
         stop.write({

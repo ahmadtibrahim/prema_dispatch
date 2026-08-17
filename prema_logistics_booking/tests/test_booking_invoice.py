@@ -9,17 +9,19 @@ class TestBookingInvoice(TransactionCase):
         super().setUpClass()
         cls.Region = cls.env["logistics.region"]
         cls.Fsa = cls.env["logistics.fsa"]
-        cls.Lane = cls.env["logistics.lane"]
-        cls.SLevel = cls.env["logistics.service.level"]
-        cls.SOffering = cls.env["logistics.service.offering"]
-        cls.RatePlan = cls.env["logistics.rate.plan"]
-        cls.Schedule = cls.env["logistics.lane.schedule"]
+        cls.Corridor = cls.env["logistics.corridor"]
+        cls.CStop = cls.env["logistics.corridor.stop"]
+        cls.Departure = cls.env["logistics.corridor.departure"]
         cls.SurchargeType = cls.env["logistics.surcharge.type"]
         cls.Equip = cls.env["logistics.equipment.profile"]
         cls.Vehicle = cls.env["fleet.vehicle"]
 
-        # Create operational vehicle (required for capacity + dispatch feasibility)
-        cls.vehicle = cls.Vehicle.search([("x_operational_logistics", "=", True)], limit=1)
+        # Create a dedicated TEST vehicle (required for capacity + dispatch
+        # feasibility). Never reuse a production vehicle from the clone:
+        # _check_vehicle_day_conflicts rejects a second departure on the
+        # same truck+date (the real Freightliner already runs GTA → QUEBEC
+        # on 2026-08-18 in the production data).
+        cls.vehicle = cls.Vehicle.search([("name", "=", "TEST-V3-INV-Truck")], limit=1)
         if not cls.vehicle:
             VehicleModel = cls.env["fleet.vehicle.model"]
             model = VehicleModel.search([], limit=1)
@@ -56,29 +58,41 @@ class TestBookingInvoice(TransactionCase):
             "fsa": "T2I", "region_id": cls.r2.id, "display_city": "Test City 2",
             "pickup_supported": True, "delivery_supported": True,
         })
-        cls.lane = cls.Lane.create({
-            "origin_region_id": cls.r1.id, "destination_region_id": cls.r2.id,
-            "active": True, "ltl_capable": True, "ftl_capable": True,
-            "max_pallets": 12,
-            "equipment_profile_id": cls.equipment.id,
+        # Corridor-era pricing fixture: the corridor owns distance, $/km,
+        # planned pallets and the booking minimum. 40 km × 200 $/km over
+        # 8 planned pallets = 25 $/pallet-km (see test_02).
+        cls.corridor = cls.Corridor.with_context(skip_departure_reconcile=True).create({
+            "name": "TEST-INV Corridor",
+            "direction": "eastbound",
+            "rate_per_km": 200.0,
+            "planned_pallets": 8,
+            "included_weight_per_pallet": 500.0,
+            "minimum_booking_charge": 0.0,
+            "departure_horizon_weeks": 8,
         })
-        cls.slevel = cls.SLevel.create({
-            "code": "TEST_INV", "name": "Test Next Day Invoice", "reefer_food_eligible": True,
+        cls.CStop.create({
+            "corridor_id": cls.corridor.id, "sequence": 10,
+            "region_id": cls.r1.id, "distance_from_origin_km": 0.0,
+            "day_offset": 0,
         })
-        cls.offering = cls.SOffering.create({
-            "lane_id": cls.lane.id, "service_level_id": cls.slevel.id,
-            "temperature_mode": "dry", "shipment_type": "ltl",
+        cls.CStop.create({
+            "corridor_id": cls.corridor.id, "sequence": 20,
+            "region_id": cls.r2.id, "distance_from_origin_km": 40.0,
+            "day_offset": 0,
         })
-        cls.Schedule.create({
-            "service_offering_id": cls.offering.id, "cutoff_time": 16.0,
-            "pickup_monday": True, "pickup_tuesday": True, "pickup_wednesday": True,
-            "pickup_thursday": True, "pickup_friday": True,
-            "delivery_offset_type": "next_day", "active": True,
-        })
-        cls.plan = cls.RatePlan.create({
-            "service_offering_id": cls.offering.id,
-            "revenue_target": 1600.0, "planned_pallets": 8,
-            "target_load_quantity": 8,
+
+        # Scheduled departure on the operational test vehicle — the live
+        # portal always prices with resolve_departures=True, and leg
+        # creation at confirm refuses a snapshot without an exact
+        # departure.
+        from datetime import date, timedelta
+        cls.Departure.create({
+            "corridor_id": cls.corridor.id,
+            "departure_date": date.today() + timedelta(days=1),
+            "departure_time": 7.0,
+            "status": "scheduled",
+            "vehicle_id": cls.vehicle.id,
+            "max_capacity": 12,
         })
 
         # Ensure TEMP_REEFER exists
@@ -107,24 +121,38 @@ class TestBookingInvoice(TransactionCase):
     def _create_session_and_book(self, pallets=1, weight=500, temp="dry"):
         """Create a pricing session and confirm booking."""
         ps = PricingService(self.env)
-        result = ps.calculate(self.fsa1, self.fsa2, "ltl", temp, pallets, weight)
+        # resolve_departures mirrors the live portal quote: legs carry an
+        # exact departure, which leg creation at confirm requires.
+        result = ps.calculate(
+            self.fsa1, self.fsa2, "ltl", temp, pallets, weight,
+            resolve_departures=True)
         self.assertTrue(result.available, f"Pricing not available: {result.reason}")
 
         from datetime import datetime, timedelta
         import uuid
+        # Mirror the live portal session creation (request_quote.py):
+        # corridor_id + route_snapshot are the corridor-era fields;
+        # service_offering/rate_plan are legacy compatibility (False).
         session = self.env["logistics.pricing.session"].sudo().create({
             "token": uuid.uuid4().hex,
             "partner_id": self.env.user.partner_id.id,
             "pickup_fsa_id": self.fsa1.id,
             "delivery_fsa_id": self.fsa2.id,
-            "service_offering_id": result.service_offering.id,
-            "rate_plan_id": result.rate_plan.id,
+            "corridor_id": result.corridor.id,
+            "service_offering_id": result.service_offering.id if result.service_offering else False,
+            "rate_plan_id": result.rate_plan.id if result.rate_plan else False,
             "shipment_type": "ltl",
             "temperature_mode": temp,
+            # physical_pallets defaults to 1 on the model — mirror the
+            # canonical portal session create (prepare_quote) which always
+            # writes both, else confirm-time validation rejects any
+            # multi-pallet quote (pallets != physical).
             "pallets": pallets,
+            "physical_pallets": pallets,
             "weight_lbs": weight,
             "calculated_price": result.calculated_price,
             "price_snapshot": result.price_lines,
+            "route_snapshot": result.route_snapshot,
             "pickup_date": result.pickup_date or datetime.now().date(),
             "delivery_date_estimate": (result.delivery_date_estimate or datetime.now().date() + timedelta(days=1)),
             "expires_at": datetime.now() + timedelta(minutes=20),
@@ -149,7 +177,10 @@ class TestBookingInvoice(TransactionCase):
         booking = self._create_session_and_book(pallets=5, weight=2500)
         line = booking.invoice_id.invoice_line_ids[:1]
         self.assertTrue(line)
-        expected = round(200.0 * 5, 2)  # $1600/8 = $200/pallet
+        # Corridor formula: 40 km × 5 pallets × (200 $/km / 8 planned
+        # pallets) = 5000; 5 × 500 lb included weight covers the load.
+        expected = PricingService.calculate_leg_per_km(
+            40.0, 200.0, 8, 5, 500.0, 2500.0)["subtotal"]
         self.assertAlmostEqual(line.price_unit, expected, places=2)
         self.assertAlmostEqual(booking.calculated_price, expected, places=2)
 
@@ -191,7 +222,11 @@ class TestBookingInvoice(TransactionCase):
              "province_state": "ON", "pallet_count": 1},
         ])
         booking.invalidate_recordset()
-        self.assertEqual(len(booking.stop_ids), 3)
+        # Confirm already creates the pickup+delivery stops; the 3 added
+        # stops must be preserved on top of them.
+        names = {s.company_name for s in booking.stop_ids}
+        for expected in ("Warehouse A", "Store B", "Store C"):
+            self.assertIn(expected, names)
 
     def test_11_multi_stop_sequence_preserved(self):
         booking = self._create_session_and_book(pallets=4, weight=2000)

@@ -487,7 +487,12 @@ class TestInvoiceCreateOpenBooking(TestV4Base):
     """Verify invoice create/open booking flow. (Step 6)"""
 
     def test_invoice_create_booking_no_duplicate(self):
-        """Create/Open Booking from invoice: first creates, second reopens."""
+        """Create/Open Booking from invoice (corridor-era contract).
+
+        action_create_or_open_booking → action_book_load opens the single
+        canonical invoice-to-booking workflow: it never creates a booking
+        itself. Fresh invoice → Book Load wizard; linked booking → booking
+        form; and a booking is never duplicated."""
         # Create a draft invoice
         invoice = self.Invoice.create({
             "move_type": "out_invoice",
@@ -502,18 +507,30 @@ class TestInvoiceCreateOpenBooking(TestV4Base):
         if not hasattr(invoice, "logistics_booking_id"):
             self.skipTest("logistics_booking_id field not on account.move")
 
-        # First open: should create booking
+        # Fresh invoice: action opens the Book Load wizard; no booking is
+        # auto-created (booking creation is wizard-driven by design).
         action = invoice.action_create_or_open_booking()
-        booking1 = invoice.logistics_booking_id
-        self.assertTrue(booking1, "Should have created/linked a booking")
+        self.assertEqual(action["res_model"], "prema.dispatch.book.load.wizard")
+        self.assertFalse(invoice.logistics_booking_id,
+                         "Wizard opening must not auto-create a booking")
 
-        # Second open: should return the same booking
+        # Link a booking (the wizard's end state) → action opens its form.
+        booking = self.Booking.create({
+            "partner_id": self.test_partner.id,
+            "shipment_type": "ltl",
+            "temperature_mode": "dry",
+            "pallets": 4,
+            "weight_lbs": 2000.0,
+        })
+        invoice.write({"logistics_booking_id": booking.id})
+
         action2 = invoice.action_create_or_open_booking()
-        booking2 = invoice.logistics_booking_id
-        self.assertEqual(booking1.id, booking2.id, "Must return the same booking")
+        self.assertEqual(action2["res_model"], "logistics.booking")
+        self.assertEqual(action2["res_id"], booking.id,
+                         "Must return the same booking")
 
-        # Verify no duplicate invoice
-        invoices = self.Invoice.search([("logistics_booking_id", "=", booking1.id)])
+        # Verify no duplicate booking / invoice links
+        invoices = self.Invoice.search([("logistics_booking_id", "=", booking.id)])
         self.assertEqual(len(invoices), 1, "Should have exactly one linked invoice")
 
 
@@ -718,164 +735,11 @@ class TestDepartureGenerator(TestV4Base):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 11. Round-Trip Profit Test
+# REMOVED (corridor-era):
+#   # 11. TestRoundTripProfit  — called Departure.get_weekly_board_data(),
+#       which no longer exists anywhere in the codebase (weekly board API
+#       removed in the corridor consolidation).
+#   # 12. TestLTLHubPricing     — called PricingService.calculate_leg_price(),
+#       also removed; corridor $/km is the single pricing authority, covered
+#       live by test_pricing.py / test_booking_invoice.py / TestCorridorPricingAndSchedule.
 # ═══════════════════════════════════════════════════════════════════════════
-
-@tagged("post_install", "-at_install", "prema_v4")
-class TestRoundTripProfit(TestV4Base):
-    """Verify cycle-level NET PROFIT on Weekly Board."""
-
-    def test_board_returns_cycle_profit_fields(self):
-        """Weekly Board data must include cycle-level profit fields."""
-        Departure = self.env["logistics.corridor.departure"]
-        data = Departure.get_weekly_board_data()
-
-        self.assertIn("week_days", data, "Board data must have week_days")
-        self.assertIn("day_cards", data, "Board data must have day_cards")
-
-        # Check at least one card has cycle profit fields
-        found = False
-        for day_key, cards in data["day_cards"].items():
-            for card in cards:
-                if card.get("is_corridor"):
-                    self.assertIn("outbound_revenue", card, "Card must have outbound_revenue")
-                    self.assertIn("backhaul_revenue", card, "Card must have backhaul_revenue")
-                    self.assertIn("gross_revenue", card, "Card must have gross_revenue")
-                    self.assertIn("cycle_cost", card, "Card must have cycle_cost")
-                    self.assertIn("cycle_net_profit", card, "Card must have cycle_net_profit")
-                    self.assertIn("departure_net_profit", card, "Card must have departure_net_profit")
-                    found = True
-                    break
-            if found:
-                break
-
-        self.assertTrue(found, "Should find at least one corridor card with profit fields")
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# 12. LTL Hub Pricing Tests (Spec §34)
-# ═══════════════════════════════════════════════════════════════════════════
-
-@tagged("post_install", "-at_install", "prema_v4")
-class TestLTLHubPricing(TestV4Base):
-    """Verify the V4 LTL Hub pricing formulas."""
-
-    def _make_rate_plan(self, revenue_target=1600.0, target_load_qty=7,
-                        incl_weight=500.0, safe_weight=11000.0):
-        """Create a test Rate Plan with V4 pricing fields."""
-        return self.RatePlan.create({
-            "revenue_target": revenue_target,
-            "target_load_quantity": target_load_qty,
-            "included_weight_per_pallet": incl_weight,
-            "safe_weight_capacity": safe_weight,
-            "planned_pallets": target_load_qty,
-            "service_offering_id": self.env["logistics.service.offering"].search([], limit=1).id
-                or self.env["logistics.service.offering"].create({
-                    "lane_id": self.env["logistics.lane"].search([], limit=1).id
-                        or self.env["logistics.lane"].create({
-                            "origin_region_id": self.r1.id,
-                            "destination_region_id": self.r8.id,
-                        }).id,
-                    "service_level_id": self.env["logistics.service.level"].search([], limit=1).id
-                        or self.env["logistics.service.level"].create({
-                            "name": "Test", "code": "TEST",
-                        }).id,
-                    "shipment_type": "ltl",
-                    "temperature_mode": "dry",
-                }).id,
-        })
-
-    def test_01_one_pallet_500lb(self):
-        """Test 1: 1 pallet, 500 lb → base rate only, no weight surcharge."""
-        rp = self._make_rate_plan()
-        from odoo.addons.prema_logistics_booking.services.pricing_service import PricingService
-        svc = PricingService(self.env)
-        result = svc.calculate_leg_price(rp, pallets=1, weight_lbs=500.0)
-
-        self.assertEqual(result["pallets"], 1)
-        self.assertEqual(result["included_weight_total"], 500.0)
-        self.assertEqual(result["excess_weight_lbs"], 0.0)
-        self.assertEqual(result["weight_surcharge"], 0.0)
-        # Base: 1 × (1600/7) = 228.5714...
-        self.assertAlmostEqual(result["leg_base_charge"], 228.57, places=2)
-        # Final: 228.57 rounded to nearest $5 = $230
-        self.assertEqual(result["final_price"], 230.0,
-                         f"Expected $230, got ${result['final_price']}")
-
-    def test_02_one_pallet_1000lb(self):
-        """Test 2: 1 pallet, 1000 lb → $301.30 before rounding → $300."""
-        rp = self._make_rate_plan()
-        from odoo.addons.prema_logistics_booking.services.pricing_service import PricingService
-        svc = PricingService(self.env)
-        result = svc.calculate_leg_price(rp, pallets=1, weight_lbs=1000.0)
-
-        self.assertEqual(result["excess_weight_lbs"], 500.0)
-        # Excess rate: 1600/11000 = 0.14545...
-        self.assertAlmostEqual(result["excess_weight_rate"], 0.145455, places=5)
-        # Weight surcharge: 500 × 0.14545 = 72.73
-        self.assertAlmostEqual(result["weight_surcharge"], 72.73, places=2)
-        # Base: 228.57, Surcharge: 72.73, Subtotal: 301.30
-        self.assertAlmostEqual(result["subtotal"], 301.30, places=1)
-        # Final rounded to nearest $5: $300
-        self.assertEqual(result["final_price"], 300.0,
-                         f"Expected $300, got ${result['final_price']}")
-
-    def test_03_two_pallets_1000lb(self):
-        """Test 3: 2 pallets, 1000 lb total → no excess, base only."""
-        rp = self._make_rate_plan()
-        from odoo.addons.prema_logistics_booking.services.pricing_service import PricingService
-        svc = PricingService(self.env)
-        result = svc.calculate_leg_price(rp, pallets=2, weight_lbs=1000.0)
-
-        # Included: 2 × 500 = 1000 → excess = 0
-        self.assertEqual(result["included_weight_total"], 1000.0)
-        self.assertEqual(result["excess_weight_lbs"], 0.0)
-        # Base: 2 × 228.57 = 457.14
-        self.assertAlmostEqual(result["leg_base_charge"], 457.14, places=2)
-        # Final: 457.14 → nearest $5 = $455
-        self.assertEqual(result["final_price"], 455.0,
-                         f"Expected $455, got ${result['final_price']}")
-
-    def test_04_two_pallets_2000lb(self):
-        """Test 4: 2 pallets, 2000 lb → excess 1000 lb surcharge."""
-        rp = self._make_rate_plan()
-        from odoo.addons.prema_logistics_booking.services.pricing_service import PricingService
-        svc = PricingService(self.env)
-        result = svc.calculate_leg_price(rp, pallets=2, weight_lbs=2000.0)
-
-        self.assertEqual(result["excess_weight_lbs"], 1000.0)
-        # Weight surcharge: 1000 × 0.14545 = 145.45
-        self.assertAlmostEqual(result["weight_surcharge"], 145.45, places=2)
-        # Subtotal: 457.14 + 145.45 = 602.59
-        self.assertAlmostEqual(result["subtotal"], 602.59, places=1)
-        # Final: nearest $5 = $605
-        self.assertEqual(result["final_price"], 605.0,
-                         f"Expected $605, got ${result['final_price']}")
-
-    def test_05_different_revenue_target(self):
-        """Verify pricing scales correctly with different revenue targets."""
-        rp = self._make_rate_plan(revenue_target=2200.0)  # Quebec City
-        from odoo.addons.prema_logistics_booking.services.pricing_service import PricingService
-        svc = PricingService(self.env)
-        result = svc.calculate_leg_price(rp, pallets=1, weight_lbs=500.0)
-
-        # Base rate: 2200/7 = 314.2857
-        self.assertAlmostEqual(result["base_rate_per_pallet"], 314.2857, places=4)
-        # Final: 314.29 → nearest $5 = $315
-        self.assertEqual(result["final_price"], 315.0)
-
-    def test_06_via_hub_two_legs(self):
-        """Test 5: London→Montreal = Leg1(London→Hub) + Leg2(Hub→Montreal)."""
-        rp_feeder = self._make_rate_plan(revenue_target=600.0)   # Hub→London
-        rp_linehaul = self._make_rate_plan(revenue_target=1600.0) # Hub→Montreal
-        from odoo.addons.prema_logistics_booking.services.pricing_service import PricingService
-        svc = PricingService(self.env)
-
-        leg1 = svc.calculate_leg_price(rp_feeder, pallets=1, weight_lbs=750.0)
-        leg2 = svc.calculate_leg_price(rp_linehaul, pallets=1, weight_lbs=750.0)
-
-        total = leg1["final_price"] + leg2["final_price"]
-        self.assertGreater(total, 0)
-        # Verify both legs charged
-        self.assertGreater(leg1["final_price"], 0)
-        self.assertGreater(leg2["final_price"], 0)

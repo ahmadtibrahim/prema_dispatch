@@ -12,6 +12,8 @@ from odoo import fields
 from odoo.exceptions import AccessError, UserError, ValidationError
 from odoo.tests.common import TransactionCase
 
+from .mock_google_apis import install_google_mocks
+
 
 class TestStopsPendingBase(TransactionCase):
     def setUp(self):
@@ -26,8 +28,12 @@ class TestStopsPendingBase(TransactionCase):
         self.stage_draft = self.env["prema.dispatch.stage"].search([("stage_type", "=", "draft")], limit=1)
         self.vehicle = self.env["fleet.vehicle"].search([], limit=1)
         self.customer = self.env["res.partner"].create({"name": "Stops Pending Test Customer"})
-        self.driver_partner = self.env["res.partner"].create({"name": "SP Driver"})
-        self.other_driver_partner = self.env["res.partner"].create({"name": "SP Other Driver"})
+        # Emails are required: real accounts get one from
+        # action_create_driver_account(), and job.message_post (stop-delete
+        # requests, pickup-completion chatter) raises "configure the
+        # sender's email address" without it.
+        self.driver_partner = self.env["res.partner"].create({"name": "SP Driver", "email": "sp_driver@example.com"})
+        self.other_driver_partner = self.env["res.partner"].create({"name": "SP Other Driver", "email": "sp_other_driver@example.com"})
         self.move = self.env["account.move"].create({
             "move_type": "out_invoice", "partner_id": self.customer.id,
         })
@@ -38,116 +44,66 @@ class TestStopsPendingBase(TransactionCase):
         })
 
 
-class TestBookLoadWizardStopsPending(TestStopsPendingBase):
-    def test_stops_pending_requires_planned_route_and_pickup_location(self):
-        wizard = self.Wizard.create({
-            "move_id": self.move.id, "partner_id": self.customer.id,
-            "route_definition_mode": "stops_pending", "expected_skids": 10,
-            "vehicle_id": self.vehicle.id,
-        })
-        with self.assertRaises(UserError):
-            wizard.action_confirm()
-
-    def test_stops_pending_creates_one_pickup_stop_no_fake_pallets(self):
-        wizard = self.Wizard.create({
-            "move_id": self.move.id, "partner_id": self.customer.id,
-            "route_definition_mode": "stops_pending", "expected_skids": 10,
-            "scheduled_pickup": "2026-07-20 08:00:00", "planned_route_name": "Ottawa Route",
-            "planned_route_corridor": "EAST", "pickup_saved_location_id": self.pickup_location.id,
-            "vehicle_id": self.vehicle.id, "driver_id": self.driver_partner.id,
-            "reserve_capacity": True,
-        })
-        wizard.action_confirm()
-        job = self.move.dispatch_job_ids
-        self.assertEqual(len(job), 1)
-        self.assertEqual(job.stops_confirmation_state, "pending")
-        self.assertEqual(job.planned_route_corridor, "EAST")
-        self.assertEqual(len(job.stop_ids), 1, "Only the pickup stop should exist before route-sheet entry")
-        self.assertEqual(job.stop_ids.stop_type, "pickup")
-        self.assertFalse(job.item_ids, "No fake pallet items should be created merely to reserve capacity")
-        link = self.env["prema.dispatch.load.plan.job"].search([("job_id", "=", job.id)])
-        self.assertEqual(link.reserved_floor_positions, 10)
-
-    def test_repeated_book_load_click_does_not_duplicate_job(self):
-        wizard1 = self.Wizard.create({
-            "move_id": self.move.id, "partner_id": self.customer.id,
-            "route_definition_mode": "exact_stops", "vehicle_id": self.vehicle.id,
-        })
-        wizard1.action_confirm()
-        self.assertEqual(len(self.move.dispatch_job_ids), 1)
-        wizard2 = self.Wizard.create({
-            "move_id": self.move.id, "partner_id": self.customer.id,
-            "route_definition_mode": "exact_stops", "vehicle_id": self.vehicle.id,
-        })
-        wizard2.action_confirm()
-        self.assertEqual(len(self.move.dispatch_job_ids), 1, "A second Book Load click must reuse the existing job, not duplicate it")
-
-
-class TestCapacityReservation(TestStopsPendingBase):
-    def _book_stops_pending(self, skids, route_name="Ottawa Route", corridor="EAST", pickup_loc=None):
-        move = self.env["account.move"].create({"move_type": "out_invoice", "partner_id": self.customer.id})
-        wizard = self.Wizard.create({
-            "move_id": move.id, "partner_id": self.customer.id,
-            "route_definition_mode": "stops_pending", "expected_skids": skids,
-            "scheduled_pickup": "2026-07-20 04:00:00", "planned_route_name": route_name,
-            "planned_route_corridor": corridor, "pickup_saved_location_id": pickup_loc.id if pickup_loc else self.pickup_location.id,
-            "vehicle_id": self.vehicle.id, "driver_id": self.driver_partner.id, "reserve_capacity": True,
-        })
-        wizard.action_confirm()
-        return move.dispatch_job_ids
-
-    def test_two_jobs_reserve_without_double_counting(self):
-        job_a = self._book_stops_pending(10)
-        job_b = self._book_stops_pending(2)
-        plan = self.LP.search([("vehicle_id", "=", self.vehicle.id), ("operating_date", "=", "2026-07-20")], limit=1)
-        self.assertTrue(plan)
-        self.assertEqual(len(plan.load_plan_job_ids.filtered("active")), 2)
-        self.assertEqual(plan.reserved_pallet_count, 12)
-        self.assertEqual(plan.committed_pallet_count, 12, "Reservation + confirmed items must not be double-counted (must be 12, not 24)")
-        self.assertNotEqual(plan.layout_template_id.layout_type, "pin_wheel", "12 reserved skids on a 26ft template must not auto-propose Pin-Wheel")
-        self.assertNotEqual(job_a.partner_id.id and job_b.partner_id.id, None)
+# The pre-pass "stops pending" wizard flow (route_definition_mode /
+# planned_route_* / reserve_capacity on prema.dispatch.book.load.wizard)
+# was removed upstream in 0bef1b7 ("unify corridor pricing departures and
+# dispatch planner", Aug 4) — Book Load now routes through the booking
+# orchestration, so these four old wizard tests are dead code:
+#   - repeated-click dedup        → TestRepeatedPickupPromotion (booking
+#                                   suite) + confirm_from_internal
+#                                   idempotency_key tests (test_milk_run,
+#                                   test_milk_run_portal)
+#   - no-fake-pallets capacity    → load-plan population tests
+#                                   (test_load_plan_population, booking
+#                                   suite)
+#   - double-counting reservation → shared-capacity tests (Task #10)
 
 
 class TestSavedLocationSearch(TestStopsPendingBase):
     def setUp(self):
         super().setUp()
         install_google_mocks(self)
+        # Fixture names are TEST-prefixed because the production clone
+        # already holds real "Foodland #3290" (Prince Edward) and "No
+        # Frills 211 Bell Blvd" (Belleville) records — Rule 4 (same brand
+        # + store number) / Rule 3 (same address + business) would block
+        # the fixture create and fail every test in the class.
         self.foodland = self.Location.create({
-            "name": "Foodland #3290 – Picton", "business_name": "Foodland #3290 – Picton",
-            "chain_name": "Foodland", "location_number": "3290",
+            "name": "Test Foodland #3290 – Picton", "business_name": "Test Foodland #3290 – Picton",
+            "chain_name": "Test Foodland", "location_number": "3290",
             "address": "23 George Wright Blvd, Picton, ON", "city": "Picton",
         })
         self.metro = self.Location.create({
-            "name": "Metro #153 – Picton", "business_name": "Metro #153 – Picton",
-            "chain_name": "Metro", "location_number": "153",
+            "name": "Test Metro #153 – Picton", "business_name": "Test Metro #153 – Picton",
+            "chain_name": "Test Metro", "location_number": "153",
             "address": "73 Main St, Picton, ON", "city": "Picton",
         })
         self.no_frills = self.Location.create({
-            "name": "Joe's No Frills – Belleville", "business_name": "Joe's No Frills – Belleville",
-            "chain_name": "No Frills", "address": "211 Bell Blvd, Belleville, ON", "city": "Belleville",
+            "name": "Test Joe's No Frills – Belleville", "business_name": "Test Joe's No Frills – Belleville",
+            "chain_name": "Test No Frills", "address": "9 Test Blvd, Belleville, ON", "city": "Belleville",
         })
 
     def test_search_by_chain_and_number_with_and_without_hash(self):
-        for query in ("Foodland 3290", "Foodland #3290"):
+        for query in ("Test Foodland 3290", "Test Foodland #3290"):
             result = self.Location.driver_search_locations(query)
             ids = [r["id"] for r in result["results"]]
-            self.assertIn(self.foodland.id, ids, f"query {query!r} should find Foodland #3290")
+            self.assertIn(self.foodland.id, ids, f"query {query!r} should find Test Foodland #3290")
 
-        result = self.Location.driver_search_locations("Metro 153")
+        result = self.Location.driver_search_locations("Test Metro 153")
         ids = [r["id"] for r in result["results"]]
         self.assertIn(self.metro.id, ids)
 
     def test_no_frills_search_without_invented_number(self):
         self.assertFalse(self.no_frills.location_number)
-        result = self.Location.driver_search_locations("No Frills Belleville")
+        result = self.Location.driver_search_locations("Test No Frills Belleville")
         ids = [r["id"] for r in result["results"]]
         self.assertIn(self.no_frills.id, ids)
 
     def test_duplicate_chain_and_number_rejected(self):
         with self.assertRaises(ValidationError):
             self.Location.create({
-                "name": "Foodland 3290 dup", "business_name": "Foodland 3290 dup",
-                "chain_name": "Foodland", "location_number": "3290", "address": "Somewhere else, ON",
+                "name": "Test Foodland 3290 dup", "business_name": "Test Foodland 3290 dup",
+                "chain_name": "Test Foodland", "location_number": "3290", "address": "Somewhere else, ON",
             })
 
 
@@ -160,15 +116,22 @@ class TestDriverStopAndLocationAuthorization(TestStopsPendingBase):
             "driver_id": self.driver_partner.id, "vehicle_id": self.vehicle.id,
             "route_definition_mode": "stops_pending", "stops_confirmation_state": "pending",
         })
+        # Real driver/dispatcher accounts are Internal Users plus their
+        # dispatch group (see res_partner_dispatch.action_create_driver_account)
+        # — the Driver group alone cannot read prema.dispatch.stage, which
+        # the job-level driver methods legitimately touch.
         self.driver_user = self.env["res.users"].create({
             "name": "Assigned Driver User", "login": "sp_assigned_driver@example.com",
             "partner_id": self.driver_partner.id,
-            "groups_id": [(6, 0, [self.env.ref("prema_dispatch.group_dispatch_driver").id])],
+            "groups_id": [(6, 0, [self.env.ref("base.group_user").id,
+                                  self.env.ref("prema_dispatch.group_dispatch_driver").id])],
         })
         self.dispatcher_user = self.env["res.users"].create({
             "name": "Dispatch User", "login": "sp_dispatcher_user@example.com",
-            "partner_id": self.env["res.partner"].create({"name": "Dispatcher Partner"}).id,
-            "groups_id": [(6, 0, [self.env.ref("prema_dispatch.group_dispatcher").id])],
+            "partner_id": self.env["res.partner"].create(
+                {"name": "Dispatcher Partner", "email": "sp_dispatcher@example.com"}).id,
+            "groups_id": [(6, 0, [self.env.ref("base.group_user").id,
+                                  self.env.ref("prema_dispatch.group_dispatcher").id])],
         })
 
     def test_wrong_driver_cannot_add_stop(self):
@@ -176,7 +139,8 @@ class TestDriverStopAndLocationAuthorization(TestStopsPendingBase):
         driver_user = self.env["res.users"].create({
             "name": "Other Driver User", "login": "sp_other_driver@example.com",
             "partner_id": self.other_driver_partner.id,
-            "groups_id": [(6, 0, [self.env.ref("prema_dispatch.group_dispatch_driver").id])],
+            "groups_id": [(6, 0, [self.env.ref("base.group_user").id,
+                                  self.env.ref("prema_dispatch.group_dispatch_driver").id])],
         })
         with self.assertRaises(AccessError):
             check_driver_can_add_stop(self.env(user=driver_user), self.job)
@@ -276,10 +240,15 @@ class TestDriverDateAndPickupWorkflow(TestStopsPendingBase):
     def setUp(self):
         super().setUp()
         install_google_mocks(self)
+        # Real driver accounts are Internal Users plus the Driver group
+        # (see res_partner_dispatch.action_create_driver_account) — the
+        # driver-only fixture cannot read prema.dispatch.stage, which the
+        # pickup-completion / driver-dates methods touch.
         self.driver_user = self.env["res.users"].create({
             "name": "SP Driver User", "login": "sp_driver_user@example.com",
             "partner_id": self.driver_partner.id,
-            "groups_id": [(6, 0, [self.env.ref("prema_dispatch.group_dispatch_driver").id])],
+            "groups_id": [(6, 0, [self.env.ref("base.group_user").id,
+                                  self.env.ref("prema_dispatch.group_dispatch_driver").id])],
             "tz": "America/Toronto",
         })
         self.job = self.Job.create({
@@ -307,9 +276,11 @@ class TestDriverDateAndPickupWorkflow(TestStopsPendingBase):
         self.plan = self.LP.browse(self.LP.create_load_plan(self.vehicle.id, "2026-07-20", driver_id=self.driver_partner.id)["id"])
         self.plan.add_job(self.job.id)
 
-    def test_driver_dates_returns_three_day_window(self):
+    def test_driver_dates_returns_seven_day_window(self):
+        # The driver window is 7 days — yesterday, today, today+5
+        # (Task #17: start-route + 7-day window + scheduled time).
         dates = self.Job.with_user(self.driver_user).get_driver_available_dates()
-        self.assertEqual(len(dates["days"]), 3)
+        self.assertEqual(len(dates["days"]), 7)
         self.assertTrue(any(day["is_today"] for day in dates["days"]))
 
     def test_unconfirmed_pickup_defaults_actual_to_expected_not_zero(self):
@@ -525,8 +496,10 @@ class TestDriverDateAndPickupWorkflow(TestStopsPendingBase):
             "address": "Cobourg",
         })
         ordered = self.Job.combined_vehicle_day_stops(self.job | terra_job, fields.Date.to_date("2026-07-20"))
-        self.assertNotIn("Ottawa, Ontario", ordered.mapped("address"))
-        ordered_ids = ordered.ids
+        # combined_vehicle_day_stops returns a flat time-sorted LIST of
+        # stops (the Driver App feed), not a recordset.
+        self.assertNotIn("Ottawa, Ontario", [s.address for s in ordered])
+        ordered_ids = [s.id for s in ordered]
         self.assertLess(ordered_ids.index(terra_pickup.id), ordered_ids.index(united_delivery.id))
 
 

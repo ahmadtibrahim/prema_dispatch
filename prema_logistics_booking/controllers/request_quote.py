@@ -250,7 +250,13 @@ class LogisticsRequestQuote(http.Controller):
             "shipment_type": "ltl",
             "temperature_mode": temperature_mode,
             "required_temperature_c": required_temperature_c if required_temperature_c is not None else 0.0,
+            # physical_pallets defaults to 1 — without an explicit write,
+            # confirm-time validation compares pallets != physical and
+            # rejects every multi-pallet quote with "Shipment details
+            # changed after pricing" (the canonical prepare_quote session
+            # create always sets both).
             "pallets": pallets,
+            "physical_pallets": pallets,
             "weight_lbs": weight_lbs,
             "liftgate_pickup": liftgate_pickup,
             "liftgate_delivery": liftgate_delivery,

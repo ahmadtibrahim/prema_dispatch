@@ -5,7 +5,7 @@ Run with: ./odoo-bin -c odoo18.conf -d Prod-db --test-enable -u prema_dispatch
 import base64
 from datetime import date
 
-from odoo import exceptions
+from odoo import exceptions, fields
 from odoo.tests.common import TransactionCase
 
 from .mock_google_apis import install_google_mocks
@@ -415,9 +415,15 @@ class TestDispatchStopOnboard(TransactionCase):
 
 
 class TestDispatchWorkflowAudit4(TransactionCase):
-    """Tests 21-24: Book Load duplicate-job dedup and cross-dock interleave
-    feasibility, covering the 4-issue report on invoice
-    D-AJX-OSH-WHI-NCL-PTB-CAM-FOX-070624 / D-WOO-BEL-110624."""
+    """Tests 23-24: cross-dock interleave feasibility, covering the
+    4-issue report on invoice
+    D-AJX-OSH-WHI-NCL-PTB-CAM-FOX-070624 / D-WOO-BEL-110624.
+
+    (Audit tests 21-22 — repeated-pickup booking → one dispatch job —
+    live in the prema_logistics_booking suite as
+    TestRepeatedPickupPromotion: dispatch's own test phase loads before
+    the booking module, so logistics.booking is never in the registry
+    here.)"""
 
     def setUp(self):
         super().setUp()
@@ -432,75 +438,6 @@ class TestDispatchWorkflowAudit4(TransactionCase):
             "move_type": "out_invoice",
             "partner_id": self.partner.id,
         })
-
-    def test_21_book_load_dedupes_repeated_pickup_estimators(self):
-        """Test 21: two job plans covering the same load (one flattens the
-        repeat pickup into a single stop, one correctly splits it into two
-        pickup legs at the same warehouse) must produce exactly ONE
-        dispatch job, not two — the bug seen on the Ajax invoice."""
-        invoice = self._make_invoice()
-        Estimator = self.env["premafirm.rate.estimator"]
-        Stop = self.env["premafirm.estimator.stop"]
-
-        flattened = Estimator.create({"invoice_id": invoice.id, "job_sequence": 1})
-        Stop.create([
-            {"estimator_id": flattened.id, "sequence": 10, "stop_type": "pickup",
-             "address": "689 Salem Rd N, Ajax, ON", "pallets": 18},
-            {"estimator_id": flattened.id, "sequence": 20, "stop_type": "delivery",
-             "address": "Carolyn's Liquidations #2, 501 Ritson Road S, Oshawa, ON", "pallets": 12},
-            {"estimator_id": flattened.id, "sequence": 30, "stop_type": "delivery",
-             "address": "Foodland Pringle Creek, 728 Anderson Street, Whitby, ON", "pallets": 1},
-        ])
-
-        split = Estimator.create({"invoice_id": invoice.id, "job_sequence": 2})
-        Stop.create([
-            {"estimator_id": split.id, "sequence": 10, "stop_type": "pickup",
-             "address": "689 Salem Rd N, Ajax, ON", "pallets": 12},
-            {"estimator_id": split.id, "sequence": 20, "stop_type": "delivery",
-             "address": "501 Ritson Road S, Oshawa, ON", "pallets": 12},
-            {"estimator_id": split.id, "sequence": 30, "stop_type": "pickup",
-             "address": "689 Salem Rd N, Ajax, ON", "pallets": 6},
-            {"estimator_id": split.id, "sequence": 40, "stop_type": "delivery",
-             "address": "728 Anderson Street, Whitby, ON", "pallets": 1},
-        ])
-
-        invoice._do_action_book_load()
-
-        self.assertEqual(
-            len(invoice.dispatch_job_ids), 1,
-            "Repeated pickup from the same warehouse must produce one dispatch job, not two",
-        )
-
-    def test_22_promoted_job_keeps_repeated_pickup_as_stops(self):
-        """Test 22: the same warehouse can appear multiple times as stops
-        inside the one promoted dispatch job."""
-        invoice = self._make_invoice()
-        Estimator = self.env["premafirm.rate.estimator"]
-        Stop = self.env["premafirm.estimator.stop"]
-
-        split = Estimator.create({"invoice_id": invoice.id, "job_sequence": 1})
-        Stop.create([
-            {"estimator_id": split.id, "sequence": 10, "stop_type": "pickup",
-             "address": "689 Salem Rd N, Ajax, ON", "pallets": 12},
-            {"estimator_id": split.id, "sequence": 20, "stop_type": "delivery",
-             "address": "501 Ritson Road S, Oshawa, ON", "pallets": 12},
-            {"estimator_id": split.id, "sequence": 30, "stop_type": "pickup",
-             "address": "689 Salem Rd N, Ajax, ON", "pallets": 6},
-            {"estimator_id": split.id, "sequence": 40, "stop_type": "delivery",
-             "address": "728 Anderson Street, Whitby, ON", "pallets": 1},
-        ])
-
-        invoice._do_action_book_load()
-
-        self.assertEqual(len(invoice.dispatch_job_ids), 1)
-        job = invoice.dispatch_job_ids
-        pickups_at_ajax = job.stop_ids.filtered(
-            lambda s: s.stop_type == "pickup" and "Ajax" in (s.address or "")
-        )
-        self.assertEqual(
-            len(pickups_at_ajax), 2,
-            "Same warehouse should appear as 2 pickup stops inside the one job",
-        )
 
     def test_23_saved_location_warehouse_allows_cross_dock(self):
         """Test 23: Allow Cross-Dock is a checkbox on Saved Location, not a
@@ -762,7 +699,7 @@ class TestDispatchCrossDockCustody(TransactionCase):
     def _make_crossdock_job(self, vehicle, driver):
         crossdock = self.Location.create({
             "name": "689 Salem Rd N, Ajax ON",
-            "business_name": "All Special Wholesale",
+            "business_name": "Test All Special Wholesale",
             "address": "689 Salem Rd N, Ajax, ON",
             "location_type": "warehouse",
             "allow_cross_dock": True,
@@ -821,7 +758,7 @@ class TestDispatchCrossDockCustody(TransactionCase):
 
         crossdock = self.Location.create({
             "name": "689 Salem Rd N, Ajax ON",
-            "business_name": "All Special Wholesale",
+            "business_name": "Test All Special Wholesale",
             "address": "689 Salem Rd N, Ajax, ON",
             "location_type": "warehouse",
             "allow_cross_dock": allow_cross_dock,
@@ -888,7 +825,7 @@ class TestDispatchCrossDockCustody(TransactionCase):
     def test_saved_location_company_display_on_stops(self):
         loc = self.Location.create({
             "name": "Ajax Warehouse Internal Name",
-            "business_name": "All Special Wholesale",
+            "business_name": "Test All Special Wholesale",
             "address": "689 Salem Rd N, Ajax, ON",
             "location_type": "warehouse",
             "allow_cross_dock": True,
@@ -898,7 +835,7 @@ class TestDispatchCrossDockCustody(TransactionCase):
             "address": "501 Ritson Road S, Oshawa, ON",
         })
         self.env["res.partner"].create({
-            "name": "All Special Wholesale",
+            "name": "Test All Special Wholesale",
         })
         job = self._make_job()
 
@@ -911,10 +848,10 @@ class TestDispatchCrossDockCustody(TransactionCase):
         self.assertEqual(stop_form.address, loc.address)
         self.assertEqual(stop_form.contact_name, loc.business_name)
         self.assertTrue(stop_form.allow_cross_dock)
-        self.assertEqual(dict(loc.name_get())[loc.id], "All Special Wholesale")
+        self.assertEqual(dict(loc.name_get())[loc.id], "Test All Special Wholesale")
         self.assertEqual(dict(fallback.name_get())[fallback.id], "Fallback Saved Location")
 
-        hits = self.Location.name_search("All Special Wholesale")
+        hits = self.Location.name_search("Test All Special Wholesale")
         self.assertIn(loc.id, [rec_id for rec_id, _label in hits])
 
         stop = self.Stop.create({
@@ -924,7 +861,7 @@ class TestDispatchCrossDockCustody(TransactionCase):
             "saved_location_id": loc.id,
             "address": loc.address,
         })
-        self.assertEqual(stop.saved_location_id.name_get()[0][1], "All Special Wholesale")
+        self.assertEqual(stop.saved_location_id.name_get()[0][1], "Test All Special Wholesale")
         self.assertEqual(stop.address, loc.address)
         self.assertEqual(self.Stop._fields["saved_location_id"].comodel_name, "prema.dispatch.location")
         self.assertNotEqual(self.Stop._fields["saved_location_id"].comodel_name, "res.partner")
@@ -1038,7 +975,7 @@ class TestDispatchCrossDockCustody(TransactionCase):
         driver = self.env["res.partner"].create({"name": "Crossdock Selector Driver"})
         crossdock = self.Location.create({
             "name": "689 Salem Rd N, Ajax ON",
-            "business_name": "All Special Wholesale",
+            "business_name": "Test All Special Wholesale",
             "address": "689 Salem Rd N, Ajax, ON",
             "location_type": "warehouse",
             "allow_cross_dock": True,
@@ -1107,7 +1044,10 @@ class TestDispatchCrossDockCustody(TransactionCase):
         self.assertEqual(item_2.current_vehicle_id.id, vehicle.id)
         self.assertEqual(item_2.current_driver_id.id, driver.id)
         self.assertEqual(item_2.current_custody_type, "truck")
-        self.assertEqual(item_2.status, "in_transit")
+        # Item not selected for the cross-dock drop stays ON the truck;
+        # "loaded" is the canonical onboard status set at pickup completion
+        # (dispatch_stop.action_mark_completed pickup branch), not "in_transit".
+        self.assertEqual(item_2.status, "loaded")
 
     def test_transfer_without_target_stages_and_unassigns(self):
         vehicle = self.env["fleet.vehicle"].search([("x_max_pallets", ">=", 1)], limit=1)
@@ -1251,11 +1191,22 @@ class TestDispatchCrossDockCustody(TransactionCase):
             "name": "Driver Payload User",
             "login": "driver_payload_user@example.com",
             "partner_id": driver_1.id,
-            "groups_id": [(6, 0, [self.env.ref("base.group_user").id])],
+            # Real driver accounts carry the Driver group — the stop payload
+            # reads pallet.stop.allocation, which is restricted to the
+            # dispatch groups (Driver/Dispatcher/Manager/Warehouse).
+            "groups_id": [(6, 0, [
+                self.env.ref("base.group_user").id,
+                self.env.ref("prema_dispatch.group_dispatch_driver").id,
+            ])],
             "company_id": self.env.company.id,
             "company_ids": [(6, 0, [self.env.company.id])],
         })
-        payload = self.Job.with_user(user).get_driver_stops_for_date("2026-07-06")
+        # The driver payload only serves the 7-day window (yesterday → today+5),
+        # so the fixture's hardcoded 2026-07-06 pickup would be clamped away.
+        # Schedule the job relative to today instead.
+        from datetime import date
+        job.scheduled_pickup = fields.Datetime.now()
+        payload = self.Job.with_user(user).get_driver_stops_for_date(str(date.today()))
         stop_payload = next(stop for stop in payload["stops"] if stop["id"] == cross_dock_drop.id)
 
         self.assertEqual(stop_payload["transfer_to_vehicle_id"], vehicles[1].id)
@@ -1446,7 +1397,7 @@ class TestDispatchCrossDockCustody(TransactionCase):
     def test_dispatcher_can_manually_change_stop_type(self):
         crossdock = self.Location.create({
             "name": "689 Salem Rd N, Ajax ON",
-            "business_name": "All Special Wholesale",
+            "business_name": "Test All Special Wholesale",
             "address": "689 Salem Rd N, Ajax, ON",
             "location_type": "warehouse",
             "allow_cross_dock": True,
@@ -1510,7 +1461,7 @@ class TestDispatchCrossDockCustody(TransactionCase):
                 for stop in stops
                 if stop["type"] in ("cross_dock_drop", "cross_dock_pickup")
             ],
-            ["All Special Wholesale", "All Special Wholesale"],
+            ["Test All Special Wholesale", "Test All Special Wholesale"],
         )
 
     def test_sheet_button_generates_driver_worksheet(self):
@@ -1537,7 +1488,7 @@ class TestDispatchCrossDockCustody(TransactionCase):
             worksheet.stop_ids.sorted("sequence").mapped("stop_type"),
             ["pickup", "cross_dock_drop", "cross_dock_pickup", "dropoff"],
         )
-        self.assertIn("All Special Wholesale", worksheet.worksheet_html)
+        self.assertIn("Test All Special Wholesale", worksheet.worksheet_html)
         self.assertIn("Cross-Dock Drop / Transfer-In", worksheet.worksheet_html)
 
     def test_sheet_button_does_not_duplicate_worksheet(self):

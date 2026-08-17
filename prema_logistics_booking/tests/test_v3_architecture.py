@@ -123,11 +123,16 @@ class TestV3Architecture(common.TransactionCase):
 
     # ── PRICING TESTS ──────────────────────────────────────────────
 
-    def test_30_pricing_formula_exists(self):
-        """Rate Plans are the sole pricing authority."""
-        RatePlan = self.env["logistics.rate.plan"]
-        self.assertTrue(RatePlan.search_count([("active", "=", True)]) > 0,
-                        "Must have at least one active rate plan")
+    def test_30_corridor_is_pricing_authority(self):
+        """Corridors are the sole pricing authority (rate plans are
+        historical). The corridor owns $/km, planned pallets and the
+        booking minimum — see TestCorridorPricingAndSchedule for the
+        live pricing behavior."""
+        Corridor = self.env["logistics.corridor"]
+        for field in ("rate_per_km", "planned_pallets", "included_weight_per_pallet",
+                      "minimum_booking_charge", "enable_ftl"):
+            self.assertIn(field, Corridor._fields,
+                          f"corridor must own pricing field {field}")
 
     def test_31_pricing_route_resolver(self):
         """RouteResolver returns available or reason for any FSA pair."""
