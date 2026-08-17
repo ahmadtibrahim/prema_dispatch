@@ -1572,6 +1572,101 @@ class PremaDispatchJob(models.Model):
             },
         }
 
+    def action_route_adviser(self):
+        """Open the Route Adviser wizard: current vs recommended route with
+        per-stop time plans. Apply writes the recommended sequence;
+        manual drag-and-drop ordering stays available."""
+        self.ensure_one()
+        from odoo.addons.prema_dispatch.services.route_adviser_service import (
+            RouteAdviserService,
+        )
+        report = RouteAdviserService(self.env).adviser_report(self)
+        Adviser = self.env["prema.dispatch.route.adviser"]
+        Line = self.env["prema.dispatch.route.adviser.line"]
+        current = report["current"]
+        recommended = report.get("recommended") or {}
+        adviser = Adviser.create({
+            "job_id": self.id,
+            "current_distance_km": current.get("distance_km", 0.0),
+            "current_drive_minutes": current.get("drive_minutes", 0.0),
+            "current_waiting_minutes": current.get("waiting_minutes", 0.0),
+            "current_finish_eta": current.get("finish_eta", ""),
+            "current_peak": current.get("peak", 0),
+            "current_feasible": current.get("feasible", True),
+            "recommended_distance_km": recommended.get("distance_km", 0.0),
+            "recommended_drive_minutes": recommended.get("drive_minutes", 0.0),
+            "recommended_waiting_minutes": recommended.get("waiting_minutes", 0.0),
+            "recommended_finish_eta": recommended.get("finish_eta", ""),
+            "recommended_peak": recommended.get("peak", 0),
+            "feasible": report["feasible"],
+            "warnings_text": "\n".join(report["warnings"]),
+        })
+        deltas = {d["stop_key"]: d for d in current.get("deltas", [])}
+        sequence = 10
+        for key in report["recommended_keys"]:
+            stop = self.stop_ids.filtered(lambda s: ("ds%d" % s.id) == key)
+            if not stop:
+                continue
+            stop_info = next(
+                (s for s in recommended.get("steps", []) if s["stop_key"] == key),
+                None,
+            ) or {}
+            delta = deltas.get(key, {})
+            Line.create({
+                "adviser_id": adviser.id,
+                "sequence": sequence,
+                "stop_name": stop_info.get("name") or stop.address or "Stop",
+                "stop_type": stop_info.get("stop_type") or stop.stop_type,
+                "eta": stop_info.get("eta", ""),
+                "facility_hours": "",
+                "appointment": "",
+                "service_start": stop_info.get("service_start", ""),
+                "service_end": stop_info.get("departure", ""),
+                "pallet_delta": "%+d" % (
+                    delta.get("pickup", 0) - delta.get("delivery", 0)
+                ) if delta else "",
+                "onboard_after": delta.get("after", 0) if delta else 0,
+                "reason": "",
+            })
+            sequence += 10
+        return {
+            "name": "Route Adviser — %s" % self.name,
+            "type": "ir.actions.act_window",
+            "res_model": "prema.dispatch.route.adviser",
+            "view_mode": "form",
+            "res_id": adviser.id,
+            "target": "new",
+        }
+
+    def apply_recommended_route(self):
+        self.ensure_one()
+        from odoo.addons.prema_dispatch.services.route_adviser_service import (
+            RouteAdviserService,
+        )
+        result = RouteAdviserService(self.env).apply_recommended_route(self)
+        if result.get("success"):
+            return {
+                "type": "ir.actions.client",
+                "tag": "display_notification",
+                "params": {
+                    "title": "Recommended Route Applied",
+                    "message": "%d stops re-sequenced. Manual drag ordering remains available." % result.get("applied", 0),
+                    "type": "success",
+                    "sticky": False,
+                    "next": {"type": "ir.actions.client", "tag": "reload"},
+                },
+            }
+        return {
+            "type": "ir.actions.client",
+            "tag": "display_notification",
+            "params": {
+                "title": "Route Adviser",
+                "message": result.get("error") or "No feasible route.",
+                "type": "warning",
+                "sticky": True,
+            },
+        }
+
     def action_rank_trucks(self):
         """Rank all trucks for this job and set recommended_truck_id."""
         self.ensure_one()

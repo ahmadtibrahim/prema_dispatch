@@ -124,6 +124,7 @@ A full in-app user manual is available from the Prema Dispatch app menu.
         "views/dispatch_item_views.xml",
         "views/dispatch_assignment_log_views.xml",
         "views/dispatch_job_views.xml",
+        "views/dispatch_route_adviser_views.xml",
         "views/dispatch_feasibility_views.xml",
         "views/account_move_dispatch_views.xml",
         "views/dispatch_consolidation_wizard_views.xml",

@@ -811,6 +811,9 @@ class LogisticsBooking(models.Model):
                 "exact_time": stop.timing_type == "exact_appointment",
                 "service_time_minutes": stop.service_time_minutes or 15,
                 "dispatcher_notes": stop.instructions or "",
+                # Frozen facility hours for time-aware route planning —
+                # master location edits never change this route.
+                "operating_hours_snapshot": stop.operating_hours_snapshot or False,
             })
         for pallet in pallets:
             deliveries = pallet.delivery_allocation_ids.filtered("active")

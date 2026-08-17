@@ -220,6 +220,12 @@ class PremaDispatchStop(models.Model):
         string="Appointment Required",
         help="Stop-level appointment requirement (milk-run stops carry "
              "their own requirement — not the job-level flag).")
+    operating_hours_snapshot = fields.Json(
+        string="Operating Hours Snapshot",
+        help="Facility operating hours frozen from the commercial booking "
+             "stop at dispatch creation: {weekday(0=Mon): [open, close] or "
+             "null}. Route planning evaluates against THIS snapshot — "
+             "master location edits never change an operational route.")
 
     # Schedule
     scheduled_time = fields.Datetime()
@@ -488,6 +494,26 @@ class PremaDispatchStop(models.Model):
             self.deadline_time = False
 
     # ── Actions ───────────────────────────────────────────────────
+
+    def action_authorize_hours_override(self):
+        """Authorize servicing this stop outside its facility operating
+        hours. Reason, user and timestamp are recorded and the override
+        only applies to this stop."""
+        self.ensure_one()
+        override = self.env["prema.dispatch.hours.override"].create({
+            "job_id": self.job_id.id,
+            "stop_id": self.id,
+            "reason": "Authorized by dispatcher from stop form.",
+            "user_id": self.env.user.id,
+        })
+        return {
+            "name": "Hours Override",
+            "type": "ir.actions.act_window",
+            "res_model": "prema.dispatch.hours.override",
+            "view_mode": "form",
+            "res_id": override.id,
+            "target": "new",
+        }
 
     def action_mark_en_route(self):
         self.write({"status": "en_route"})

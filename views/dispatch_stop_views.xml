@@ -6,6 +6,12 @@
         <field name="arch" type="xml">
             <form string="Stop">
                 <header>
+                    <button name="action_authorize_hours_override"
+                            string="Authorize Hours Override"
+                            type="object" class="btn-secondary"
+                            icon="fa-clock-o"
+                            title="Authorize servicing this stop outside its facility operating hours (reason, user and timestamp are recorded)"
+                            invisible="not job_id or status in ('completed','cancelled')"/>
                     <button name="action_mark_en_route" string="En Route"
                             type="object" class="btn-primary"
                             invisible="status != 'pending'"/>

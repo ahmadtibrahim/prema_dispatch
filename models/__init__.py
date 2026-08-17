@@ -26,5 +26,7 @@ from . import dispatch_book_load_wizard
 from . import dispatch_location_photo
 from . import dispatch_location_extraction
 from . import dispatch_route_visit
+from . import dispatch_hours_override
+from . import dispatch_route_adviser
 from . import dispatch_load_plan_operation
 from . import dispatch_error_log
