@@ -615,6 +615,107 @@ class LogisticsBooking(models.Model):
                     base_hour = configured
         return self._dispatch_datetime(operation_date, base_hour)
 
+    def pallet_movements(self):
+        """Canonical movement dicts for the itinerary planner — one per
+        physical pallet with stable stop keys (never array indices)."""
+        movements = []
+        for pallet in self.env["logistics.booking.pallet"].search(
+                [("booking_id", "=", self.id)]):
+            movements.append({
+                "key": "p%d" % pallet.id,
+                "pallet_id": pallet.id,
+                "label": pallet.label or ("P-%d" % pallet.sequence),
+                "weight_lbs": pallet.weight_lbs or 0.0,
+                "shared": pallet.shared,
+                "pickup_stop_key": "s%d" % pallet.pickup_stop_id.id,
+                "delivery_stop_keys": [
+                    "s%d" % alloc.delivery_stop_id.id
+                    for alloc in pallet.delivery_allocation_ids.filtered("active")
+                ],
+            })
+        return movements
+
+    def _create_dispatch_route_from_movements(self):
+        """Milk-run bridge: one dispatch route job with ordered operational
+        stops and canonical items derived from booking.stop_ids and booking
+        pallet movements. Returns the created job or False when the legacy
+        path should be used instead."""
+        self.ensure_one()
+        stops = self.stop_ids.sorted("sequence")
+        pallets = self.env["logistics.booking.pallet"].search(
+            [("booking_id", "=", self.id)])
+        if not stops or not pallets:
+            return False
+        Job = self.env["prema.dispatch.job"].sudo()
+        Stop = self.env["prema.dispatch.stop"].sudo()
+        Item = self.env["prema.dispatch.item"].sudo()
+        from ..services.itinerary_planner import ItineraryPlanner
+        simulation = ItineraryPlanner(self.env).simulate_movements(
+            ["s%d" % s.id for s in stops], self.pallet_movements())
+        deltas = {d["stop_key"]: d for d in simulation["deltas"]}
+        operation_date = self.pickup_date or fields.Date.context_today(self)
+        job = Job.create({
+            "name": "Milk Run — %s" % self.booking_number,
+            "partner_id": self.partner_id.id,
+            "ref": self.booking_number,
+            "source_model": "logistics.booking",
+            "source_res_id": self.id,
+            "logistics_booking_id": self.id,
+            "operation_date": operation_date,
+            "operation_role": "route",
+            "tracking_number": "%s-01" % self.booking_number,
+            "company_id": self.env.company.id,
+            "service_type": "ltl" if self.shipment_type == "ltl" else "ftl",
+            "equipment_type": self.temperature_mode,
+            "requires_reefer": self.temperature_mode == "reefer",
+            "requires_liftgate": self.liftgate_pickup or self.liftgate_delivery,
+            "approximate_skids": self.physical_pallets or self.pallets,
+            "planned_delivery_date": fields.Date.to_date(operation_date),
+            "pickup_window_type": "flexible",
+            "delivery_window_type": "flexible",
+            "route_definition_mode": "exact_stops",
+            "stops_confirmation_state": "confirmed",
+            "planned_route_name": self.booking_number,
+            "pickup_saved_location_id": self.pickup_saved_location_id.id
+            if self.pickup_saved_location_id else False,
+        })
+        stop_records = {}
+        for index, stop in enumerate(stops):
+            delta = deltas.get("s%d" % stop.id, {})
+            stop_records[stop.id] = Stop.create({
+                "job_id": job.id,
+                "sequence": index * 10,
+                "stop_type": "pickup" if stop.stop_type == "pickup" else "dropoff",
+                "saved_location_id": stop.saved_location_id.id
+                if stop.saved_location_id else False,
+                "logistics_booking_stop_id": stop.id,
+                "pallets_in": delta.get("pickup", 0),
+                "pallets_out": delta.get("delivery", 0),
+                "weight_in_lbs": 0.0,
+                "weight_out_lbs": 0.0,
+                "pod_required": stop.stop_type == "delivery",
+                "pop_required": stop.stop_type == "pickup",
+                "tz_name": stop.timezone or "America/Toronto",
+            })
+        for pallet in pallets:
+            deliveries = pallet.delivery_allocation_ids.filtered("active")
+            item = Item.create({
+                "job_id": job.id,
+                "logistics_booking_pallet_id": pallet.id,
+                "load_unit_type": "shared_pallet" if pallet.shared else "pallet",
+                "pickup_stop_id": stop_records[pallet.pickup_stop_id.id]
+                if pallet.pickup_stop_id else False,
+                "delivery_stop_id": stop_records[deliveries[:1].delivery_stop_id.id]
+                if deliveries and deliveries[:1].delivery_stop_id else False,
+                "weight_lbs": pallet.weight_lbs or 0.0,
+                "shared_skid": pallet.shared,
+            })
+            item.stop_allocation_ids = [(0, 0, {
+                "stop_id": stop_records[alloc.delivery_stop_id.id].id,
+                "unload_sequence": alloc.unload_sequence or 10,
+            }) for alloc in deliveries if alloc.delivery_stop_id.id in stop_records]
+        return job
+
     def _create_dispatch_operation(self, leg, role, operation_date, origin_stop=None,
                                    destination_stop=None, sequence=1):
         self.ensure_one()
@@ -873,6 +974,15 @@ class LogisticsBooking(models.Model):
             if self.dispatch_job_id != existing[0]:
                 self.dispatch_job_id = existing[0].id
             return existing
+
+        # Milk-run generalization: bookings with canonical pallet movement
+        # records bridge to ONE route job with ordered stops and items.
+        if self.env["logistics.booking.pallet"].search_count(
+                [("booking_id", "=", self.id)]):
+            route_job = self._create_dispatch_route_from_movements()
+            if route_job:
+                self.dispatch_job_id = route_job.id
+                return route_job
 
         jobs = self.env["prema.dispatch.job"]
         sequence = 1
