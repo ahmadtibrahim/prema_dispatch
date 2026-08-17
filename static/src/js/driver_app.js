@@ -143,7 +143,13 @@ function proofLabelForStop(stop){
     return "Proof of Delivery (POD)";
 }
 function proofRequiredForStop(stop){
-    return false;
+    // Proof is required exactly when the COMMERCIAL booking marks it
+    // required (pop_required for pickups, pod_required for deliveries —
+    // see dispatch_stop.py::_check_required_proof). Transfer / cross-dock
+    // stops are custody hand-offs: proof there is optional.
+    if(isPickupStop(stop?.type)) return !!stop.pop_required;
+    if(stop?.type==="transfer" || isCrossDockStop(stop?.type)) return false;
+    return !!stop.pod_required;
 }
 function isClosedStopStatus(status){
     return ["completed","skipped","cancelled","issue"].includes(status);
@@ -697,8 +703,15 @@ bindPickupDelegates();
 function renderWeek() {
     const wk=S.weekData; if(!wk)return;
     const grid=q("#weekDays"); if(!grid)return;
+    // Upcoming routes are shown ≥7 days ahead (backend window: yesterday /
+    // today / next 5 days) — the bar is a 7-day strip, not 3 days.
+    const lbl=q("#weekLabel");
+    if(lbl && (wk.days||[]).length){
+        const last=(wk.days[wk.days.length-1]||{}).date;
+        lbl.textContent=last ? `7-Day Window — ${wk.week_start||""} → ${last}` : "7-Day Window";
+    }
     grid.innerHTML="";
-    (wk.days||[]).slice(0,3).forEach(d=>{
+    (wk.days||[]).slice(0,7).forEach(d=>{
         const cell=mk("div","da-day-cell"+(d.date===S.selDate?" selected":"")+(d.is_today?" today":"")+(d.is_past?" past":""));
         cell.innerHTML=`<div class="da-day-wd">${d.weekday}</div><div class="da-day-num">${d.day_num}</div><div class="da-day-dot ${d.all_done?"all-done":d.job_count?"has-jobs":""}"></div>`;
         cell.onclick=()=>selectDay(d.date);
@@ -741,6 +754,7 @@ function renderStopList() {
     hint.textContent="Hold and drag ↕ to reorder stops";
     list.appendChild(hint);
 
+    const routeHeadersShown=new Set();
     S.stops.forEach((stop,idx)=>{
         const isLast=idx===S.stops.length-1;
         const isPickup=isPickupLikeStop(stop.type);
@@ -786,6 +800,44 @@ function renderStopList() {
 
         row.append(tl,ct,handle);
         list.appendChild(row);
+
+        // Route header — one per job, before its first stop: the
+        // ASSIGNED ROUTE → START ROUTE handshake. Shown until the job is
+        // started (or already finished — the Job Finished rows below take
+        // over then).
+        const jid=stop.job_id;
+        if(jid && !routeHeadersShown.has(jid) && !stop.job_completed && !isDone){
+            routeHeadersShown.add(jid);
+            const js=stop.job_summary||{};
+            const header=mk("div","da-route-header");
+            if(js.route_started){
+                header.innerHTML=`🚚 ${esc(stop.job_name||"Route")} · <span class="da-route-started">▶ Route started${js.route_started_at?` ${fmtStopTime(js.route_started_at,stop.tz_name)}`:""}</span>`;
+            }else{
+                header.innerHTML=`🚚 ${esc(stop.job_name||"Assigned route")} · <span style="opacity:.7">assigned route</span>`;
+                const btn=mk("button","da-btn da-btn-green da-route-start-btn");
+                btn.textContent="▶ Start Route";
+                btn.onclick=async()=>{
+                    try{
+                        const res=await rpc("/dispatch/driver/job/start-route",{job_id:jid});
+                        if(res?.success){
+                            toast("▶ Route started");
+                            S.stops.forEach(s=>{
+                                if(s.job_id===jid){
+                                    s.job_summary=s.job_summary||{};
+                                    s.job_summary.route_started=true;
+                                    s.job_summary.route_started_at=res.route_started_at;
+                                }
+                            });
+                            renderStopList();
+                        }else{
+                            toast(res?.error||"Could not start route");
+                        }
+                    }catch(e){ toast("Could not start route — check your connection"); }
+                };
+                header.appendChild(btn);
+            }
+            list.insertBefore(header,row);
+        }
     });
 
     // Progress
@@ -939,6 +991,72 @@ function renderStopTimeLine(stop){
     return `<div class="da-detail-time">🕐 ${esc(parts.join(" · "))}</div>`;
 }
 
+// Same rule as static/src/js/dispatch_time_utils.js — duplicated here because
+// driver_app.js is loaded as a plain <script> tag on the standalone public
+// page and can't `import` that module (see the fmtStopTime duplicate).
+// "9" / "9am" / "9:30am" / "14:30" / "2:30 pm" → "HH:MM" (24h), "" if bad.
+function parseTimeInputTo24h(raw){
+    if(!raw)return"";
+    const s=String(raw).trim().toLowerCase();
+    if(!s)return"";
+    const m=s.match(/^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$/);
+    if(!m)return"";
+    let hour=parseInt(m[1],10);
+    const minute=m[2]?parseInt(m[2],10):0;
+    const meridian=m[3];
+    if(minute>59)return"";
+    if(meridian){
+        if(hour<1||hour>12)return"";
+        if(meridian==="pm"&&hour<12)hour+=12;
+        if(meridian==="am"&&hour===12)hour=0;
+    }else{
+        if(hour>23)return"";
+    }
+    return `${String(hour).padStart(2,"0")}:${String(minute).padStart(2,"0")}`;
+}
+
+/** "2026-08-17" + "18:30" + "America/Toronto" → UTC naive ISO "2026-08-17T22:30:00"
+ * (the shape driver_edit_stop validates). Date parts are treated as UTC
+ * first, then shifted by the timezone's real offset at that instant. */
+function localDateToUtcIso(dateStr,hhmm,tzName){
+    const [h,m]=hhmm.split(":").map(Number);
+    const asUtc=Date.UTC(+dateStr.slice(0,4),+dateStr.slice(5,7)-1,+dateStr.slice(8,10),h,m);
+    const parts=Object.fromEntries(new Intl.DateTimeFormat("en-US",{
+        timeZone:tzName||"America/Toronto",hour12:false,year:"numeric",month:"2-digit",
+        day:"2-digit",hour:"2-digit",minute:"2-digit",
+    }).formatToParts(new Date(asUtc)).map(p=>[p.type,p.value]));
+    const localAsUtc=Date.UTC(+parts.year,+parts.month-1,+parts.day,+(parts.hour||0)%24,+parts.minute);
+    return new Date(asUtc-(localAsUtc-asUtc)).toISOString().replace(/\.\d{3}Z$/,"");
+}
+
+async function saveSchedTime(){
+    const stop=S.stop; if(!stop)return;
+    const el=q("#schedTimeInput"); if(!el)return;
+    const hhmm=parseTimeInputTo24h(el.value);
+    if(!hhmm){ toast("Enter a time like 9, 9am, 9:30am, 14:30 or 2:30 pm"); return; }
+    // The stop's local date: reuse its existing scheduled date, else today's
+    // selected schedule day.
+    let dateStr=S.selDate;
+    if(stop.scheduled_time){
+        const d=new Date(stop.scheduled_time);
+        if(!isNaN(d.getTime())) dateStr=`${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,"0")}-${String(d.getUTCDate()).padStart(2,"0")}`;
+    }
+    try{
+        const utcIso=localDateToUtcIso(dateStr,hhmm,stop.tz_name);
+        const res=await rpc("/dispatch/driver/stop/update",{
+            stop_id:stop.id, values:{scheduled_time:utcIso},
+        });
+        if(res?.success){
+            stop.scheduled_time=utcIso;
+            renderStopDetail();
+            toast(`🕐 Scheduled ${fmtStopTime(utcIso,stop.tz_name)}`);
+        }else{
+            toast(res?.error||"Could not save scheduled time");
+        }
+    }catch(e){ toast("Could not save scheduled time — check your connection"); }
+}
+window.saveSchedTime=saveSchedTime;
+
 function renderStopDetail() {
     const stop=S.stop;
     const body=q("#stopDetailBody"); if(!body)return;
@@ -956,6 +1074,12 @@ function renderStopDetail() {
         `<div class="da-detail-addr">${esc(stop.address)}</div>`+
         (stop.address_warning?`<div class="da-addr-warn">⚠ ${esc(stop.address_warning)}</div>`:"")+
         (renderStopTimeLine(stop))+
+        (!isDone?`<div class="da-sched-edit">🕐 Set scheduled time:
+            <input id="schedTimeInput" class="da-time-input" inputmode="numeric" autocomplete="off"
+                   placeholder="e.g. 9, 9am, 9:30am, 14:30"
+                   value="${stop.scheduled_time?fmtStopTime(stop.scheduled_time,stop.tz_name):""}"/>
+            <button class="da-svc-btn" onclick="saveSchedTime()">Save</button>
+        </div>`:"")+
         (isPickup ? renderPickupActualsCard(stop) : "")+
         (stop.type==="pickup"
             ?`<div class="da-detail-meta" data-role="pickup-load-meta">📦 <strong>${pickupInfo?.actual ?? stop.pallets_in ?? "?"} pallets</strong> to pick up${stop.pallets_in_estimated?' <span class="da-est-badge" title="Estimated from downstream deliveries">✨ est.</span>':""}${pickupInfo && !pickupInfo.confirmed && pickupInfo.actual !== pickupInfo.expected ? ' <span class="da-est-badge" title="Changed on device but not confirmed yet">draft</span>' : ""}</div>`
@@ -2688,6 +2812,8 @@ window.delEv=delEv;
 // doesn't depend on a third-party CDN at runtime.
 let _scannerLoading=null, _scannerReady=false, _jscanify=null;
 let _scanStream=null, _scanContext=null, _scanStopId=null, _scanEvType=null, _scanCapturedCanvas=null, _scanEnhanced=false;
+let _scanPages=[];       // multi-page scans: captured page payloads awaiting upload
+let _scannerPopHandler=null;  // browser-Back closes the scanner (see armScannerBackButton)
 
 function loadScannerLibs(){
     if(_scannerReady) return Promise.resolve();
@@ -2720,7 +2846,9 @@ function loadJscanify(resolve,reject){
 async function openScanner(contextOrStopId,evType){
     const ctx = (typeof contextOrStopId === "object" && contextOrStopId) ? contextOrStopId : {mode:"stop_evidence", stopId:contextOrStopId, evidenceType:evType};
     _scanContext=ctx; _scanStopId=ctx.stopId||0; _scanEvType=ctx.evidenceType||ctx.documentType||evType; _scanEnhanced=false;
+    _scanPages=[]; updateScanPageBadge();
     show("oScanner");
+    armScannerBackButton();
     renderScanStatus("idle"); setScanButtonsDisabled(false);
     setScannerStage("camera");
     toast("Loading scanner…");
@@ -2817,28 +2945,21 @@ async function useScan(){
     if(!out)return;
     const dataUrl=out.toDataURL("image/jpeg",0.92);
     const b64=dataUrl.split(",")[1];
-    setScanButtonsDisabled(true);
-    renderScanStatus("uploading");
-    try{
-        let route="/dispatch/driver/evidence/add";
-        let payload={stop_id:_scanStopId, ev_type:_scanEvType, data_b64:b64, filename:`scan_${Date.now()}.jpg`};
-        if(_scanContext?.mode==="load_plan_document"){
-            route="/dispatch/driver/loadplan/document/upload";
-            payload={load_plan_id:_scanContext.loadPlanId, document_type:_scanContext.documentType||"loading_photo", item_id:_scanContext.itemId||null, data_b64:b64, filename:`loadplan_${Date.now()}.jpg`};
-        } else if(_scanContext?.mode==="location_extract"){
-            route="/dispatch/driver/location/extract";
-            payload={
+
+    if(_scanContext?.mode==="location_extract"){
+        // Extraction always uses the single page on screen.
+        setScanButtonsDisabled(true);
+        renderScanStatus("uploading");
+        try{
+            const r=await rpc("/dispatch/driver/location/extract",{
                 job_id:_scanContext.jobId,
                 stop_id:_scanContext.stopId||null,
                 extraction_context:_scanContext.extractionContext||"ship_to",
                 data_b64:b64,
                 filename:`ship_to_${Date.now()}.jpg`,
                 mimetype:"image/jpeg",
-            };
-        }
-        const r=await rpc(route,payload);
-        if(r?.success){
-            if(_scanContext?.mode==="location_extract"){
+            });
+            if(r?.success){
                 if(S.pickupIntake){
                     S.pickupIntake.locationMode="manual";
                     S.pickupIntake.manual={...S.pickupIntake.manual,...(r.extraction||{})};
@@ -2848,27 +2969,104 @@ async function useScan(){
                 setTimeout(()=>{ closeScanner(); renderScanStatus("idle"); }, 900);
                 return;
             }
-            renderScanStatus("success", r.duplicate?(r.message||"Already uploaded"):"Scan saved");
-            const stop=S.stops.find(s=>s.id===_scanStopId);
-            if(stop && !r.duplicate){
-                const key=_scanEvType==="pop"?"pop_attachments":"pod_attachments";
-                (stop[key]=stop[key]||[]).push({id:r.id,name:r.name,url:r.url});
-            }
-            if(S.stop?.id===_scanStopId) renderStopDetail();
-            if(finishProofOpen() && S.finishFlow?.stopId===_scanStopId) renderFinishProof();
-            setTimeout(()=>{ renderScanStatus("idle"); setScannerStage("camera"); },1200);
-            return; // keep buttons disabled during the success-message pause; re-enabled by the next scan's setScannerStage
+            renderScanStatus("failed", r?.error||"Upload failed");
+        }catch(e){
+            renderScanStatus("failed", e?.message||"Upload error — check your connection");
         }
-        renderScanStatus("failed", r?.error||"Upload failed");
-    }catch(e){
-        renderScanStatus("failed", e?.message||"Upload error — check your connection");
+        setScanButtonsDisabled(false);
+        return;
     }
-    setScanButtonsDisabled(false);
+
+    // Evidence / load-plan: upload every collected page plus the page on
+    // screen, sequentially — the backend accepts one file per call.
+    const pages=[..._scanPages,b64];
+    setScanButtonsDisabled(true);
+    let failed=false,lastErr="",uploaded=0;
+    for(let i=0;i<pages.length;i++){
+        if(pages.length>1) renderScanStatus("uploading",`Uploading ${i+1}/${pages.length}…`);
+        else renderScanStatus("uploading");
+        try{
+            const r=await uploadOneScanPage(pages[i]);
+            if(r?.success){
+                uploaded++;
+                const stop=S.stops.find(s=>s.id===_scanStopId);
+                if(stop && !r.duplicate){
+                    const key=_scanEvType==="pop"?"pop_attachments":"pod_attachments";
+                    (stop[key]=stop[key]||[]).push({id:r.id,name:r.name,url:r.url});
+                }
+                if(S.stop?.id===_scanStopId) renderStopDetail();
+                if(finishProofOpen() && S.finishFlow?.stopId===_scanStopId) renderFinishProof();
+            }else{
+                failed=true; lastErr=r?.error||"Upload failed";
+            }
+        }catch(e){
+            failed=true; lastErr=e?.message||"Upload error — check your connection";
+        }
+    }
+    _scanPages=[];
+    updateScanPageBadge();
+    if(failed){
+        renderScanStatus("failed", `${lastErr}${pages.length>1?` (page ${uploaded+1} of ${pages.length})`:""}`);
+        setScanButtonsDisabled(false);
+        return;
+    }
+    if(pages.length===1){
+        // Single page: keep the scanner open for consecutive scans, as before.
+        renderScanStatus("success", "Scan saved");
+        setTimeout(()=>{ renderScanStatus("idle"); setScannerStage("camera"); },1200);
+        return; // buttons re-enabled by the next scan's setScannerStage
+    }
+    renderScanStatus("success", `${pages.length} pages saved`);
+    setTimeout(()=>{ closeScanner(); renderScanStatus("idle"); }, 900);
 }
 window.useScan=useScan;
 
+async function uploadOneScanPage(b64){
+    let route="/dispatch/driver/evidence/add";
+    let payload={stop_id:_scanStopId, ev_type:_scanEvType, data_b64:b64, filename:`scan_${Date.now()}_${(Math.random()*1e4)|0}.jpg`};
+    if(_scanContext?.mode==="load_plan_document"){
+        route="/dispatch/driver/loadplan/document/upload";
+        payload={load_plan_id:_scanContext.loadPlanId, document_type:_scanContext.documentType||"loading_photo", item_id:_scanContext.itemId||null, data_b64:b64, filename:`loadplan_${Date.now()}_${(Math.random()*1e4)|0}.jpg`};
+    }
+    return rpc(route,payload);
+}
+
+/** Multi-page scans: keep this page, go back to the camera for the next
+ * one. "Use This" then uploads the collected pages + the current page. */
+function addScanPage(){
+    const out=q("#scanPreviewCanvas");
+    if(!out||!_scanCapturedCanvas)return;
+    const dataUrl=out.toDataURL("image/jpeg",0.92);
+    if(!dataUrl)return;
+    _scanPages.push(dataUrl.split(",")[1]);
+    updateScanPageBadge();
+    renderScanStatus("idle");
+    setScannerStage("camera");
+}
+window.addScanPage=addScanPage;
+
+function updateScanPageBadge(){
+    const btn=q("#scanUseBtn");
+    if(btn) btn.textContent=_scanPages.length ? `✓ Use (${_scanPages.length+1})` : "✓ Use This";
+}
+
+// Browser Back closes the scanner (a pushed history entry + popstate), so
+// a driver can't get stuck in the camera/preview overlay.
+function armScannerBackButton(){
+    disarmScannerBackButton();
+    try{ history.pushState({__daScanner:true},""); }catch(e){}
+    _scannerPopHandler=()=>{ if(isScannerOpen()) closeScanner(); };
+    window.addEventListener("popstate",_scannerPopHandler);
+}
+function disarmScannerBackButton(){
+    if(_scannerPopHandler){ window.removeEventListener("popstate",_scannerPopHandler); _scannerPopHandler=null; }
+}
+function isScannerOpen(){ const el=q("#oScanner"); return !!el && el.style.display!=="none"; }
+
 function closeScanner(){
+    disarmScannerBackButton();
     stopScanCamera();
+    _scanPages=[]; updateScanPageBadge();
     hide("oScanner");
 }
 window.closeScanner=closeScanner;
@@ -3855,11 +4053,27 @@ window.addEventListener("popstate", (ev) => {
 });
 
 // ── Utils ─────────────────────────────────────────────────────────
+// Session expiry must send the driver back to a fresh login — with the
+// redirect param, and via location.replace so the browser Back button
+// can't loop into the expired session. Plain /web/login navigation can
+// 400 on the standalone public page; replace() avoids the stale-POST case.
+function isSessionExpiredError(d){
+    const msg=((d?.error?.data?.message||d?.error?.message||"")+" "+(d?.error?.code||"")).toLowerCase();
+    return d?.error?.code===300 || msg.includes("session expired") || msg.includes("session has expired");
+}
+function redirectToDriverLogin(){
+    const q=new URLSearchParams({redirect:"/dispatch/driver"});
+    try{ window.location.replace("/web/login?"+q); }
+    catch(e){ window.location.href="/web/login?"+q; }
+}
 async function rpc(url,params){
     const r=await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},credentials:"include",
         body:JSON.stringify({jsonrpc:"2.0",method:"call",id:(Math.random()*1e9)|0,params})});
     const d=await r.json();
-    if(d.error)throw new Error(d.error.data?.message||d.error.message||"RPC error");
+    if(d.error){
+        if(isSessionExpiredError(d)){ redirectToDriverLogin(); }
+        throw new Error(d.error.data?.message||d.error.message||"RPC error");
+    }
     return d.result;
 }
 // Same JSON-RPC envelope as rpc(), but via XMLHttpRequest so upload
@@ -3879,7 +4093,10 @@ function rpcWithProgress(url,params,onProgress){
             let d;
             try{ d=JSON.parse(xhr.responseText); }
             catch(e){ reject(new Error("Bad response from server")); return; }
-            if(d.error) reject(new Error(d.error.data?.message||d.error.message||"RPC error"));
+            if(d.error){
+                if(isSessionExpiredError(d)){ redirectToDriverLogin(); }
+                reject(new Error(d.error.data?.message||d.error.message||"RPC error"));
+            }
             else resolve(d.result);
         };
         xhr.onerror=()=>reject(new Error("Network error — check your connection"));

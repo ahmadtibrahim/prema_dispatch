@@ -1,4 +1,5 @@
-from odoo import api, fields, models
+from odoo import _, api, fields, models
+from odoo.exceptions import UserError
 
 
 class AccountMove(models.Model):
@@ -16,7 +17,7 @@ class AccountMove(models.Model):
         ("draft", "Draft"),
         ("in_progress", "In Progress"),
         ("completed", "Completed"),
-        ("pod_ready", "POD Ready"),
+        ("pod_ready", "Ready for Dispatch Review"),
         ("posted", "Posted"),
         ("error", "Error"),
     ], compute="_compute_dispatch_status", store=True, string="Dispatch Status")
@@ -33,7 +34,6 @@ class AccountMove(models.Model):
         "dispatch_job_ids.stage_id.is_completed",
         "dispatch_job_ids.stage_id.is_cancelled",
         "dispatch_job_ids.pod_complete",
-        "dispatch_job_ids.auto_posted_invoice",
         "state",
     )
     def _compute_dispatch_status(self):
@@ -41,15 +41,17 @@ class AccountMove(models.Model):
             jobs = move.dispatch_job_ids
             if not jobs:
                 move.dispatch_status = "none"
-            elif move.state == "posted" and any(job.auto_posted_invoice for job in jobs):
+            elif move.state == "posted":
                 move.dispatch_status = "posted"
             elif all(job.stage_id and job.stage_id.is_completed for job in jobs):
+                # Every dispatch job complete: pod_ready = READY FOR
+                # DISPATCH REVIEW. The invoice still needs a dispatcher's
+                # manual approval (action_approve_dispatch_review) — the
+                # review gate is never bypassed automatically.
                 move.dispatch_status = (
                     "pod_ready" if all(job.pod_complete for job in jobs)
                     else "completed"
                 )
-            elif any(job.auto_post_error for job in jobs):
-                move.dispatch_status = "error"
             elif all(
                 not job.stage_id or job.stage_id.stage_type in ("draft", False)
                 for job in jobs
@@ -57,6 +59,48 @@ class AccountMove(models.Model):
                 move.dispatch_status = "draft"
             else:
                 move.dispatch_status = "in_progress"
+
+    def action_approve_dispatch_review(self):
+        """Dispatcher's manual approval of a READY FOR DISPATCH REVIEW
+        invoice: review the evidence, then post the invoice. This is the
+        ONLY path that posts a dispatch-linked invoice — completion never
+        auto-posts it.
+
+        Access: the group gate below runs FIRST, in the caller's own
+        environment, before any account.move record is touched — a driver
+        or plain internal user gets a clean UserError here even though
+        they have no accounting access. After the gate, the posting runs
+        with sudo: the dispatcher's authorization is this method's gate
+        (they are not necessarily an accounting user), mirroring the
+        dispatch-manager pattern in fleet_vehicle.py."""
+        self.ensure_one()
+        user = self.env.user
+        inv = self.sudo()
+        if inv.dispatch_job_ids:
+            if not (
+                user.has_group("prema_dispatch.group_dispatch_manager")
+                or user.has_group("prema_dispatch.group_dispatcher")
+                or user.has_group("base.group_system")
+            ):
+                raise UserError(_(
+                    "Only a Dispatcher or Dispatch Manager can approve a "
+                    "dispatch invoice for posting."))
+            if not all(
+                j.stage_id and j.stage_id.is_completed for j in inv.dispatch_job_ids
+            ):
+                raise UserError(_(
+                    "Not all dispatch jobs on this invoice are completed — "
+                    "cannot approve yet."))
+        if inv.state != "draft":
+            raise UserError(_("Only draft invoices can be approved and posted."))
+        inv.action_post()
+        inv.message_post(
+            body=(
+                f"<b>Approved for posting</b> by {user.name} after "
+                f"dispatch review. Evidence reviewed; invoice posted manually."
+            )
+        )
+        return True
 
     def action_open_dispatch_jobs_prema(self):
         """Open the Planner operation cards linked to this invoice."""

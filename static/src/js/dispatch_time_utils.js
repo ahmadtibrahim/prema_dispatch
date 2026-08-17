@@ -39,6 +39,30 @@ export function fmtStopDateTime(isoUtc, tzName) {
     }
 }
 
+/** Parse a loose time input ("9", "9am", "9:30am", "14:30", "2:30 pm")
+ * into a 24-hour "HH:MM" string ("09:00"). Empty input or anything
+ * unparseable returns "". The caller decides whether empty means "keep
+ * current value" or "clear". */
+export function parseTimeInputTo24h(raw) {
+    if (!raw) return "";
+    const s = String(raw).trim().toLowerCase();
+    if (!s) return "";
+    const m = s.match(/^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$/);
+    if (!m) return "";
+    let hour = parseInt(m[1], 10);
+    const minute = m[2] ? parseInt(m[2], 10) : 0;
+    const meridian = m[3];
+    if (minute > 59) return "";
+    if (meridian) {
+        if (hour < 1 || hour > 12) return "";
+        if (meridian === "pm" && hour < 12) hour += 12;
+        if (meridian === "am" && hour === 12) hour = 0;
+    } else {
+        if (hour > 23) return "";
+    }
+    return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+}
+
 /** IANA tz name -> short zone abbreviation for the given instant, e.g. "EDT"/"CST". */
 export function tzAbbrev(isoUtc, tzName) {
     if (!tzName) return "";

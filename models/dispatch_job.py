@@ -413,7 +413,15 @@ class PremaDispatchJob(models.Model):
     )
     completed_at = fields.Datetime(readonly=True)
 
+    # ── Route start (Amazon-Flex style explicit start) ────────────
+
+    route_started_at = fields.Datetime(readonly=True, copy=False)
+    route_started_by = fields.Many2one("res.users", readonly=True, copy=False)
+
     # ── Invoice completion ────────────────────────────────────────
+    # Historical flags from the auto-post era — kept read-only for old
+    # records; nothing writes them anymore. The invoice now stops at
+    # READY FOR DISPATCH REVIEW and a dispatcher approves it manually.
 
     auto_posted_invoice = fields.Boolean(readonly=True)
     auto_post_error = fields.Text(readonly=True)
@@ -592,6 +600,10 @@ class PremaDispatchJob(models.Model):
             "onboard_pallet_count": self.onboard_pallet_count,
             "pickup_location": {"id": pickup.saved_location_id.id if pickup and pickup.saved_location_id else False, "address": pickup.address if pickup else ""},
             "route_sheet_received_at": self._dt_iso_utc(self.route_sheet_received_at),
+            "route_started_at": self._dt_iso_utc(self.route_started_at),
+            "route_started": bool(self.route_started_at),
+            "route_started_by": (self.route_started_by.partner_id.name or self.route_started_by.name)
+                if self.route_started_by else "",
             "vehicle": {"id": self.vehicle_id.id, "name": self.vehicle_id.name} if self.vehicle_id else False,
             "driver": {"id": self.driver_id.id, "name": self.driver_id.name} if self.driver_id else False,
             "stage": self.stage_id.name if self.stage_id else "", "load_plan_id": link.load_plan_id.id if link else False,
@@ -2530,8 +2542,8 @@ class PremaDispatchJob(models.Model):
                 j.stage_id.is_completed and j.pod_complete
                 for j in all_jobs
             )
-            if all_done and self.invoice_id.state == "draft":
-                self._auto_post_invoice()
+            if all_done:
+                self._mark_invoice_ready_for_dispatch_review()
                 self._post_timeline(
                     self, "invoice_completed",
                     notes=self.invoice_id.name,
@@ -3019,11 +3031,10 @@ class PremaDispatchJob(models.Model):
                     )
                     if job.invoice_id:
                         job._attach_documents_to_invoice()
-                        job.invoice_id.message_post(body=job._build_completion_summary())
-                        all_jobs = job.invoice_id.dispatch_job_ids
+                        job.invoice_id.sudo().message_post(body=job._build_completion_summary())
+                        all_jobs = job.invoice_id.sudo().dispatch_job_ids
                         if all(j.stage_id.is_completed and j.pod_complete for j in all_jobs):
-                            if job.invoice_id.state == "draft":
-                                job._auto_post_invoice()
+                            job._mark_invoice_ready_for_dispatch_review()
 
     def _check_all_stops_cancelled(self):
         """If every stop on a job ends up cancelled (e.g. dispatcher cancels
@@ -3063,8 +3074,23 @@ class PremaDispatchJob(models.Model):
         return "<br/>".join(lines)
 
     def _attach_documents_to_invoice(self):
-        """Collect all attachments from this job and its stops and link to the invoice."""
+        """Collect all attachments from this job and its stops and link to the invoice.
+
+        Only attaches while the invoice is still DRAFT and belongs to this
+        job's own customer — a posted invoice (or a cross-customer one on a
+        consolidated load) never receives evidence here."""
         if not self.invoice_id:
+            return 0
+        # The completion path can run under the driver's own user (the app
+        # completes the last stop) — a driver has no accounting access to
+        # account.move. Read and write the invoice with sudo: the
+        # authorization gate happened upstream (the caller is authorized
+        # for the job), and this is internal evidence bookkeeping, not a
+        # user-visible account operation.
+        invoice = self.invoice_id.sudo()
+        if invoice.state != "draft":
+            return 0
+        if invoice.partner_id.id != self.partner_id.id:
             return 0
 
         Att = self.env["ir.attachment"]
@@ -3072,12 +3098,12 @@ class PremaDispatchJob(models.Model):
         existing_names = set(
             Att.search([
                 ("res_model", "=", "account.move"),
-                ("res_id", "=", self.invoice_id.id),
+                ("res_id", "=", invoice.id),
             ]).mapped("name")
         )
 
         job_ref = _safe_fname(self.name)
-        inv_ref = _safe_fname(self.invoice_id.name or self.invoice_id.ref or "INV")
+        inv_ref = _safe_fname(invoice.name or invoice.ref or "INV")
         attached = 0
 
         def _link_attachment(att, stop_seq=None, category="DOC"):
@@ -3090,7 +3116,7 @@ class PremaDispatchJob(models.Model):
             Att.create({
                 "name": new_name,
                 "res_model": "account.move",
-                "res_id": self.invoice_id.id,
+                "res_id": invoice.id,
                 "type": att.type,
                 "datas": att.datas,
                 "mimetype": att.mimetype,
@@ -3110,7 +3136,7 @@ class PremaDispatchJob(models.Model):
         if attached:
             pod_count = sum(len(s.pod_attachment_ids) for s in self.stop_ids)
             photo_count = sum(len(s.photo_attachment_ids) for s in self.stop_ids)
-            self.invoice_id.message_post(
+            invoice.message_post(
                 body=(
                     f"<b>Dispatch job {self.name} completed.</b><br/>"
                     f"POD files: {pod_count} | Photos: {photo_count} | "
@@ -3119,26 +3145,28 @@ class PremaDispatchJob(models.Model):
             )
         return attached
 
-    def _auto_post_invoice(self):
-        """Attempt to confirm/post the linked invoice."""
-        try:
-            self.invoice_id.action_post()
-            self.write({"auto_posted_invoice": True})
-            self.invoice_id.message_post(
-                body=(
-                    f"<b>Invoice auto-confirmed</b> after all dispatch jobs completed. "
-                    f"Jobs: {', '.join(j.name for j in self.invoice_id.dispatch_job_ids)}"
-                )
+    def _mark_invoice_ready_for_dispatch_review(self):
+        """All dispatch jobs on the linked invoice are complete with POD:
+        the invoice is READY FOR DISPATCH REVIEW.
+
+        It is NEVER auto-posted or auto-sent here. A dispatcher reviews
+        the evidence and posts/sends it manually via
+        account.move::action_approve_dispatch_review — the dispatch
+        gate ends at "review ready", by design."""
+        if not self.invoice_id:
+            return
+        invoice = self.invoice_id.sudo()
+        if invoice.state != "draft":
+            return
+        invoice.message_post(
+            body=(
+                f"<b>READY FOR DISPATCH REVIEW</b> — all dispatch jobs "
+                f"complete with POD. Evidence attached. A dispatcher must "
+                f"review and manually approve this invoice before it is "
+                f"posted and sent.<br/>"
+                f"Jobs: {', '.join(j.name for j in invoice.dispatch_job_ids)}"
             )
-        except Exception as exc:
-            _logger.exception("Auto-post failed for invoice %s", self.invoice_id.name)
-            self.write({"auto_post_error": str(exc)})
-            self.invoice_id.message_post(
-                body=(
-                    f"<b>Auto-confirm failed.</b> Please confirm manually.<br/>"
-                    f"Error: {exc}"
-                )
-            )
+        )
 
     # ── Driver App API ────────────────────────────────────────────
 
@@ -3374,15 +3402,17 @@ class PremaDispatchJob(models.Model):
         return ""
 
     @api.model
-    def _driver_three_day_window(self, user_tz):
+    def _driver_seven_day_window(self, user_tz):
+        """The driver schedule shows 7 days: yesterday, today, and the
+        next 5 days (upcoming routes ≥7 days on the schedule bar)."""
         from datetime import timedelta
         today = self._user_today(user_tz)
-        return today - timedelta(days=1), today, today + timedelta(days=1)
+        return today - timedelta(days=1), today, today + timedelta(days=5)
 
     @api.model
     def _sanitize_driver_date(self, date_str, user_tz):
         from datetime import date
-        window = self._driver_three_day_window(user_tz)
+        window = self._driver_seven_day_window(user_tz)
         today = window[1]
         if not date_str:
             return today
@@ -3390,7 +3420,7 @@ class PremaDispatchJob(models.Model):
             parsed = date.fromisoformat(date_str)
         except Exception:
             return today
-        return parsed if parsed in window else today
+        return parsed if window[0] <= parsed <= window[2] else today
 
     def _pickup_completion_step_state(self):
         self.ensure_one()
@@ -3949,15 +3979,34 @@ class PremaDispatchJob(models.Model):
             if linked_items:
                 linked_items.write({"evidence_attachment_ids": [(4, att.id)]})
             # Attach to the invoice linked to THIS stop if set (multi-invoice
-            # consolidated jobs), otherwise fall back to the job's invoice/quote.
-            # Tagged via description so driver_remove_evidence can find and
-            # delete this copy too when the original is removed.
+            # consolidated jobs), otherwise fall back to the job's invoice.
+            # Two hard rules: the invoice must be DRAFT (never append
+            # evidence to a posted invoice) and it must belong to THIS
+            # customer (never cross-customer — a consolidated job's stop
+            # may not share the job's invoice). Tagged via description so
+            # driver_remove_evidence can find and delete this copy too
+            # when the original is removed.
             job = stop.job_id
+            customer = job.partner_id
             target_invoice = stop.invoice_id or job.invoice_id
             tag = f"__evidence_source:{att.id}__"
-            if target_invoice:
-                att.copy({"res_model": "account.move", "res_id": target_invoice.id, "description": tag})
-            elif job.sale_order_id:
+            # The driver (or a dispatcher) is authorized for the stop, but
+            # may have no accounting access to account.move — read the
+            # gate state with sudo. The copy itself is still only created
+            # for the same-customer DRAFT invoice; never for a posted one
+            # and never across customers.
+            inv = target_invoice.sudo() if target_invoice else False
+            if (
+                inv
+                and inv.state == "draft"
+                and inv.partner_id.id == customer.id
+            ):
+                att.copy({"res_model": "account.move", "res_id": inv.id, "description": tag})
+            elif (
+                job.sale_order_id
+                and job.sale_order_id.partner_id.id == customer.id
+                and job.sale_order_id.state in ("draft", "sent")
+            ):
                 att.copy({"res_model": "sale.order", "res_id": job.sale_order_id.id, "description": tag})
             return {
                 "success": True, "id": att.id, "name": att.name,
@@ -4120,18 +4169,20 @@ class PremaDispatchJob(models.Model):
 
     @api.model
     def get_driver_available_dates(self, week_offset=0):
-        """Return exactly yesterday / today / tomorrow in the driver's timezone."""
-        from datetime import date, datetime, timedelta
+        """Return the 7-day driver window (yesterday / today / next 5 days)
+        in the driver's timezone — the schedule shows upcoming routes at
+        least a week ahead."""
+        from datetime import datetime
         import pytz
 
         user    = self.env.user
         partner = user.partner_id
         user_tz = pytz.timezone(user.tz or "America/Toronto")
-        yesterday, today, tomorrow = self._driver_three_day_window(user_tz)
+        first, today, last = self._driver_seven_day_window(user_tz)
 
         def to_utc(d, t): return user_tz.localize(datetime.combine(d, t)).astimezone(pytz.utc).replace(tzinfo=None)
-        utc_start = to_utc(yesterday, datetime.min.time())
-        utc_end   = to_utc(tomorrow, datetime.max.time())
+        utc_start = to_utc(first, datetime.min.time())
+        utc_end   = to_utc(last, datetime.max.time())
 
         all_jobs = self.env["prema.dispatch.job"].search([
             ("driver_id", "=", partner.id),
@@ -4154,8 +4205,10 @@ class PremaDispatchJob(models.Model):
             if not job.stage_id.is_completed:
                 dates_map[ld]["active"] += 1
 
+        from datetime import timedelta
         result = []
-        for d in (yesterday, today, tomorrow):
+        d = first
+        while d <= last:
             d_str = d.isoformat()
             info  = dates_map.get(d_str, {"total": 0, "active": 0})
             result.append({
@@ -4169,10 +4222,11 @@ class PremaDispatchJob(models.Model):
                 "has_active": info["active"] > 0,
                 "all_done":   info["total"] > 0 and info["active"] == 0,
             })
+            d += timedelta(days=1)
 
         return {
             "days":         result,
-            "week_start":   yesterday.isoformat(),
+            "week_start":   first.isoformat(),
             "week_label":   today.strftime("%b %d, %Y"),
             "week_offset":  0,
             "today":        today.isoformat(),
@@ -4472,6 +4526,23 @@ class PremaDispatchJob(models.Model):
             write_vals["shared_pallet_number"] = shared_pallet_number
         if "sequence" in values and values.get("sequence") not in (None, ""):
             write_vals["sequence"] = max(10, int(values.get("sequence")))
+        if "scheduled_time" in values and values.get("scheduled_time"):
+            # The driver app sends a full UTC ISO datetime (naive, "Z"-free)
+            # built from the parsed local time-of-day (see
+            # dispatch_time_utils.js::parseTimeInputTo24h). Odoo's strict
+            # Datetime parser wants a space, not the ISO "T" — normalize so
+            # both "2026-08-17 18:30:00" and "2026-08-17T18:30:00" are
+            # accepted, and anything else returns a clean error, not a 500.
+            try:
+                fields.Datetime.to_datetime(
+                    values["scheduled_time"].replace("T", " ")
+                )
+            except (TypeError, ValueError):
+                return {"success": False,
+                        "error": "Scheduled time must be a full date-time, e.g. 2026-08-17T18:30:00"}
+            write_vals["scheduled_time"] = fields.Datetime.to_datetime(
+                values["scheduled_time"].replace("T", " ")
+            )
 
         if not write_vals:
             return {"success": False, "error": "No editable fields were provided"}
@@ -4684,6 +4755,37 @@ class PremaDispatchJob(models.Model):
             return {"success": False, "error": str(exc)}
 
     @api.model
+    def driver_start_route(self, job_id):
+        """Driver App: explicit "Start Route" tap — the assigned-route
+        handshake. Records when the driver actually begins the run
+        (route_started_at/by) so dispatch can audit start times. Idempotent:
+        starting an already-started route is a no-op that returns the
+        existing state."""
+        from odoo.addons.prema_dispatch.services.dispatch_auth import check_job_access
+        job = self.browse(job_id)
+        if not job.exists():
+            return {"success": False, "error": "Job not found"}
+        if not check_job_access(self.env, job, raise_on_fail=False):
+            return {"success": False, "error": "Not authorized for this job"}
+        if job.stage_id.is_cancelled or job.stage_id.is_completed:
+            return {"success": False,
+                    "error": "This job is already finished — it cannot be started."}
+        if not job.route_started_at:
+            job.write({
+                "route_started_at": fields.Datetime.now(),
+                "route_started_by": self.env.user.id,
+            })
+            job.message_post(
+                body=f"Route started by {self.env.user.name}."
+            )
+        return {
+            "success": True,
+            "job_id": job.id,
+            "job_name": job.name,
+            "route_started_at": job._dt_iso_utc(job.route_started_at),
+            "job_summary": job._driver_job_summary(),
+        }
+
     def driver_finish_job(self, job_id):
         """Driver App: explicit "Job Finished" tap once every stop on a job
         is done. The job actually auto-completes via

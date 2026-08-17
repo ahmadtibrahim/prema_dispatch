@@ -172,6 +172,10 @@ class DriverAppController(http.Controller):
     def finish_job(self, job_id, **kwargs):
         return request.env["prema.dispatch.job"].driver_finish_job(job_id)
 
+    @http.route("/dispatch/driver/job/start-route", type="json", auth="user", methods=["POST"])
+    def start_route(self, job_id, **kwargs):
+        return request.env["prema.dispatch.job"].driver_start_route(job_id)
+
     # ── Entrance photo upload ────────────────────────────────────
 
     @http.route("/dispatch/driver/stop/photo", type="json", auth="user", methods=["POST"])

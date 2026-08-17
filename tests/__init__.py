@@ -7,3 +7,4 @@ from . import test_saved_locations
 from . import test_route_adviser
 from . import test_route_order_fix
 from . import test_milk_run_operations
+from . import test_driver_app_workflow

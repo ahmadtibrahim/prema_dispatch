@@ -61,7 +61,7 @@
 
     <!-- Three-Day Window -->
     <div class="da-week-bar">
-      <div class="da-week-label">Yesterday / Today / Tomorrow</div>
+      <div class="da-week-label" id="weekLabel">7-Day Window</div>
       <!-- Map toggle lives here (not inside routeMapWrap) so it's still
            reachable when the map is collapsed to 0 height -->
       <button class="da-week-nav da-week-map-toggle" onclick="APP.toggleMap()" id="mapToggleBtn" title="Show/hide map">▲</button>
@@ -221,7 +221,9 @@
         <canvas id="scanPreviewCanvas" class="da-scan-canvas"></canvas>
       </div>
       <div class="da-scan-bar">
+        <button class="da-map-fab" onclick="closeScanner()" title="Close scanner">✕ Close</button>
         <button id="scanRetakeBtn" class="da-btn da-btn-ghost" onclick="retakeScan()">↺ Retake</button>
+        <button id="scanAddPageBtn" class="da-btn da-btn-secondary" onclick="addScanPage()">＋ Add Page</button>
         <button id="scanEnhanceBtn" class="da-btn da-btn-secondary" onclick="toggleScanEnhance()">✨ Enhance</button>
         <button id="scanUseBtn" class="da-btn da-btn-primary" onclick="useScan()">✓ Use This</button>
       </div>
