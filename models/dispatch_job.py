@@ -1667,6 +1667,87 @@ class PremaDispatchJob(models.Model):
             },
         }
 
+    # ── Milk-run: capacity + load plan + expectations ──────────────
+
+    def _active_items(self):
+        return self.item_ids.filtered(
+            lambda i: i.status != "cancelled")
+
+    def _recompute_downstream_stop_expectations(self):
+        """Recompute every delivery stop's expected pallets/weight from the
+        ACTIVE items delivering there (after a pickup variance cancels
+        uncollected items)."""
+        self.ensure_one()
+        for stop in self.stop_ids.filtered(
+                lambda s: s.stop_type in ("dropoff", "return")):
+            items = self._active_items().filtered(
+                lambda i, sid=stop.id: i.delivery_stop_id.id == sid
+                or any(a.stop_id.id == sid and a.active
+                       for a in i.stop_allocation_ids))
+            stop.write({
+                "pallets_out": len(items),
+                "weight_out_lbs": sum(items.mapped("weight_lbs")),
+            })
+
+    def route_capacity_check(self):
+        """{peak, vehicle_max, ok, layout} — maximum SIMULTANEOUS onboard
+        for the current stop order vs the assigned vehicle's canonical
+        capacity layout. Different stop orders can produce different
+        peaks; this uses the movement simulation, not the sum of handled
+        pallets."""
+        self.ensure_one()
+        try:
+            from odoo.addons.prema_dispatch.services.route_adviser_service import (
+                RouteAdviserService,
+            )
+            svc = RouteAdviserService(self.env)
+            report = svc.adviser_report(self)
+            peak = report["current"]["peak"]
+            vehicle_max = report["vehicle_max"]
+        except Exception:
+            peak = self.max_onboard_pallets or 0
+            vehicle_max = 0
+        layout_code = ""
+        if self.vehicle_id:
+            try:
+                from odoo.addons.prema_logistics_booking.services.vehicle_capacity_service import (
+                    VehicleCapacityService,
+                )
+                result = VehicleCapacityService(self.env).evaluate(
+                    self.vehicle_id, False, 0,
+                )
+                layout_code = (result.get("selected_layout") or {}).get("code", "")
+            except Exception:
+                pass
+        return {
+            "peak": peak,
+            "vehicle_max": vehicle_max,
+            "ok": bool(not vehicle_max or peak <= vehicle_max),
+            "layout": layout_code,
+        }
+
+    def load_plan_summary(self):
+        """Load Plan / Driver App summary: current onboard, future pickups
+        (items whose pickup stop is still ahead — same item identity is
+        kept; they are never duplicated), planned peak and capacity."""
+        self.ensure_one()
+        active = self._active_items()
+        onboard = active.filtered(
+            lambda i: i.status in ("loaded", "in_transit",
+                                   "partially_unloaded", "out_for_delivery"))
+        future = active.filtered("pending_future_pickup")
+        capacity = self.route_capacity_check()
+        return {
+            "onboard_items": len(onboard),
+            "onboard_weight_lbs": sum(onboard.mapped("weight_lbs")),
+            "future_pickup_items": len(future),
+            "future_pickup_weight_lbs": sum(future.mapped("weight_lbs")),
+            "planned_peak": capacity["peak"],
+            "vehicle_max": capacity["vehicle_max"],
+            "capacity_ok": capacity["ok"],
+            "layout": capacity["layout"],
+        }
+
     def action_rank_trucks(self):
         """Rank all trucks for this job and set recommended_truck_id."""
         self.ensure_one()
@@ -3090,6 +3171,16 @@ class PremaDispatchJob(models.Model):
             "entrance_photo_url": entrance_photo_url,
             "saved_location_id": loc.id if loc else False,
             "allow_cross_dock":  bool(loc.allow_cross_dock) if loc else False,
+            # ── Milk-run per-stop data ─────────────────────────────
+            "facility_hours":    self._stop_facility_hours(s),
+            "appointment":        self._stop_appointment_text(s),
+            "liftgate_required": s.requires_liftgate,
+            "appointment_required": s.appointment_required,
+            "pop_required":      s.pop_required,
+            "pod_required":      s.pod_required,
+            "expected_pallets_in": len(s._items_picked_here()),
+            "expected_pallets_out": len(s._items_delivered_here()),
+            "instructions":      s.dispatcher_notes or "",
             "pallets_in":        s.pallets_in,
             "pallets_in_estimated": s.pallets_in_estimated,
             "pallets_out":       s.pallets_out,
@@ -3162,12 +3253,58 @@ class PremaDispatchJob(models.Model):
             running = 0
             for stop_dict in sorted(group, key=self._serialized_stop_sort_key):
                 stop_type = stop_dict.get("type") or stop_dict.get("stop_type")
+                stop_dict["onboard_before"] = running
                 if stop_type in ("pickup", "cross_dock_pickup"):
                     running += int(stop_dict.get("pallets_in") or 0)
                 elif stop_type in ("dropoff", "return", "cross_dock_drop", "transfer"):
                     running = max(0, running - int(stop_dict.get("pallets_out") or 0))
                 stop_dict["onboard_after"] = running
         return stop_dicts
+
+    @api.model
+    def _stop_facility_hours(self, s):
+        """Human-readable facility hours for the stop's local day from the
+        frozen operating-hours snapshot (never the live master location)."""
+        snapshot = s.operating_hours_snapshot or None
+        if not snapshot and "logistics_booking_stop_id" in s._fields:
+            bstop = s.logistics_booking_stop_id
+            snapshot = bstop.operating_hours_snapshot if bstop else None
+        if not snapshot:
+            return ""
+        from datetime import datetime
+        import pytz
+        now = datetime.now(pytz.timezone(s.tz_name or "America/Toronto"))
+        hours = snapshot.get(str(now.weekday()))
+        if hours is None:
+            return "Closed today"
+        def _fmt(h):
+            hh = int(h); mm = int(round((h - hh) * 60))
+            if mm == 60:
+                hh += 1; mm = 0
+            ap = "AM" if hh < 12 else "PM"
+            hh12 = hh % 12 or 12
+            return "%02d:%02d %s" % (hh12, mm, ap)
+        return "%s – %s" % (_fmt(hours[0]), _fmt(hours[1]))
+
+    @api.model
+    def _stop_appointment_text(self, s):
+        """Appointment / window text for the driver stop card."""
+        if s.time_window_type == "exact" and s.exact_time:
+            return "Exact appointment %s" % fields.Datetime.context_timestamp(
+                self, s.exact_time).strftime("%H:%M")
+        if s.time_window_type == "window" and (s.earliest_time or s.latest_time):
+            parts = []
+            if s.earliest_time:
+                parts.append(fields.Datetime.context_timestamp(
+                    self, s.earliest_time).strftime("%H:%M"))
+            if s.latest_time:
+                parts.append(fields.Datetime.context_timestamp(
+                    self, s.latest_time).strftime("%H:%M"))
+            return "Window %s" % "–".join(parts)
+        if s.time_window_type == "deadline" and s.deadline_time:
+            return "By %s" % fields.Datetime.context_timestamp(
+                self, s.deadline_time).strftime("%H:%M")
+        return ""
 
     @api.model
     def _driver_three_day_window(self, user_tz):

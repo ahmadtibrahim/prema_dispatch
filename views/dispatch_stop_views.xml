@@ -12,6 +12,12 @@
                             icon="fa-clock-o"
                             title="Authorize servicing this stop outside its facility operating hours (reason, user and timestamp are recorded)"
                             invisible="not job_id or status in ('completed','cancelled')"/>
+                    <button name="action_authorize_proof_override"
+                            string="Override Required Proof"
+                            type="object" class="btn-secondary"
+                            icon="fa-file-text-o"
+                            title="Authorize completing this stop without its required POP/POD (reason, user and timestamp are recorded)"
+                            invisible="not (pop_required or pod_required) or status == 'completed'"/>
                     <button name="action_mark_en_route" string="En Route"
                             type="object" class="btn-primary"
                             invisible="status != 'pending'"/>
@@ -112,11 +118,28 @@
                             <field name="weight_in_lbs"/>
                             <field name="weight_out_lbs"/>
                         </group>
+                        <group string="Per-Stop Actuals (Milk-Run)">
+                            <field name="actual_pallets_in" invisible="stop_type != 'pickup'"/>
+                            <field name="actual_weight_in_lbs" invisible="stop_type != 'pickup'"/>
+                            <field name="actual_pallets_out" invisible="stop_type not in ('dropoff','return')"/>
+                            <field name="actual_weight_out_lbs" invisible="stop_type not in ('dropoff','return')"/>
+                            <field name="pickup_actuals_confirmed_at" invisible="stop_type != 'pickup'"/>
+                            <field name="pickup_actuals_confirmed_by" invisible="stop_type != 'pickup'"/>
+                            <field name="delivery_actuals_confirmed_at" invisible="stop_type not in ('dropoff','return')"/>
+                            <field name="delivery_actuals_confirmed_by" invisible="stop_type not in ('dropoff','return')"/>
+                            <field name="variance_notes"/>
+                        </group>
                         <group string="POD Requirements">
                             <field name="pod_required"/>
+                            <field name="pop_required"/>
                             <field name="pod_uploaded" readonly="1"/>
                             <field name="invoice_id"
                                    help="Only needed when this job has multiple delivery stops billed on separate invoices. Leave blank to use the job's main invoice."/>
+                        </group>
+                        <group string="Proof Override">
+                            <field name="proof_override_reason"/>
+                            <field name="proof_override_by"/>
+                            <field name="proof_override_at"/>
                         </group>
                     </group>
                     <notebook>

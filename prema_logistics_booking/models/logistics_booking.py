@@ -827,6 +827,12 @@ class LogisticsBooking(models.Model):
                 "pickup_stop_id": pickup_dispatch_stop.id if pickup_dispatch_stop else False,
                 "delivery_stop_id": stop_records[first_delivery.id].id
                 if first_delivery and first_delivery.id in stop_records else False,
+                # Future-pickup architecture: the item is only available
+                # after ITS pickup stop — before TerraFreska pickup the TF
+                # pallets exist as planned items, never as onboard freight,
+                # and the SAME item rows become onboard at pickup.
+                "available_after_stop_id": pickup_dispatch_stop.id
+                if pickup_dispatch_stop else False,
                 "weight_lbs": pallet.weight_lbs or 0.0,
                 "shared_skid": pallet.shared,
             })

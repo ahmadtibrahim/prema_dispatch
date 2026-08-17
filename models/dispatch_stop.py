@@ -272,6 +272,35 @@ class PremaDispatchStop(models.Model):
         help="Pallets unloaded from truck at this drop-off stop.")
     weight_in_lbs = fields.Float(string="Weight In (lbs)", digits=(10, 1))
     weight_out_lbs = fields.Float(string="Weight Out (lbs)", digits=(10, 1))
+
+    # ── Per-stop pickup/delivery actuals (milk-run authority) ─────────
+    # Actuals belong to the STOP — a variance at one pickup never alters
+    # another pickup's actuals. Job-level pickup values remain computed
+    # compatibility summaries.
+    actual_pallets_in = fields.Integer(string="Actual Pallets In")
+    actual_weight_in_lbs = fields.Float(
+        string="Actual Weight In (lbs)", digits=(10, 1))
+    actual_pallets_out = fields.Integer(string="Actual Pallets Out")
+    actual_weight_out_lbs = fields.Float(
+        string="Actual Weight Out (lbs)", digits=(10, 1))
+    pickup_actuals_confirmed_at = fields.Datetime(
+        string="Pickup Actuals Confirmed At", readonly=True)
+    pickup_actuals_confirmed_by = fields.Many2one(
+        "res.users", string="Pickup Actuals Confirmed By", readonly=True)
+    delivery_actuals_confirmed_at = fields.Datetime(
+        string="Delivery Actuals Confirmed At", readonly=True)
+    delivery_actuals_confirmed_by = fields.Many2one(
+        "res.users", string="Delivery Actuals Confirmed By", readonly=True)
+    variance_notes = fields.Text(
+        string="Variance Notes",
+        help="Why actual pallets/weight differ from expectation.")
+
+    # ── Required-proof override (POP/POD) ────────────────────────────
+    proof_override_reason = fields.Text(string="Proof Override Reason")
+    proof_override_by = fields.Many2one(
+        "res.users", string="Proof Override By", readonly=True)
+    proof_override_at = fields.Datetime(
+        string="Proof Override At", readonly=True)
     onboard_load_after_stop = fields.Integer(
         string="Onboard After",
         compute="_compute_onboard_load", store=True, readonly=True,
@@ -515,6 +544,105 @@ class PremaDispatchStop(models.Model):
             "target": "new",
         }
 
+    # ── Per-stop pickup/delivery actuals ────────────────────────────
+
+    def _items_picked_here(self):
+        self.ensure_one()
+        return self.job_id.item_ids.filtered(
+            lambda i: i.pickup_stop_id.id == self.id
+        ).sorted("id")
+
+    def _items_delivered_here(self):
+        self.ensure_one()
+        items = self.job_id.item_ids.filtered(
+            lambda i: i.delivery_stop_id.id == self.id
+            or any(a.stop_id.id == self.id for a in i.stop_allocation_ids)
+        )
+        return items.sorted("id")
+
+    def confirm_pickup_actuals(self, actual_pallets, actual_weight_lbs, notes=""):
+        """Authoritative per-stop pickup actuals. A variance at THIS stop
+        never alters another pickup's actuals; it re-computes downstream
+        delivery expectations and the load plan instead."""
+        self.ensure_one()
+        if self.stop_type != "pickup":
+            raise exceptions.UserError(
+                "Pickup actuals can only be confirmed on pickup stops.")
+        self.write({
+            "actual_pallets_in": int(actual_pallets),
+            "actual_weight_in_lbs": float(actual_weight_lbs or 0.0),
+            "pickup_actuals_confirmed_at": fields.Datetime.now(),
+            "pickup_actuals_confirmed_by": self.env.user.id,
+            "variance_notes": notes or "",
+        })
+        self._apply_pickup_variance(int(actual_pallets))
+        return True
+
+    def _apply_pickup_variance(self, actual_pallets):
+        """If fewer pallets were collected than expected, the uncollected
+        items never enter the truck: cancel them and recompute every
+        downstream delivery stop's expected pallets/weight."""
+        items = self._items_picked_here()
+        expected = len(items)
+        if actual_pallets >= expected:
+            return
+        collected, uncollected = items[:actual_pallets], items[actual_pallets:]
+        uncollected.write({"status": "cancelled"})
+        self.job_id._recompute_downstream_stop_expectations()
+
+    def confirm_delivery_actuals(self, actual_pallets, actual_weight_lbs, notes=""):
+        self.ensure_one()
+        if self.stop_type not in ("dropoff", "return"):
+            raise exceptions.UserError(
+                "Delivery actuals can only be confirmed on delivery stops.")
+        self.write({
+            "actual_pallets_out": int(actual_pallets),
+            "actual_weight_out_lbs": float(actual_weight_lbs or 0.0),
+            "delivery_actuals_confirmed_at": fields.Datetime.now(),
+            "delivery_actuals_confirmed_by": self.env.user.id,
+            "variance_notes": notes or "",
+        })
+        return True
+
+    # ── Required proof (POP/POD) enforcement ────────────────────────
+
+    def action_authorize_proof_override(self):
+        """Authorize completing this stop without its required POP/POD.
+        Reason, user and timestamp are recorded; the audit event is
+        posted to the job timeline."""
+        self.ensure_one()
+        wizard = self.env["prema.dispatch.proof.override.wizard"].create({
+            "stop_id": self.id,
+        })
+        return {
+            "name": "Authorize Proof Override",
+            "type": "ir.actions.act_window",
+            "res_model": "prema.dispatch.proof.override.wizard",
+            "view_mode": "form",
+            "res_id": wizard.id,
+            "target": "new",
+        }
+
+    def _check_required_proof(self):
+        """POP/POD required by the commercial booking blocks stop
+        completion unless proof is attached or an override was
+        authorized (reason/user/timestamp)."""
+        self.ensure_one()
+        if self.status == "completed":
+            return
+        if self.proof_override_by:
+            return
+        if self.pop_required and self.stop_type == "pickup" \
+                and not self.pop_attachment_ids:
+            raise exceptions.UserError(
+                "Proof of Pickup (POP) is required for this stop. Attach "
+                "the pickup proof or authorize an override.")
+        if self.pod_required and self.stop_type in ("dropoff", "return") \
+                and not self.pod_attachment_ids:
+            raise exceptions.UserError(
+                "Proof of Delivery (POD) is required for this stop. Attach "
+                "the delivery proof or authorize an override.")
+
     def action_mark_en_route(self):
         self.write({"status": "en_route"})
 
@@ -603,11 +731,15 @@ class PremaDispatchStop(models.Model):
 
         Driver proof/photo capture remains supported, but it should not
         block the stop from finishing when the dispatcher/driver needs to
-        move the route forward without a POD/custody upload yet.
+        move the route forward without a POD/custody upload yet — EXCEPT
+        when the commercial booking marks proof as REQUIRED
+        (pop_required/pod_required); those stops need proof or an
+        authorized override.
         """
         self.ensure_one()
         self._check_transfer_configuration()
         self._check_explicit_freight_selection()
+        self._check_required_proof()
 
     def _selected_item_pallet_total(self):
         self.ensure_one()
