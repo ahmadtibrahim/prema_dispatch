@@ -4,8 +4,18 @@ One logistics.booking.pallet row = ONE physical pallet/skid unit with
 exactly one pickup stop and one-or-more delivery allocations. This is the
 persistent source of truth for pallet movement; the legacy
 `_pallet_allocs` JSON remains a derived compatibility view.
+
+A SHARED pallet is still ONE physical position on the truck: however many
+delivery allocations it has, capacity counts the movement once. Each
+allocation carries the PORTION of the pallet's weight delivered at that
+stop; the active allocations' weights must sum to the pallet weight.
 """
-from odoo import fields, models
+from odoo import api, fields, models
+from odoo.exceptions import ValidationError
+from odoo.tools.translate import _
+
+# Tolerance for "allocation weights sum to pallet weight" (rounding).
+_WEIGHT_SUM_TOLERANCE_LB = 0.1
 
 
 class LogisticsBookingPallet(models.Model):
@@ -66,6 +76,43 @@ class LogisticsBookingPallet(models.Model):
             self.state = "onboard"
             return
 
+    def _auto_split_portions(self):
+        """Fill portion weights for pallets that carry none yet:
+        single-delivery pallets take the whole weight; shared pallets
+        split it evenly across active allocations. Never overwrites
+        portions that were already entered."""
+        for pallet in self:
+            if not pallet.weight_lbs:
+                continue
+            active = pallet.delivery_allocation_ids.filtered("active")
+            if not active or any(a.weight_lbs for a in active):
+                continue
+            split = round(pallet.weight_lbs / len(active), 1)
+            # ONE batched write: the sum-to-pallet constraint must see
+            # every portion at once, or the first allocation updated
+            # mid-split fails validation.
+            active.write({"weight_lbs": split})
+
+    def _validate_portion_sum(self):
+        """Pallet invariant: the active allocations' portion weights must
+        add up to the pallet weight — once every allocation carries a
+        weight (legacy pallets with no portion data stay untouched)."""
+        for pallet in self:
+            if not pallet.weight_lbs:
+                continue
+            active = pallet.delivery_allocation_ids.filtered("active")
+            if not active or not all(a.weight_lbs for a in active):
+                continue  # portions not fully entered yet — nothing to check
+            # Round: an even 3-way split of 2000 lb stores as
+            # 666.7 → sum 2000.1000000000001; that is 2000.1, not an error.
+            total = round(sum(a.weight_lbs or 0.0 for a in active), 1)
+            if abs(total - pallet.weight_lbs) > _WEIGHT_SUM_TOLERANCE_LB:
+                raise ValidationError(_(
+                    "Pallet %s portions do not add up to the pallet "
+                    "weight: allocations total %.1f lb, pallet is %.1f lb. "
+                    "Re-split the delivery portions."
+                ) % (pallet.label or pallet.sequence, total, pallet.weight_lbs))
+
 
 class LogisticsBookingPalletStopAllocation(models.Model):
     _name = "logistics.booking.pallet.stop.allocation"
@@ -79,5 +126,26 @@ class LogisticsBookingPalletStopAllocation(models.Model):
         "logistics.booking.stop", string="Delivery Stop", required=True,
         ondelete="restrict", index=True)
     unload_sequence = fields.Integer(default=10)
+    # Delivery PORTION of a shared pallet: how much of the physical
+    # pallet's weight (and how many pieces) come off at THIS stop. The
+    # active allocations' weights must sum to the pallet's weight.
+    weight_lbs = fields.Float(string="Portion Weight (lbs)",
+                              digits=(10, 1))
+    piece_count = fields.Integer(string="Pieces")
     delivered = fields.Boolean(default=False)
     active = fields.Boolean(default=True)
+
+    @api.constrains("weight_lbs", "active")
+    def _check_portion_weights_sum_to_pallet(self):
+        """A shared pallet's delivery portions must add up to the whole
+        pallet — the truck delivers exactly what it picked up.
+
+        Skipped while a build is in progress (portion_batch context): the
+        orchestration creates allocations one at a time and validates the
+        completed pallet explicitly at the end. Deactivating a delivery
+        therefore requires re-splitting the portions, which is correct: a
+        portion removed from one stop must be re-allocated elsewhere."""
+        if self.env.context.get("portion_batch"):
+            return  # build in progress — validated at the end of the batch
+        for alloc in self:
+            alloc.pallet_id._validate_portion_sum()

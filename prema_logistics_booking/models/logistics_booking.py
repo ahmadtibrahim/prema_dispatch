@@ -851,6 +851,16 @@ class LogisticsBooking(models.Model):
                     "s%d" % alloc.delivery_stop_id.id
                     for alloc in pallet.delivery_allocation_ids.filtered("active")
                 ],
+                # Per-stop delivery PORTIONS, aligned with
+                # delivery_stop_keys — the shared-pallet weight split.
+                "delivery_weights": [
+                    alloc.weight_lbs or 0.0
+                    for alloc in pallet.delivery_allocation_ids.filtered("active")
+                ],
+                "delivery_pieces": [
+                    alloc.piece_count or 0
+                    for alloc in pallet.delivery_allocation_ids.filtered("active")
+                ],
             })
         return movements
 
@@ -964,6 +974,11 @@ class LogisticsBooking(models.Model):
             item.stop_allocation_ids = [(0, 0, {
                 "stop_id": stop_records[alloc.delivery_stop_id.id].id,
                 "unload_sequence": alloc.unload_sequence or 10,
+                # Portion mirrors the booking allocation 1:1 by
+                # unload_sequence — weights on the truck reconcile with
+                # weights at each delivery stop.
+                "weight_lbs": alloc.weight_lbs or 0.0,
+                "piece_count": alloc.piece_count or 0,
             }) for alloc in deliveries if alloc.delivery_stop_id.id in stop_records]
         return job
 

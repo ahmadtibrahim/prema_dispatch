@@ -13,6 +13,12 @@ class PremaDispatchPalletStopAllocation(models.Model):
     load_plan_id = fields.Many2one("prema.dispatch.load.plan", related="dispatch_item_id.load_plan_id", store=True, index=True)
     invoice_id = fields.Many2one("account.move")
     unload_sequence = fields.Integer(default=10)
+    # Portion of a shared pallet delivered at THIS stop — mirrors the
+    # canonical booking allocation (logistics.booking.pallet.stop.allocation)
+    # 1:1 by unload_sequence so the reconciliation trace
+    # booking pallet → dispatch item → dispatch allocation → weight holds.
+    weight_lbs = fields.Float(string="Portion Weight (lbs)", digits=(10, 1))
+    piece_count = fields.Integer(string="Pieces")
     notes = fields.Text()
     delivered = fields.Boolean(default=False)
     delivered_at = fields.Datetime()

@@ -1349,12 +1349,25 @@ class BookingOrchestrationService:
 
         pallet_movements: list of dicts with stable stop keys
         {key, label, weight_lbs, shared, pickup_stop_key,
-        delivery_stop_keys, commodity, temperature_notes, reference}.
+        delivery_stop_keys, delivery_weights, delivery_pieces,
+        commodity, temperature_notes, reference}.
         Stop keys resolve against the booking stops created in the same
         transaction — never positional indices.
+
+        delivery_weights/delivery_pieces: per-delivery PORTION lists
+        aligned with delivery_stop_keys (a shared pallet's weight is split
+        across its stops). When absent, _auto_split_portions() fills them:
+        single-delivery pallets take the whole weight, shared pallets
+        split evenly.
         """
         Pallet = self.env["logistics.booking.pallet"].sudo()
-        Allocation = self.env["logistics.booking.pallet.stop.allocation"].sudo()
+        # Build the allocations under portion_batch: the sum-to-pallet
+        # constraint cannot judge a pallet while its allocations are still
+        # being created one at a time — the completed pallet is validated
+        # explicitly at the end of the batch.
+        Allocation = self.env[
+            "logistics.booking.pallet.stop.allocation"
+        ].sudo().with_context(portion_batch=True)
         stops_by_key = {
             stop.stop_key: stop
             for stop in booking.stop_ids
@@ -1382,6 +1395,8 @@ class BookingOrchestrationService:
                 "state": "pending_pickup",
             })
             sequence += 10
+            weights = movement.get("delivery_weights") or []
+            pieces = movement.get("delivery_pieces") or []
             for unload_index, delivery_key in enumerate(movement.get("delivery_stop_keys") or []):
                 delivery_stop = stops_by_key.get(delivery_key)
                 if not delivery_stop:
@@ -1392,7 +1407,19 @@ class BookingOrchestrationService:
                     "pallet_id": pallet.id,
                     "delivery_stop_id": delivery_stop.id,
                     "unload_sequence": (unload_index + 1) * 10,
+                    "weight_lbs": float(weights[unload_index] or 0.0)
+                    if unload_index < len(weights) else 0.0,
+                    "piece_count": int(pieces[unload_index] or 0)
+                    if unload_index < len(pieces) else 0,
                 })
+        # Pallets without entered portions get the default split (whole
+        # weight for single delivery, even split for shared) — then the
+        # completed pallets are validated so the sum-to-pallet invariant
+        # always holds for new bookings.
+        pallets = self.env["logistics.booking.pallet"].sudo().search(
+            [("booking_id", "=", booking.id)])
+        pallets._auto_split_portions()
+        pallets._validate_portion_sum()
 
     def _create_booking_lines(self, booking, normalized_request: NormalizedBookingRequest):
         """Create booking lines from normalized request."""
