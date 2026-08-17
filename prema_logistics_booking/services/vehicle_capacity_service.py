@@ -98,7 +98,8 @@ class VehicleCapacityService:
     def reserved_pallets(self, departure):
         """Physical pallet positions already reserved on the departure
         (cancelled/draft bookings never count). Delegates to the canonical
-        CapacityEngine segment-peak computation."""
+        CapacityEngine segment-peak computation — the true onboard peak
+        (LTL positions + any exclusive FTL booking's positions)."""
         if not departure:
             return 0
         from .capacity_engine import CapacityEngine
@@ -107,33 +108,58 @@ class VehicleCapacityService:
     # ── Canonical evaluation ────────────────────────────────────────
 
     def evaluate(self, vehicle, departure=None, proposed_pallets=0):
-        """Full capacity answer for a vehicle (+ optional departure)."""
+        """Full capacity answer for a vehicle (+ optional departure).
+
+        FTL / Dedicated / Exclusive service bookings reserve the ENTIRE
+        vehicle: when one is confirmed on the departure, remaining
+        SELLABLE capacity is 0 regardless of its own position count.
+        LTL bookings (even threshold-priced FTL loads — pricing mode is
+        NOT service type) reserve their physical positions only.
+        """
+        peak = {}
+        if departure:
+            from .capacity_engine import CapacityEngine
+            peak = CapacityEngine(self.env).compute_departure_peak(departure)
+        exclusive = bool(peak.get("exclusive_vehicle_reserved"))
+        reserved = peak.get("peak_pallets", 0)
+        reserved_ltl = peak.get("reserved_ltl_positions", 0)
+        maximum = self.maximum_capacity(vehicle)
+        # Sellable = what a NEW LTL booking may reserve: when the truck is
+        # exclusively held, nothing is sellable at all.
+        remaining_sellable = 0 if exclusive else max(maximum - reserved_ltl, 0)
+
         result = {
             "vehicle": vehicle,
             "layouts": self.get_layouts(vehicle),
             "default_capacity": self.default_capacity(vehicle),
-            "maximum_capacity": self.maximum_capacity(vehicle),
-            "reserved_pallets": self.reserved_pallets(departure) if departure else 0,
+            "maximum_capacity": maximum,
+            "reserved_pallets": reserved,
+            "reserved_ltl_positions": reserved_ltl,
+            "exclusive_vehicle_reserved": exclusive,
+            "exclusive_booking_ids": peak.get("exclusive_booking_ids", []),
+            "remaining_sellable_capacity": remaining_sellable,
             "proposed_pallets": proposed_pallets,
             "proposed_total": 0,
             "selected_layout": None,
-            "remaining_pallets": 0,
+            "remaining_pallets": remaining_sellable,
             "capacity_valid": True,
             "reason": None,
         }
-        result["proposed_total"] = result["reserved_pallets"] + proposed_pallets
-        result["remaining_pallets"] = max(
-            result["maximum_capacity"] - result["reserved_pallets"], 0,
-        )
+        result["proposed_total"] = reserved + proposed_pallets
         valid, layout = self.select_layout(vehicle, result["proposed_total"])
         result["selected_layout"] = layout
-        if not valid:
+        if exclusive and proposed_pallets:
+            result["capacity_valid"] = False
+            result["reason"] = _(
+                "This departure's truck is exclusively reserved for a "
+                "Full Truckload / dedicated shipment.")
+        elif not valid:
             result["capacity_valid"] = False
             result["reason"] = _(
                 "Only %(remaining)s pallet position(s) remain on the selected "
                 "departure. Please reduce the pallet quantity or choose "
                 "another departure.",
-                remaining=result["remaining_pallets"],
+                remaining=remaining_sellable,
             )
         return result
 
@@ -180,6 +206,9 @@ class VehicleCapacityService:
             "max_pallets": result["maximum_capacity"],
             "reserved_pallets": result["reserved_pallets"],
             "remaining_pallets": result["remaining_pallets"],
+            "reserved_ltl_positions": result["reserved_ltl_positions"],
+            "exclusive_vehicle_reserved": result["exclusive_vehicle_reserved"],
+            "remaining_sellable_capacity": result["remaining_sellable_capacity"],
             "layout_code": layout.get("code", ""),
             "layout_name": layout.get("name", ""),
             # Per-pallet default weight from the selected corridor's own
@@ -187,12 +216,21 @@ class VehicleCapacityService:
             "per_pallet_weight": corridor.included_weight_per_pallet or 0.0 if corridor else 0.0,
         }
 
-    def check_and_reserve(self, departure, proposed_pallets, proposed_weight_lbs=0.0):
+    def check_and_reserve(self, departure, proposed_pallets, proposed_weight_lbs=0.0,
+                          service_type="ltl"):
         """Authoritative, concurrency-safe capacity validation.
 
         Locks the departure row FOR UPDATE inside the caller's transaction
         and recomputes reserved positions from committed bookings, so two
         simultaneous confirmations can never both pass.
+
+        service_type: 'ltl' reserves physical positions only. 'ftl'
+        (Full Truckload / Dedicated / Exclusive) requires the ENTIRE
+        vehicle: the departure must be completely free, and once such a
+        booking is confirmed nothing else may join. A corridor's FTL
+        PRICING threshold (enable_ftl + ftl_threshold_pallets +
+        auto_price) never flips service_type — threshold-priced LTL loads
+        reserve their positions like any LTL booking.
 
         Returns the evaluation dict; `capacity_valid` is False with a
         user-facing reason when the booking cannot fit.
@@ -209,6 +247,26 @@ class VehicleCapacityService:
         )
         departure.invalidate_recordset()
         result = self.evaluate(departure.vehicle_id, departure, proposed_pallets)
+        if service_type == "ftl" and not result["capacity_valid"]:
+            return result
+        # Exclusivity: FTL needs the truck EMPTY; LTL can never join an
+        # exclusively-held truck.
+        from .capacity_engine import CapacityEngine
+        peak = CapacityEngine(self.env).compute_departure_peak(departure)
+        if service_type == "ftl":
+            if peak["peak_pallets"] or peak["exclusive_vehicle_reserved"]:
+                result["capacity_valid"] = False
+                result["reason"] = _(
+                    "Full Truckload / dedicated moves require the ENTIRE "
+                    "vehicle — this departure already has bookings on it. "
+                    "Choose a free departure.")
+                return result
+        elif peak["exclusive_vehicle_reserved"]:
+            result["capacity_valid"] = False
+            result["reason"] = _(
+                "This departure's truck is exclusively reserved for a "
+                "Full Truckload / dedicated shipment.")
+            return result
         if not result["capacity_valid"]:
             return result
         # Weight is a separate constraint on the vehicle payload.
@@ -216,9 +274,7 @@ class VehicleCapacityService:
         if payload and proposed_weight_lbs:
             current = 0.0
             try:
-                from .capacity_engine import CapacityEngine
-                current = CapacityEngine(self.env).compute_departure_peak(
-                    departure)["peak_weight"]
+                current = peak["peak_weight"]
             except Exception:
                 current = 0.0
             if current + proposed_weight_lbs > payload:

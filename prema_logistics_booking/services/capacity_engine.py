@@ -162,82 +162,193 @@ class CapacityEngine:
 
     # ── Phase 8: Leg-Segment Peak Capacity ───────────────────────────
 
+    @staticmethod
+    def _is_exclusive_service(booking):
+        """A Full Truckload / Dedicated / Exclusive service booking owns the
+        ENTIRE vehicle on its departure: nothing may share the truck with it.
+
+        The discriminator is the booking's SERVICE TYPE (load_type /
+        shipment_type = 'ftl') — NEVER the pricing mode. Corridors with
+        'enable_ftl / ftl_threshold_pallets / auto_price' price large LTL
+        loads with FTL math at the threshold (corridor 9: 10 pallets) but
+        those remain LTL service bookings: they reserve their positions
+        only and never auto-reserve the truck."""
+        return bool(booking) and (
+            booking.load_type == "ftl" or booking.shipment_type == "ftl")
+
     def compute_departure_peak(self, departure):
         """Compute peak pallets and weight across all segments of a corridor departure.
 
         For each corridor stop (segment between consecutive stops), sums
-        pallets/weight from all bookings whose:
+        physical positions/weight from all CONFIRMED bookings whose:
         - pickup is at or before this stop's region, AND
         - delivery is after this stop's region
 
-        Returns dict: {peak_pallets, peak_weight, segment_details: [...]}
+        Segment occupancy is movement-aware: movement_v1 (milk-run)
+        bookings contribute ONE physical position per pallet movement,
+        each spanning pickup-stop region → delivery-stop region (a movement
+        picked up at a later corridor stop only occupies segments after
+        it — never the whole first-pickup → last-delivery span). Legacy
+        bookings keep their FSA-anchored span, counted in physical
+        positions.
+
+        Returns dict: {peak_pallets, peak_weight, segment_details,
+        reserved_ltl_positions, exclusive_vehicle_reserved,
+        exclusive_booking_ids, ...} — peak_pallets is the true onboard
+        peak; reserved_ltl_positions is the LTL-only sellable occupancy
+        (an exclusive FTL booking zeroes the remaining SELLABLE capacity
+        regardless of its own position count).
         """
+        empty = {
+            "peak_pallets": 0, "peak_weight": 0.0, "total_handled": 0,
+            "segment_details": [],
+            "reserved_ltl_positions": 0,
+            "exclusive_vehicle_reserved": False,
+            "exclusive_booking_ids": [],
+        }
         if not departure or not departure.corridor_id:
-            return {"peak_pallets": 0, "peak_weight": 0.0, "segment_details": []}
+            return dict(empty)
 
         corridor = departure.corridor_id
         stops = corridor.stop_ids.sorted("sequence")
         if len(stops) < 2:
-            return {"peak_pallets": 0, "peak_weight": 0.0, "segment_details": []}
+            return dict(empty)
 
-        # Get all confirmed bookings for this departure
+        # All confirmed bookings on this departure.
         bookings = self.env["logistics.booking"].search([
             ("departure_id", "=", departure.id),
             ("state", "=", "confirmed"),
         ])
+        exclusive = [b for b in bookings if self._is_exclusive_service(b)]
+        exclusive_ids = [b.id for b in exclusive]
 
-        # Build booking list with pickup/delivery region indices
+        # Build per-booking segment occupancy (movement-aware).
         booking_segments = []
         for bk in bookings:
-            pickup_region = bk.pickup_fsa_id.region_id
-            delivery_region = bk.delivery_fsa_id.region_id
-            # Find the stop indices for these regions on the corridor
-            pickup_idx = None
-            delivery_idx = None
-            for i, stop in enumerate(stops):
-                if stop.region_id == pickup_region:
-                    pickup_idx = i
-                if stop.region_id == delivery_region:
-                    delivery_idx = i
-            if pickup_idx is not None and delivery_idx is not None:
-                booking_segments.append({
-                    "booking": bk,
-                    "pallets": bk.pallets,
-                    "weight": bk.weight_lbs,
-                    "pickup_idx": pickup_idx,
-                    "delivery_idx": delivery_idx,
-                })
+            segments = self._booking_segments(stops, bk)
+            booking_segments.extend(segments)
 
         # Compute load on each segment (between consecutive stops)
         max_pallets = 0
         max_weight = 0.0
+        max_ltl = 0
         segment_details = []
 
         for seg_start in range(len(stops) - 1):
             seg_pallets = 0
             seg_weight = 0.0
+            seg_ltl = 0
             for bs in booking_segments:
                 # Booking is on this segment if: pickup at or before seg_start
                 # AND delivery after seg_start
                 if bs["pickup_idx"] <= seg_start and bs["delivery_idx"] > seg_start:
                     seg_pallets += bs["pallets"]
                     seg_weight += bs["weight"]
+                    if not bs["exclusive"]:
+                        seg_ltl += bs["pallets"]
 
             segment_details.append({
                 "from_stop": stops[seg_start].region_id.name if stops[seg_start].region_id else stops[seg_start].name,
                 "to_stop": stops[seg_start + 1].region_id.name if stops[seg_start + 1].region_id else stops[seg_start + 1].name,
                 "pallets": seg_pallets,
                 "weight": seg_weight,
+                "ltl_positions": seg_ltl,
             })
             max_pallets = max(max_pallets, seg_pallets)
             max_weight = max(max_weight, seg_weight)
+            max_ltl = max(max_ltl, seg_ltl)
 
         return {
             "peak_pallets": max_pallets,
             "peak_weight": max_weight,
             "total_handled": sum(bs["pallets"] for bs in booking_segments),
             "segment_details": segment_details,
+            "reserved_ltl_positions": max_ltl,
+            "exclusive_vehicle_reserved": bool(exclusive_ids),
+            "exclusive_booking_ids": exclusive_ids,
         }
+
+    def _booking_segments(self, corridor_stops, booking):
+        """Segment occupancy of one confirmed booking on the corridor.
+
+        movement_v1: one segment span PER PALlet MOVEMENT (pickup stop
+        region → delivery stop region) — the milk-run segment capacity:
+        a movement picked up at a later corridor stop occupies only the
+        segments after it. A shared pallet (multiple delivery stops) rides
+        to its DEEPEST delivery index.
+        Legacy: the booking's FSA-anchored span (pickup region → delivery
+        region), counted in physical positions.
+        Returns [{pallets, weight, pickup_idx, delivery_idx, exclusive}].
+        """
+        result = []
+        if booking.route_model_version == "movement_v1":
+            from .region_resolver import RegionResolver
+            resolver = RegionResolver(self.env)
+            stop_by_key = {s.stop_key: s for s in booking.stop_ids}
+            movements = self.env["logistics.booking"]._extract_pallet_movements_from_snapshot(
+                booking.price_snapshot)
+            resolved = {}
+            for mv in movements:
+                pu = stop_by_key.get(mv.get("pickup_stop_key") or "")
+                keys = mv.get("delivery_stop_keys") or (
+                    [mv["delivery_stop_key"]] if mv.get("delivery_stop_key") else [])
+                dests = [stop_by_key.get(k) for k in keys]
+                dests = [d for d in dests if d]
+                if not pu or not dests:
+                    continue
+                idxs = []
+                for stop in [pu] + dests:
+                    key = ("stop", stop.id)
+                    if key not in resolved:
+                        idx = self._region_stop_index(resolver, corridor_stops, stop)
+                        resolved[key] = idx
+                    idxs.append(resolved[key])
+                pu_idx = idxs[0]
+                de_idx = max(idxs[1:])
+                if pu_idx is not None and de_idx is not None:
+                    result.append({
+                        "pallets": 1,  # one physical position per movement
+                        "weight": float(mv.get("weight_lbs") or booking.weight_lbs or 0.0),
+                        "pickup_idx": pu_idx, "delivery_idx": de_idx,
+                        "exclusive": self._is_exclusive_service(booking),
+                    })
+            return result
+
+        # Legacy anchor: the booking's own FSA regions on this corridor.
+        pickup_region = booking.pickup_fsa_id.region_id
+        delivery_region = booking.delivery_fsa_id.region_id
+        pickup_idx = None
+        delivery_idx = None
+        for i, stop in enumerate(corridor_stops):
+            if stop.region_id == pickup_region:
+                pickup_idx = i
+            if stop.region_id == delivery_region:
+                delivery_idx = i
+        if pickup_idx is not None and delivery_idx is not None:
+            result.append({
+                "pallets": int(booking.physical_pallets or booking.pallets or 1),
+                "weight": booking.weight_lbs or 0.0,
+                "pickup_idx": pickup_idx, "delivery_idx": delivery_idx,
+                "exclusive": self._is_exclusive_service(booking),
+            })
+        return result
+
+    @staticmethod
+    def _region_stop_index(resolver, corridor_stops, stop):
+        """Index of the corridor stop whose region contains the booking
+        stop's pin (resolved once per stop); None when unresolvable."""
+        if not (stop.latitude and stop.longitude):
+            return None
+        region = resolver.resolve(
+            stop.latitude, stop.longitude,
+            country=stop.country_id.id if stop.country_id else None,
+        ).matched_region
+        if not region:
+            return None
+        for i, cstop in enumerate(corridor_stops):
+            if cstop.region_id == region:
+                return i
+        return None
 
     def can_accept_booking(self, departure, new_pallets, new_weight_lbs):
         """Check if a new booking can fit on this departure without exceeding capacity.

@@ -1451,11 +1451,20 @@ class BookingOrchestrationService:
         ) % (booking.booking_number or booking.id))
 
     def _lock_and_validate_departures(self, departure_ids, equipment, pallets, weight_lbs,
-                                       allow_pinwheel_override=False):
+                                       allow_pinwheel_override=False, service_type="ltl"):
         """Sort + SELECT...FOR UPDATE every departure, then revalidate vehicle
         assignment, temperature compatibility, and pallet/weight capacity
         INSIDE the lock. Returns {departure_id: fleet.vehicle} on success;
-        raises UserError on any violation (nothing is written yet)."""
+        raises UserError on any violation (nothing is written yet).
+
+        service_type: 'ftl' (Full Truckload / Dedicated / Exclusive) needs
+        the ENTIRE vehicle — the departure must be completely free. 'ltl'
+        (the default, and the service type of every threshold-priced load)
+        reserves physical positions only and can never join an exclusively
+        held truck. A corridor's FTL PRICING threshold (enable_ftl +
+        ftl_threshold_pallets + auto_price) never changes service_type —
+        pricing mode is not service type, and pricing never auto-reserves
+        the truck."""
         from .capacity_engine import CapacityEngine
         from .temperature_compat import vehicle_accepts
 
@@ -1493,9 +1502,26 @@ class BookingOrchestrationService:
                 ) % dep.name)
 
             peak = engine.compute_departure_peak(dep)
+            # Exclusivity gate — FTL/Dedicated/Exclusive owns the whole
+            # vehicle; LTL can never join a held truck.
+            if service_type == "ftl":
+                if peak["peak_pallets"] or peak["exclusive_vehicle_reserved"]:
+                    raise UserError(_(
+                        "Full Truckload / dedicated moves require the ENTIRE "
+                        "vehicle — %(dep)s already has bookings on it. Choose "
+                        "a free departure.",
+                        dep=dep.name,
+                    ))
+            elif peak["exclusive_vehicle_reserved"]:
+                raise UserError(_(
+                    "%(dep)s's truck is exclusively reserved for a Full "
+                    "Truckload / dedicated shipment.",
+                    dep=dep.name,
+                ))
+
             projected_pallets = peak["peak_pallets"] + pallets
             projected_weight = peak["peak_weight"] + weight_lbs
-            remaining = max(capacity.maximum_capacity(vehicle) - peak["peak_pallets"], 0)
+            remaining = capacity.maximum_capacity(vehicle) - peak["peak_pallets"]
 
             if projected_weight > payload:
                 raise UserError(_(
@@ -1508,7 +1534,7 @@ class BookingOrchestrationService:
                     "Only %(remaining)s pallet position(s) remain on the "
                     "selected departure. Please reduce the pallet quantity "
                     "or choose another departure.",
-                    remaining=remaining,
+                    remaining=max(remaining, 0),
                 ))
 
             vehicles_by_departure[did] = vehicle
@@ -1531,9 +1557,17 @@ class BookingOrchestrationService:
         equipment = snap.get("temperature_mode", "dry")
         pallets = snap.get("pallets") or booking.pallets
         weight_lbs = snap.get("weight_lbs") or booking.weight_lbs
+        # Service TYPE decides exclusivity, never pricing mode: an LTL
+        # booking that tripped the corridor's FTL pricing threshold stays
+        # 'ltl' here and reserves its positions only.
+        service_type = (
+            "ftl" if (booking.load_type == "ftl" or booking.shipment_type == "ftl")
+            else "ltl"
+        )
         vehicles_by_departure = self._lock_and_validate_departures(
             departure_ids, equipment, pallets, weight_lbs,
             allow_pinwheel_override=bool(booking.capacity_override),
+            service_type=service_type,
         )
 
         # Frozen vehicle must still match what was quoted — a vehicle swap
@@ -1695,6 +1729,10 @@ class BookingOrchestrationService:
         vehicles_by_departure = self._lock_and_validate_departures(
             [departure.id], equipment, booking.pallets, booking.weight_lbs,
             allow_pinwheel_override=bool(booking.capacity_override),
+            service_type=(
+                "ftl" if (booking.load_type == "ftl" or booking.shipment_type == "ftl")
+                else "ltl"
+            ),
         )
 
         leg = self.env["logistics.booking.leg"].sudo().create({

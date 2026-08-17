@@ -861,6 +861,34 @@ class LogisticsCorridorDeparture(models.Model):
     capacity_reserved_pallets = fields.Integer(compute="_compute_capacity_display")
     capacity_remaining_pallets = fields.Integer(compute="_compute_capacity_display")
 
+    # ── Sellable capacity audit (shared LTL positions + FTL exclusivity) ──
+    # LTL bookings reserve exactly their physical positions; an FTL /
+    # Dedicated / Exclusive service booking reserves the ENTIRE vehicle.
+    # A corridor's FTL PRICING threshold never reserves the truck — these
+    # fields are service-type driven (see CapacityEngine._is_exclusive_service).
+    exclusive_vehicle_reserved = fields.Boolean(
+        string="Truck Exclusively Reserved", compute="_compute_capacity_display",
+        help="A Full Truckload / Dedicated / Exclusive service booking owns "
+             "this departure's ENTIRE vehicle — no other booking may join.")
+    exclusive_booking_ref = fields.Char(
+        string="Exclusive Booking", compute="_compute_capacity_display",
+        help="Booking number(s) holding the truck exclusively.")
+    reserved_ltl_positions = fields.Integer(
+        string="Reserved LTL Positions", compute="_compute_capacity_display",
+        help="Physical pallet positions reserved by LTL service bookings "
+             "(segment peak — milk-run movements count their own spans).")
+    planned_peak_onboard = fields.Integer(
+        string="Planned Peak Onboard", compute="_compute_capacity_display",
+        help="Highest physical pallet count across all corridor segments "
+             "(LTL positions + any exclusive booking's positions).")
+    vehicle_max_bookable_positions = fields.Integer(
+        string="Max Bookable Positions", compute="_compute_capacity_display",
+        help="The assigned vehicle's maximum pallet positions (best layout).")
+    remaining_sellable_capacity = fields.Integer(
+        string="Remaining Sellable Capacity", compute="_compute_capacity_display",
+        help="Positions a NEW LTL booking may reserve: max − reserved LTL; "
+             "0 when the truck is exclusively held.")
+
     def _compute_capacity_display(self):
         from ..services.vehicle_capacity_service import VehicleCapacityService
         service = VehicleCapacityService(self.env)
@@ -872,6 +900,18 @@ class LogisticsCorridorDeparture(models.Model):
             departure.capacity_max_pallets = result["maximum_capacity"]
             departure.capacity_reserved_pallets = result["reserved_pallets"]
             departure.capacity_remaining_pallets = result["remaining_pallets"]
+            departure.reserved_ltl_positions = result["reserved_ltl_positions"]
+            departure.planned_peak_onboard = result["reserved_pallets"]
+            departure.vehicle_max_bookable_positions = result["maximum_capacity"]
+            departure.remaining_sellable_capacity = result["remaining_sellable_capacity"]
+            departure.exclusive_vehicle_reserved = result["exclusive_vehicle_reserved"]
+            exclusive_ids = result["exclusive_booking_ids"] or []
+            if exclusive_ids:
+                names = self.env["logistics.booking"].browse(exclusive_ids).mapped(
+                    lambda b: b.booking_number or "Booking %s" % b.id)
+                departure.exclusive_booking_ref = ", ".join(names)
+            else:
+                departure.exclusive_booking_ref = ""
 
     @api.constrains("capacity_layout_override_id", "vehicle_id")
     def _check_layout_override_valid(self):

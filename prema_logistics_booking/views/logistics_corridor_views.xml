@@ -237,6 +237,22 @@
                                domain="[('vehicle_id', '=', vehicle_id), ('active', '=', True)]"
                                options="{'no_create': True}"/>
                     </group>
+                    <group string="Sellable Capacity (Shared LTL + FTL Exclusivity)" col="6">
+                        <div class="alert alert-warning" role="alert"
+                             invisible="not exclusive_vehicle_reserved">
+                            <i class="fa fa-lock me-1"/>
+                            <b>Truck exclusively reserved</b> — Full Truckload /
+                            dedicated booking <field name="exclusive_booking_ref"
+                                                     nolabel="1" readonly="1" class="d-inline"/>
+                            owns the entire vehicle; no other booking may join.
+                        </div>
+                        <field name="exclusive_vehicle_reserved" readonly="1"/>
+                        <field name="exclusive_booking_ref" readonly="1"/>
+                        <field name="reserved_ltl_positions" readonly="1"/>
+                        <field name="planned_peak_onboard" readonly="1"/>
+                        <field name="vehicle_max_bookable_positions" readonly="1"/>
+                        <field name="remaining_sellable_capacity" readonly="1"/>
+                    </group>
                 </sheet>
             </form>
         </field>
