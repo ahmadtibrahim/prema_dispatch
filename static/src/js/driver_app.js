@@ -973,6 +973,10 @@ function renderStopDetail() {
             <button class="da-svc-btn" onclick="bumpSvcTime(5)">+</button>
         </div>`:"")+
         (stop.dock_door?`<div class="da-detail-dock">🚪 Dock: ${esc(stop.dock_door)}</div>`:"")+
+        (stop.facility_hours?`<div class="da-detail-meta">🕒 Facility hours today: <strong>${esc(stop.facility_hours)}</strong></div>`:"")+
+        (stop.appointment?`<div class="da-detail-meta">📅 <strong>${esc(stop.appointment)}</strong></div>`:"")+
+        (stop.liftgate_required?`<div class="da-detail-meta">🛗 <strong>Liftgate required</strong></div>`:"")+
+        (stop.instructions?`<div class="da-detail-notes">📋 ${esc(stop.instructions)}</div>`:"")+
         (phone?`<a href="tel:${esc(phone)}" class="da-phone-link">📞 ${esc(stop.contact_name||stop.partner||phone)}</a>`:"")+
         (stop.parking_notes?`<div class="da-detail-notes">🅿️ ${esc(stop.parking_notes)}</div>`:"")+
         (stop.entrance_photo_url?`<button class="da-photo-btn" onclick="APP.openPhoto('${stop.entrance_photo_url}')">📷 Entrance Photo</button>`:

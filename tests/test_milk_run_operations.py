@@ -166,6 +166,54 @@ class TestMilkRunOperations(TransactionCase):
         self.assertEqual(check["peak"], 4)
         self.assertTrue(check["ok"])
 
+    # ── Capacity: total handled > capacity, peak fits ───────────────
+
+    def test_07b_total_handled_exceeds_capacity_peak_fits(self):
+        """+8, −5, +8: 16 pallets handled, peak 11 — acceptable on a
+        configured 13-position vehicle. Capacity is MAXIMUM SIMULTANEOUS
+        ONBOARD, never total pallets handled."""
+        job = self._make_job()
+        pa = self.env["prema.dispatch.stop"].create({
+            "job_id": job.id, "sequence": 10, "stop_type": "pickup",
+            "address": "Pickup A", "pallets_in": 8})
+        da = self.env["prema.dispatch.stop"].create({
+            "job_id": job.id, "sequence": 20, "stop_type": "dropoff",
+            "address": "Drop A", "pallets_out": 5})
+        pb = self.env["prema.dispatch.stop"].create({
+            "job_id": job.id, "sequence": 30, "stop_type": "pickup",
+            "address": "Pickup B", "pallets_in": 8})
+        db = self.env["prema.dispatch.stop"].create({
+            "job_id": job.id, "sequence": 40, "stop_type": "dropoff",
+            "address": "Drop B", "pallets_out": 11})
+        for i in range(8):
+            self.env["prema.dispatch.item"].create({
+                "job_id": job.id, "name": "A-%02d" % (i + 1),
+                "weight_lbs": 500.0,
+                "pickup_stop_id": pa.id,
+                "delivery_stop_id": (da.id if i < 5 else db.id),
+                "available_after_stop_id": pa.id,
+            })
+        for i in range(8):
+            self.env["prema.dispatch.item"].create({
+                "job_id": job.id, "name": "B-%02d" % (i + 1),
+                "weight_lbs": 500.0,
+                "pickup_stop_id": pb.id,
+                "delivery_stop_id": db.id,
+                "available_after_stop_id": pb.id,
+            })
+        check = job.route_capacity_check()
+        self.assertEqual(check["peak"], 11)  # 8 → 3 → 11 → 0
+        self.assertEqual(len(job.item_ids), 16)  # total handled 16
+        # On a 13-position truck the SAME route is fine.
+        job.write({"vehicle_id": self._vehicle(13).id})
+        check = job.route_capacity_check()
+        self.assertEqual(check["peak"], 11)
+        self.assertTrue(check["ok"])
+        # But not on an 8-position truck.
+        job.write({"vehicle_id": self._vehicle(8).id})
+        check = job.route_capacity_check()
+        self.assertFalse(check["ok"])
+
     # ── Load plan summary (future pickups, same item identity) ──────
 
     def test_08_load_plan_summary_future_pickups(self):
