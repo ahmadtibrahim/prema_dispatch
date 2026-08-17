@@ -393,8 +393,20 @@ class PremaDispatchLoadPlan(models.Model):
         if existing:
             return self.get_load_plan()
         self.env["prema.dispatch.load.plan.job"].create({"load_plan_id": self.id, "job_id": job.id})
+        # LOAD-PLAN POPULATION: adding the job attaches its floor items
+        # (one item per physical pallet) to this plan — a plan with a job
+        # link but zero pallets is the zero-item bug. Shared skids count
+        # one item; future-pickup pallets (second pickup, milk-run) are
+        # planned on the truck that will carry them.
+        floor_items = job.item_ids.filtered(
+            lambda i: i.status != "cancelled"
+            and i.load_unit_type in ("pallet", "shared_pallet", "container"))
+        missing = floor_items.filtered(lambda i: not i.load_plan_id)
+        if missing:
+            missing.write({"load_plan_id": self.id})
         self._mark_stale("Job added to load plan")
-        self._log_event("job_added", new_value={"job_id": job.id})
+        self._log_event("job_added", new_value={
+            "job_id": job.id, "items_attached": len(missing)})
         self._bump_version()
         return self.get_load_plan()
 

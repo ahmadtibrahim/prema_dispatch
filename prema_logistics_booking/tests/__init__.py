@@ -28,3 +28,4 @@ from . import test_milk_run_pricing
 from . import test_ftl_exclusivity
 from . import test_route_order_fix_booking
 from . import test_shared_pallet_portions
+from . import test_load_plan_population

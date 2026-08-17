@@ -78,8 +78,13 @@ def install_google_mocks(test_case):
     """Install mocks on a test case using Odoo's self.patch().
     Call in setUp() after super().setUp()."""
 
-    # Patch the requests module inside the Odoo addons that use it
+    # Patch the requests module inside the Odoo addons that use it.
+    # Capture the ORIGINAL functions first: patching replaces the module
+    # attributes, so calling real_requests.get after patching would recurse
+    # into the mock forever on any URL without a canned response.
     import requests as real_requests
+    original_get = real_requests.get
+    original_post = real_requests.post
 
     class MockResponse:
         def __init__(self, status_code, json_data):
@@ -100,13 +105,13 @@ def install_google_mocks(test_case):
         if data is not None:
             return MockResponse(status, data)
         # Let unmocked URLs go through to real requests (Odoo test mode blocks them)
-        return real_requests.get(url, **kwargs)
+        return original_get(url, **kwargs)
 
     def mock_post(url, **kwargs):
         status, data = _mock_request('POST', url, **kwargs)
         if data is not None:
             return MockResponse(status, data)
-        return real_requests.post(url, **kwargs)
+        return original_post(url, **kwargs)
 
     # Patch at the module level where requests is used — Odoo's
     # BaseCase.patch takes (obj, key, val); a string path would be

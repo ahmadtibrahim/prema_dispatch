@@ -107,6 +107,7 @@ class TestLoadPlanModel(TestLoadPlanBase):
     def test_03_shared_skid_counts_as_one_pallet_three_allocations(self):
         data = self._make_plan()
         plan = self.LP.browse(data["id"])
+        plan.add_job(self.job.id)  # allocations must stay within plan-linked jobs
         item = self.Item.create({"job_id": self.job.id, "name": "Shared Skid", "load_plan_id": plan.id})
         plan.assign_stops_to_pallet(item.id, [
             {"stop_id": self.stop1.id}, {"stop_id": self.stop2.id}, {"stop_id": self.stop3.id},
@@ -119,6 +120,7 @@ class TestLoadPlanModel(TestLoadPlanBase):
     def test_03b_five_stop_max_allowed_sixth_rejected(self):
         data = self._make_plan()
         plan = self.LP.browse(data["id"])
+        plan.add_job(self.job.id)
         stop4 = self.Stop.create({"job_id": self.job.id, "sequence": 40, "stop_type": "dropoff", "address": "Stop 4"})
         stop5 = self.Stop.create({"job_id": self.job.id, "sequence": 50, "stop_type": "dropoff", "address": "Stop 5"})
         stop6 = self.Stop.create({"job_id": self.job.id, "sequence": 60, "stop_type": "dropoff", "address": "Stop 6"})
@@ -138,6 +140,7 @@ class TestLoadPlanModel(TestLoadPlanBase):
     def test_03c_partial_unload_keeps_position_until_last_allocation(self):
         data = self._make_plan()
         plan = self.LP.browse(data["id"])
+        plan.add_job(self.job.id)
         item = self.Item.create({"job_id": self.job.id, "name": "U-06", "load_plan_id": plan.id})
         pos = plan.layout_template_id.position_ids[0]
         plan.assign_pallet_to_position(item.id, pos.id, plan.version)
@@ -257,6 +260,7 @@ class TestLoadPlanModel(TestLoadPlanBase):
     def test_11_warehouse_payload_strips_customer_and_invoice(self):
         data = self._make_plan()
         plan = self.LP.browse(data["id"])
+        plan.add_job(self.job.id)
         item = self.Item.create({"job_id": self.job.id, "name": "X", "load_plan_id": plan.id})
         plan.assign_stops_to_pallet(item.id, [{"stop_id": self.stop1.id, "invoice_id": False}], plan.version)
         wh_payload = plan.with_user(self.warehouse_user).get_load_plan_for_warehouse()
@@ -298,8 +302,13 @@ class TestLoadPlanModel(TestLoadPlanBase):
     # ── Unverified-layout safety gate (production deployment addendum) ──
 
     def test_16_confirm_loading_blocked_until_unverified_ack(self):
-        data = self._make_plan()  # Straight template is seeded is_verified=False
+        data = self._make_plan()
         plan = self.LP.browse(data["id"])
+        # The straight template ships is_verified=False, but on a
+        # production-clone DB a manager may already have verified it —
+        # force the unverified state the test is about.
+        plan.layout_template_id.write({"is_verified": False, "verified_by": False})
+        plan.invalidate_recordset()
         self.assertFalse(plan.layout_template_id.is_verified)
         with self.assertRaises(UserError) as cm:
             plan.confirm_loading(plan.version)

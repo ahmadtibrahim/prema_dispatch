@@ -958,6 +958,9 @@ class LogisticsBooking(models.Model):
             item = Item.create({
                 "job_id": job.id,
                 "logistics_booking_pallet_id": pallet.id,
+                # Stable pallet ID (U-01, TF-01…) on the physical item —
+                # the label the dispatcher positions and the driver scans.
+                "name": pallet.label or ("P-%d" % pallet.sequence),
                 "load_unit_type": "shared_pallet" if pallet.shared else "pallet",
                 "pickup_stop_id": pickup_dispatch_stop.id if pickup_dispatch_stop else False,
                 "delivery_stop_id": stop_records[first_delivery.id].id

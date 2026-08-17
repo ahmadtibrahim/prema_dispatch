@@ -52,6 +52,12 @@ class FleetVehicle(models.Model):
         if self.turned_pallet_capacity < self.pin_wheel_pallet_capacity:
             raise UserError("Turned capacity must be greater than or equal to Pin-Wheel capacity.")
 
+        # The gate above is the whole access check: only a Dispatch
+        # Manager (or admin) reaches this point. The writes themselves
+        # target fleet.vehicle, which fleet's own security rules restrict
+        # to Fleet/Officer — sudo here so a dispatch manager who is not a
+        # fleet officer can still verify the layout configuration.
+        self = self.sudo()
         templates = self.env["prema.dispatch.vehicle.layout.template"].search([
             "|", ("applicable_vehicle_ids", "in", [self.id]), ("applicable_vehicle_ids", "=", False),
             ("active", "=", True),
