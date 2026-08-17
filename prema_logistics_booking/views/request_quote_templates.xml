@@ -494,6 +494,29 @@
                         <div class="col-6 mt-2"><small class="text-muted">EST. DELIVERY</small><br/><t t-esc="booking.estimated_delivery_date"/></div>
                     </div>
                 </div></div>
+                <!-- PRIVACY: only THIS booking's own stops — never other
+                     customers' stops from the consolidated truck route. -->
+                <t t-if="stops_display">
+                    <div class="card mt-3"><div class="card-body">
+                        <strong>Your Route Stops</strong>
+                        <t t-foreach="stops_display" t-as="stop">
+                            <div class="d-flex align-items-center py-2 border-bottom">
+                                <span class="badge me-2" t-att-class="'bg-info' if stop['stop_type'] == 'pickup' else 'bg-secondary'">
+                                    <t t-esc="'Pickup' if stop['stop_type'] == 'pickup' else 'Delivery'"/>
+                                </span>
+                                <div class="flex-grow-1">
+                                    <t t-esc="stop['name']"/><t t-if="stop['city']">, <t t-esc="stop['city']"/></t>
+                                    <small class="text-muted d-block">
+                                        <t t-esc="stop['status'].replace('_', ' ').title()"/>
+                                        <t t-if="stop['eta']"> · ETA <t t-esc="stop['eta']"/></t>
+                                        <t t-if="stop['pop_attached']"> · POP ✓</t>
+                                        <t t-if="stop['pod_attached']"> · POD ✓</t>
+                                    </small>
+                                </div>
+                            </div>
+                        </t>
+                    </div></div>
+                </t>
                 <p class="mt-3"><a href="/track">Track another</a></p>
             </div>
         </div>

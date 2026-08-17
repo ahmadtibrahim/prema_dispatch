@@ -37,6 +37,35 @@ class LogisticsBookingPallet(models.Model):
         "logistics.booking.pallet.stop.allocation", "pallet_id",
         string="Delivery Allocations")
 
+    def sync_custody_from_dispatch_item(self, item):
+        """Shared-pallet custody: a shared physical pallet is NEVER marked
+        fully delivered at its first allocation — it goes to
+        partially_delivered until its FINAL active delivery allocation
+        completes.
+
+        The bridge preserves unload sequences 1:1 between the booking
+        allocations and the dispatch stop allocations, so delivered
+        dispatch allocations map onto booking allocations by
+        unload_sequence."""
+        self.ensure_one()
+        allocations = self.delivery_allocation_ids.filtered("active")
+        if item.status == "delivered":
+            self.state = "delivered"
+            allocations.write({"delivered": True})
+            return
+        if item.status == "partially_unloaded":
+            self.state = "partially_delivered"
+            delivered_sequences = set(
+                item.stop_allocation_ids.filtered("delivered")
+                .mapped("unload_sequence"))
+            for alloc in allocations:
+                if not alloc.delivered and alloc.unload_sequence in delivered_sequences:
+                    alloc.delivered = True
+            return
+        if item.status in ("loaded", "in_transit", "out_for_delivery"):
+            self.state = "onboard"
+            return
+
 
 class LogisticsBookingPalletStopAllocation(models.Model):
     _name = "logistics.booking.pallet.stop.allocation"

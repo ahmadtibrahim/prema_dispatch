@@ -577,6 +577,98 @@ class LogisticsBooking(models.Model):
                 return existing
             raise
 
+    def _tracking_stops_display(self):
+        """Customer-facing stop list for the public tracking page.
+
+        PRIVACY: only THIS booking's own stops are ever serialized —
+        stops of other customers riding the same consolidated truck route
+        never appear."""
+        self.ensure_one()
+        dispatch_stops_by_booking_stop = {}
+        for job in self.dispatch_job_ids:
+            for stop in job.stop_ids:
+                if stop.logistics_booking_stop_id:
+                    dispatch_stops_by_booking_stop[
+                        stop.logistics_booking_stop_id.id] = stop
+        stops_display = []
+        for bstop in self.stop_ids.sorted("sequence"):
+            twin = dispatch_stops_by_booking_stop.get(bstop.id)
+            stops_display.append({
+                "name": bstop.company_name or bstop.location_name or "Stop",
+                "city": bstop.city or "",
+                "stop_type": bstop.stop_type,
+                "status": twin.status if twin else "planned",
+                "eta": twin.scheduled_time if twin and twin.scheduled_time else False,
+                "sequence": bstop.sequence,
+                "pod_attached": bool(
+                    twin.pod_attachment_ids if twin else False),
+                "pop_attached": bool(
+                    twin.pop_attachment_ids if twin else False),
+            })
+        return stops_display
+
+    def sync_state_from_dispatch(self):
+        """Server-side state machine for movement_v1 bookings, driven by
+        dispatch activity (never the customer):
+
+        confirmed → planned → in_execution → delivered → completed
+
+        - planned: dispatch jobs exist but no stop activity.
+        - in_execution: first pickup actuals confirmed or any stop
+          en-route/arrived.
+        - delivered: every delivery stop completed.
+        - completed: delivered + all required POP/POD evidence present
+          or authorized-overridden + per-stop actuals confirmed.
+
+        Only ADVANCES state; never downgrades, never touches legacy
+        bookings."""
+        for booking in self:
+            if booking.route_model_version != "movement_v1":
+                continue
+            if booking.state in ("cancelled", "completed"):
+                continue
+            stops = booking.dispatch_job_ids.mapped("stop_ids")
+            active = stops.filtered(
+                lambda s: s.status not in ("cancelled", "skipped"))
+            delivery_stops = active.filtered(
+                lambda s: s.stop_type in ("dropoff", "return"))
+            pickup_stops = active.filtered(
+                lambda s: s.stop_type == "pickup")
+            proofs_ok = all(
+                (not s.pop_required or s.pop_attachment_ids or s.proof_override_by)
+                for s in pickup_stops
+            ) and all(
+                (not s.pod_required or s.pod_attachment_ids or s.proof_override_by)
+                for s in delivery_stops
+            )
+            actuals_ok = (
+                not pickup_stops
+                or all(s.pickup_actuals_confirmed_at for s in pickup_stops)
+            ) and (
+                not delivery_stops
+                or all(s.delivery_actuals_confirmed_at for s in delivery_stops)
+            )
+            new_state = booking.state
+            if delivery_stops and all(
+                    s.status == "completed" for s in delivery_stops):
+                if proofs_ok and actuals_ok:
+                    new_state = "completed"
+                else:
+                    new_state = "delivered"
+            elif pickup_stops.filtered(
+                    lambda s: s.status == "completed"
+                    or s.actual_pallets_in
+                    or s.pickup_actuals_confirmed_at):
+                new_state = "in_execution"
+            elif active.filtered(
+                    lambda s: s.status in ("en_route", "arrived")):
+                new_state = "in_execution"
+            elif booking.dispatch_job_ids:
+                new_state = "planned"
+            states = ["confirmed", "planned", "in_execution", "delivered", "completed"]
+            if states.index(new_state) > states.index(booking.state):
+                booking.write({"state": new_state})
+
     def action_cancel(self, reason="", source="customer"):
         self.ensure_one()
         if self.state == "cancelled":

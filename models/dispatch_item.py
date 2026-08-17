@@ -177,6 +177,17 @@ class PremaDispatchItem(models.Model):
             label = f"{label} ({self.pallet_count} pallet{'s' if self.pallet_count != 1 else ''})"
         return label
 
+    def _sync_booking_pallet_custody(self):
+        """Mirror custody onto the canonical booking pallet (movement_v1).
+        Shared pallets go to partially_delivered until their FINAL active
+        delivery allocation — never fully delivered at the first stop."""
+        if "logistics_booking_pallet_id" not in self._fields:
+            return
+        for item in self:
+            pallet = item.logistics_booking_pallet_id
+            if pallet:
+                pallet.sync_custody_from_dispatch_item(item)
+
     def _log_custody_event(
         self, event_type, stop=None, saved_location=None,
         vehicle=None, driver=None, notes=None,

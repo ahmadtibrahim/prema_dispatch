@@ -1748,6 +1748,59 @@ class PremaDispatchJob(models.Model):
             "layout": capacity["layout"],
         }
 
+    # ── Mixed physical visits (pickup + delivery, same facility) ────
+
+    def combine_physical_visit(self, stop_ids):
+        """Combine logical stops of THIS job that share one physical
+        facility into ONE route visit. A mix of pickup + delivery stops
+        becomes a MIXED visit (default action order: UNLOAD first, then
+        LOAD); every underlying stop keeps its own job, items, evidence
+        and completion status."""
+        self.ensure_one()
+        from odoo.exceptions import UserError as _UserError
+        stops = self.stop_ids.browse(stop_ids)
+        if len(stops) < 2:
+            raise _UserError(
+                "At least two stops are required to combine a physical visit.")
+        locations = stops.mapped("saved_location_id")
+        if len(locations) != 1:
+            raise _UserError(
+                "All stops must share the same Saved Location to be "
+                "combined into one physical visit.")
+        stop_types = set(stops.mapped("stop_type"))
+        if {"pickup", "dropoff"} <= stop_types:
+            visit_type = "mixed"
+        elif stop_types == {"pickup"}:
+            visit_type = "pickup"
+        elif stop_types <= {"dropoff", "return"}:
+            visit_type = "delivery"
+        else:
+            visit_type = "other"
+        visit = self.env["prema.dispatch.route.visit"].create({
+            "load_plan_id": (
+                self.load_plan_ids[:1].id
+                if "load_plan_ids" in self._fields and self.load_plan_ids
+                else False),
+            "operating_date": (
+                self.operation_date if "operation_date" in self._fields
+                else fields.Date.context_today(self)),
+            "vehicle_id": self.vehicle_id.id or False,
+            "driver_id": self.driver_id.id or False,
+            "visit_type": visit_type,
+            "mixed_action_order": "unload_then_load",
+            "saved_location_id": locations.id,
+            "address": locations.address or "",
+            "effective_lat": locations.pin_lat or 0.0,
+            "effective_lng": locations.pin_lng or 0.0,
+        })
+        for stop in stops:
+            self.env["prema.dispatch.route.visit.stop"].create({
+                "route_visit_id": visit.id,
+                "stop_id": stop.id,
+            })
+        return {"success": True, "route_visit_id": visit.id,
+                "visit_type": visit_type, "stop_ids": stop_ids}
+
     def action_rank_trucks(self):
         """Rank all trucks for this job and set recommended_truck_id."""
         self.ensure_one()

@@ -57,9 +57,15 @@ class LogisticsTracking(http.Controller):
             elif "pickup" in stage_name or "load" in stage_name:
                 status = "picked_up"
 
+        # PRIVACY: only THIS booking's own stops are ever shown — the
+        # consolidated truck route's other customers are never revealed.
+        # Each stop matches its dispatch twin via the booking-stop bridge.
+        stops_display = booking._tracking_stops_display()
+
         return request.render("prema_logistics_booking.portal_tracking_result", {
             "booking": booking,
             "status_label": STATUS_LABELS.get(status, booking.state),
             "status": status,
             "dispatch_job": dispatch_job,
+            "stops_display": stops_display,
         })

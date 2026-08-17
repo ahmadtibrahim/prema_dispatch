@@ -576,6 +576,8 @@ class PremaDispatchStop(models.Model):
             "variance_notes": notes or "",
         })
         self._apply_pickup_variance(int(actual_pallets))
+        # First pickup actuals move the booking into execution.
+        self._sync_booking_state()
         return True
 
     def _apply_pickup_variance(self, actual_pallets):
@@ -602,6 +604,7 @@ class PremaDispatchStop(models.Model):
             "delivery_actuals_confirmed_by": self.env.user.id,
             "variance_notes": notes or "",
         })
+        self._sync_booking_state()
         return True
 
     # ── Required proof (POP/POD) enforcement ────────────────────────
@@ -643,14 +646,27 @@ class PremaDispatchStop(models.Model):
                 "Proof of Delivery (POD) is required for this stop. Attach "
                 "the delivery proof or authorize an override.")
 
+    def _sync_booking_state(self):
+        """Advance the commercial booking's server-side state machine from
+        dispatch activity (movement_v1 only — legacy bookings are never
+        touched)."""
+        job = self.job_id
+        if not job or "logistics_booking_id" not in job._fields:
+            return
+        booking = job.logistics_booking_id
+        if booking:
+            booking.sync_state_from_dispatch()
+
     def action_mark_en_route(self):
         self.write({"status": "en_route"})
+        self._sync_booking_state()
 
     def action_mark_arrived(self):
         self.write({
             "status": "arrived",
             "actual_arrival_time": fields.Datetime.now(),
         })
+        self._sync_booking_state()
         self.job_id._post_timeline(
             self.job_id, "arrived_stop",
             notes=self.name or self.address,
@@ -697,7 +713,15 @@ class PremaDispatchStop(models.Model):
             )
         if self.stop_type in ("dropoff", "return"):
             self._mark_pallet_allocations_delivered()
+        elif self.stop_type == "pickup":
+            # Pickup completion: the SAME item rows become onboard and the
+            # booking pallets mirror the custody change.
+            for item in self._items_picked_here():
+                if item.status not in ("cancelled", "delivered"):
+                    item.write({"status": "loaded"})
+                item._sync_booking_pallet_custody()
         self.job_id._check_all_stops_done()
+        self._sync_booking_state()
 
     def _mark_pallet_allocations_delivered(self):
         self.ensure_one()
@@ -725,6 +749,7 @@ class PremaDispatchStop(models.Model):
                 item_vals["status"] = "delivered"
                 item_vals["current_custody_type"] = "delivered"
             item.write(item_vals)
+            item._sync_booking_pallet_custody()
 
     def _check_completion_requirements(self):
         """Validate only the parts that must block completion.

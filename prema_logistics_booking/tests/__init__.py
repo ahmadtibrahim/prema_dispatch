@@ -22,3 +22,4 @@ from . import test_milk_run
 from . import test_portal_pallet_capacity
 from . import test_pallet_state_sync
 from . import test_milk_run_portal
+from . import test_milk_run_operations_booking
