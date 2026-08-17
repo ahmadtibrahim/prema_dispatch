@@ -24,3 +24,4 @@ from . import test_pallet_state_sync
 from . import test_milk_run_portal
 from . import test_milk_run_operations_booking
 from . import test_coordinate_integrity
+from . import test_milk_run_pricing

@@ -392,6 +392,249 @@ class ShipmentRoutingService:
             routing_snapshot=snapshot,
         )
 
+    # ── Milk-run route pricing (route-level / furthest served point) ──
+
+    _PRICING_BASIS_PARAM = "prema_logistics_booking.pricing_basis"
+    _BACKTRACK_TOLERANCE_KM = 25.0
+
+    def _pricing_basis(self):
+        """Pricing basis for multi-stop (movement_v1) bookings.
+
+        'route_level_furthest_point' (default, current corridor policy):
+        the itinerary prices from the first pickup to the FURTHEST served
+        corridor destination — a Brampton → Belleville → Ottawa milk-run
+        prices through Ottawa, because the same scheduled truck covers the
+        whole corridor at the corridor's per-km rate.
+
+        'segment_pallet_occupancy' is the FUTURE basis (per-segment
+        pallet-occupancy pricing); it is NOT implemented yet. Callers must
+        surface a manual-review flag instead of silently switching.
+        """
+        param = self.env["ir.config_parameter"].sudo().get_param(
+            self._PRICING_BASIS_PARAM, "route_level_furthest_point")
+        return param if param in ("route_level_furthest_point", "segment_pallet_occupancy") \
+            else "route_level_furthest_point"
+
+    def plan_milk_run_route(self, stops, pallets=1, weight_lbs=0,
+                            requested_pickup_date=None, equipment="dry",
+                            shipment_type="ltl"):
+        """Price the canonical milk-run itinerary at ROUTE LEVEL.
+
+        Policy (current corridor configuration): the route is priced from
+        the FIRST pickup to the FURTHEST downstream corridor destination it
+        serves — NOT first pickup → last-entered delivery. Each delivery is
+        planned independently against the live corridor config (segment
+        distance, rate per km, planned pallets, volume tiers, booking
+        minimum); the delivery whose billable distance is greatest becomes
+        the canonical route the whole itinerary prices through.
+
+        Live config only — corridor distance, $/km, planned pallets and
+        discount are read from the corridor records, never hardcoded.
+
+        stops: ordered route stops as dicts with stop_type, latitude,
+        longitude, stop_key, city. The first pickup with coordinates is the
+        origin; every delivery with coordinates is evaluated.
+
+        Returns a ShipmentRoute whose routing_snapshot carries a 'milk_run'
+        section: basis, furthest stop, per-stop billable distances,
+        backtracking / unreachable deliveries and any manual-review flags
+        (out-of-corridor delivery, backward order, unimplemented pricing
+        basis). Does NOT reserve capacity or create records.
+        """
+        basis = self._pricing_basis()
+        manual_review_reasons = []
+        if basis != "route_level_furthest_point":
+            manual_review_reasons.append(
+                "pricing basis '%s' is configured but not implemented — "
+                "route-level (furthest served point) pricing applied; "
+                "manual review required." % basis)
+
+        # Coordinates may live on the stop dict itself (client-validated
+        # Google pin) OR on the stop's saved location — the portal passes
+        # route_stops through with saved_location_id only. Client coords
+        # win; the saved location supplements when they are missing.
+        SavedLocation = self.env["logistics.saved.location"]
+
+        def _enrich(stop):
+            stop = dict(stop)
+            if not (stop.get("latitude") and stop.get("longitude")):
+                loc_id = stop.get("saved_location_id")
+                if loc_id:
+                    loc = SavedLocation.browse(int(loc_id))
+                    if loc.exists() and loc.latitude and loc.longitude:
+                        stop["latitude"] = loc.latitude
+                        stop["longitude"] = loc.longitude
+            return stop
+
+        stops = [_enrich(s) for s in (stops or [])]
+
+        # Origin: the first pickup with coordinates (movement_v1 guarantees
+        # them, but never trust a silent degradation).
+        origin = None
+        for stop in stops:
+            if stop.get("stop_type") == "pickup" and stop.get("latitude") and stop.get("longitude"):
+                origin = stop
+                break
+        if not origin:
+            snapshot = {"timestamp": datetime.utcnow().isoformat() + "Z",
+                        "steps": [], "milk_run": {"basis": basis}}
+            return ShipmentRoute(
+                False, "No pickup stop with coordinates on the route.",
+                "NO_PICKUP_REGION", [], pallets, weight_lbs, None, snapshot)
+
+        deliveries = [
+            s for s in stops
+            if s.get("stop_type") == "delivery" and s.get("latitude") and s.get("longitude")
+        ]
+        if not deliveries:
+            snapshot = {"timestamp": datetime.utcnow().isoformat() + "Z",
+                        "steps": [], "milk_run": {"basis": basis}}
+            return ShipmentRoute(
+                False, "No delivery stop with coordinates on the route.",
+                "NO_LEGS", [], pallets, weight_lbs, None, snapshot)
+
+        # ── Plan every delivery against the live corridor network ─────
+        per_stop = []
+        available_routes = []
+        failures = []
+        for stop in deliveries:
+            route = self.plan_route(
+                pickup_lat=float(origin["latitude"]),
+                pickup_lng=float(origin["longitude"]),
+                delivery_lat=float(stop["latitude"]),
+                delivery_lng=float(stop["longitude"]),
+                pallets=pallets, weight_lbs=weight_lbs,
+                requested_pickup_date=requested_pickup_date,
+                equipment=equipment, shipment_type=shipment_type,
+            )
+            billable_km = 0.0
+            if route.available:
+                billable_km = round(sum(
+                    leg.estimated_distance_km or 0.0 for leg in route.legs), 1)
+            entry = {
+                "stop_key": stop.get("stop_key", ""),
+                "city": stop.get("city", ""),
+                "outcome": "available" if route.available else route.reason_code,
+                "billable_km": billable_km,
+                "legs": len(route.legs) if route.available else 0,
+            }
+            per_stop.append(entry)
+            if route.available:
+                available_routes.append((route, entry))
+            else:
+                failures.append(entry)
+
+        # No reachable delivery at all → surface the FIRST failure exactly
+        # as plan_route would (friendly reason mapping in prepare_quote).
+        if not available_routes:
+            if failures:
+                stop = deliveries[0]
+                first_failure = self.plan_route(
+                    pickup_lat=float(origin["latitude"]),
+                    pickup_lng=float(origin["longitude"]),
+                    delivery_lat=float(stop["latitude"]),
+                    delivery_lng=float(stop["longitude"]),
+                    pallets=pallets, weight_lbs=weight_lbs,
+                    requested_pickup_date=requested_pickup_date,
+                    equipment=equipment, shipment_type=shipment_type,
+                )
+                first_failure.routing_snapshot["milk_run"] = {
+                    "basis": basis, "per_stop": per_stop,
+                    "manual_review_required": True,
+                    "manual_review_reasons": [
+                        "no delivery is reachable on scheduled corridors"] +
+                        manual_review_reasons,
+                }
+                return first_failure
+            snapshot = {"timestamp": datetime.utcnow().isoformat() + "Z",
+                        "steps": [], "milk_run": {"basis": basis}}
+            return ShipmentRoute(
+                False, "Could not build shipment legs.", "NO_LEGS",
+                [], pallets, weight_lbs, None, snapshot)
+
+        # ── Canonical route = the FURTHEST served point ────────────────
+        # Ties resolve to the deeper stop in route order (same corridor,
+        # later in the itinerary).
+        furthest_route, furthest_entry = max(
+            available_routes, key=lambda pair: (pair[1]["billable_km"],
+                                                pair[0].legs and pair[0].legs[-1].sequence or 0))
+
+        # ── Backtracking / detour detection ────────────────────────────
+        # A delivery materially closer to the origin than the farthest
+        # billable distance already seen (in route order) is a detour back
+        # toward home — priced at route level but flagged for dispatch
+        # review (never silently priced as a second route). Same-city
+        # repeat stops (a cluster, e.g. two Belleville stops with Ottawa
+        # between them in entry order) are NOT detours: the truck already
+        # visits that city, and the corridor-configured additional-stop
+        # charge covers the extra stop.
+        backtracking = []
+        seen_cities = set()
+        running_max = 0.0
+        for entry in per_stop:
+            if entry["outcome"] != "available":
+                continue
+            city = (entry.get("city") or entry.get("stop_key") or "").strip().lower()
+            if entry["billable_km"] < running_max - self._BACKTRACK_TOLERANCE_KM \
+                    and city not in seen_cities:
+                backtracking.append({
+                    "stop_key": entry["stop_key"], "city": entry["city"],
+                    "billable_km": entry["billable_km"],
+                    "vs_furthest_km": furthest_entry["billable_km"],
+                })
+                manual_review_reasons.append(
+                    "delivery '%s' (%s) is served %.0f km short of the furthest "
+                    "point after it in route order — backtracking/detour, "
+                    "manual review required."
+                    % (entry["stop_key"], entry["city"],
+                       furthest_entry["billable_km"] - entry["billable_km"]))
+            seen_cities.add(city)
+            running_max = max(running_max, entry["billable_km"])
+
+        # Deliveries that did not resolve onto a scheduled corridor are a
+        # hard flag: the quote prices the reachable network only.
+        unreachable = [e for e in per_stop if e["outcome"] != "available"]
+        for entry in unreachable:
+            manual_review_reasons.append(
+                "delivery '%s' (%s) is outside scheduled corridors (%s) — "
+                "manual review required." % (
+                    entry["stop_key"], entry["city"], entry["outcome"]))
+
+        # ── Merge the canonical route with milk-run metadata ───────────
+        snapshot = dict(furthest_route.routing_snapshot)
+        snapshot["milk_run"] = {
+            "basis": basis,
+            "origin": {
+                "stop_key": origin.get("stop_key", ""),
+                "city": origin.get("city", ""),
+            },
+            "furthest_stop_key": furthest_entry["stop_key"],
+            "furthest_city": furthest_entry["city"],
+            "furthest_billable_km": furthest_entry["billable_km"],
+            "per_stop": per_stop,
+            "backtracking_deliveries": backtracking,
+            "unreachable_deliveries": unreachable,
+            "manual_review_required": bool(manual_review_reasons),
+            "manual_review_reasons": manual_review_reasons,
+        }
+        pricing = dict(snapshot.get("pricing") or {})
+        pricing["basis"] = basis
+        snapshot["pricing"] = pricing
+
+        return ShipmentRoute(
+            available=True,
+            reason=("Milk-run planned: %d delivery(s), priced through %s "
+                    "(%s, %.1f km)." % (
+                        len(deliveries), furthest_entry["city"],
+                        furthest_entry["stop_key"], furthest_entry["billable_km"])),
+            reason_code="ROUTE_PLANNED",
+            legs=furthest_route.legs,
+            total_pallets=pallets,
+            total_weight_lbs=weight_lbs,
+            estimated_delivery=furthest_route.estimated_delivery,
+            routing_snapshot=snapshot,
+        )
+
     def get_eligible_pickup_dates(self, pickup_lat, pickup_lng,
                                    delivery_lat, delivery_lng,
                                    pallets=1, weight_lbs=500,

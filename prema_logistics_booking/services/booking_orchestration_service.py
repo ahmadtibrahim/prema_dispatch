@@ -248,6 +248,46 @@ class BookingOrchestrationService:
         count = len(route_pickups) - 1
         return count, rate, round(count * rate, 2) if rate else 0.0
 
+    def _milk_run_stop_cost_allocations(self, route_stops, milk_run, subtotal):
+        """Explanatory per-stop cost allocations for a route-level milk run.
+
+        Each served delivery is allocated a share of the authoritative
+        route subtotal (discounted, minimum-floored) proportional to its
+        billable distance × pallets. Cents are rounded and the residual is
+        applied to the largest share, so the allocations sum EXACTLY to the
+        subtotal — they are explanatory, never a second pricing path.
+        """
+        pallets_by_key = {
+            rs.get("stop_key", ""): int(rs.get("pallets") or 0)
+            for rs in (route_stops or [])
+            if rs.get("stop_type") == "delivery"
+        }
+        weighted = []
+        for entry in milk_run.get("per_stop") or []:
+            if entry.get("outcome") != "available" or not entry.get("billable_km"):
+                continue
+            pallets = pallets_by_key.get(entry.get("stop_key", "")) or 1
+            weighted.append((entry, pallets, entry["billable_km"] * pallets))
+        total_weight = sum(w for _, _, w in weighted)
+        if not total_weight:
+            return []
+        allocations = []
+        for entry, pallets, weight in weighted:
+            allocations.append({
+                "stop_key": entry["stop_key"],
+                "city": entry["city"],
+                "pallets": pallets,
+                "billable_km": entry["billable_km"],
+                "amount": round(subtotal * weight / total_weight, 2),
+            })
+        # Rounding drift (floating-point) → the largest share, keeping the
+        # allocations an exact decomposition of the subtotal.
+        residual = round(subtotal - sum(a["amount"] for a in allocations), 2)
+        if residual:
+            largest = max(allocations, key=lambda a: (a["amount"], a["billable_km"]))
+            largest["amount"] = round(largest["amount"] + residual, 2)
+        return allocations
+
     def prepare_quote(self, normalized_request: NormalizedBookingRequest, session_ttl_minutes: int = 20) -> dict:
         """Create a pricing session / quote for the customer to review.
 
@@ -298,17 +338,33 @@ class BookingOrchestrationService:
                         pickup_lat, pickup_lng, delivery_lat, delivery_lng)
 
             routing_svc = ShipmentRoutingService(self.env)
-            route = routing_svc.plan_route(
-                pickup_lat=float(pickup_lat),
-                pickup_lng=float(pickup_lng),
-                delivery_lat=float(delivery_lat),
-                delivery_lng=float(delivery_lng),
-                pallets=normalized_request.pallets,
-                weight_lbs=normalized_request.weight_lbs,
-                requested_pickup_date=normalized_request.requested_pickup_date,
-                equipment=normalized_request.equipment_type,
-                shipment_type=normalized_request.load_type,
-            )
+            # Generalized movement_v1 requests carry the FULL ordered route
+            # stop list. They price at ROUTE LEVEL through the FURTHEST
+            # served point (Brampton → Belleville → Ottawa prices through
+            # Ottawa) — never first pickup → last-entered delivery.
+            # Legacy delivery-only requests keep the direct plan_route path.
+            route_stops_for_route = normalized_request.route_stops or []
+            if route_stops_for_route:
+                route = routing_svc.plan_milk_run_route(
+                    stops=route_stops_for_route,
+                    pallets=normalized_request.pallets,
+                    weight_lbs=normalized_request.weight_lbs,
+                    requested_pickup_date=normalized_request.requested_pickup_date,
+                    equipment=normalized_request.equipment_type,
+                    shipment_type=normalized_request.load_type,
+                )
+            else:
+                route = routing_svc.plan_route(
+                    pickup_lat=float(pickup_lat),
+                    pickup_lng=float(pickup_lng),
+                    delivery_lat=float(delivery_lat),
+                    delivery_lng=float(delivery_lng),
+                    pallets=normalized_request.pallets,
+                    weight_lbs=normalized_request.weight_lbs,
+                    requested_pickup_date=normalized_request.requested_pickup_date,
+                    equipment=normalized_request.equipment_type,
+                    shipment_type=normalized_request.load_type,
+                )
 
             if not route.available:
                 _logger.error(
@@ -372,6 +428,10 @@ class BookingOrchestrationService:
             final_price = pricing.get("final_transportation")
             if final_price is None:
                 final_price = route_total if is_ftl else max(route_total, booking_min)
+            # Authoritative ROUTE subtotal BEFORE the corridor-configured
+            # additional stop/pickup charges below — the number the
+            # milk-run per-stop cost allocations must sum to EXACTLY.
+            route_subtotal = final_price
             if not is_ftl and pricing.get("volume_discount_pct"):
                 price_lines.append({
                     "label": "Volume discount (%g%%)" % pricing["volume_discount_pct"],
@@ -434,9 +494,29 @@ class BookingOrchestrationService:
                         "departure_date": None,
                     })
 
+            # Explanatory per-stop cost allocations for movement_v1 milk
+            # runs: each served delivery gets a share of the authoritative
+            # route subtotal weighted by billable distance × pallets,
+            # rounded to cents so the allocations sum EXACTLY to the
+            # subtotal (never the raw, pre-discount leg total).
+            stop_cost_allocations = []
+            milk_run = route.routing_snapshot.get("milk_run") or {}
+            if route_stops_for_route and milk_run and not is_ftl:
+                stop_cost_allocations = self._milk_run_stop_cost_allocations(
+                    route_stops_for_route, milk_run, route_subtotal)
+                if milk_run.get("manual_review_required"):
+                    _logger.warning(
+                        "prepare_quote MILK-RUN MANUAL REVIEW: source=%s "
+                        "reasons=%s",
+                        normalized_request.source_reference,
+                        milk_run.get("manual_review_reasons"))
+
             # Snapshot for the session carries the additional-stop fields
             # and the final transportation including the charge.
             route_snapshot_for_session = dict(route.routing_snapshot)
+            if stop_cost_allocations:
+                route_snapshot_for_session.setdefault("milk_run", {})[
+                    "stop_allocations"] = stop_cost_allocations
             session_pricing = dict(route_snapshot_for_session.get("pricing") or {})
             session_pricing.update({
                 "additional_stop_count": additional_stop_count,
@@ -518,7 +598,9 @@ class BookingOrchestrationService:
                     {"_pallet_allocs": normalized_request.pallet_allocations},
                 ] + ([
                     {"_pallet_movements": normalized_request.pallet_movements},
-                ] if normalized_request.route_model_version == "movement_v1" else []),
+                ] if normalized_request.route_model_version == "movement_v1" else []) + ([
+                    {"_stop_cost_allocations": stop_cost_allocations},
+                ] if stop_cost_allocations else []),
                 "route_snapshot": route_snapshot_for_session,
                 "pickup_saved_location_id": pu_saved_id,
                 "delivery_saved_location_id": de_saved_id,

@@ -219,9 +219,15 @@ class TestMilkRun(TransactionCase):
         self.assertEqual(booking.route_model_version, "legacy")
         job = booking._create_dispatch_job()
         self.assertTrue(job)
-        # Legacy bridge: no canonical movement job, no booking-stop links.
+        # Legacy bridge: no canonical movement job, no canonical pallet
+        # items — bridge selection is the explicit route_model_version
+        # discriminator, never pallet-row presence. (The stops DO carry the
+        # booking-stop link since the integrity pass: Booking 185's
+        # dispatch stops were created by this very bridge, and one-click
+        # re-geocode / coordinate restore requires the confirmed booking
+        # snapshot link.)
         self.assertNotEqual(job.name.split("—")[0].strip(), "Milk Run")
-        self.assertFalse(job.stop_ids.mapped("logistics_booking_stop_id"))
+        self.assertTrue(job.stop_ids.mapped("logistics_booking_stop_id"))
         self.assertFalse(job.item_ids.mapped("logistics_booking_pallet_id"))
 
     def test_09_movement_v1_booking_uses_movement_bridge(self):
@@ -382,5 +388,9 @@ class TestMilkRun(TransactionCase):
         job = booking._create_dispatch_job()
         self.assertTrue(job)
         self.assertNotIn("Milk Run", job.name)
-        self.assertFalse(job.stop_ids.mapped("logistics_booking_stop_id"))
+        # Legacy architecture kept (no canonical items) — but the stops
+        # link their confirmed booking snapshots for coordinate/facility
+        # integrity repair (Booking 185: legacy-created stops were the
+        # corrupted ones; re-geocode needs the link).
+        self.assertTrue(job.stop_ids.mapped("logistics_booking_stop_id"))
         self.assertFalse(job.item_ids.mapped("logistics_booking_pallet_id"))
