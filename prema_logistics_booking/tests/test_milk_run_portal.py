@@ -141,6 +141,20 @@ class TestMilkRunPortal(TransactionCase):
                     "open_time": 8.0, "close_time": 17.0,
                 })
 
+        # CRITICAL: logistics.booking.stop.saved_location_id points to
+        # prema.dispatch.location (the master facility), NOT to
+        # logistics.saved.location. Link each customer location to its
+        # master dispatch facility like the real portal confirm does.
+        DispatchLocation = cls.env["prema.dispatch.location"]
+        for loc in (cls.loc_ud, cls.loc_tf, cls.loc_blv, cls.loc_ott):
+            master = DispatchLocation.create({
+                "name": "Facility — %s" % loc.name,
+                "address": "%s, %s" % (loc.city, loc.postal_code),
+                "pin_lat": loc.latitude,
+                "pin_lng": loc.longitude,
+            })
+            loc.dispatch_location_id = master.id
+
         cls.wednesday = cls._next("wednesday")
 
     @classmethod
@@ -317,7 +331,9 @@ class TestMilkRunPortal(TransactionCase):
                 "postal_code": loc.postal_code,
                 "latitude": loc.latitude,
                 "longitude": loc.longitude,
-                "saved_location_id": loc.id,
+                # booking.stop.saved_location_id = master dispatch facility
+                "saved_location_id": loc.dispatch_location_id.id
+                if loc.dispatch_location_id else False,
                 "logistics_saved_location_id": loc.id,
                 "operating_hours_snapshot": snapshot_saved_location_hours(
                     self.env, loc, s["stop_type"]),
@@ -380,7 +396,8 @@ class TestMilkRunPortal(TransactionCase):
                 "postal_code": loc.postal_code,
                 "latitude": loc.latitude,
                 "longitude": loc.longitude,
-                "saved_location_id": loc.id,
+                "saved_location_id": loc.dispatch_location_id.id
+                if loc.dispatch_location_id else False,
                 "logistics_saved_location_id": loc.id,
                 "operating_hours_snapshot": snapshot_saved_location_hours(
                     self.env, loc, s["stop_type"]),

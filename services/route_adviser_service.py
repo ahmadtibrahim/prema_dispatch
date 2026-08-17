@@ -313,6 +313,9 @@ class RouteAdviserService:
         }
 
     def apply_recommended_route(self, job):
+        """Apply the recommended order, preserving completed/locked stops
+        in their exact slots (mid-day reoptimization never rewrites
+        already-driven history)."""
         report = self.adviser_report(job)
         if not report["feasible"] or not report["recommended_keys"]:
             return {
@@ -320,15 +323,31 @@ class RouteAdviserService:
                 "error": "No feasible recommended route available.",
             }
         ordered = job.stop_ids.sorted("sequence")
-        sequence = 10
         locked_ids = set(self.locked_stop_ids(job))
+        # Stable merge: walk the current order; locked stops keep their
+        # slots, unlocked stops are filled from the recommendation.
+        recommended_ids = []
         for key in report["recommended_keys"]:
             stop = ordered.filtered(lambda s: ("ds%d" % s.id) == key)
-            if not stop:
-                continue
-            stop.write({"sequence": sequence})
-            sequence += 10
-        return {"success": True, "applied": len(report["recommended_keys"])}
+            if stop and stop.id not in locked_ids:
+                recommended_ids.append(stop.id)
+        recommended_iter = iter(recommended_ids)
+        new_ids = []
+        for stop in ordered:
+            if stop.id in locked_ids:
+                new_ids.append(stop.id)
+            else:
+                try:
+                    new_ids.append(next(recommended_iter))
+                except StopIteration:
+                    new_ids.append(stop.id)
+        sequence = 10
+        for stop_id in new_ids:
+            stop = ordered.filtered(lambda s: s.id == stop_id)
+            if stop:
+                stop.write({"sequence": sequence})
+                sequence += 10
+        return {"success": True, "applied": len(new_ids)}
 
     # ── Manual route validation ───────────────────────────────────────
 
