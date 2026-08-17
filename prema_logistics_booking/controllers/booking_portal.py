@@ -166,6 +166,54 @@ def _build_stop_pricing(session):
     }
 
 
+def _saved_locations_builder_payload(partner):
+    """JSON payload for the portal route builder: every saved location
+    owned by the customer with coordinates and operating hours, so stop
+    cards can offer location selection and show facility hours without
+    extra round-trips."""
+    SavedLocation = request.env["logistics.saved.location"].sudo()
+    Hours = request.env["logistics.saved.location.hours"].sudo()
+    locations = SavedLocation.search([
+        ("commercial_partner_id", "=", partner.id),
+        ("active", "=", True),
+    ], order="name")
+    payload = []
+    for loc in locations:
+        hours = {}
+        for day in range(7):
+            rows = Hours.search([
+                ("saved_location_id", "=", loc.id),
+                ("day_of_week", "=", str(day)),
+                ("active", "=", True),
+            ])
+            general = rows.filtered(lambda r: r.service_scope == "general") or rows[:1]
+            if not general:
+                hours[str(day)] = None
+                continue
+            row = general[0]
+            if row.status == "closed":
+                hours[str(day)] = None
+            elif row.status == "open_24h":
+                hours[str(day)] = [0.0, 24.0]
+            else:
+                hours[str(day)] = [float(row.open_time or 0.0), float(row.close_time or 24.0)]
+        payload.append({
+            "id": loc.id,
+            "name": loc.name or "",
+            "business_name": loc.business_name or "",
+            "city": loc.city or "",
+            "postal_code": loc.postal_code or "",
+            "latitude": loc.latitude or 0.0,
+            "longitude": loc.longitude or 0.0,
+            "timezone": loc.timezone or "America/Toronto",
+            "location_type": loc.location_type or "both",
+            "liftgate_required": bool(loc.liftgate_required),
+            "dock_info": bool(loc.dock_info),
+            "hours": hours,
+        })
+    return payload
+
+
 def _reconcile_pallet_allocations(physical_pallets, allocations):
     """Make the allocation list length match the submitted physical pallet
     count. Missing pallets are padded with default unallocated records
@@ -417,6 +465,15 @@ class LogisticsBookingPortal(http.Controller):
                 except (ValueError, TypeError):
                     pass
 
+        # Collect additional pickup stop IDs (milk-run route builder)
+        pickup_loc_ids = []
+        for key, val in kwargs.items():
+            if key.startswith("pickup_loc_id_") and val:
+                try:
+                    pickup_loc_ids.append(int(val))
+                except (ValueError, TypeError):
+                    pass
+
         Fsa = request.env["logistics.fsa"].sudo()
         SavedLocation = request.env["logistics.saved.location"].sudo()
         partner = request.env.user.partner_id.commercial_partner_id
@@ -488,6 +545,9 @@ class LogisticsBookingPortal(http.Controller):
                 "delivery_lat": float(delivery_lat), "delivery_lng": float(delivery_lng or 0),
                 "pickup_loc_id": pickup_loc_id, "delivery_loc_ids": delivery_loc_ids,
                 "delivery_loc_id": delivery_loc_id,
+                "pickup_loc_ids": pickup_loc_ids,
+                "saved_locations_json": json.dumps(
+                    _saved_locations_builder_payload(partner)),
             })
 
         # Route B: FSA postal code fallback
@@ -501,6 +561,8 @@ class LogisticsBookingPortal(http.Controller):
             "pickup_lat": 0, "pickup_lng": 0,
             "delivery_lat": 0, "delivery_lng": 0,
             "pickup_loc_id": None, "delivery_loc_id": None,
+            "saved_locations_json": json.dumps(
+                _saved_locations_builder_payload(partner)),
         })
 
     @http.route("/my/booking/quote", type="http", auth="user", website=True, sitemap=False, methods=["POST"])
@@ -564,6 +626,24 @@ class LogisticsBookingPortal(http.Controller):
             # the submitted physical pallet count exactly.
             pallet_allocations = _reconcile_pallet_allocations(
                 physical_pallets, pallet_allocations)
+
+            # Generalized milk-run payload from the portal route builder:
+            # ordered stops with stable stop keys + canonical pallet
+            # movements. Both or neither — a half-built payload never
+            # silently becomes a legacy booking.
+            route_stops = []
+            pallet_movements = []
+            route_stops_json = kwargs.get("route_stops_json", "").strip()
+            movements_json = kwargs.get("pallet_movements_json", "").strip()
+            if route_stops_json and movements_json:
+                try:
+                    route_stops = json.loads(route_stops_json)
+                    pallet_movements = json.loads(movements_json)
+                except (json.JSONDecodeError, TypeError):
+                    route_stops = []
+                    pallet_movements = []
+                if route_stops and pallet_movements:
+                    physical_pallets = len(pallet_movements)
         except ValueError:
             # Build error context with all required template vars
             pu_loc_for_err = SavedLocation.browse(int(pickup_loc_id)) if pickup_loc_id and SavedLocation.browse(int(pickup_loc_id)).exists() else None
@@ -698,6 +778,46 @@ class LogisticsBookingPortal(http.Controller):
         if not delivery_stops:
             delivery_stops = [{"postal_code": delivery_fsa.fsa}]
 
+        # Generalized milk-run payload: ordered stops with stable stop keys
+        # drive BOTH the pickup and delivery stop lists. Ownership of every
+        # selected saved location is re-validated server-side.
+        if route_stops and pallet_movements:
+            gen_pickup_stops, gen_delivery_stops = [], []
+            for rs in route_stops:
+                loc = None
+                loc_id = rs.get("saved_location_id")
+                if loc_id:
+                    loc = SavedLocation.browse(int(loc_id))
+                    if not loc.exists() or loc.commercial_partner_id.id != partner.id:
+                        return request.redirect("/my/booking/new")
+                entry = {
+                    "stop_key": rs.get("stop_key") or "",
+                    "location_name": rs.get("location_name")
+                        or (loc.business_name or loc.name if loc else ""),
+                    "postal_code": (loc.postal_code if loc else rs.get("postal_code")) or "",
+                    "latitude": (loc.latitude if loc else rs.get("latitude")) or 0.0,
+                    "longitude": (loc.longitude if loc else rs.get("longitude")) or 0.0,
+                    "address": (loc.street if loc else rs.get("address")) or "",
+                    "city": (loc.city if loc else rs.get("city")) or "",
+                    "saved_location_id": loc.id if loc else None,
+                    "liftgate_required": bool(rs.get("liftgate_required")),
+                    "dock_available": bool(rs.get("dock_available")),
+                    "appointment_required": bool(rs.get("appointment_required")),
+                    "timing_type": rs.get("timing_type") or "flexible",
+                    "window_start": _parse_time_float(rs.get("window_start")) if rs.get("window_start") else None,
+                    "window_end": _parse_time_float(rs.get("window_end")) if rs.get("window_end") else None,
+                    "appointment_time": _parse_time_float(rs.get("appointment_time")) if rs.get("appointment_time") else None,
+                    "service_time_minutes": int(rs.get("service_time_minutes") or 15),
+                    "instructions": rs.get("instructions") or "",
+                    "timezone": rs.get("timezone") or (loc.timezone if loc else "America/Toronto"),
+                }
+                if rs.get("stop_type") == "pickup":
+                    gen_pickup_stops.append(entry)
+                else:
+                    gen_delivery_stops.append(entry)
+            pickup_stops = gen_pickup_stops
+            delivery_stops = gen_delivery_stops
+
         # Requested pickup date from form
         requested_pickup_date = kwargs.get("requested_pickup_date", "").strip() or None
 
@@ -713,6 +833,13 @@ class LogisticsBookingPortal(http.Controller):
                 "physical_pallets": physical_pallets,
                 "shared_pallet_mode": shared_pallet_mode,
                 "pallet_allocations": pallet_allocations,
+                # Generalized milk-run: explicit architecture discriminator
+                # + ordered stops + canonical movements.
+                "route_model_version": (
+                    "movement_v1" if (route_stops and pallet_movements) else "legacy"
+                ),
+                "route_stops": route_stops,
+                "pallet_movements": pallet_movements,
                 "weight_lbs": weight_lbs,
                 "liftgate_pickup": liftgate_pickup,
                 "liftgate_delivery": liftgate_delivery,

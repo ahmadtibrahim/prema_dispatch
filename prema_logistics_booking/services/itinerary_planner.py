@@ -20,6 +20,45 @@ REASON_HOURS = "facility_operating_hours"
 REASON_APPOINTMENT = "appointment_window"
 REASON_CAPACITY = "peak_capacity"
 
+WEEKDAY_KEYS = [str(day) for day in range(7)]
+
+
+def snapshot_saved_location_hours(env, saved_location, stop_type="pickup"):
+    """Freeze a saved location's CURRENT operating hours into a planning
+    snapshot {weekday: [open, close] or None}.
+
+    Preference order per day: scope-specific rows (pickup hours for pickup
+    stops, receiving hours for delivery stops) → general rows → first row.
+    A day with no rows or status=closed maps to None (closed day).
+    Once snapshotted, later master-location edits never change historical
+    booking planning.
+    """
+    snapshot = {key: None for key in WEEKDAY_KEYS}
+    if not saved_location:
+        return snapshot
+    scope = "pickup" if stop_type == "pickup" else "delivery"
+    rows = env["logistics.saved.location.hours"].search([
+        ("saved_location_id", "=", saved_location.id),
+        ("active", "=", True),
+    ])
+    for day in WEEKDAY_KEYS:
+        day_rows = rows.filtered(lambda r, d=day: r.day_of_week == d)
+        if not day_rows:
+            continue
+        chosen = (
+            day_rows.filtered(lambda r, s=scope: r.service_scope == s)
+            or day_rows.filtered(lambda r: r.service_scope == "general")
+            or day_rows[:1]
+        )
+        row = chosen[0]
+        if row.status == "closed":
+            snapshot[day] = None
+        elif row.status == "open_24h":
+            snapshot[day] = [0.0, 24.0]
+        else:
+            snapshot[day] = [float(row.open_time or 0.0), float(row.close_time or 24.0)]
+    return snapshot
+
 
 class ItineraryPlanner:
     def __init__(self, env):

@@ -65,6 +65,13 @@ class LogisticsPricingSession(models.TransientModel):
         "logistics.pricing.session.stop", "session_id",
         string="Delivery Stops",
     )
+    stop_ids = fields.One2many(
+        "logistics.pricing.session.stop", "session_id",
+        string="Route Stops",
+        help="ALL ordered route stops (pickups + deliveries) for "
+             "generalized milk-run sessions; legacy sessions only carry "
+             "delivery rows.",
+    )
 
     pickup_date = fields.Date()
     delivery_date_estimate = fields.Date()

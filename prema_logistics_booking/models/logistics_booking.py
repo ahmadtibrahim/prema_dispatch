@@ -330,6 +330,63 @@ class LogisticsBooking(models.Model):
     # ── Booking Legs from Route Snapshot ──────────────────────────────
     # ------------------------------------------------------------------
 
+    def _build_confirm_stops_from_session(self, session):
+        """Build (pickup_stops, delivery_stops) from the ordered session
+        stop list for generalized milk-run confirmations.
+
+        Each stop keeps its stable stop_key so pallet movements resolve
+        against persistent booking stops. Operating hours are SNAPSHOTTED
+        NOW from the master saved location — later edits to the location's
+        hours never change this booking's planning."""
+        from ..services.itinerary_planner import snapshot_saved_location_hours
+        pickups, deliveries = [], []
+        for stop in session.stop_ids.sorted("sequence"):
+            sl = stop.saved_location_id
+            dispatch_loc_id = sl.dispatch_location_id.id if sl and sl.dispatch_location_id else None
+            values = {
+                "stop_key": stop.stop_key or "",
+                "company_name": sl.business_name or sl.name if sl else stop.location_name or "",
+                "street": sl.street if sl else stop.street or "",
+                "city": sl.city if sl else stop.city or "",
+                "province_state": sl.state_id.code if sl and sl.state_id else stop.state_code or "",
+                "postal_code": sl.postal_code if sl else stop.postal_code or "",
+                "formatted_address": sl.street if sl else stop.street or "",
+                "latitude": sl.latitude if sl and sl.latitude else stop.latitude,
+                "longitude": sl.longitude if sl and sl.longitude else stop.longitude,
+                "google_place_id": sl.google_place_id if sl else "",
+                "contact_name": sl.contact_name if sl else "",
+                "phone": sl.contact_phone if sl else "",
+                "instructions": stop.instructions or "",
+                "pallet_count": stop.pallets or 1,
+                "weight_lb": stop.weight_lbs or 0.0,
+                # Stop-level requirements — the stop carries them, never
+                # the booking-level legacy flags.
+                "liftgate_required": stop.liftgate_required,
+                "dock_available": stop.dock_available,
+                "appointment_required": stop.appointment_required,
+                "timing_type": stop.timing_type or "flexible",
+                "window_start": stop.window_start,
+                "window_end": stop.window_end,
+                "appointment_time": stop.appointment_time,
+                "service_time_minutes": stop.service_time_minutes or 15,
+                "timezone": stop.timezone or (sl.timezone if sl else "America/Toronto"),
+                # Fresh snapshot at confirmation (spec: freeze current
+                # facility hours onto the persistent booking stop).
+                "operating_hours_snapshot": snapshot_saved_location_hours(
+                    self.env, sl, stop.stop_type,
+                ),
+                # CRITICAL: saved_location_id = prema.dispatch.location
+                # (master facility); logistics_saved_location_id = customer
+                # profile record.
+                "saved_location_id": dispatch_loc_id,
+                "logistics_saved_location_id": sl.id if sl else None,
+            }
+            if stop.stop_type == "pickup":
+                pickups.append(values)
+            else:
+                deliveries.append(values)
+        return pickups, deliveries
+
     def _build_confirm_delivery_stops(self, session, address_vals):
         """Build delivery_stops list for confirm_from_session, supporting
         multi-stop with per-stop pallets and shared-pallet mode.
@@ -451,11 +508,17 @@ class LogisticsBooking(models.Model):
         from ..services.booking_orchestration_service import BookingOrchestrationService
 
         svc = BookingOrchestrationService(self.env)
+        movements = self._extract_pallet_movements_from_snapshot(session.price_snapshot)
         pu_loc = session.pickup_saved_location_id
         pu_dispatch_id = pu_loc.dispatch_location_id.id if pu_loc and pu_loc.dispatch_location_id else None
-        normalized = svc.normalize_request({
-            "partner_id": user_partner.id,
-            "pickup_stops": [{
+        if movements:
+            # Generalized milk-run: pickup AND delivery stops come from the
+            # ordered session stop list (stable stop keys, per-stop
+            # requirements, operating-hours snapshot re-read from the
+            # master saved locations at confirmation).
+            pickup_stops, delivery_stops = self._build_confirm_stops_from_session(session)
+        else:
+            pickup_stops = [{
                 "company_name": pu_loc.business_name or pu_loc.name if pu_loc else "",
                 "street": pu_loc.street if pu_loc else "",
                 "city": pu_loc.city if pu_loc else "",
@@ -475,8 +538,12 @@ class LogisticsBooking(models.Model):
                 "saved_location_id": pu_dispatch_id,
                 # logistics_saved_location_id = logistics.saved.location (customer profile)
                 "logistics_saved_location_id": pu_loc.id if pu_loc else None,
-            }],
-            "delivery_stops": self._build_confirm_delivery_stops(session, address_vals),
+            }]
+            delivery_stops = self._build_confirm_delivery_stops(session, address_vals)
+        normalized = svc.normalize_request({
+            "partner_id": user_partner.id,
+            "pickup_stops": pickup_stops,
+            "delivery_stops": delivery_stops,
             "load_type": session.shipment_type,
             "equipment_type": session.temperature_mode,
             "required_temperature_c": (
@@ -490,12 +557,8 @@ class LogisticsBooking(models.Model):
             "pallet_allocations": self._extract_pallet_allocs_from_snapshot(session.price_snapshot),
             # Architecture discriminator: only sessions built by the
             # generalized route builder carry canonical movements.
-            "route_model_version": (
-                "movement_v1"
-                if self._extract_pallet_movements_from_snapshot(session.price_snapshot)
-                else "legacy"
-            ),
-            "pallet_movements": self._extract_pallet_movements_from_snapshot(session.price_snapshot),
+            "route_model_version": "movement_v1" if movements else "legacy",
+            "pallet_movements": movements,
             "weight_lbs": session.weight_lbs,
             "liftgate_pickup": session.liftgate_pickup,
             "liftgate_delivery": session.liftgate_delivery,

@@ -100,6 +100,10 @@ class NormalizedBookingRequest:
 
         self.pickup_stops = data.get("pickup_stops", [])
         self.delivery_stops = data.get("delivery_stops", [])
+        # Generalized route builder: the full ordered stop list with stable
+        # stop_keys (pickups + deliveries interleaved as the customer
+        # ordered them). Only movement_v1 requests carry it.
+        self.route_stops = data.get("route_stops") or []
         self.transfer_allowed = data.get("transfer_allowed", True)
         self.requested_pickup_date = data.get("requested_pickup_date")
         self.requested_delivery_date = data.get("requested_delivery_date")
@@ -207,6 +211,10 @@ class BookingOrchestrationService:
         3 charges; a lone Belleville stop beside two Ottawa stops → only
         the extra Ottawa stop is charged).
 
+        Additional PICKUP stops (milk-run, movement_v1) are charged one
+        per stop beyond the first via ltl_additional_pickup_charge —
+        same-city grouping does not apply to origins.
+
         Returns (additional_stop_count, additional_stop_rate,
                  additional_stop_total). Always (0, 0.0, 0.0) for FTL or
         when the corridor has no configured charge.
@@ -222,6 +230,22 @@ class BookingOrchestrationService:
         count = sum(max(n - 1, 0) for n in city_counts.values())
         if not count:
             return 0, rate, 0.0
+        return count, rate, round(count * rate, 2) if rate else 0.0
+
+    def _ltl_additional_pickup_charge(self, normalized_request, corridor):
+        """Additional-pickup charge for generalized milk-run bookings:
+        one corridor-configured charge per pickup stop beyond the first.
+        Returns (count, rate, total); (0, 0.0, 0.0) when N/A."""
+        if normalized_request.load_type != "ltl" or not corridor:
+            return 0, 0.0, 0.0
+        rate = corridor.ltl_additional_pickup_charge or 0.0
+        route_pickups = [
+            s for s in (normalized_request.route_stops or [])
+            if s.get("stop_type") == "pickup"
+        ]
+        if len(route_pickups) <= 1:
+            return 0, rate, 0.0
+        count = len(route_pickups) - 1
         return count, rate, round(count * rate, 2) if rate else 0.0
 
     def prepare_quote(self, normalized_request: NormalizedBookingRequest, session_ttl_minutes: int = 20) -> dict:
@@ -388,6 +412,28 @@ class BookingOrchestrationService:
                         "departure_date": None,
                     })
 
+            # Generalized milk-run: additional PICKUP stops are their own
+            # corridor-configured charge (one per stop beyond the first).
+            additional_pickup_count, additional_pickup_rate, additional_pickup_total = (
+                0, 0.0, 0.0,
+            )
+            if not is_ftl and normalized_request.route_stops:
+                additional_pickup_count, additional_pickup_rate, additional_pickup_total = (
+                    self._ltl_additional_pickup_charge(normalized_request, corridor)
+                )
+                if additional_pickup_total:
+                    final_price = final_price + additional_pickup_total
+                    final_price = max(final_price, booking_min)
+                    price_lines.append({
+                        "label": "Additional Pickup (%d × $%.2f)" % (
+                            additional_pickup_count, additional_pickup_rate,
+                        ),
+                        "distance_km": 0, "pallets": 0,
+                        "rate_per_km": 0, "pallet_rate_per_km": 0,
+                        "amount": additional_pickup_total,
+                        "departure_date": None,
+                    })
+
             # Snapshot for the session carries the additional-stop fields
             # and the final transportation including the charge.
             route_snapshot_for_session = dict(route.routing_snapshot)
@@ -396,6 +442,9 @@ class BookingOrchestrationService:
                 "additional_stop_count": additional_stop_count,
                 "additional_stop_rate": additional_stop_rate,
                 "additional_stop_total": additional_stop_total,
+                "additional_pickup_count": additional_pickup_count,
+                "additional_pickup_rate": additional_pickup_rate,
+                "additional_pickup_total": additional_pickup_total,
                 "final_transportation": round(final_price, 2),
             })
             route_snapshot_for_session["pricing"] = session_pricing
@@ -457,48 +506,96 @@ class BookingOrchestrationService:
                 "pickup_date": first_leg.departure_date if first_leg else None,
                 "delivery_date_estimate": est_delivery,
                 "calculated_price": final_price,
-                "price_snapshot": price_lines + [{"_pallet_allocs": normalized_request.pallet_allocations}],
+                "price_snapshot": price_lines + [
+                    {"_pallet_allocs": normalized_request.pallet_allocations},
+                ] + ([
+                    {"_pallet_movements": normalized_request.pallet_movements},
+                ] if normalized_request.route_model_version == "movement_v1" else []),
                 "route_snapshot": route_snapshot_for_session,
                 "pickup_saved_location_id": pu_saved_id,
                 "delivery_saved_location_id": de_saved_id,
                 "expires_at": fields.Datetime.now() + datetime.timedelta(minutes=session_ttl_minutes),
             })
 
-            # Create per-stop records for multi-stop bookings
+            # Create per-stop records for multi-stop bookings. Generalized
+            # movement_v1 requests carry the FULL ordered route stop list
+            # (pickups + deliveries) with stable stop keys and per-stop
+            # requirements; legacy requests keep the delivery-only loop.
             StopModel = self.env["logistics.pricing.session.stop"].sudo()
-            for i, ds in enumerate(normalized_request.delivery_stops):
-                sl_id = ds.get("saved_location_id")
-                sl = self.env["logistics.saved.location"].browse(sl_id) if sl_id else None
-                stop_idx = i + 1  # 1-based stop index matching pallet_allocations
-                # Compute allocated pallets and shared flag from pallet_allocations
-                allocs = normalized_request.pallet_allocations or []
-                stop_pallets = [a["pallet"] for a in allocs if stop_idx in (a.get("stops") or [])]
-                stop_shared = len(stop_pallets) > 0 and any(
-                    len(a.get("stops") or []) > 1 for a in allocs
-                    if a["pallet"] in stop_pallets
-                )
-                StopModel.create({
-                    "session_id": session.id,
-                    "sequence": stop_idx,
-                    "saved_location_id": sl_id,
-                    "location_name": sl.name if sl else ds.get("city", ""),
-                    "street": sl.street if sl else ds.get("address", ""),
-                    "city": sl.city if sl else ds.get("city", ""),
-                    "state_code": sl.state_id.code if sl and sl.state_id else "",
-                    "postal_code": sl.postal_code if sl else ds.get("postal_code", ""),
-                    "latitude": ds.get("latitude", 0),
-                    "longitude": ds.get("longitude", 0),
-                    "pallets": ds.get("pallets", 1),
-                    "weight_lbs": ds.get("weight_lbs", 500),
-                    "shared_pallet": stop_shared or ds.get("shared_pallet", False),
-                    "timing_type": ds.get("timing_type", "flexible"),
-                    "window_start": ds.get("window_start") or False,
-                    "window_end": ds.get("window_end") or False,
-                    "appointment_time": ds.get("appointment_time") or False,
-                    "liftgate_delivery": ds.get("liftgate_delivery", False),
-                    "appointment": ds.get("appointment", False),
-                    "instructions": ds.get("instructions", ""),
-                })
+            if normalized_request.route_stops:
+                from ..services.itinerary_planner import snapshot_saved_location_hours
+                for position, rs in enumerate(normalized_request.route_stops):
+                    sl_id = rs.get("saved_location_id")
+                    sl = self.env["logistics.saved.location"].browse(sl_id) if sl_id else None
+                    stop_type = rs.get("stop_type") or "delivery"
+                    StopModel.create({
+                        "session_id": session.id,
+                        "sequence": (position + 1) * 10,
+                        "stop_key": rs.get("stop_key") or "",
+                        "stop_type": stop_type,
+                        "saved_location_id": sl_id or False,
+                        "location_name": rs.get("location_name")
+                            or (sl.name if sl else rs.get("city", "")),
+                        "street": rs.get("street") or (sl.street if sl else ""),
+                        "city": rs.get("city") or (sl.city if sl else ""),
+                        "state_code": rs.get("state_code") or (sl.state_id.code if sl and sl.state_id else ""),
+                        "postal_code": rs.get("postal_code") or (sl.postal_code if sl else ""),
+                        "latitude": rs.get("latitude", sl.latitude if sl else 0.0),
+                        "longitude": rs.get("longitude", sl.longitude if sl else 0.0),
+                        "pallets": rs.get("pallets", 1),
+                        "weight_lbs": rs.get("weight_lbs", 500),
+                        "shared_pallet": rs.get("shared_pallet", False),
+                        "liftgate_required": rs.get("liftgate_required", False),
+                        "dock_available": rs.get("dock_available", False),
+                        "appointment_required": rs.get("appointment_required", False),
+                        "timing_type": rs.get("timing_type", "flexible"),
+                        "window_start": rs.get("window_start") or False,
+                        "window_end": rs.get("window_end") or False,
+                        "appointment_time": rs.get("appointment_time") or False,
+                        "service_time_minutes": rs.get("service_time_minutes") or 15,
+                        "operating_hours_snapshot": snapshot_saved_location_hours(
+                            self.env, sl, stop_type,
+                        ),
+                        "timezone": rs.get("timezone") or (sl.timezone if sl else "") or "America/Toronto",
+                        "instructions": rs.get("instructions", ""),
+                        # Legacy compat fields
+                        "liftgate_delivery": rs.get("liftgate_required", False),
+                        "appointment": rs.get("appointment_required", False),
+                    })
+            else:
+                for i, ds in enumerate(normalized_request.delivery_stops):
+                    sl_id = ds.get("saved_location_id")
+                    sl = self.env["logistics.saved.location"].browse(sl_id) if sl_id else None
+                    stop_idx = i + 1  # 1-based stop index matching pallet_allocations
+                    # Compute allocated pallets and shared flag from pallet_allocations
+                    allocs = normalized_request.pallet_allocations or []
+                    stop_pallets = [a["pallet"] for a in allocs if stop_idx in (a.get("stops") or [])]
+                    stop_shared = len(stop_pallets) > 0 and any(
+                        len(a.get("stops") or []) > 1 for a in allocs
+                        if a["pallet"] in stop_pallets
+                    )
+                    StopModel.create({
+                        "session_id": session.id,
+                        "sequence": stop_idx,
+                        "saved_location_id": sl_id,
+                        "location_name": sl.name if sl else ds.get("city", ""),
+                        "street": sl.street if sl else ds.get("address", ""),
+                        "city": sl.city if sl else ds.get("city", ""),
+                        "state_code": sl.state_id.code if sl and sl.state_id else "",
+                        "postal_code": sl.postal_code if sl else ds.get("postal_code", ""),
+                        "latitude": ds.get("latitude", 0),
+                        "longitude": ds.get("longitude", 0),
+                        "pallets": ds.get("pallets", 1),
+                        "weight_lbs": ds.get("weight_lbs", 500),
+                        "shared_pallet": stop_shared or ds.get("shared_pallet", False),
+                        "timing_type": ds.get("timing_type", "flexible"),
+                        "window_start": ds.get("window_start") or False,
+                        "window_end": ds.get("window_end") or False,
+                        "appointment_time": ds.get("appointment_time") or False,
+                        "liftgate_delivery": ds.get("liftgate_delivery", False),
+                        "appointment": ds.get("appointment", False),
+                        "instructions": ds.get("instructions", ""),
+                    })
 
             return {
                 "quote_token": session.token,
@@ -1105,12 +1202,17 @@ class BookingOrchestrationService:
                 "pallet_count": pu.get("pallet_count", 0),
                 "weight_lb": pu.get("weight_lb", pu.get("weight_lbs", 0.0)),
                 "liftgate_required": pu.get("liftgate_required", False),
+                "dock_available": pu.get("dock_available", False),
+                "appointment_required": pu.get("appointment_required", False),
                 "instructions": pu.get("instructions", ""),
                 "reference": pu.get("reference", ""),
                 "timing_type": pu.get("timing_type", "flexible"),
                 "window_start": pu.get("window_start") or False,
                 "window_end": pu.get("window_end") or False,
                 "appointment_time": pu.get("appointment_time") or False,
+                "hard_deadline": pu.get("hard_deadline") or False,
+                "service_time_minutes": pu.get("service_time_minutes") or 15,
+                "operating_hours_snapshot": pu.get("operating_hours_snapshot") or False,
                 "timezone": pu.get("timezone") or "",
             })
             seq += 10
@@ -1137,12 +1239,17 @@ class BookingOrchestrationService:
                 "pallet_count": dl.get("pallet_count", 0),
                 "weight_lb": dl.get("weight_lb", dl.get("weight_lbs", 0)),
                 "liftgate_required": dl.get("liftgate_required", False),
+                "dock_available": dl.get("dock_available", False),
+                "appointment_required": dl.get("appointment_required", False),
                 "instructions": dl.get("instructions", ""),
                 "reference": dl.get("reference", ""),
                 "timing_type": dl.get("timing_type", "flexible"),
                 "window_start": dl.get("window_start") or False,
                 "window_end": dl.get("window_end") or False,
                 "appointment_time": dl.get("appointment_time") or False,
+                "hard_deadline": dl.get("hard_deadline") or False,
+                "service_time_minutes": dl.get("service_time_minutes") or 15,
+                "operating_hours_snapshot": dl.get("operating_hours_snapshot") or False,
                 "timezone": dl.get("timezone") or "",
             })
             seq += 10
