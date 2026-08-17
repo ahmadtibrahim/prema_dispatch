@@ -1398,7 +1398,10 @@
 
             window.addExtraPickupCard = function() {
                 extraPickupCount += 1;
-                var key = 'stp-pu-' + extraPickupCount;
+                // 'stp-pu-x…' — must NOT collide with the legacy main
+                // pickup's 'stp-pu-1' (pickupStops()): a duplicate key would
+                // break movement-pickup selection and payload resolution.
+                var key = 'stp-pu-x' + extraPickupCount;
                 var el = document.createElement('div');
                 el.innerHTML = stopCardHtml(key, 'pickup', extraPickupCount + 1);
                 document.getElementById('extra_pickup_cards').appendChild(el.firstChild);

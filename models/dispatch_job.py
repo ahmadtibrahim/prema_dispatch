@@ -3110,6 +3110,9 @@ class PremaDispatchJob(models.Model):
             nonlocal attached
             ext = att.name.rsplit(".", 1)[-1] if "." in att.name else "bin"
             stop_part = f"_STOP{stop_seq}" if stop_seq else ""
+            # category must never contain "POD"/"BOL": see the base_automation
+            # 54 note in driver_add_evidence — such names get reparented onto
+            # the "Invoice: Sending" template and stripped from the invoice.
             new_name = f"{inv_ref}_{job_ref}{stop_part}_{category}.{ext}"
             if new_name in existing_names:
                 return
@@ -3127,7 +3130,7 @@ class PremaDispatchJob(models.Model):
         for stop in self.stop_ids.sorted("sequence"):
             seq = stop.sequence // 10
             for att in stop.pod_attachment_ids:
-                _link_attachment(att, seq, "POD")
+                _link_attachment(att, seq, "DELIVERY_PROOF")
             for i, att in enumerate(stop.photo_attachment_ids, 1):
                 _link_attachment(att, seq, f"PHOTO{i}")
             for att in stop.document_attachment_ids:
@@ -3348,7 +3351,10 @@ class PremaDispatchJob(models.Model):
         frozen operating-hours snapshot (never the live master location)."""
         snapshot = s.operating_hours_snapshot or None
         if not snapshot and "logistics_booking_stop_id" in s._fields:
-            bstop = s.logistics_booking_stop_id
+            # Frozen facility hours are driver-route data, not sensitive
+            # booking data — the driver feed must not crash (or leak anything
+            # new) because booking stops sit behind customer-scoped ACLs.
+            bstop = s.sudo().logistics_booking_stop_id
             snapshot = bstop.operating_hours_snapshot if bstop else None
         if not snapshot:
             return ""
@@ -3590,8 +3596,17 @@ class PremaDispatchJob(models.Model):
         prefix = self._actual_pallet_prefix()
         pickup_stop = pickup_stop or self.stop_ids.filtered(lambda stop: stop.stop_type == "pickup" and not stop.planning_only)[:1]
         self._normalize_current_pickup_pallet_items(actual_count=actual_count, pickup_stop=pickup_stop)
+        # PER-STOP scope: the confirmed count belongs to THIS pickup stop.
+        # A job-wide floor list mixes in pallets from other (later)
+        # pickups; comparing against the global count would cancel the
+        # other pickup's items — the driver confirming "1 pallet received
+        # here" must never destroy a pallet that is collected elsewhere.
+        # (Single-pickup jobs are unaffected: their whole load is picked
+        # at the one stop.)
         floor_items = self.item_ids.filtered(
-            lambda item: item.consumes_floor_position and item.status != "cancelled" and not item.pending_future_pickup
+            lambda item: item.pickup_stop_id.id == pickup_stop.id
+            and item.consumes_floor_position and item.status != "cancelled"
+            and not item.pending_future_pickup
         ).sorted(key=lambda item: (item.sequence, item.id))
         current_count = len(floor_items)
         if actual_count == current_count:
@@ -3635,9 +3650,14 @@ class PremaDispatchJob(models.Model):
         actual_count = int(values.get("actual_received_pallet_count") or 0)
         if actual_count < 0:
             raise exceptions.UserError("Actual pallet count cannot be negative.")
-        layout_choice = stop.job_id.vehicle_id.get_recommended_pallet_layout(actual_count) if stop.job_id.vehicle_id else False
-        if actual_count and not layout_choice:
-            raise exceptions.UserError("This load exceeds every configured single-truck layout capacity.")
+        # Capacity can only be exceeded when a truck is actually assigned:
+        # a vehicle-less job (not yet dispatched) has no layout to violate,
+        # so layout_choice stays False there and the guard must not fire.
+        layout_choice = False
+        if stop.job_id.vehicle_id:
+            layout_choice = stop.job_id.vehicle_id.get_recommended_pallet_layout(actual_count)
+            if actual_count and not layout_choice:
+                raise exceptions.UserError("This load exceeds every configured single-truck layout capacity.")
         layout_capacity = stop.job_id.vehicle_id.get_layout_capacity(layout_choice or stop.job_id.vehicle_id.default_pallet_layout) if stop.job_id.vehicle_id else 0
         plan = False
         if values.get("load_plan_id"):
@@ -3646,6 +3666,7 @@ class PremaDispatchJob(models.Model):
                 return {"success": False, "error": "Load Plan not found."}
             plan._check_version(values.get("version"))
         before_count = len(job.item_ids.filtered(lambda item: item.status != "cancelled" and item.consumes_floor_position and not item.pending_future_pickup))
+        pickup_expected = len(stop._items_picked_here())
         floor_items = job._sync_actual_pallet_items(actual_count, pickup_stop=stop)
         job.write({
             "actual_received_pallet_count": actual_count,
@@ -3655,6 +3676,21 @@ class PremaDispatchJob(models.Model):
             "route_sheet_received_at": fields.Datetime.now() if values.get("route_sheet_received") else job.route_sheet_received_at,
             "route_sheet_received_by": self.env.user.id if values.get("route_sheet_received") else job.route_sheet_received_by.id if job.route_sheet_received_by else False,
         })
+        # The booking state machine reads PER-STOP actuals
+        # (logistics_booking.sync_state_from_dispatch): mirror the driver's
+        # confirmation onto the pickup stop itself, and recompute the
+        # downstream delivery expectations on a variance — the same wiring
+        # the dispatcher path (confirm_pickup_actuals) does. Without this,
+        # a job completed from the driver app can never reach booking state
+        # "completed" (actuals_ok stays False on the stops).
+        if stop.stop_type == "pickup":
+            stop.write({
+                "actual_pallets_in": actual_count,
+                "pickup_actuals_confirmed_at": fields.Datetime.now(),
+                "pickup_actuals_confirmed_by": self.env.user.id,
+            })
+            if actual_count != pickup_expected:
+                self._recompute_downstream_stop_expectations()
         if job.vehicle_id:
             job.vehicle_id.sudo().message_post(body=(
                 f"Pickup actual pallets updated for {job.name}: expected {job.expected_pallet_count}, "
@@ -4001,7 +4037,31 @@ class PremaDispatchJob(models.Model):
                 and inv.state == "draft"
                 and inv.partner_id.id == customer.id
             ):
-                att.copy({"res_model": "account.move", "res_id": inv.id, "description": tag})
+                # Name the invoice copy WITHOUT "POD"/"BOL" substrings: the
+                # account automation "Auto Attach Invoice Files"
+                # (base.automation id 54, account.move on_create_or_write)
+                # matches attachment names containing POD/BOL and writes
+                # mail.template.attachment_ids, whose inverse REPARENTS the
+                # attachment to the "Invoice: Sending" template
+                # (mail_template.attachment_ids.write({'res_model'...})) —
+                # stripping the evidence off the invoice. The evidence must
+                # stay on the draft invoice for the dispatcher review gate;
+                # the automation keeps working for manually-attached files.
+                # driver_remove_evidence finds this copy via the description
+                # tag, not the name.
+                ext = validated["filename"].rsplit(".", 1)[-1] \
+                    if "." in validated["filename"] else "bin"
+                copy_name = (
+                    f"Delivery proof - Stop {stop.id}.{ext}"
+                    if ev_type == "pod"
+                    else f"Pickup proof - Stop {stop.id}.{ext}"
+                )
+                att.copy({
+                    "res_model": "account.move",
+                    "res_id": inv.id,
+                    "name": copy_name,
+                    "description": tag,
+                })
             elif (
                 job.sale_order_id
                 and job.sale_order_id.partner_id.id == customer.id

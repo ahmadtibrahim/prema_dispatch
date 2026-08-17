@@ -315,6 +315,12 @@ class CapacityEngine:
             return result
 
         # Legacy anchor: the booking's own FSA regions on this corridor.
+        # FSA→region mapping can point at anchor/legacy region records that
+        # no corridor stop references (corridors are keyed to the operational
+        # region set). When the FSA span matches nothing, fall back to the
+        # frozen route snapshot's operational region codes, then to the
+        # booking stops' coordinates (polygon resolution) — a confirmed
+        # booking must never be silently uncounted on its own departure.
         pickup_region = booking.pickup_fsa_id.region_id
         delivery_region = booking.delivery_fsa_id.region_id
         pickup_idx = None
@@ -324,6 +330,31 @@ class CapacityEngine:
                 pickup_idx = i
             if stop.region_id == delivery_region:
                 delivery_idx = i
+        if pickup_idx is None or delivery_idx is None:
+            idx_by_code = {
+                stop.region_id.code: i
+                for i, stop in enumerate(corridor_stops)
+                if stop.region_id
+            }
+            for leg in (booking.route_snapshot or {}).get("legs") or []:
+                if pickup_idx is None and leg.get("origin_region_code") in idx_by_code:
+                    pickup_idx = idx_by_code[leg["origin_region_code"]]
+                if delivery_idx is None and leg.get("dest_region_code") in idx_by_code:
+                    delivery_idx = idx_by_code[leg["dest_region_code"]]
+        if pickup_idx is None or delivery_idx is None:
+            from .region_resolver import RegionResolver
+            resolver = RegionResolver(self.env)
+            pu_stop = booking.stop_ids.filtered(
+                lambda s: s.stop_type == "pickup")[:1]
+            de_stop = booking.stop_ids.filtered(
+                lambda s: s.stop_type == "delivery")[:1]
+            if pu_stop and de_stop:
+                pu_idx = self._region_stop_index(resolver, corridor_stops, pu_stop)
+                de_idx = self._region_stop_index(resolver, corridor_stops, de_stop)
+                if pu_idx is not None:
+                    pickup_idx = pu_idx
+                if de_idx is not None:
+                    delivery_idx = de_idx
         if pickup_idx is not None and delivery_idx is not None:
             result.append({
                 "pallets": int(booking.physical_pallets or booking.pallets or 1),

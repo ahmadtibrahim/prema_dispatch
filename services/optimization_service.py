@@ -472,9 +472,40 @@ class DispatchOptimizationService:
             ("stage_id.is_cancelled", "=", False),
         ]).filtered(lambda j: j.scheduled_pickup and j.scheduled_pickup.date() == check_date)
 
+        # FTL exclusivity: a job whose commercial booking is Full-Truckload
+        # (sold as FTL, or auto-priced FTL at the corridor threshold — e.g.
+        # corridor 9: >= 10 pallets with ftl_behavior "auto_price") is a
+        # dedicated direct service. Its stops must never be interleaved
+        # with other customers' freight on the same truck; only true LTL
+        # chains participate in the merged proposal.
+        ltl_jobs = []
+        excluded_ftl = []
+        for job in jobs:
+            booking = job.logistics_booking_id
+            is_ftl = bool(booking and booking.shipment_type == "ftl")
+            if not is_ftl and booking and booking.corridor_id:
+                corridor = booking.corridor_id
+                is_ftl = bool(
+                    corridor.enable_ftl
+                    and corridor.ftl_behavior == "auto_price"
+                    and corridor.ftl_threshold_pallets
+                    and booking.pallets >= corridor.ftl_threshold_pallets
+                )
+            if is_ftl:
+                excluded_ftl.append(job)
+            else:
+                ltl_jobs.append(job)
+        if excluded_ftl:
+            _logger.info(
+                "Consolidation excluded %d FTL job(s) from the shared-route "
+                "proposal for vehicle %s on %s: %s",
+                len(excluded_ftl), vehicle_id, date_str,
+                ", ".join(j.name for j in excluded_ftl),
+            )
+
         chains = []
         locked_prefix = []
-        for job in jobs:
+        for job in ltl_jobs:
             ordered_stops = job.stop_ids.filtered(
                 lambda s: not s.planning_only and s.stop_type not in ("cross_dock_drop", "cross_dock_pickup")
             ).sorted("sequence")

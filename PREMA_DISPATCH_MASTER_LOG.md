@@ -5,7 +5,7 @@
 **Branch:** `feature/multi-pickup-multi-delivery` (milk-run implementation, NOT yet deployed to production)
 **Database:** Prod-db (production), Prod-db-test1a (test)
 **Odoo Config:** `/etc/odoo18.conf`
-**Version:** 6.3 · **Last Updated:** 2026-08-17
+**Version:** 6.4 · **Last Updated:** 2026-08-17
 
 > This is the SINGLE authoritative file for everything Prema Dispatch. All architecture, business rules, pricing, capacity, deployment procedures, file index, booking module notes, decision history, and test results live here. No other Prema Dispatch .md files should exist outside `docs/archive/`.
 
@@ -1601,3 +1601,128 @@ becomes a real product before this is revisited.
 - Booking always has exactly one `logistics.booking.line` (single-commodity
   LTL/FTL shipment) — matches the "keep it simple" Phase 1 scope; the model
   supports multiple lines if ever needed later.
+
+## Manual-UAT Correction + Capacity / LTL Consolidation Pass — Session 4 (2026-08-17)
+
+Task 15 steps (g)+(h) of the master manual-UAT instruction. **Production NOT
+deployed** — standing constraint, still awaiting review/approval. Everything
+below was live-proven on **Prod-db-uat** (port 8070, `feature/multi-pickup-
+multi-delivery`, commits 9b08977→5f752f7 already landed; this session's
+10-file fix set is the uncommitted remainder committed with this log update).
+
+### Fixes #14 and #15 (this session, code + live proof)
+
+**Fix #14 — booking-stop saved-location FK translation (`booking_orchestration_service.py`):**
+`confirm_from_internal`'s `_create_booking_stops` wrote the stop's
+`saved_location_id` raw into the dispatch FK — the portal convention
+(`confirm_from_session`) passes `logistics.saved.location` ids, internal
+channels (recurring agreements) pass `prema.dispatch.location` ids, and the
+two tables are different (booking-stop FK = dispatch master facility,
+pricing-session FK = customer profile). Internal confirms of portal-style
+stop dicts crashed with `FK violation: saved_location_id=47 not in
+prema_dispatch_location`. **Fix:** `_stop_saved_ids(env, stop_dict)` static
+helper resolves the canonical pair (dispatch id + logistics id) in both
+directions (logistics→dispatch via `dispatch_location_id`; dispatch→logistics
+via reverse search), wired into both `_create_booking_stops` loops.
+**Live proof:** bookings 190/191/192 confirmed; stops 248–253 carry
+`saved_location_id` 533/534 (dispatch) **and** `logistics_saved_location_id`
+47/48 (logistics) — dual convention intact.
+
+**Fix #15 — capacity legacy-anchor fallback (`capacity_engine.py`):**
+`_booking_segments`' legacy branch anchored the segment span on
+`pickup_fsa_id.region_id` — the **legacy region set** (R1–R26, e.g. L6S→R1
+"GTA Central") — while corridor stops are keyed to the **operational set**
+(R-GTA/R-SEO…). Confirmed bookings therefore never registered on their own
+departure (`compute_departure_peak` = 0 despite 23 reserved pallets), so the
+capacity gate silently accepted an unlimited 14th pallet. **Fix:** fallback
+chain — FSA regions first, then the frozen `route_snapshot` leg region codes
+(R-GTA→R-SEO), then booking-stop coordinates via `RegionResolver` polygon
+resolution. **Live proof:** departure 84 peak now reads 23 pallets / 11,500 lb
+(13 LTL from 190–192 + 10 FTL from 193), all on the GTA→SEO segments;
+`can_accept_booking` correctly rejects a 14th pallet ("24 pallets on a
+13-pallet truck"); with the FTL fixture cancelled, departure 84 = exactly
+13/13.
+
+### Fixes #1–#13 (prior sessions, already in this log)
+UAT-004..UAT-013 entries above (2026-08-08/09) document fixes #1–#13: portal
+location-type precedence (UAT-004), booking-step HTTP 500 (UAT-005),
+multi-corridor quote routing (UAT-006), smart pickup calendar (UAT-007),
+date-selector redesign (UAT-008), review-page redesign (UAT-009), multi-stop
+delivery (UAT-010), per-stop contact/instructions (UAT-011), contact
+architecture (UAT-012), corridor-per-km pricing authority (UAT-013).
+Additionally proven live this pass: shared-pallet weight portions
+(booking 188, 250/250 lb across two dropoffs via
+`prema.dispatch.pallet.stop.allocation`), movement_v1 full driver lifecycle
+(booking 188 / job 451 / stops 1053–1056, driver ahmad uid 76: POP on
+pickups, POD on dropoffs, booking reached `completed` with zero AccessErrors
+post-Fix-#6/#10), and the driver-app per-stop actuals wiring (Fix #9).
+
+### Live proofs — step (g) Booking-185 checklist (all on Prod-db-uat)
+
+**LTL-13 full-capacity consolidation (corridor 9, Fri 2026-08-21, departure
+84, vehicle 15 pin_wheel capacity 13):** bookings 190 (8 pallets, $655.41,
+United Dairy/partner 1498), 191 (3 pallets, $316.00, Shenzhen Bangzhun/100),
+192 (2 pallets, $210.67, Nodan Gichki/101) — all created through the canonical
+orchestration path (normalize_request → prepare_quote → confirm_from_internal)
+with live pricing. Jobs 452/453/454 assigned vehicle 15;
+`suggest_consolidated_route(15, 2026-08-21)` merged all three into ONE 6-stop
+proposal (3 pickups @ 533 09:20/09:35/09:50 → 3 dropoffs @ 534
+12:03/12:18/12:33); `apply_consolidated_route` wrote the 6 stops, 0 cross-dock
+legs; `compute_departure_peak(84)` = 13/13 (max_capacity 13).
+`CapacityEngine.evaluate(13, 6500, vehicle 15)`: eligible, layout=pin_wheel,
+auto_booking_capacity=13, payload 11,000 lb, manual_review (reason
+`pinwheel_override_required`) — the 13th position is dispatcher-override-only
+by design.
+
+**FTL threshold (live corridor 9 config, never hardcoded):** enable_ftl=t,
+ftl_behavior=auto_price, ftl_threshold_pallets=10, $3.00/km, min $750,
+reserve_entire_truck=t. 9 pallets → LTL, 30% volume discount, **$737.34**
+(snapshot mode `corridor_per_km`); 10 pallets → FTL auto-price, **$936.30** =
+312.1 km × $3.00/km, no discount (snapshot mode `ftl`). The 9→10 pallet
+switch is a pricing-mode change only — service stays LTL (see Fix #13).
+
+**FTL exclusivity (Fix #13):** booking 193 (10 pallets, $936.30, job 455, same
+truck/day) EXCLUDED from the LTL consolidation chain ("FTL job 455 in merged
+LTL chain: False"). 193 was then **cancelled** (fixture cleanup) so departure
+84 sits at exactly 13/13.
+
+**Confirm-time capacity rejection:** a 2-pallet overflow booking attempt was
+rejected live: "Weight capacity exceeded on GTA → Ottawa → Boucherville — Fri
+Aug 21: 11500 lb + 1000 lb > 11000 lb" — the payload gate fires at
+confirm-time, not silently at peak computation.
+
+**Ontario-only route map:** corridor 9 = 9 stops / 975.8 km: R-GTA (0 km),
+R-YRK (33.5), R-DUR (85.7), R-NOR (162.2), R-SEO (312.1), R-OTT (507.6) — all
+ON; then QC: R-MON (723.5), R-CDQ (823.2), R-QUE (975.8). Booking 190's leg
+R-GTA→R-SEO = 312.1 km exactly (matches the FTL rate basis).
+
+### Fixture state on Prod-db-uat (final)
+- Bookings 190/191/192 confirmed on corridor 9 departure 84 (Fri 2026-08-21);
+  jobs 452/453/454 on vehicle 15, stage 3 (scheduled); departure peak 13/13.
+- Booking 193 cancelled (FTL exclusivity fixture removed); job 455 in
+  cancelled stage.
+- Booking 188 (shared pallets) completed; its movement_v1 driver lifecycle
+  finished (booking state `completed`).
+- All stops carry BOTH FK conventions (Fix #14): saved_location_id 533/534 +
+  logistics_saved_location_id 47/48.
+
+### Hygiene
+- Core instrumentation (`/opt/odoo/odoo18/addons/account/models/ir_attachment.py`
+  and `/opt/odoo/odoo18/odoo/addons/base/models/ir_attachment.py`) fully
+  reverted to `/tmp/*.bak`; `grep -rl UAT-DIAG /opt/odoo/odoo18/` clean.
+- Portal booking-detail UAT-DETAIL-TRACEBACK diagnostic converted to
+  production logging (`logging.exception("portal booking detail render
+  failed for booking %s")` + re-raise).
+- UAT server still running on 8070 with all fixes loaded.
+
+### This session's commit (10 files)
+`models/dispatch_item.py` (Fix #10 sudo custody mirror), `models/dispatch_job.py`
+(Fixes #6/#7a/#7b/#9/#11/#12 driver-flow family), `models/dispatch_stop.py`
+(Fix #9 actuals backfill), `prema_logistics_booking/controllers/booking_portal.py`
+(production logging), `prema_logistics_booking/models/logistics_booking.py`
+(multi-stop confirm FSA validation + sudo state sync), `prema_logistics_booking/
+services/booking_orchestration_service.py` (Fix #14),
+`prema_logistics_booking/services/capacity_engine.py` (Fix #15),
+`prema_logistics_booking/views/portal_templates.xml` (Fix #8 stp-pu-x key),
+`services/optimization_service.py` (Fix #13 FTL exclusivity),
+`static/src/js/driver_app.js` (Fix #5 date clamp).

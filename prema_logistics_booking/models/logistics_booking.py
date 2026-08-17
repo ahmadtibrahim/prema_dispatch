@@ -496,10 +496,22 @@ class LogisticsBooking(models.Model):
         # PricingService for why this is the correct pattern here.
         Fsa = self.env["logistics.fsa"].sudo()
         pickup_fsa = Fsa.resolve_from_postal(address_vals.get("pickup_postal_code"))
-        delivery_fsa = Fsa.resolve_from_postal(address_vals.get("delivery_postal_code"))
         if not pickup_fsa or pickup_fsa.id != session.pickup_fsa_id.id:
             raise UserError(_("Your pickup address doesn't match the quoted area. Please get a new price."))
-        if not delivery_fsa or delivery_fsa.id != session.delivery_fsa_id.id:
+
+        # Multi-stop quotes anchor delivery_fsa_id on the furthest served
+        # point (the pricing basis), while the confirm form re-sends the
+        # FIRST delivery stop's postal code. Validate the re-sent postal
+        # against the whole quoted stop set, not just the anchor FSA.
+        quoted_fsa_ids = set()
+        for stop in session.delivery_stop_ids:
+            stop_fsa = Fsa.resolve_from_postal(stop.postal_code) if stop.postal_code else False
+            if stop_fsa:
+                quoted_fsa_ids.add(stop_fsa.id)
+        if not quoted_fsa_ids and session.delivery_fsa_id:
+            quoted_fsa_ids.add(session.delivery_fsa_id.id)
+        delivery_fsa = Fsa.resolve_from_postal(address_vals.get("delivery_postal_code"))
+        if not delivery_fsa or delivery_fsa.id not in quoted_fsa_ids:
             raise UserError(_("Your delivery address doesn't match the quoted area. Please get a new price."))
 
         if not (session.route_snapshot or {}).get("legs"):
@@ -627,7 +639,13 @@ class LogisticsBooking(models.Model):
 
         Only ADVANCES state; never downgrades, never touches legacy
         bookings."""
-        for booking in self:
+        # Runs from the driver app too (last stop completed under the
+        # driver's own user): the booking is gated by record rules, so read
+        # and write it under sudo. The driver's authorization was checked
+        # upstream (check_stop_access on the job) and this only advances
+        # the workflow state machine — same pattern as the sudo'd evidence
+        # copy on account.move in dispatch_job._attach_documents_to_invoice.
+        for booking in self.sudo():
             if booking.route_model_version != "movement_v1":
                 continue
             if booking.state in ("cancelled", "completed"):

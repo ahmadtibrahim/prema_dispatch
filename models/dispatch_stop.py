@@ -825,6 +825,40 @@ class PremaDispatchStop(models.Model):
         if not self.completed_driver_id and self.job_id.driver_id:
             vals["completed_driver_id"] = self.job_id.driver_id.id
         self.write(vals)
+        # Delivery/pickup actuals: the driver app has no separate actuals
+        # step for delivery stops — completing the stop IS the confirmation
+        # (plan values; the dispatcher can correct them on the stop form).
+        # Backfill only when unset so the booking state machine's
+        # actuals_ok gate (logistics_booking.sync_state_from_dispatch) is
+        # satisfiable in live flow, and never clobber an earlier
+        # confirmation (driver pickup-confirm or dispatcher entry).
+        if self.stop_type in ("dropoff", "return") and not self.delivery_actuals_confirmed_at:
+            # Shared-pallet splits (e.g. 250 lb of a 500 lb pallet) are
+            # tracked in the stop allocations; the stop's pallets_out field
+            # is often stale (set at job build). Prefer allocation totals.
+            allocs = self.env["prema.dispatch.pallet.stop.allocation"].search([
+                ("stop_id", "=", self.id),
+                ("active", "=", True),
+            ])
+            if allocs:
+                actual_pallets = len(set(allocs.mapped("dispatch_item_id").ids))
+                actual_weight = sum(allocs.mapped("weight_lbs"))
+            else:
+                actual_pallets = self.pallets_out or 0
+                actual_weight = self.weight_out_lbs or 0.0
+            self.write({
+                "actual_pallets_out": actual_pallets,
+                "actual_weight_out_lbs": actual_weight,
+                "delivery_actuals_confirmed_at": fields.Datetime.now(),
+                "delivery_actuals_confirmed_by": self.env.user.id,
+            })
+        elif self.stop_type == "pickup" and not self.pickup_actuals_confirmed_at:
+            self.write({
+                "actual_pallets_in": self.pallets_in or 0,
+                "actual_weight_in_lbs": self.weight_in_lbs or 0.0,
+                "pickup_actuals_confirmed_at": fields.Datetime.now(),
+                "pickup_actuals_confirmed_by": self.env.user.id,
+            })
         if self.stop_type == "cross_dock_drop" and self.transfer_to_vehicle_id:
             self._apply_receiving_truck_assignment()
         if self.saved_location_id:

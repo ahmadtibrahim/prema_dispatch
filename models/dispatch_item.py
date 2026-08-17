@@ -186,7 +186,14 @@ class PremaDispatchItem(models.Model):
         for item in self:
             pallet = item.logistics_booking_pallet_id
             if pallet:
-                pallet.sync_custody_from_dispatch_item(item)
+                # Runs from the driver app too (stop completion): the
+                # booking-pallet movement record is gated by record rules
+                # (no group grants the driver access), so mirror custody
+                # under sudo — same pattern as _log_custody_event below and
+                # the sudo'd booking sync in sync_state_from_dispatch. The
+                # driver's authorization was checked upstream
+                # (check_stop_access on the job).
+                pallet.sudo().sync_custody_from_dispatch_item(item)
 
     def _log_custody_event(
         self, event_type, stop=None, saved_location=None,

@@ -40,11 +40,14 @@ const isoLocalDate = (d) => {
     return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`;
 };
 function clampDriverDate(dateStr){
+    // The schedule advertises a 7-day window (yesterday / today / next 5
+    // days, matching _driver_seven_day_window) — clamp to that same range,
+    // not to tomorrow. ISO dates compare correctly as strings.
     const now = new Date();
-    const yesterday = new Date(now); yesterday.setDate(now.getDate()-1);
-    const tomorrow = new Date(now); tomorrow.setDate(now.getDate()+1);
-    const allowed = new Set([isoLocalDate(yesterday), isoLocalDate(now), isoLocalDate(tomorrow)]);
-    return allowed.has(dateStr) ? dateStr : today();
+    const min = new Date(now); min.setDate(now.getDate()-1);
+    const max = new Date(now); max.setDate(now.getDate()+5);
+    const lo = isoLocalDate(min), hi = isoLocalDate(max);
+    return (dateStr >= lo && dateStr <= hi) ? dateStr : today();
 }
 const isMaps = () => !!window.google?.maps;
 const GMAPS_KEY = document.getElementById("app")?.dataset.gmapsKey || "";

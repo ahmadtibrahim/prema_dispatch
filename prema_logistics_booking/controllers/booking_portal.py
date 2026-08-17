@@ -1,4 +1,6 @@
 import json
+import logging
+import traceback
 
 from odoo import _, http
 from odoo.exceptions import AccessError, UserError
@@ -1027,7 +1029,13 @@ class LogisticsBookingPortal(http.Controller):
             # Record rule already scopes this to the caller's own company --
             # an id belonging to another customer simply won't be found.
             raise NotFound()
-        return request.render("prema_logistics_booking.portal_booking_detail", {"booking": booking})
+        try:
+            return request.render("prema_logistics_booking.portal_booking_detail", {"booking": booking})
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "portal booking detail render failed for booking %s", booking_id
+            )
+            raise
 
     # ------------------------------------------------------------------
     # Where We Go — Customer Portal

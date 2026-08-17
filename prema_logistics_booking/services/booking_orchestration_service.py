@@ -1263,6 +1263,51 @@ class BookingOrchestrationService:
         if delivery_fsa and session.delivery_fsa_id != delivery_fsa:
             raise UserError(_("Delivery area changed after pricing. Please get a new price."))
 
+    @staticmethod
+    def _stop_saved_ids(env, stop_dict):
+        """Resolve the canonical saved-location FK pair for one stop dict.
+
+        Two conventions exist in the wild and BOTH must work here:
+          - the portal / quote flow carries logistics.saved.location ids in
+            saved_location_id (the session's FK is that table);
+          - internal channels (recurring agreements, import wizards) carry
+            prema.dispatch.location master-facility ids.
+        Booking stops store BOTH ids — dispatch facility (operational
+        anchor, saved_location_id FK) and customer logistics location —
+        so the missing side is resolved instead of trusting either
+        convention blindly. Mirrors the translation confirm_from_session
+        (logistics_booking.py) performs for the portal path.
+
+        Returns (dispatch_location_id, logistics_saved_location_id).
+        """
+        LogisticsLoc = env["logistics.saved.location"]
+        dispatch_id = stop_dict.get("saved_location_id") or False
+        logistics_id = stop_dict.get("logistics_saved_location_id") or False
+
+        if logistics_id:
+            sl = LogisticsLoc.browse(logistics_id)
+            if sl.exists():
+                if sl.dispatch_location_id:
+                    dispatch_id = sl.dispatch_location_id.id
+                elif not dispatch_id:
+                    dispatch_id = False
+                logistics_id = sl.id
+            else:
+                logistics_id = False
+        elif dispatch_id:
+            sl = LogisticsLoc.browse(dispatch_id)
+            if sl.exists():
+                # Portal convention: saved_location_id IS the logistics id.
+                logistics_id = sl.id
+                dispatch_id = sl.dispatch_location_id.id if sl.dispatch_location_id else False
+            else:
+                # Internal convention: saved_location_id is a dispatch id.
+                sl = LogisticsLoc.search(
+                    [("dispatch_location_id", "=", dispatch_id)], limit=1,
+                )
+                logistics_id = sl.id if sl else False
+        return dispatch_id, logistics_id
+
     def _create_booking_stops(self, booking, pickup_stops, delivery_stops):
         """Create real booking stops from raw pickup/delivery stop dicts.
         THE single stop-creation path for every channel — no channel may
@@ -1271,13 +1316,14 @@ class BookingOrchestrationService:
         seq = 10
 
         for pu in pickup_stops:
+            dispatch_id, logistics_id = self._stop_saved_ids(self.env, pu)
             Stop.create({
                 "booking_id": booking.id,
                 "sequence": seq,
                 "stop_type": "pickup",
                 "stop_key": pu.get("stop_key") or "",
-                "saved_location_id": pu.get("saved_location_id") or False,
-                "logistics_saved_location_id": pu.get("logistics_saved_location_id") or False,
+                "saved_location_id": dispatch_id,
+                "logistics_saved_location_id": logistics_id,
                 "company_name": pu.get("company_name", ""),
                 "street": pu.get("street", ""),
                 "city": pu.get("city", ""),
@@ -1308,13 +1354,14 @@ class BookingOrchestrationService:
             seq += 10
 
         for dl in delivery_stops:
+            dispatch_id, logistics_id = self._stop_saved_ids(self.env, dl)
             Stop.create({
                 "booking_id": booking.id,
                 "sequence": seq,
                 "stop_type": "delivery",
                 "stop_key": dl.get("stop_key") or "",
-                "saved_location_id": dl.get("saved_location_id") or False,
-                "logistics_saved_location_id": dl.get("logistics_saved_location_id") or False,
+                "saved_location_id": dispatch_id,
+                "logistics_saved_location_id": logistics_id,
                 "company_name": dl.get("company_name", ""),
                 "street": dl.get("street", ""),
                 "city": dl.get("city", ""),
