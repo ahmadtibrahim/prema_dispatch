@@ -591,7 +591,11 @@ class LogisticsBooking(models.Model):
                     dispatch_stops_by_booking_stop[
                         stop.logistics_booking_stop_id.id] = stop
         stops_display = []
-        for bstop in self.stop_ids.sorted("sequence"):
+        # Keyed stops only — hub/transfer leg placeholders are pricing
+        # artifacts, never customer-facing route stops.
+        visible_stops = self.stop_ids.filtered(lambda s: s.stop_key) \
+            if self.route_model_version == "movement_v1" else self.stop_ids
+        for bstop in visible_stops.sorted("sequence"):
             twin = dispatch_stops_by_booking_stop.get(bstop.id)
             stops_display.append({
                 "name": bstop.company_name or bstop.location_name or "Stop",
@@ -843,7 +847,11 @@ class LogisticsBooking(models.Model):
         pallet movements. Returns the created job or False when the legacy
         path should be used instead."""
         self.ensure_one()
-        stops = self.stop_ids.sorted("sequence")
+        # Only keyed stops participate in the movement route — legacy
+        # multi-leg machinery may have created hub/transfer placeholder
+        # stops (no stop_key) purely for leg reservation; those are
+        # never operational stops in a movement_v1 route.
+        stops = self.stop_ids.filtered(lambda s: s.stop_key).sorted("sequence")
         pallets = self.env["logistics.booking.pallet"].search(
             [("booking_id", "=", self.id)])
         if not stops or not pallets:
@@ -1453,10 +1461,15 @@ class LogisticsBooking(models.Model):
         if self.customer_reference:
             lines.append(f"Reference: {self.customer_reference}")
 
-        # Use stop_ids when available
+        # Use stop_ids when available (keyed stops only for movement_v1 —
+        # hub/transfer leg placeholders are not invoiced as stops).
         if self.stop_ids:
-            pickups = self.stop_ids.filtered(lambda s: s.stop_type == "pickup")
-            deliveries = self.stop_ids.filtered(lambda s: s.stop_type == "delivery")
+            if self.route_model_version == "movement_v1":
+                stops = self.stop_ids.filtered(lambda s: s.stop_key)
+            else:
+                stops = self.stop_ids
+            pickups = stops.filtered(lambda s: s.stop_type == "pickup")
+            deliveries = stops.filtered(lambda s: s.stop_type == "delivery")
             if pickups:
                 lines.append("")
                 for i, s in enumerate(pickups, 1):
