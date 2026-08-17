@@ -112,6 +112,11 @@ class LogisticsCorridor(models.Model):
         help="Charge applied for each additional delivery stop within the "
              "same destination city/region after the first stop.",
     )
+    ltl_additional_pickup_charge = fields.Monetary(
+        string="Additional Pickup Charge", default=0.0,
+        help="Charge applied for each additional qualifying pickup stop "
+             "after the first pickup. Corridor-specific; never hardcoded.",
+    )
     currency_id = fields.Many2one(
         "res.currency", default=lambda self: self.env.company.currency_id,
     )

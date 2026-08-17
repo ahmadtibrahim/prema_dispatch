@@ -10,6 +10,30 @@ class LogisticsBookingStop(models.Model):
     booking_id = fields.Many2one("logistics.booking", required=True, ondelete="cascade", index=True)
     sequence = fields.Integer(required=True, default=10)
     stop_type = fields.Selection([("pickup", "Pickup"), ("delivery", "Delivery")], required=True)
+    stop_key = fields.Char(
+        string="Stable Stop Key", index=True,
+        help="Client/session stable identifier mapped to this persistent "
+             "stop at confirmation (never a transient array index).")
+    liftgate_required = fields.Boolean(string="Liftgate Required")
+    dock_available = fields.Boolean(string="Dock Available")
+    appointment_required = fields.Boolean(string="Appointment Required")
+    timing_type = fields.Selection([
+        ("flexible", "Flexible"),
+        ("time_window", "Time Window"),
+        ("exact_appointment", "Exact Appointment"),
+        ("deadline", "Hard Deadline"),
+    ], default="flexible")
+    service_date = fields.Date()
+    window_start = fields.Float(string="Window Start (24h float)")
+    window_end = fields.Float(string="Window End (24h float)")
+    appointment_time = fields.Float(string="Appointment Time (24h float)")
+    hard_deadline = fields.Datetime(string="Hard Deadline")
+    service_time_minutes = fields.Integer(default=15)
+    operating_hours_snapshot = fields.Json(
+        string="Operating Hours Snapshot",
+        help="Facility operating hours frozen at confirmation; planned "
+             "against, never silently re-read from the master location.")
+    timezone = fields.Char(default="America/Toronto")
 
     # Saved location (reuse existing dispatch.location)
     saved_location_id = fields.Many2one("prema.dispatch.location", string="Saved Location", index=True, ondelete="set null")

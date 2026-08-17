@@ -274,6 +274,12 @@ class PremaDispatchStop(models.Model):
              "invoice. Leave blank to use the job's invoice.",
     )
     pod_required = fields.Boolean(string="POD Required", default=False)
+    pop_required = fields.Boolean(string="POP Required", default=False)
+    logistics_booking_stop_id = fields.Many2one(
+        "logistics.booking.stop", string="Booking Stop",
+        ondelete="set null", index=True,
+        help="Stable bridge to the commercial booking stop (idempotency, "
+             "sync, audit).")
     pod_uploaded = fields.Boolean(
         string="POD Uploaded", compute="_compute_pod_uploaded", store=True
     )

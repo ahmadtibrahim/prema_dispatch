@@ -15,7 +15,31 @@ class LogisticsPricingSessionStop(models.TransientModel):
         "logistics.pricing.session", string="Session",
         required=True, ondelete="cascade",
     )
+    stop_key = fields.Char(
+        string="Stable Stop Key", index=True,
+        help="Client-side stable identifier so pallet allocations never "
+             "depend on transient array positions.")
+    stop_type = fields.Selection(
+        [("pickup", "Pickup"), ("delivery", "Delivery")],
+        string="Stop Type", default="delivery", required=True)
     sequence = fields.Integer(string="Stop #", required=True, default=1)
+    liftgate_required = fields.Boolean()
+    dock_available = fields.Boolean()
+    appointment_required = fields.Boolean()
+    timing_type = fields.Selection([
+        ("flexible", "Flexible"),
+        ("time_window", "Time Window"),
+        ("exact_appointment", "Exact Appointment"),
+        ("deadline", "Hard Deadline"),
+    ], default="flexible")
+    window_start = fields.Float()
+    window_end = fields.Float()
+    appointment_time = fields.Float()
+    hard_deadline = fields.Datetime()
+    service_time_minutes = fields.Integer(default=15)
+    operating_hours_snapshot = fields.Json()
+    timezone = fields.Char(default="America/Toronto")
+    instructions = fields.Char()
     saved_location_id = fields.Many2one(
         "logistics.saved.location", string="Saved Location",
     )

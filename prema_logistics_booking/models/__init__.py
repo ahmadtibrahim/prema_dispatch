@@ -26,6 +26,7 @@ from . import logistics_customer_rate
 from . import logistics_pricing_session
 from . import logistics_pricing_session_stop
 from . import logistics_booking_line
+from . import logistics_booking_pallet
 from . import logistics_booking_stop
 from . import logistics_booking_leg
 from . import logistics_booking
