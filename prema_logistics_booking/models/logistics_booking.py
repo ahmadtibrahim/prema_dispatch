@@ -847,13 +847,22 @@ class LogisticsBooking(models.Model):
         pallet movements. Returns the created job or False when the legacy
         path should be used instead."""
         self.ensure_one()
-        # Only keyed stops participate in the movement route — legacy
-        # multi-leg machinery may have created hub/transfer placeholder
-        # stops (no stop_key) purely for leg reservation; those are
-        # never operational stops in a movement_v1 route.
-        stops = self.stop_ids.filtered(lambda s: s.stop_key).sorted("sequence")
         pallets = self.env["logistics.booking.pallet"].search(
             [("booking_id", "=", self.id)])
+        # Operational stops = keyed stops PLUS any stop referenced by a
+        # pallet movement. Legacy multi-leg machinery may have created
+        # hub/transfer placeholder stops (no stop_key, unreferenced)
+        # purely for leg reservation — those never join the route.
+        referenced_stop_ids = set()
+        for pallet in pallets:
+            if pallet.pickup_stop_id:
+                referenced_stop_ids.add(pallet.pickup_stop_id.id)
+            for alloc in pallet.delivery_allocation_ids.filtered("active"):
+                if alloc.delivery_stop_id:
+                    referenced_stop_ids.add(alloc.delivery_stop_id.id)
+        stops = self.stop_ids.filtered(
+            lambda s: s.stop_key or s.id in referenced_stop_ids
+        ).sorted("sequence")
         if not stops or not pallets:
             return False
         Job = self.env["prema.dispatch.job"].sudo()
