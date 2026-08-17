@@ -173,7 +173,13 @@ class ItineraryPlanner:
 
     # ── Travel estimate ──────────────────────────────────────────────
 
-    def _travel_minutes(self, from_stop, to_stop):
+    def _travel_minutes(self, from_stop, to_stop, travel_fn=None):
+        """Minutes between two stops. `travel_fn` (injected by callers
+        that own a road-routing client, e.g. Google-first) takes priority;
+        the built-in straight-line ×1.4 @ 50 km/h estimate is the
+        deterministic fallback — identical math everywhere."""
+        if travel_fn is not None:
+            return travel_fn(from_stop, to_stop)
         lat1 = (from_stop.get("latitude") if isinstance(from_stop, dict) else from_stop.latitude) or 0
         lng1 = (from_stop.get("longitude") if isinstance(from_stop, dict) else from_stop.longitude) or 0
         lat2 = (to_stop.get("latitude") if isinstance(to_stop, dict) else to_stop.latitude) or 0
@@ -185,14 +191,30 @@ class ItineraryPlanner:
         km = math.sqrt(dx * dx + dy * dy) * 1.4
         return km / 50.0 * 60.0  # ~50 km/h average urban
 
+    @staticmethod
+    def _cluster_key(stop):
+        """Normalized same-city key for consecutive-stop clustering
+        (lowercased, whitespace-collapsed). Empty string = no cluster."""
+        city = (stop.get("city") or "") if isinstance(stop, dict) else (stop.city or "")
+        return " ".join(str(city).strip().lower().split())
+
     # ── Route adviser ────────────────────────────────────────────────
 
     def recommend_route(self, stops, pallet_movements, start_dt, vehicle_max=0,
-                        start_position=None):
+                        start_position=None, travel_fn=None):
         """Deterministic time-aware sequencing.
 
         stops: ordered dicts/records with stop_key, stop_type, lat/lng,
-               timing fields and operating_hours_snapshot.
+               timing fields and operating_hours_snapshot. Stops with a
+               `city` value are clustered: once a stop in a city is
+               chosen, every legal stop in that same city goes next, so
+               multi-stop towns (e.g. two Belleville deliveries on the
+               Brampton → Belleville → Ottawa run) are never split by a
+               far-away stop — the manual-UAT backtracking bug.
+        travel_fn: optional callable(from_stop, to_stop) -> minutes.
+                   Callers with a road-routing client (Google-first with
+                   straight-line fallback) inject it here; the built-in
+                   straight-line estimate is used otherwise.
         Returns dict with recommended keys, steps, reasons, feasibility."""
         stops_by_key = {}
         for stop in stops:
@@ -226,16 +248,18 @@ class ItineraryPlanner:
                 return {"feasible": False, "reason": REASON_PRECEDENCE,
                         "recommended": route, "steps": steps,
                         "reasons": reasons}
-            best_key = None
-            best_score = None
-            for key in legal:
+            def _score_candidate(key):
+                """(score, plan) for a legal candidate, or None when the
+                stop is not time-feasible right now. plan is the tuple
+                consumed after the loop: (feasible, waiting, service_start,
+                departure, arrival, travel, stop_type, onboard_after)."""
                 stop = stops_by_key[key]
                 stop_type = stop["stop_type"] if isinstance(stop, dict) else stop.stop_type
-                travel = self._travel_minutes(position, stop)
+                travel = self._travel_minutes(position, stop, travel_fn)
                 arrival = current_dt + timedelta(minutes=travel)
                 feasible, waiting, service_start, departure = self.arrival_plan(stop, arrival)
                 if not feasible:
-                    continue
+                    return None
                 # look-ahead: would choosing this make another hard-window
                 # stop miss its window?
                 hard_risk = 0
@@ -247,7 +271,7 @@ class ItineraryPlanner:
                     if other_timing not in ("time_window", "exact_appointment"):
                         continue
                     other_arrival = departure + timedelta(
-                        minutes=self._travel_minutes(stop, other))
+                        minutes=self._travel_minutes(stop, other, travel_fn))
                     ok, _, _, _ = self.arrival_plan(other, other_arrival)
                     if not ok:
                         hard_risk += 10000
@@ -262,11 +286,51 @@ class ItineraryPlanner:
                     capacity_risk + hard_risk + waiting * 2 + travel
                     + (departure - start_dt).total_seconds() / 3600.0
                 )
+                plan = (feasible, waiting, service_start, departure,
+                        arrival, travel, stop_type, onboard_after)
+                return score, plan
+
+            best_key = None
+            best_score = None
+            best_plan = None
+            for key in legal:
+                scored = _score_candidate(key)
+                if scored is None:
+                    continue
+                score, plan = scored
                 if best_key is None or score < best_score:
                     best_key = key
                     best_score = score
-                    best_plan = (feasible, waiting, service_start, departure,
-                                 arrival, travel, stop_type, onboard_after)
+                    best_plan = plan
+            # Same-city clustering: when the best stop shares a city with
+            # other still-legal stops, restrict the choice to that cluster
+            # so same-town stops are served consecutively (never split by
+            # a far-away stop). Only time-feasible candidates qualify —
+            # window protection is never traded away for clustering.
+            if best_key is not None:
+                cluster = self._cluster_key(stops_by_key[best_key])
+                if cluster:
+                    cluster_keys = [
+                        key for key in legal
+                        if self._cluster_key(stops_by_key[key]) == cluster
+                    ]
+                    if len(cluster_keys) > 1:
+                        cluster_best = None
+                        cluster_score = None
+                        cluster_plan = None
+                        for key in cluster_keys:
+                            scored = _score_candidate(key)
+                            if scored is None:
+                                continue
+                            score, plan = scored
+                            if cluster_best is None or score < cluster_score:
+                                cluster_best = key
+                                cluster_score = score
+                                cluster_plan = plan
+                        if cluster_best is not None and cluster_plan is not None:
+                            best_key = cluster_best
+                            best_score = cluster_score
+                            best_plan = cluster_plan
             if best_key is None:
                 return {"feasible": False, "reason": REASON_HOURS,
                         "recommended": route, "steps": steps,

@@ -7,6 +7,8 @@ permissions, and the public QR summary's data minimization.
 from odoo.exceptions import AccessError, UserError
 from odoo.tests.common import TransactionCase
 
+from .mock_google_apis import install_google_mocks
+
 
 class TestLoadPlanBase(TransactionCase):
     def setUp(self):

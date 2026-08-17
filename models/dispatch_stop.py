@@ -5,6 +5,15 @@ from odoo import api, exceptions, fields, models
 _logger = logging.getLogger(__name__)
 
 
+def _booking_stop_of(stop):
+    """The linked booking-stop snapshot, or None when the booking module is
+    not loaded. logistics_booking_stop_id is added by prema_logistics_booking
+    inheritance; in the dispatch-only phase the field does not exist."""
+    if "logistics_booking_stop_id" not in stop._fields:
+        return None
+    return stop.logistics_booking_stop_id
+
+
 def tz_from_longitude_band(lat, lng):
     """Rough North-American timezone estimate from longitude alone, used only
     when the Time Zone API call fails/has no key. Real timezone boundaries
@@ -549,11 +558,11 @@ class PremaDispatchStop(models.Model):
                     "booking address — confirmed pin kept. Review the master "
                     "location link." % (location.name, dist)
                 )
-        if self.logistics_booking_stop_id:
+        if _booking_stop_of(self):
             # Booking-sourced stop: always keep the FULL confirmed snapshot
             # address — never the master location's short form, and never a
             # truncated Google short name (no-city addresses geocode wrong).
-            full = _booking_snapshot_address(self.logistics_booking_stop_id)
+            full = _booking_snapshot_address(_booking_stop_of(self))
             if full:
                 vals["address"] = full
         elif confirmed_address and location.address and not mismatch:
@@ -566,7 +575,7 @@ class PremaDispatchStop(models.Model):
             vals["coordinate_validated"] = True
             vals["coordinate_warning"] = warning
             vals["facility_mismatch"] = True
-        elif self.coordinate_source == "manual" and not self.logistics_booking_stop_id:
+        elif self.coordinate_source == "manual" and not _booking_stop_of(self):
             vals["coordinate_source"] = "master_location"
         self.write(vals)
         return True
@@ -1577,7 +1586,7 @@ class PremaDispatchStop(models.Model):
         api_key = self.env["ir.config_parameter"].sudo().get_param("google_maps_api_key")
         if not api_key:
             return False
-        bstop = self.logistics_booking_stop_id
+        bstop = _booking_stop_of(self)
         if bstop and bstop.latitude and bstop.longitude and not force:
             # Snapshot is authority — just make sure the stored pin still
             # matches it (restores it if a geocode/location ever drifted).
@@ -1656,7 +1665,7 @@ class PremaDispatchStop(models.Model):
         touching the stop's own address.
         """
         for stop in self:
-            bstop = stop.logistics_booking_stop_id
+            bstop = _booking_stop_of(stop)
             if not bstop or not bstop.latitude or not bstop.longitude:
                 continue  # no confirmed snapshot to validate against
             vals = {}
@@ -1735,7 +1744,7 @@ class PremaDispatchStop(models.Model):
         cross-city pins (an ambiguous geocode resolving to the USA).
         """
         for stop in self:
-            bstop = stop.logistics_booking_stop_id
+            bstop = _booking_stop_of(stop)
             if not bstop:
                 raise exceptions.UserError(
                     "This stop has no confirmed booking address to restore "

@@ -8,6 +8,8 @@ from datetime import date
 from odoo import exceptions
 from odoo.tests.common import TransactionCase
 
+from .mock_google_apis import install_google_mocks
+
 
 class TestDispatchCapacity(TransactionCase):
     """Tests 1–5: Capacity validation."""

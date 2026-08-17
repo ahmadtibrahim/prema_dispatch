@@ -26,3 +26,4 @@ from . import test_milk_run_operations_booking
 from . import test_coordinate_integrity
 from . import test_milk_run_pricing
 from . import test_ftl_exclusivity
+from . import test_route_order_fix_booking

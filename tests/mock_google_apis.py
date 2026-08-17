@@ -108,9 +108,11 @@ def install_google_mocks(test_case):
             return MockResponse(status, data)
         return real_requests.post(url, **kwargs)
 
-    # Patch at the module level where requests is used
-    test_case.patch('requests.get', mock_get)
-    test_case.patch('requests.post', mock_post)
+    # Patch at the module level where requests is used — Odoo's
+    # BaseCase.patch takes (obj, key, val); a string path would be
+    # setattr'd onto the requests module itself and explode.
+    test_case.patch(real_requests, 'get', mock_get)
+    test_case.patch(real_requests, 'post', mock_post)
 
     # Also disable FCM push notifications
     test_case.env['ir.config_parameter'].sudo().set_param('mail_mobile.fcm_enabled', 'False')

@@ -83,17 +83,42 @@ class DispatchOptimizationService:
         """
         Re-order pending stops on a job to minimize total drive time.
 
+        Canonical path (jobs whose stops carry pallet movements — the
+        Booking-185-style milk runs): delegates to RouteAdviserService,
+        which feeds the ItineraryPlanner — the single sequencing engine —
+        with Google road routing (straight-line fallback), movement
+        precedence, facility windows, capacity and same-city clustering
+        (the Belleville-after-Ottawa backtracking fix).
+
+        Legacy path (jobs without item movements): nearest-neighbour
+        with the same same-city clustering, per-candidate point-to-point
+        distances (never chained-leg misreads), linked_load_group
+        precedence and the urgent-deadline override.
+
         Rules:
         - Completed/arrived stops are locked in place.
         - route_locked stops keep their position.
-        - Pickup must always precede its linked drop-offs (linked_load_group).
-        - Returns dict: {new_order, added_distance_km, added_minutes, eta_changes}
+        - Pickup must always precede its linked drop-offs.
+        - Returns dict: {new_order, added_distance_km, added_minutes,
+          stop_count, missed_deadlines}
         """
-        from odoo.addons.prema_dispatch.services.route_service import DispatchRouteService
+        from odoo.addons.prema_dispatch.services.route_adviser_service import (
+            RouteAdviserService,
+        )
+        from odoo.addons.prema_dispatch.services.route_service import (
+            DispatchRouteService,
+        )
 
         job = self.env["prema.dispatch.job"].browse(job_id)
         if not job.exists() or not job.stop_ids:
             return {}
+
+        # Canonical path: movement-bearing jobs → planner-backed adviser.
+        adviser = RouteAdviserService(self.env)
+        if adviser.movements(job):
+            delegated = self._delegate_route_to_adviser(job, adviser)
+            if delegated is not None:
+                return delegated
 
         route_svc = DispatchRouteService(self.env)
         all_stops = list(job.stop_ids.sorted("sequence"))
@@ -139,6 +164,18 @@ class DispatchOptimizationService:
                         return False
             return True
 
+        def _legs_to(current_loc, stop):
+            """Point-to-point travel from current_loc to one candidate.
+            Google road routing primary (region=ca), straight-line
+            fallback inside the route service — never chained legs."""
+            dest = (stop.latitude, stop.longitude) if stop.latitude else (stop.address or "")
+            legs = route_svc.get_sequential_travel([current_loc, dest])
+            distance = legs[0]["distance_km"] if legs else 0.0
+            drive_min = legs[0].get("drive_minutes") if legs else 0
+            if not drive_min:
+                drive_min = distance / 0.8  # rough: 0.8 km/min avg city speed
+            return distance, drive_min
+
         # Running clock used to decide when a deadline is genuinely at risk —
         # started from the last locked stop's actual/estimated departure, or
         # now if nothing is locked yet.
@@ -155,22 +192,43 @@ class DispatchOptimizationService:
                 candidates = remaining[:1]
 
             if current_loc:
-                locs = [current_loc] + [
-                    (s.latitude, s.longitude) if s.latitude else s.address or ""
-                    for s in candidates
-                ]
-                legs = route_svc.get_sequential_travel(locs)
-                distances = [l["distance_km"] for l in legs]
-                drive_minutes = [l.get("drive_minutes") or (d / 0.8) for d, l in zip(distances, legs)]
+                distances = []
+                drive_minutes = []
+                for cand in candidates:
+                    distance, drive_min = _legs_to(current_loc, cand)
+                    distances.append(distance)
+                    drive_minutes.append(drive_min)
                 best_idx = distances.index(min(distances))
                 chosen = candidates[best_idx]
                 chosen_drive_min = drive_minutes[best_idx]
+
+                # Same-city clustering: when the best stop shares a city
+                # with other still-legal candidates, the nearest same-city
+                # stop goes next — same-town stops are served consecutively
+                # (the Belleville-after-Ottawa backtracking fix also applies
+                # to legacy jobs without item movements).
+                chosen_city = adviser.stop_city(chosen)
+                if chosen_city:
+                    same_city = [
+                        s for s in remaining
+                        if s is not chosen and adviser.stop_city(s) == chosen_city
+                        and _can_add(s, already_added)
+                    ]
+                    if same_city:
+                        city_distances = []
+                        for cand in same_city:
+                            distance, drive_min = _legs_to(current_loc, cand)
+                            city_distances.append((distance, drive_min, cand))
+                        if city_distances:
+                            city_distances.sort(key=lambda x: x[0])
+                            chosen = city_distances[0][2]
+                            chosen_drive_min = city_distances[0][1]
 
                 # Deadline override: if some OTHER candidate has a hard
                 # deadline that arriving-after-the-nearest-stop-first would
                 # blow, and going there now would still make it, prefer it —
                 # a simple "urgent stop jumps the queue" rule rather than a
-                # full constraint solver.
+                # full constraint solver. Deadlines always beat clustering.
                 for i, cand in enumerate(candidates):
                     if cand is chosen or not cand.hard_deadline:
                         continue
@@ -247,6 +305,60 @@ class DispatchOptimizationService:
             "added_minutes": round(added_km / 0.8),  # rough: 0.8 km/min avg city speed
             "stop_count": len(optimized),
             "missed_deadlines": missed_deadlines,
+        }
+
+    def _delegate_route_to_adviser(self, job, adviser):
+        """Canonical route optimization: the planner-backed adviser
+        computes and APPLIES the recommended order (movement precedence,
+        facility windows, capacity, same-city clustering, Google road
+        routing). Returns the optimize_route() result shape, or None when
+        the adviser has no feasible recommendation (caller falls back to
+        the legacy nearest-neighbour)."""
+        report = adviser.adviser_report(job)
+        if not report["feasible"] or not report["recommended_keys"]:
+            return None
+        applied = adviser.apply_recommended_route(job)
+        if not applied.get("success"):
+            return None
+
+        ordered = job.stop_ids.sorted("sequence")
+        recommended_steps = {
+            s["stop_id"]: s
+            for s in (report.get("recommended") or {}).get("steps", [])
+        }
+        missed_deadlines = []
+        for stop in ordered:
+            if not stop.hard_deadline or stop.status in ("completed", "skipped", "cancelled"):
+                continue
+            deadline = stop.deadline_time or stop.latest_time
+            step = recommended_steps.get(stop.id)
+            if not deadline or not step or not step.get("eta"):
+                continue
+            eta = datetime.fromisoformat(step["eta"])
+            if eta > deadline:
+                missed_deadlines.append({
+                    "stop_id": stop.id,
+                    "stop_name": stop.name,
+                    "deadline": deadline.isoformat(),
+                    "estimated_arrival": eta.isoformat(),
+                    "late_by_minutes": int((eta - deadline).total_seconds() / 60),
+                })
+        if missed_deadlines:
+            job.write({"feasibility_status": "risky"})
+
+        recommended = report.get("recommended") or {}
+        current = report.get("current") or {}
+        added_km = round(
+            recommended.get("distance_km", 0.0) - current.get("distance_km", 0.0), 1)
+        added_min = round(
+            recommended.get("drive_minutes", 0) - current.get("drive_minutes", 0), 0)
+        return {
+            "new_order": [s.id for s in ordered],
+            "added_distance_km": added_km,
+            "added_minutes": added_min,
+            "stop_count": len(ordered),
+            "missed_deadlines": missed_deadlines,
+            "basis": "planner",
         }
 
     @staticmethod

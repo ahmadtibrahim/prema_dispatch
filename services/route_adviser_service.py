@@ -47,8 +47,38 @@ def _lazy_snapshot_helper():
 class RouteAdviserService:
     def __init__(self, env):
         self.env = env
+        # Google-first road travel with straight-line fallback; the pair
+        # cache keeps repeated 2-point calls (O(N²) planner look-ahead)
+        # off the wire. _us_dip_seen accumulates USA-detour flags from
+        # Google responses for surfacing in the adviser report.
+        self._travel_cache = {}
+        self._us_dip_seen = False
+        self._route_svc = None
+
+    def _get_route_service(self):
+        if self._route_svc is None:
+            from odoo.addons.prema_dispatch.services.route_service import (
+                DispatchRouteService,
+            )
+            self._route_svc = DispatchRouteService(self.env)
+        return self._route_svc
 
     # ── Context extraction ───────────────────────────────────────────
+
+    def stop_city(self, stop):
+        """Cluster key for a dispatch stop: the commercial saved location's
+        city, then the linked booking stop's city (bridge), then ''."""
+        city = ""
+        if stop.saved_location_id:
+            city = stop.saved_location_id.city or ""
+        if not city and "logistics_booking_stop_id" in stop._fields \
+                and stop.logistics_booking_stop_id:
+            city = stop.logistics_booking_stop_id.city or ""
+        if not city and "logistics_booking_stop_id" in stop._fields \
+                and stop.logistics_booking_stop_id \
+                and stop.logistics_booking_stop_id.saved_location_id:
+            city = stop.logistics_booking_stop_id.saved_location_id.city or ""
+        return city
 
     def stop_dict(self, stop):
         """Dispatch stop → planner stop dict (stable keys = dispatch ids)."""
@@ -80,6 +110,7 @@ class RouteAdviserService:
             "stop_type": "pickup" if stop.stop_type == "pickup" else "delivery",
             "latitude": stop.latitude or 0.0,
             "longitude": stop.longitude or 0.0,
+            "city": self.stop_city(stop),
             "timing_type": timing,
             "window_start": window_start,
             "window_end": window_end,
@@ -240,7 +271,11 @@ class RouteAdviserService:
         }
 
     def _travel_minutes(self, from_pos, to_stop):
-        """Straight-line estimate ×1.4 road factor @ 50 km/h (urban)."""
+        """Minutes between two positions — Google road routing PRIMARY
+        (region=ca, never through the USA), straight-line ×1.4 @ 50 km/h
+        fallback inside the route service when Google is unavailable.
+        Identical result for the same (lat, lng) pair thanks to the
+        cache, so repeated planner look-ahead calls cost nothing."""
         lat1 = lng1 = lat2 = lng2 = None
         if isinstance(from_pos, dict):
             lat1, lng1 = from_pos.get("latitude") or 0, from_pos.get("longitude") or 0
@@ -251,16 +286,27 @@ class RouteAdviserService:
         lng2 = to_stop.get("longitude") or 0
         if not (lat1 and lat2):
             return 10.0
-        import math
-        dx = (lng2 - lng1) * 111.32 * math.cos(math.radians((lat1 + lat2) / 2))
-        dy = (lat2 - lat1) * 111.32
-        km = math.sqrt(dx * dx + dy * dy) * 1.4
-        return km / URBAN_KMH * 60.0
+        pair = (round(lat1, 5), round(lng1, 5), round(lat2, 5), round(lng2, 5))
+        cached = self._travel_cache.get(pair)
+        if cached is not None:
+            return cached
+        legs = self._get_route_service().get_sequential_travel([pair[:2], pair[2:]])
+        minutes = float(legs[0]["drive_minutes"]) if legs else 10.0
+        if legs and getattr(legs, "_us_dip_detected", False):
+            self._us_dip_seen = True
+        if not minutes:
+            minutes = 10.0
+        self._travel_cache[pair] = minutes
+        return minutes
 
     # ── Adviser report ────────────────────────────────────────────────
 
     def adviser_report(self, job):
         """{current, recommended, comparison, warnings, feasible}."""
+        # Fresh travel cache + USA-dip flag per report (a report is one
+        # route evaluation from one state).
+        self._travel_cache = {}
+        self._us_dip_seen = False
         start_dt, start_position = self.start_context(job)
         ordered = job.stop_ids.sorted("sequence")
         current = self.simulate_order(job, ordered, start_dt, start_position)
@@ -288,8 +334,14 @@ class RouteAdviserService:
             stop_dicts, movements, start_dt,
             vehicle_max=vehicle_max,
             start_position=start_pos_dict,
+            travel_fn=self._travel_minutes,
         )
         warnings = []
+        if self._us_dip_seen:
+            warnings.append(
+                "Google routing flagged a suspected USA detour — the route "
+                "shape dips south of the route's own stops. Verify the map: "
+                "Ontario corridor legs must stay in Canada.")
         recommended = {}
         if result.get("feasible"):
             recommended_order = [
