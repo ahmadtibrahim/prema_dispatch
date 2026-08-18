@@ -1899,6 +1899,7 @@ class PremaDispatchJob(models.Model):
             return {"key": "pickup_complete", "label": "PICKUP COMPLETE"}
         return {"key": "driver_started", "label": "DRIVER STARTED"}
 
+    @api.model
     def get_booking_status_board_data(self):
         """Structured Booking Board data: a single unified list, one row per
         open job (Booking #, Customer, Status, Pickup, Deadline, Route,
