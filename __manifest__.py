@@ -1,6 +1,6 @@
 {
     "name": "Prema Dispatch",
-    "version": "18.0.3.3.0",
+    "version": "18.0.3.3.1",
     "summary": "Booking, planning, live GPS tracking, driver mobile app, interactive truck Load Plans, warehouse loading mode, AI document extraction, VoIP calling and reporting for PremaFirm dispatch operations",
     "category": "Logistics",
     "description": """
@@ -171,9 +171,12 @@ A full in-app user manual is available from the Prema Dispatch app menu.
         ],
         # The canonical loader also ships on portal pages (where-we-go map,
         # saved-locations autocomplete) so `window.loadGoogleMaps` is
-        # available to their inline scripts.
+        # available to their inline scripts. driver_flow_v6.js is a guarded
+        # post-load layer that activates only when the standalone driver app
+        # has created APP/S state, so it is harmless on other portal pages.
         "web.assets_frontend": [
             "prema_dispatch/static/src/js/google_maps_loader.js",
+            "prema_dispatch/static/src/js/driver_flow_v6.js",
         ],
     },
     "installable": True,
