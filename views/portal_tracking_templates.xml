@@ -10,6 +10,10 @@
                     .track-header { border-bottom: 2px solid #0d6efd; padding-bottom: 12px; margin-bottom: 20px; }
                     .track-title { font-size: 1.4rem; font-weight: bold; color: #0d6efd; }
                     .track-num { font-size: 0.9rem; color: #6c757d; }
+                    .track-live { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; margin:14px 0 18px; }
+                    .track-live-card { background:#f1f6ff; border:1px solid #d8e7ff; border-radius:8px; padding:10px 12px; }
+                    .track-live-label { font-size:.72rem; text-transform:uppercase; color:#6c757d; font-weight:700; }
+                    .track-live-value { margin-top:3px; font-size:.95rem; font-weight:700; color:#16253a; }
                     .timeline { list-style: none; padding: 0; position: relative; }
                     .timeline::before { content: ''; position: absolute; left: 16px; top: 0; bottom: 0; width: 2px; background: #dee2e6; }
                     .timeline li { padding: 8px 8px 8px 44px; position: relative; }
@@ -19,11 +23,11 @@
                     .ev-time { font-size: 0.78rem; color: #6c757d; }
                     .ev-label { font-weight: 600; }
                     .ev-detail { font-size: 0.85rem; color: #495057; }
-                    .stop-badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 0.78rem; background: #e9ecef; }
                     .lprog-badge { display: inline-block; padding: 4px 14px; border-radius: 14px; font-size: 0.85rem; font-weight: 700; background: #0d6efd; color: #fff; }
                     .lprog-badge.lprog-planned, .lprog-badge.lprog-driver_started { background: #6c757d; }
                     .lprog-badge.lprog-completed { background: #198754; }
                     .lprog-badge.lprog-loading, .lprog-badge.lprog-at_transfer { background: #6f42c1; }
+                    @media(max-width:540px){.track-live{grid-template-columns:1fr}.track-card{margin:8px;padding:16px}}
                 </style>
             </t>
             <div class="track-card">
@@ -41,7 +45,25 @@
                     </t>
                 </div>
 
-                <!-- Route summary -->
+                <div class="track-live">
+                    <div class="track-live-card">
+                        <div class="track-live-label">Next Stop</div>
+                        <div class="track-live-value" id="live_next_stop"><t t-esc="(next_stop.address or '').split(',')[0] if next_stop else 'Route complete'"/></div>
+                    </div>
+                    <div class="track-live-card">
+                        <div class="track-live-label">Estimated Arrival</div>
+                        <div class="track-live-value" id="live_eta"><t t-esc="next_stop.estimated_arrival if next_stop and next_stop.estimated_arrival else 'Calculating…'"/></div>
+                    </div>
+                    <div class="track-live-card">
+                        <div class="track-live-label">Location Freshness</div>
+                        <div class="track-live-value" id="live_gps_age">Updating…</div>
+                    </div>
+                    <div class="track-live-card">
+                        <div class="track-live-label">Live Status</div>
+                        <div class="track-live-value" id="live_status_text"><t t-esc="live_progress_label"/></div>
+                    </div>
+                </div>
+
                 <t t-if="job.pickup_city or job.delivery_cities">
                     <div style="margin-bottom:16px;">
                         <span style="font-weight:600;">Route: </span>
@@ -50,7 +72,6 @@
                     </div>
                 </t>
 
-                <!-- Stops -->
                 <t t-if="stops">
                     <div style="margin-bottom:16px;">
                         <div style="font-weight:600;margin-bottom:8px;">Stops</div>
@@ -73,7 +94,6 @@
                     </div>
                 </t>
 
-                <!-- Timeline -->
                 <div style="font-weight:600;margin-bottom:8px;">Timeline</div>
                 <ul class="timeline">
                     <t t-foreach="events" t-as="ev">
@@ -91,29 +111,47 @@
                 </ul>
             </div>
 
-            <!-- Live sync (§33): poll the live endpoint every 30s and swap
-                 the progress badge in place — no full-page reload. -->
             <script>
             (function () {
                 var params = new URLSearchParams(window.location.search);
                 var token = params.get('token') || '';
                 var badge = document.getElementById('lprog_badge');
+                var eta = document.getElementById('live_eta');
+                var nextStop = document.getElementById('live_next_stop');
+                var gpsAge = document.getElementById('live_gps_age');
+                var liveStatus = document.getElementById('live_status_text');
                 if (!token || !badge) { return; }
-                setInterval(function () {
+
+                function formatEta(value) {
+                    if (!value) return 'Calculating…';
+                    var d = new Date(value);
+                    if (isNaN(d.getTime())) return value;
+                    return d.toLocaleString([], {weekday:'short', hour:'numeric', minute:'2-digit'});
+                }
+
+                function poll() {
                     fetch('/dispatch/track/<t t-esc="job.tracking_number"/>/live?token=' + encodeURIComponent(token),
                           { headers: { 'Accept': 'application/json' } })
                         .then(function (r) { return r.json(); })
                         .then(function (d) {
                             if (!d || d.error) { return; }
-                            if (d.live_progress) {
-                                badge.className = 'lprog-badge lprog-' + d.live_progress;
-                            }
+                            if (d.live_progress) badge.className = 'lprog-badge lprog-' + d.live_progress;
                             if (d.live_progress_label) {
                                 badge.textContent = d.live_progress_label;
+                                if (liveStatus) liveStatus.textContent = d.live_progress_label;
+                            }
+                            if (nextStop) nextStop.textContent = d.next_stop_addr || (d.live_progress === 'completed' ? 'Route complete' : 'Next stop pending');
+                            if (eta) eta.textContent = d.live_progress === 'completed' ? 'Delivered' : formatEta(d.next_stop_estimated_arrival);
+                            if (gpsAge) {
+                                if (d.gps_age_min === null || d.gps_age_min === undefined) gpsAge.textContent = 'Location unavailable';
+                                else if (d.gps_age_min &lt;= 1) gpsAge.textContent = 'Live now';
+                                else gpsAge.textContent = d.gps_age_min + ' min ago';
                             }
                         })
                         .catch(function () { /* transient network blip — retry next tick */ });
-                }, 30000);
+                }
+                poll();
+                setInterval(poll, 30000);
             })();
             </script>
         </t>
