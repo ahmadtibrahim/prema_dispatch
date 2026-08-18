@@ -185,6 +185,7 @@ A full in-app user manual is available from the Prema Dispatch app menu.
             "prema_dispatch/static/src/js/driver_native_nav_v6.js",
             "prema_dispatch/static/src/css/driver_guided_flow_v7.css",
             "prema_dispatch/static/src/js/driver_guided_flow_v7.js",
+            "prema_dispatch/static/src/js/driver_guided_flow_v7_hotfix.js",
         ],
     },
     "installable": True,
