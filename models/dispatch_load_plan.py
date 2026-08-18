@@ -217,6 +217,10 @@ class PremaDispatchLoadPlan(models.Model):
             allocs = self.env["prema.dispatch.pallet.stop.allocation"].search([
                 ("dispatch_item_id", "=", item.id), ("active", "=", True),
             ])
+            popp = [{
+                "id": a.id, "name": a.name,
+                "url": f"/web/content/{a.id}",
+            } for a in item.popp_attachment_ids]
             return {
                 "id": item.id, "name": item.name, "load_unit_type": item.load_unit_type,
                 "job_id": item.job_id.id,
@@ -225,6 +229,9 @@ class PremaDispatchLoadPlan(models.Model):
                 "weight_lbs": item.weight_lbs, "position_id": item.position_id.id,
                 "position_code": item.position_id.position_code if item.position_id else False,
                 "exception_state": item.exception_state,
+                "popp_photos": popp,
+                "popp_count": len(popp),
+                "popp_complete": bool(popp),
                 "stops": [{
                     "stop_id": a.stop_id.id, "sequence": a.stop_id.sequence,
                     "customer": a.stop_id.job_id.partner_id.name,

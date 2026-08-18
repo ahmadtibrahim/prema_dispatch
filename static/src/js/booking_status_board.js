@@ -30,13 +30,6 @@ const PRIORITY_LABELS = {
     emergency: "Emergency",
 };
 
-const FEASIBILITY_LABELS = {
-    feasible:     "Feasible",
-    risky:        "Risky",
-    not_feasible: "Not Feasible",
-    unknown:      "Unchecked",
-};
-
 export class BookingStatusBoard extends Component {
     static template = "prema_dispatch.BookingStatusBoard";
     static props = { ...standardActionServiceProps };
@@ -183,7 +176,6 @@ export class BookingStatusBoard extends Component {
     statusLabel(key) { return STATUS_LABELS[key] || key; }
     equipmentLabel(key) { return EQUIPMENT_LABELS[key] || key || "—"; }
     priorityLabel(key) { return PRIORITY_LABELS[key] || key; }
-    feasibilityLabel(key) { return FEASIBILITY_LABELS[key] || key; }
 
     openJob(jobId) {
         this.action.doAction({

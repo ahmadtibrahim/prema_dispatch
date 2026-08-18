@@ -196,6 +196,8 @@ class PremaDispatchJob(models.Model):
     actual_received_pallet_count = fields.Integer(default=0, tracking=True)
     pickup_actuals_confirmed_at = fields.Datetime(readonly=True, copy=False, tracking=True)
     pickup_actuals_confirmed_by = fields.Many2one("res.users", readonly=True, copy=False)
+    pickup_actuals_confirmed_lat = fields.Float(digits=(16, 7), string="Pickup Confirm GPS Latitude")
+    pickup_actuals_confirmed_lng = fields.Float(digits=(16, 7), string="Pickup Confirm GPS Longitude")
     confirmed_pallet_count = fields.Integer(compute="_compute_operational_pallet_counts", store=True)
     assigned_pallet_count = fields.Integer(compute="_compute_operational_pallet_counts", store=True)
     loaded_pallet_count = fields.Integer(compute="_compute_operational_pallet_counts", store=True)
@@ -1842,15 +1844,70 @@ class PremaDispatchJob(models.Model):
     # ── JSON-RPC endpoints (called by OWL board) ──────────────────
 
     @api.model
+    def _board_live_progress(self):
+        """Spec §33 — granular operational progress for the Booking Board
+        LIVE PROGRESS column (mirrored to customer tracking). Derived from
+        stop states + driver actions; updates immediately because every
+        driver action mutates these fields, and the board polls every 20s.
+        """
+        self.ensure_one()
+        stops = self.stop_ids.filtered(
+            lambda s: s.status != "cancelled").sorted("sequence")
+        if not stops:
+            return {"key": "planned", "label": "PLANNED"}
+        pickup_stops = stops.filtered(lambda s: s.stop_type == "pickup")
+        delivery_stops = stops.filtered(
+            lambda s: s.stop_type in ("dropoff", "return"))
+        done = stops.filtered(lambda s: s.status == "completed")
+        if len(done) == len(stops):
+            return {"key": "completed", "label": "COMPLETED"}
+        if not self.route_started_at:
+            return {"key": "planned", "label": "PLANNED"}
+        active = next((s for s in stops if s.status in ("en_route", "arrived")), False)
+        if active:
+            s = active
+            if s.stop_type == "pickup":
+                if s.status == "arrived":
+                    if self.pickup_actuals_confirmed_at:
+                        return {"key": "loading", "label": "LOADING"}
+                    return {"key": "arrived_pickup", "label": "ARRIVED AT PICKUP"}
+                return {"key": "en_route_pickup", "label": "EN ROUTE TO PICKUP"}
+            if s.stop_type in ("dropoff", "return"):
+                count = len(delivery_stops) or 1
+                idx = (delivery_stops.ids.index(s.id) + 1) if delivery_stops else 1
+                if s.status == "arrived":
+                    return {"key": "arrived_delivery",
+                            "label": f"ARRIVED AT DELIVERY {idx}/{count}"}
+                return {"key": "en_route_delivery",
+                        "label": f"EN ROUTE TO DELIVERY {idx}/{count}"}
+            if s.stop_type in ("transfer", "cross_dock_drop"):
+                return {"key": "at_transfer" if s.status == "arrived" else "en_route",
+                        "label": "AT TRANSFER" if s.status == "arrived" else "EN ROUTE"}
+            return {"key": "en_route", "label": "EN ROUTE"}
+        pickup_done = bool(pickup_stops) and len(
+            pickup_stops.filtered(lambda s: s.status == "completed")) == len(pickup_stops)
+        if pickup_done:
+            if delivery_stops:
+                done_count = len(delivery_stops.filtered(
+                    lambda s: s.status == "completed"))
+                if done_count == 0:
+                    return {"key": "pickup_complete", "label": "PICKUP COMPLETE"}
+                if done_count == len(delivery_stops):
+                    return {"key": "completed", "label": "COMPLETED"}
+                return {"key": "delivering",
+                        "label": f"{done_count}/{len(delivery_stops)} DELIVERED"}
+            return {"key": "pickup_complete", "label": "PICKUP COMPLETE"}
+        return {"key": "driver_started", "label": "DRIVER STARTED"}
+
     def get_booking_status_board_data(self):
         """Structured Booking Board data: a single unified list, one row per
         open job (Booking #, Customer, Status, Pickup, Deadline, Route,
-        Skids, Equipment, Priority, Truck, Driver, Feasibility, Notes).
+        Skids, Equipment, Priority, Truck, Driver, Live Progress, Notes).
         Unassigned jobs (no vehicle_id yet) are regular rows too — Truck/
         Driver show "—" and Status shows "Unassigned" — sorted to the top
         so dispatchers still see them first, without a separate boxed
-        panel. Feasibility is computed server-side per job (see
-        _board_feasibility) — the client only renders the badge.
+        panel. Live Progress is computed server-side per job (see
+        _board_live_progress, spec §33) — the client only renders the badge.
         Delivered jobs disappear on their own next refresh once
         _check_all_stops_done() flips the stage to completed. Cancelled
         jobs are only shown if they still have a truck assigned (so a
@@ -1938,7 +1995,9 @@ class PremaDispatchJob(models.Model):
 
             pickup_time, pickup_date = fmt_local(job.scheduled_pickup)
             deadline_time, deadline_date = fmt_local(job.delivery_deadline)
-            badge = job._board_feasibility()
+            # Spec §32/§33: Feasibility is a pre-acceptance concern — the
+            # board's column space now shows LIVE PROGRESS instead.
+            progress = job._board_live_progress()
 
             handoff_label = ""
             if transfer_boundary:
@@ -1962,8 +2021,8 @@ class PremaDispatchJob(models.Model):
                 "skids":           skids(job),
                 "equipment_type":  job.equipment_type or "",
                 "priority":        job.priority or "normal",
-                "feasibility":     badge["verdict"],
-                "feasibility_reason": badge["reason"],
+                "live_progress":      progress["key"],
+                "live_progress_label": progress["label"],
                 "notes":           job.internal_notes or job.feasibility_notes or "",
                 "status_key":      status_key,
                 "time_label":      time_label,
@@ -3129,6 +3188,8 @@ class PremaDispatchJob(models.Model):
 
         for stop in self.stop_ids.sorted("sequence"):
             seq = stop.sequence // 10
+            for att in stop.pop_attachment_ids:
+                _link_attachment(att, seq, "PICKUP_PROOF")
             for att in stop.pod_attachment_ids:
                 _link_attachment(att, seq, "DELIVERY_PROOF")
             for i, att in enumerate(stop.photo_attachment_ids, 1):
@@ -3137,13 +3198,14 @@ class PremaDispatchJob(models.Model):
                 _link_attachment(att, seq, "DOC")
 
         if attached:
+            pop_count = sum(len(s.pop_attachment_ids) for s in self.stop_ids)
             pod_count = sum(len(s.pod_attachment_ids) for s in self.stop_ids)
             photo_count = sum(len(s.photo_attachment_ids) for s in self.stop_ids)
             invoice.message_post(
                 body=(
                     f"<b>Dispatch job {self.name} completed.</b><br/>"
-                    f"POD files: {pod_count} | Photos: {photo_count} | "
-                    f"Total attached: {attached}"
+                    f"POP files: {pop_count} | POD files: {pod_count} | "
+                    f"Photos: {photo_count} | Total attached: {attached}"
                 )
             )
         return attached
@@ -3436,6 +3498,11 @@ class PremaDispatchJob(models.Model):
         allocated = floor_items.filtered(lambda item: item.stop_allocation_ids.filtered("active"))
         actual_confirmed = bool(self.pickup_actuals_confirmed_at)
         actual_value = self.actual_received_pallet_count if actual_confirmed else self.expected_pallet_count
+        gate = False
+        try:
+            gate = self._pickup_confirm_gate()
+        except Exception:
+            _logger.exception("pickup confirm gate failed for %s", self.name)
         return {
             "pickup_stop_id": pickup.id if pickup else False,
             "expected": self.expected_pallet_count,
@@ -3444,12 +3511,17 @@ class PremaDispatchJob(models.Model):
             "actual_confirmed": actual_confirmed,
             "actual_confirmed_at": self._dt_iso_utc(self.pickup_actuals_confirmed_at),
             "actual_confirmed_by": (self.pickup_actuals_confirmed_by.partner_id.name or self.pickup_actuals_confirmed_by.name) if self.pickup_actuals_confirmed_by else "",
+            "actual_confirmed_lat": self.pickup_actuals_confirmed_lat,
+            "actual_confirmed_lng": self.pickup_actuals_confirmed_lng,
             "variance": (actual_value or 0) - (self.expected_pallet_count or 0),
             "delivery_stop_count": len(delivery_stops),
             "confirmed_pallet_count": len(floor_items),
             "allocated_pallet_count": len(allocated),
             "route_sheet_received": bool(self.route_sheet_received_at),
             "needs_stop_entry": self.route_definition_mode == "stops_pending" and self.stops_confirmation_state in ("pending", "partial"),
+            # Phase 4 (spec §21/§23): full Pickup Confirmation readiness.
+            "pickup_gate_ready": bool(gate and gate.get("ready")),
+            "pickup_gate_missing": (gate or {}).get("missing") or [],
         }
 
     def _sync_shared_stop_pallet_assignments(self, plan=None):
@@ -3690,7 +3762,12 @@ class PremaDispatchJob(models.Model):
                 "pickup_actuals_confirmed_by": self.env.user.id,
             })
             if actual_count != pickup_expected:
-                self._recompute_downstream_stop_expectations()
+                # NOTE: called on `job` (the browsed recordset), not `self` —
+                # this method is invoked on an EMPTY recordset through
+                # env["prema.dispatch.job"].driver_confirm_pickup_actuals()
+                # and self._recompute_downstream_stop_expectations() would
+                # raise "Expected singleton" on the variance path.
+                job._recompute_downstream_stop_expectations()
         if job.vehicle_id:
             job.vehicle_id.sudo().message_post(body=(
                 f"Pickup actual pallets updated for {job.name}: expected {job.expected_pallet_count}, "
@@ -3717,6 +3794,34 @@ class PremaDispatchJob(models.Model):
             f"Pickup actual pallets confirmed by {self.env.user.name}: expected {job.expected_pallet_count}, actual {actual_count}."
         ))
         after_count = len(job.item_ids.filtered(lambda item: item.status != "cancelled" and item.consumes_floor_position and not item.pending_future_pickup))
+        # Spec §23: record confirmation GPS with the actuals.
+        if values.get("lat") is not None or values.get("lng") is not None:
+            job.write({
+                "pickup_actuals_confirmed_lat": values.get("lat"),
+                "pickup_actuals_confirmed_lng": values.get("lng"),
+            })
+        # Spec §21/§23: the full Pickup Confirmation gate — pallet
+        # assignment complete AND POPP complete (or a documented No
+        # Access/Sealed override) AND §5 variance notes on a mismatch.
+        # The actuals stay recorded; confirmation is not considered
+        # complete until the gate passes and the app shows what is
+        # still missing.
+        gate = job._pickup_confirm_gate()
+        if not gate["ready"]:
+            return {
+                "success": False, "code": "pickup_gate_blocked",
+                "missing": gate["missing"],
+                "pickup_step_state": job._pickup_completion_step_state(),
+                "message": "Pickup Confirmation needs a few more things.",
+            }
+        # Spec §34: the confirmed pickup propagates to the tracking timeline
+        # immediately (distinct from the stop-completion "picked_up" event —
+        # this fires the moment the gate is satisfied).
+        self._post_timeline(
+            job, "pickup_confirmed",
+            notes=f"Actual pallets {actual_count} confirmed by {self.env.user.name}.",
+            stop=stop,
+        )
         return {
             "success": True,
             "job": job._driver_job_summary(),
@@ -3775,7 +3880,11 @@ class PremaDispatchJob(models.Model):
         values = values or {}
 
         if "actual_received_pallet_count" in values:
-            self.driver_confirm_pickup_actuals(stop.id, values)
+            confirm_res = self.driver_confirm_pickup_actuals(stop.id, values)
+            if isinstance(confirm_res, dict) and not confirm_res.get("success"):
+                # pickup_gate_blocked etc. — pass through so the app can
+                # show exactly what is still required (spec §21).
+                return confirm_res
 
         delivery_stops = job.stop_ids.filtered(lambda s: s.stop_type == "dropoff" and not s.planning_only and s.status != "cancelled").sorted("sequence")
         new_state = values.get("stops_confirmation_state")
@@ -3830,6 +3939,129 @@ class PremaDispatchJob(models.Model):
             "stops": [self._driver_stop_dict(s) for s in delivery_stops],
             "suggested_layout_ready": bool(recommendation),
             "layout_recommendation": recommendation,
+        }
+
+    # ── Phase 4: POPP gate + No Access/Sealed override (spec §21-§23) ──
+
+    def _pickup_confirm_gate(self):
+        """Pickup Confirmation readiness (spec §21/§23): pallet assignment
+        complete AND per-pallet POPP complete OR a valid No Access/Sealed
+        override — plus the §5 variance-notes requirement when actual
+        pallets differ from expected.
+
+        Returns {"ready": bool, "missing": [str, ...]} — never raises, so
+        the driver app can render exactly what is still required.
+        """
+        self.ensure_one()
+        missing = []
+        if not self.pickup_actuals_confirmed_at:
+            missing.append("Confirm the actual pallet count first.")
+        floor_items = self.item_ids.filtered(
+            lambda i: i.consumes_floor_position and i.status != "cancelled"
+                      and not i.pending_future_pickup)
+        unassigned = floor_items.filtered(
+            lambda i: not i.stop_allocation_ids.filtered("active"))
+        if unassigned:
+            names = ", ".join(i.name for i in unassigned[:5])
+            extra_n = f" (+{len(unassigned) - 5} more)" if len(unassigned) > 5 else ""
+            missing.append(
+                f"Assign every pallet to a delivery stop first — missing: {names}{extra_n}.")
+        override = self.env["prema.dispatch.popp.override"].sudo().search([
+            ("job_id", "=", self.id),
+            ("active", "=", True),
+        ], limit=1)
+        if not override:
+            no_popp = floor_items.filtered(lambda i: not i.popp_attachment_ids)
+            if no_popp:
+                names = ", ".join(i.name for i in no_popp[:5])
+                extra_n = f" (+{len(no_popp) - 5} more)" if len(no_popp) > 5 else ""
+                missing.append(
+                    f"POPP photo required for pallet(s): {names}{extra_n} — or "
+                    "record a No Access / Sealed Load override.")
+        if self.actual_received_pallet_count and \
+                self.actual_received_pallet_count != self.expected_pallet_count \
+                and not self.pickup_variance_notes:
+            diff = self.actual_received_pallet_count - self.expected_pallet_count
+            missing.append(
+                f"Pallet Difference is {diff:+d} — variance notes are required "
+                "(spec §5).")
+        return {"ready": not missing, "missing": missing}
+
+    @api.model
+    def driver_create_popp_override(self, stop_id, reason, seal_number="",
+                                    seal_photo_b64=None, lat=None, lng=None,
+                                    reason_other=""):
+        """Record a No Access / Sealed Load override (spec §22).
+
+        One documented override per stop is active at a time — a new one
+        supersedes the previous (all are kept for audit). The audit event
+        (reason, driver, timestamp, GPS, seal) is posted to the job
+        timeline. After this, Pickup Confirmation may bypass POPP.
+        """
+        import base64 as b64mod
+        from odoo.addons.prema_dispatch.services.dispatch_auth import check_stop_access
+        from odoo.addons.prema_dispatch.services.dispatch_upload import (
+            decode_and_validate, UploadError,
+        )
+        stop = self.env["prema.dispatch.stop"].browse(stop_id)
+        if not stop.exists():
+            return {"success": False, "code": "record_not_found", "error": "Stop not found"}
+        # NOTE: never compare `stop.job_id == self` here — this method is
+        # invoked on an EMPTY recordset via env["prema.dispatch.job"].
+        #driver_create_popp_override(...) and would always be "unauthorized".
+        # check_stop_access does the real ownership check (driver group:
+        # job.driver_id must be the calling user's partner).
+        if not check_stop_access(self.env, stop, raise_on_fail=False):
+            return {"success": False, "code": "unauthorized",
+                    "error": "Not authorized for this stop"}
+        if stop.job_id.stage_id.is_cancelled:
+            return {"success": False, "code": "unauthorized",
+                    "error": "This job has been cancelled — evidence can no longer be added."}
+        if reason not in dict(self.env["prema.dispatch.popp.override"].REASONS):
+            return {"success": False, "code": "invalid_reason",
+                    "error": "Choose a valid override reason."}
+
+        seal_att = False
+        if seal_photo_b64:
+            try:
+                validated = decode_and_validate(
+                    seal_photo_b64, f"seal-{stop_id}.jpg", category="seal")
+                seal_att = self.env["ir.attachment"].sudo().create({
+                    "name": validated["filename"],
+                    "type": "binary",
+                    "datas": b64mod.b64encode(validated["data"]),
+                    "res_model": "prema.dispatch.popp.override",
+                    "mimetype": validated["mimetype"],
+                })
+            except UploadError as e:
+                return {"success": False, "code": e.code, "error": e.message}
+
+        now = fields.Datetime.now()
+        ov = self.env["prema.dispatch.popp.override"].sudo().create({
+            "stop_id": stop.id,
+            "reason": reason,
+            "reason_other": reason_other or "",
+            "seal_number": seal_number or "",
+            "seal_photo_id": seal_att.id if seal_att else False,
+            "overridden_by": self.env.user.id,
+            "overridden_at": now,
+            "lat": lat,
+            "lng": lng,
+        })
+        ov._ensure_single_active()
+        ov.action_audit_message()
+        # Spec §34: the override propagates to the tracking timeline too.
+        self._post_timeline(
+            stop.job_id, "popp_override",
+            notes=f"POPP requirement overridden at {stop.address or stop.stop_type} — {reason}",
+            stop=stop,
+        )
+        return {
+            "success": True,
+            "override_id": ov.id,
+            "reason": reason,
+            "seal_number": seal_number or "",
+            "overridden_at": self._dt_iso_utc(now),
         }
 
     @api.model
@@ -3946,6 +4178,12 @@ class PremaDispatchJob(models.Model):
                 "driver_name": driver_name,
             })
 
+        # Workday state for this date (START WORK / END DAY / summary).
+        workday = self.env["prema.dispatch.driver.workday"].search([
+            ("driver_id", "=", partner.id),
+            ("work_date", "=", check_d),
+        ], limit=1)
+
         return {
             "date":        check_d.isoformat(),
             "is_today":    check_d == self._user_today(user_tz),
@@ -3959,18 +4197,38 @@ class PremaDispatchJob(models.Model):
                 "lng":   (truck.x_last_location_lng or 0) if truck else 0,
             } if truck else {},
             "available_transfer_trucks": available_transfer_trucks,
+            "workday": (workday._payload() if workday else {
+                "date": check_d.isoformat(), "state": "not_started",
+                "work_started_at": "", "work_finished_at": "",
+                "work_started_by": "", "work_finished_by": "",
+                "summary": None,
+            }),
             "stops": stops_out,
         }
 
     @api.model
-    def driver_add_evidence(self, stop_id, ev_type, data_b64, filename):
-        """Add a POP or POD attachment to a stop.
+    def driver_add_evidence(self, stop_id, ev_type, data_b64, filename, extra=None):
+        """Add evidence to a stop. Every file creates ONE canonical
+        prema.dispatch.evidence record (spec §35); the ir.attachment is
+        added to the stop's POP/POD bucket and copied to the draft
+        invoice/quote (spec §36) — except for scanner pages.
 
-        ev_type: 'pop' (proof of pickup) | 'pod' (proof of delivery)
-        data_b64: base64-encoded file content
-        filename: original filename
-
-        Automatically also links the attachment to the job's invoice/quote.
+        ev_type:
+          - 'pop' / 'pod' — general proof. Lands in pop_attachment_ids /
+            pod_attachment_ids, copied to invoice/quote, evidence record
+            type pop_general / pod_general.
+          - 'popp' — per-pallet Proof of Pickup Pallet (spec §20). Lands
+            on the pallet's own popp_attachment_ids bucket (max 4 per
+            pallet), evidence record type 'popp' with pallet_id; never
+            copied to the invoice. extra['pallet_id'] is required.
+          - 'scan' — one page of a multi-page document. Held as a
+            scan_page record (no m2m link, no invoice copy, does NOT
+            satisfy proof requirements) until driver_complete_scan merges
+            the whole session into a single PDF (spec §17).
+        extra: optional dict with captured_at / lat / lng / device /
+          scan_session / scan_page_index / pallet_id (spec §16 metadata —
+          the burned-in stamp is never the only record of where/when the
+          file was taken).
         """
         import base64 as b64mod
         from odoo.addons.prema_dispatch.services.dispatch_auth import check_stop_access
@@ -3986,20 +4244,48 @@ class PremaDispatchJob(models.Model):
             return {"success": False, "code": "unauthorized",
                     "error": "This job has been cancelled — evidence can no longer be added."}
 
+        if ev_type not in ("pop", "pod", "scan", "popp"):
+            return {"success": False, "code": "unsupported_type",
+                    "error": "Unsupported evidence type."}
+        is_scan_page = ev_type == "scan"
+        is_popp = ev_type == "popp"
+
+        # POPP (spec §20): pallet-specific proof. The target pallet comes
+        # from the app; it must belong to this job's pickup and is capped
+        # at 4 photos per physical pallet.
+        item = False
+        if is_popp:
+            try:
+                item = self.env["prema.dispatch.item"].sudo().browse(
+                    int((extra or {}).get("pallet_id") or 0))
+            except (TypeError, ValueError):
+                item = self.env["prema.dispatch.item"]
+            if not item.exists() or item.job_id.id != stop.job_id.id:
+                return {"success": False, "code": "pallet_not_found",
+                        "error": "This pallet does not belong to this pickup."}
+            if item.pickup_stop_id and item.pickup_stop_id.id != stop.id:
+                return {"success": False, "code": "pallet_not_found",
+                        "error": "This pallet was not picked up at this stop."}
+            if len(item.popp_attachment_ids) >= 4:
+                return {"success": False, "code": "popp_limit",
+                        "error": "Maximum 4 POPP photos per pallet (spec §20)."}
+
         try:
             validated = decode_and_validate(data_b64, filename, category=ev_type)
         except UploadError as e:
             return {"success": False, "code": e.code, "error": e.message}
 
         field = "pop_attachment_ids" if ev_type == "pop" else "pod_attachment_ids"
-        dup = find_duplicate(self.env, stop[field], validated["checksum_sha256"])
-        if dup:
-            return {
-                "success": True, "duplicate": True,
-                "id": dup.id, "existing_attachment_id": dup.id,
-                "name": dup.name, "url": f"/web/content/{dup.id}",
-                "message": "This file was already uploaded.",
-            }
+        if not is_scan_page:
+            bucket = item.popp_attachment_ids if is_popp else stop[field]
+            dup = find_duplicate(self.env, bucket, validated["checksum_sha256"])
+            if dup:
+                return {
+                    "success": True, "duplicate": True,
+                    "id": dup.id, "existing_attachment_id": dup.id,
+                    "name": dup.name, "url": f"/web/content/{dup.id}",
+                    "message": "This file was already uploaded.",
+                }
 
         try:
             att = self.env["ir.attachment"].create({
@@ -4010,67 +4296,81 @@ class PremaDispatchJob(models.Model):
                 "res_id":      stop.id,
                 "mimetype":    validated["mimetype"],
             })
+            meta = extra or {}
+            if is_scan_page:
+                # Scanner page: hold aside until driver_complete_scan
+                # merges the session. Never satisfies pop/pod proof and is
+                # never copied to the invoice.
+                ev_row = self.env["prema.dispatch.evidence"]._create_evidence(
+                    att, stop, "scan_page", {
+                        "captured_at": meta.get("captured_at"),
+                        "lat": meta.get("lat"),
+                        "lng": meta.get("lng"),
+                        "device": meta.get("device"),
+                        "scan_session": meta.get("scan_session"),
+                        "scan_page_index": meta.get("scan_page_index"),
+                        "checksum_sha256": validated["checksum_sha256"],
+                    })
+                return {
+                    "success": True, "id": att.id, "name": att.name,
+                    "url": f"/web/content/{att.id}", "mimetype": att.mimetype,
+                    "evidence_id": ev_row.id, "page": True,
+                    "checksum_sha256": validated["checksum_sha256"],
+                }
+            if is_popp:
+                # Pallet-specific proof (spec §20): lives on the pallet's
+                # own bucket, NOT the stop's POP bucket, and is never
+                # copied to the invoice (the general POP covers invoicing).
+                item.write({"popp_attachment_ids": [(4, att.id)]})
+                ev_row = self.env["prema.dispatch.evidence"]._create_evidence(
+                    att, stop, "popp", {
+                        "pallet_id": item.id,
+                        "captured_at": meta.get("captured_at"),
+                        "lat": meta.get("lat"),
+                        "lng": meta.get("lng"),
+                        "device": meta.get("device"),
+                        "checksum_sha256": validated["checksum_sha256"],
+                    })
+                # Spec §34: POPP capture propagates to the tracking timeline.
+                self._post_timeline(
+                    stop.job_id, "popp_captured",
+                    notes=f"POPP photo for pallet {item.name}",
+                    stop=stop,
+                )
+                return {
+                    "success": True, "id": att.id, "name": att.name,
+                    "url": f"/web/content/{att.id}", "mimetype": att.mimetype,
+                    "evidence_id": ev_row.id, "pallet_id": item.id,
+                    "checksum_sha256": validated["checksum_sha256"],
+                    "preview_available": validated["preview_available"],
+                }
             stop.write({field: [(4, att.id)]})
             linked_items = stop._items_for_custody_transition()
             if linked_items:
                 linked_items.write({"evidence_attachment_ids": [(4, att.id)]})
-            # Attach to the invoice linked to THIS stop if set (multi-invoice
-            # consolidated jobs), otherwise fall back to the job's invoice.
-            # Two hard rules: the invoice must be DRAFT (never append
-            # evidence to a posted invoice) and it must belong to THIS
-            # customer (never cross-customer — a consolidated job's stop
-            # may not share the job's invoice). Tagged via description so
-            # driver_remove_evidence can find and delete this copy too
-            # when the original is removed.
-            job = stop.job_id
-            customer = job.partner_id
-            target_invoice = stop.invoice_id or job.invoice_id
-            tag = f"__evidence_source:{att.id}__"
-            # The driver (or a dispatcher) is authorized for the stop, but
-            # may have no accounting access to account.move — read the
-            # gate state with sudo. The copy itself is still only created
-            # for the same-customer DRAFT invoice; never for a posted one
-            # and never across customers.
-            inv = target_invoice.sudo() if target_invoice else False
-            if (
-                inv
-                and inv.state == "draft"
-                and inv.partner_id.id == customer.id
-            ):
-                # Name the invoice copy WITHOUT "POD"/"BOL" substrings: the
-                # account automation "Auto Attach Invoice Files"
-                # (base.automation id 54, account.move on_create_or_write)
-                # matches attachment names containing POD/BOL and writes
-                # mail.template.attachment_ids, whose inverse REPARENTS the
-                # attachment to the "Invoice: Sending" template
-                # (mail_template.attachment_ids.write({'res_model'...})) —
-                # stripping the evidence off the invoice. The evidence must
-                # stay on the draft invoice for the dispatcher review gate;
-                # the automation keeps working for manually-attached files.
-                # driver_remove_evidence finds this copy via the description
-                # tag, not the name.
-                ext = validated["filename"].rsplit(".", 1)[-1] \
-                    if "." in validated["filename"] else "bin"
-                copy_name = (
-                    f"Delivery proof - Stop {stop.id}.{ext}"
-                    if ev_type == "pod"
-                    else f"Pickup proof - Stop {stop.id}.{ext}"
-                )
-                att.copy({
-                    "res_model": "account.move",
-                    "res_id": inv.id,
-                    "name": copy_name,
-                    "description": tag,
+            ev_row = self.env["prema.dispatch.evidence"]._create_evidence(
+                att, stop,
+                "pop_general" if ev_type == "pop" else "pod_general",
+                {
+                    "captured_at": meta.get("captured_at"),
+                    "lat": meta.get("lat"),
+                    "lng": meta.get("lng"),
+                    "device": meta.get("device"),
+                    "checksum_sha256": validated["checksum_sha256"],
                 })
-            elif (
-                job.sale_order_id
-                and job.sale_order_id.partner_id.id == customer.id
-                and job.sale_order_id.state in ("draft", "sent")
-            ):
-                att.copy({"res_model": "sale.order", "res_id": job.sale_order_id.id, "description": tag})
+            self._copy_evidence_to_invoice(att, stop, ev_type)
+            # Spec §34: general proof propagates to the tracking timeline
+            # (POD keeps its own dedicated event type).
+            self._post_timeline(
+                stop.job_id,
+                "pod_uploaded" if ev_type == "pod" else "evidence_uploaded",
+                notes=f"{'POD' if ev_type == 'pod' else 'POP'} photo — {stop.address or stop.stop_type}",
+                stop=stop,
+            )
             return {
                 "success": True, "id": att.id, "name": att.name,
                 "url": f"/web/content/{att.id}", "mimetype": att.mimetype,
+                "evidence_id": ev_row.id,
                 "checksum_sha256": validated["checksum_sha256"],
                 "preview_available": validated["preview_available"],
             }
@@ -4079,16 +4379,229 @@ class PremaDispatchJob(models.Model):
             return {"success": False, "code": "upload_failed",
                     "error": "Could not save this upload. Please try again."}
 
+    def _copy_evidence_to_invoice(self, att, stop, ev_type):
+        """Copy a just-uploaded evidence attachment to the draft invoice
+        linked to THIS stop (multi-invoice consolidated jobs) or the job's
+        invoice, and to a draft/sent quotation as a fallback.
+
+        Two hard rules: the invoice must be DRAFT (never append evidence
+        to a posted invoice) and it must belong to THIS customer (never
+        cross-customer — a consolidated job's stop may not share the job's
+        invoice). Tagged via description so driver_remove_evidence can
+        find and delete this copy too when the original is removed.
+        """
+        job = stop.job_id
+        customer = job.partner_id
+        target_invoice = stop.invoice_id or job.invoice_id
+        tag = f"__evidence_source:{att.id}__"
+        # The driver (or a dispatcher) is authorized for the stop, but
+        # may have no accounting access to account.move — read the
+        # gate state with sudo. The copy itself is still only created
+        # for the same-customer DRAFT invoice; never for a posted one
+        # and never across customers.
+        inv = target_invoice.sudo() if target_invoice else False
+        if (
+            inv
+            and inv.state == "draft"
+            and inv.partner_id.id == customer.id
+        ):
+            # Name the invoice copy WITHOUT "POD"/"BOL" substrings: the
+            # account automation "Auto Attach Invoice Files"
+            # (base.automation id 54, account.move on_create_or_write)
+            # matches attachment names containing POD/BOL and writes
+            # mail.template.attachment_ids, whose inverse REPARENTS the
+            # attachment to the "Invoice: Sending" template
+            # (mail_template.attachment_ids.write({'res_model'...})) —
+            # stripping the evidence off the invoice. The evidence must
+            # stay on the draft invoice for the dispatcher review gate;
+            # the automation keeps working for manually-attached files.
+            # driver_remove_evidence finds this copy via the description
+            # tag, not the name.
+            ext = att.name.rsplit(".", 1)[-1] if "." in att.name else "bin"
+            copy_name = (
+                f"Delivery proof - Stop {stop.id}.{ext}"
+                if ev_type == "pod"
+                else f"Pickup proof - Stop {stop.id}.{ext}"
+            )
+            att.copy({
+                "res_model": "account.move",
+                "res_id": inv.id,
+                "name": copy_name,
+                "description": tag,
+            })
+        elif (
+            job.sale_order_id
+            and job.sale_order_id.partner_id.id == customer.id
+            and job.sale_order_id.state in ("draft", "sent")
+        ):
+            att.copy({"res_model": "sale.order", "res_id": job.sale_order_id.id, "description": tag})
+
     @api.model
-    def driver_remove_evidence(self, stop_id, ev_type, att_id):
-        """Remove a POP or POD attachment from a stop, and any copy of it
-        already attached to an invoice/quotation (see driver_add_evidence)."""
+    def driver_complete_scan(self, stop_id, ev_type, session):
+        """Merge a multi-page scan session into ONE PDF (spec §17) and
+        attach it as regular pop/pod evidence.
+
+        Every page uploaded with the same scan_session becomes a page of
+        the PDF, in page_index order (edge-corrected/cropped pages were
+        already handled client-side before upload). The final PDF lands in
+        the stop's pop/pod bucket (satisfying proof requirements) and is
+        copied to the draft invoice; the page attachments are then removed
+        so no half-scanned pages linger.
+        """
+        import base64 as b64mod
+        import io
+        try:
+            from PIL import Image
+        except ImportError:
+            return {"success": False, "error": "PDF merging is unavailable on this server."}
+        from odoo.addons.prema_dispatch.services.dispatch_auth import check_stop_access
+
+        stop = self.env["prema.dispatch.stop"].browse(stop_id)
+        if not stop.exists():
+            return {"success": False, "error": "Stop not found"}
+        if not check_stop_access(self.env, stop, raise_on_fail=False):
+            return {"success": False, "error": "Not authorized for this stop"}
+        if stop.job_id.stage_id.is_cancelled:
+            return {"success": False, "error": "This job has been cancelled — evidence can no longer be added."}
+        if ev_type not in ("pop", "pod"):
+            return {"success": False, "error": "Unsupported evidence type for scan merge."}
+
+        Evidence = self.env["prema.dispatch.evidence"]
+        pages = Evidence.sudo().search([
+            ("stop_id", "=", stop.id),
+            ("evidence_type", "=", "scan_page"),
+            ("scan_session", "=", session),
+        ], order="scan_page_index, id")
+        if not pages:
+            return {"success": False, "error": "No scanned pages found for this session."}
+
+        images = []
+        try:
+            for page in pages.sorted("scan_page_index"):
+                data = page.attachment_id.datas
+                if not data:
+                    continue
+                # ir.attachment.datas reads back base64-encoded regardless
+                # of storage; always decode (fall back to raw bytes only if
+                # that somehow fails).
+                try:
+                    raw = b64mod.b64decode(data)
+                except Exception:
+                    raw = bytes(data)
+                with Image.open(io.BytesIO(raw)) as im:
+                    images.append(im.convert("RGB"))
+            if not images:
+                return {"success": False, "error": "Scan pages could not be read."}
+            pdf_buf = io.BytesIO()
+            if len(images) == 1:
+                images[0].save(pdf_buf, "PDF", resolution=150)
+            else:
+                first, rest = images[0], images[1:]
+                first.save(pdf_buf, "PDF", save_all=True, append_images=rest, resolution=150)
+        except Exception:
+            _logger.exception("scan merge failed")
+            return {"success": False, "error": "Could not merge the scanned pages."}
+
+        loc_name = _safe_fname(stop.name or stop.job_id.partner_id.name or "stop")
+        now = fields.Datetime.now()
+        fname = "{}-{}-{}.pdf".format(
+            "POP" if ev_type == "pop" else "POD",
+            loc_name, now.strftime("%Y%m%d-%H%M"))
+
+        try:
+            att = self.env["ir.attachment"].create({
+                "name":      fname,
+                "type":      "binary",
+                "datas":     b64mod.b64encode(pdf_buf.getvalue()),
+                "res_model": "prema.dispatch.stop",
+                "res_id":    stop.id,
+                "mimetype":  "application/pdf",
+            })
+            field = "pop_attachment_ids" if ev_type == "pop" else "pod_attachment_ids"
+            stop.write({field: [(4, att.id)]})
+            ev_row = Evidence._create_evidence(
+                att, stop,
+                "scanned_pop" if ev_type == "pop" else "scanned_pod",
+                {"captured_at": now, "device": "scanner"})
+            pages.write({"merged_into_id": ev_row.id})
+            self._copy_evidence_to_invoice(att, stop, ev_type)
+            # Spec §34: the finished document propagates to the timeline.
+            self._post_timeline(
+                stop.job_id, "document_scanned",
+                notes=f"{len(images)} page(s) merged into {fname}",
+                stop=stop,
+            )
+            # Remove the page attachments (cascades the page evidence rows);
+            # the merged PDF is the only artifact left.
+            for page in pages:
+                if page.attachment_id:
+                    page.attachment_id.unlink()
+            return {
+                "success": True, "id": att.id, "name": att.name,
+                "url": f"/web/content/{att.id}",
+                "mimetype": "application/pdf",
+                "evidence_id": ev_row.id,
+                "pages": len(images),
+            }
+        except Exception:
+            _logger.exception("driver_complete_scan failed")
+            return {"success": False, "error": "Could not save the merged scan."}
+
+    @api.model
+    def driver_cancel_scan(self, stop_id, session):
+        """Discard all pages of a scan session (driver hit ✕ instead of
+        COMPLETE — spec §17/§55)."""
         from odoo.addons.prema_dispatch.services.dispatch_auth import check_stop_access
         stop = self.env["prema.dispatch.stop"].browse(stop_id)
         if not stop.exists():
             return {"success": False, "error": "Stop not found"}
         if not check_stop_access(self.env, stop, raise_on_fail=False):
             return {"success": False, "error": "Not authorized for this stop"}
+        pages = self.env["prema.dispatch.evidence"].sudo().search([
+            ("stop_id", "=", stop.id),
+            ("evidence_type", "=", "scan_page"),
+            ("scan_session", "=", session),
+        ])
+        for page in pages:
+            if page.attachment_id:
+                page.attachment_id.unlink()  # cascades the evidence row
+        return {"success": True}
+
+    @api.model
+    def driver_remove_evidence(self, stop_id, ev_type, att_id, extra=None):
+        """Remove a POP / POD / POPP / scan attachment and every linked
+        record: the stop/pallet bucket link, any copy already attached to
+        an invoice/quotation (see driver_add_evidence), and its canonical
+        evidence record(s). extra['pallet_id'] identifies the pallet for
+        POPP removals."""
+        from odoo.addons.prema_dispatch.services.dispatch_auth import check_stop_access
+        stop = self.env["prema.dispatch.stop"].browse(stop_id)
+        if not stop.exists():
+            return {"success": False, "error": "Stop not found"}
+        if not check_stop_access(self.env, stop, raise_on_fail=False):
+            return {"success": False, "error": "Not authorized for this stop"}
+        if ev_type == "scan":
+            # A scanner page (not yet merged into the final PDF) — remove
+            # the attachment; the evidence row cascades with it.
+            evs = self.env["prema.dispatch.evidence"].sudo().search([
+                ("attachment_id", "=", int(att_id)),
+                ("evidence_type", "=", "scan_page"),
+            ])
+            for ev in evs:
+                if ev.attachment_id:
+                    ev.attachment_id.unlink()
+            return {"success": True}
+        if ev_type == "popp":
+            # Per-pallet POPP photo (spec §20): unlink from the pallet's
+            # bucket; the evidence row cascades with the attachment.
+            item = self.env["prema.dispatch.item"].sudo().browse(
+                int((extra or {}).get("pallet_id") or 0))
+            if item.exists():
+                item.write({"popp_attachment_ids": [(3, int(att_id))]})
+            self.env["prema.dispatch.evidence"].sudo().search(
+                [("attachment_id", "=", int(att_id)),
+                 ("evidence_type", "=", "popp")]).unlink()
+            return {"success": True}
         field = "pop_attachment_ids" if ev_type == "pop" else "pod_attachment_ids"
         stop.write({field: [(3, att_id)]})
         stop.job_id.item_ids.filtered(
@@ -4097,8 +4610,9 @@ class PremaDispatchJob(models.Model):
         tag = f"__evidence_source:{att_id}__"
         copies = self.env["ir.attachment"].search([("description", "=", tag)])
         copies.unlink()
+        self.env["prema.dispatch.evidence"].sudo().search(
+            [("attachment_id", "=", int(att_id))]).unlink()
         return {"success": True}
-
     @api.model
     def get_or_create_driver_channel(self):
         """Return (or create) the direct message channel between this driver and dispatchers."""
@@ -4266,11 +4780,19 @@ class PremaDispatchJob(models.Model):
                 dates_map[ld]["active"] += 1
 
         from datetime import timedelta
+        # Workday flags (START WORK / END DAY / calendar checkmark).
+        workdays = self.env["prema.dispatch.driver.workday"].search([
+            ("driver_id", "=", partner.id),
+            ("work_date", ">=", first),
+            ("work_date", "<=", last),
+        ])
+        wd_by_date = {wd.work_date.isoformat(): wd for wd in workdays}
         result = []
         d = first
         while d <= last:
             d_str = d.isoformat()
             info  = dates_map.get(d_str, {"total": 0, "active": 0})
+            wd    = wd_by_date.get(d_str)
             result.append({
                 "date":       d_str,
                 "weekday":    d.strftime("%a"),
@@ -4281,6 +4803,8 @@ class PremaDispatchJob(models.Model):
                 "job_count":  info["total"],
                 "has_active": info["active"] > 0,
                 "all_done":   info["total"] > 0 and info["active"] == 0,
+                "work_started": bool(wd and wd.work_started_at),
+                "day_completed": bool(wd and wd.state == "completed"),
             })
             d += timedelta(days=1)
 
@@ -4773,6 +5297,27 @@ class PremaDispatchJob(models.Model):
                     stop.job_id.message_post(
                         body=f"<b>Stop delayed:</b> {stop.address} — {data['delay_reason']}"
                     )
+                # Spec §34: issue propagates to the tracking timeline.
+                self._post_timeline(
+                    stop.job_id, "issue_reported",
+                    notes=f"{stop.address or stop.stop_type} — {data.get('delay_reason') or 'Issue'}",
+                    stop=stop,
+                )
+            elif action == "skipped":
+                # Spec §34: the driver app's Skip must be recorded
+                # server-side (previously only a client-side status flip),
+                # so the board, timeline and job completion agree.
+                if stop.status in ("completed", "skipped", "cancelled"):
+                    return {"success": False, "error": "Stop is already closed."}
+                stop.write({"status": "skipped"})
+                stop.job_id.message_post(
+                    body=f"<b>Stop skipped</b> by {self.env.user.name}: {stop.address or stop.stop_type}"
+                )
+                self._post_timeline(
+                    stop.job_id, "stop_skipped",
+                    notes=stop.address or stop.stop_type,
+                    stop=stop,
+                )
             elif action == "en_route":
                 stop.write({"status": "en_route"})
             elif action == "update_pin":
@@ -4838,6 +5383,9 @@ class PremaDispatchJob(models.Model):
             job.message_post(
                 body=f"Route started by {self.env.user.name}."
             )
+            # Spec §34: propagate immediately to the tracking timeline.
+            self._post_timeline(job, "route_started",
+                                notes=f"Route started by {self.env.user.name}.")
         return {
             "success": True,
             "job_id": job.id,

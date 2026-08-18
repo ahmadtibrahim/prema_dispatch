@@ -147,6 +147,8 @@ class DispatchTrackingController(http.Controller):
             (s for s in stops if s.status in ("pending", "en_route")), None
         )
         api_key = request.env["ir.config_parameter"].sudo().get_param("google_maps_api_key", "")
+        # Spec §33: the same LIVE PROGRESS the dispatcher sees (§32 board).
+        progress = job._board_live_progress()
 
         return request.render(
             "prema_dispatch.portal_tracking_page",
@@ -158,6 +160,8 @@ class DispatchTrackingController(http.Controller):
                 "truck_lat":  truck_lat,
                 "truck_lng":  truck_lng,
                 "google_api_key": api_key,
+                "live_progress":      progress["key"],
+                "live_progress_label": progress["label"],
             },
         )
 
@@ -182,10 +186,14 @@ class DispatchTrackingController(http.Controller):
         gps_age = None
         if vehicle and vehicle.x_last_location_at:
             gps_age = int((now - vehicle.x_last_location_at.replace(tzinfo=None)).total_seconds() / 60)
+        # Spec §33: live progress mirrors the Booking Board (§32).
+        progress = job._board_live_progress()
         return {
             "truck_lat":  vehicle.x_last_location_lat if vehicle else 0,
             "truck_lng":  vehicle.x_last_location_lng if vehicle else 0,
             "gps_age_min": gps_age,
+            "live_progress": progress["key"],
+            "live_progress_label": progress["label"],
             "next_stop_id": next_stop.id if next_stop else None,
             "next_stop_addr": (next_stop.address or "").split(",")[0] if next_stop else "",
             "next_stop_status": next_stop.status if next_stop else "",

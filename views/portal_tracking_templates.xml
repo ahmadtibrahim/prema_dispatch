@@ -20,6 +20,10 @@
                     .ev-label { font-weight: 600; }
                     .ev-detail { font-size: 0.85rem; color: #495057; }
                     .stop-badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 0.78rem; background: #e9ecef; }
+                    .lprog-badge { display: inline-block; padding: 4px 14px; border-radius: 14px; font-size: 0.85rem; font-weight: 700; background: #0d6efd; color: #fff; }
+                    .lprog-badge.lprog-planned, .lprog-badge.lprog-driver_started { background: #6c757d; }
+                    .lprog-badge.lprog-completed { background: #198754; }
+                    .lprog-badge.lprog-loading, .lprog-badge.lprog-at_transfer { background: #6f42c1; }
                 </style>
             </t>
             <div class="track-card">
@@ -27,7 +31,11 @@
                     <div class="track-title">Shipment Tracking</div>
                     <div class="track-num">Tracking #: <strong><t t-esc="job.tracking_number"/></strong></div>
                     <div class="track-num">Customer: <t t-esc="job.partner_id.name"/></div>
-                    <div class="track-num">Status: <strong><t t-esc="job.stage_id.name"/></strong></div>
+                    <div class="track-num">
+                        Status: <strong><t t-esc="job.stage_id.name"/></strong>
+                        <span class="lprog-badge" t-attf-class="lprog-badge lprog-#{live_progress}"
+                              id="lprog_badge"><t t-esc="live_progress_label"/></span>
+                    </div>
                     <t t-if="job.scheduled_pickup">
                         <div class="track-num">Pickup: <t t-esc="job.scheduled_pickup"/></div>
                     </t>
@@ -82,6 +90,32 @@
                     </t>
                 </ul>
             </div>
+
+            <!-- Live sync (§33): poll the live endpoint every 30s and swap
+                 the progress badge in place — no full-page reload. -->
+            <script>
+            (function () {
+                var params = new URLSearchParams(window.location.search);
+                var token = params.get('token') || '';
+                var badge = document.getElementById('lprog_badge');
+                if (!token || !badge) { return; }
+                setInterval(function () {
+                    fetch('/dispatch/track/<t t-esc="job.tracking_number"/>/live?token=' + encodeURIComponent(token),
+                          { headers: { 'Accept': 'application/json' } })
+                        .then(function (r) { return r.json(); })
+                        .then(function (d) {
+                            if (!d || d.error) { return; }
+                            if (d.live_progress) {
+                                badge.className = 'lprog-badge lprog-' + d.live_progress;
+                            }
+                            if (d.live_progress_label) {
+                                badge.textContent = d.live_progress_label;
+                            }
+                        })
+                        .catch(function () { /* transient network blip — retry next tick */ });
+                }, 30000);
+            })();
+            </script>
         </t>
     </template>
 

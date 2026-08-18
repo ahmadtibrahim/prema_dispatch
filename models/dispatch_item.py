@@ -99,6 +99,20 @@ class PremaDispatchItem(models.Model):
         help="Pictures and documents that should follow this pallet/skid across "
              "cross-dock storage, handoffs, and final delivery.",
     )
+    # POPP — Proof of Pickup Pallet (spec §20): 1-4 photos taken by the
+    # driver at the pickup dock, belonging to THIS pallet (not the general
+    # pickup stop). The canonical evidence rows (evidence_type "popp") link
+    # back through pallet_id; this m2m is the pallet analog of
+    # stop.pop_attachment_ids. The cap is enforced in
+    # driver_add_evidence (dispatch_job.py).
+    popp_attachment_ids = fields.Many2many(
+        "ir.attachment",
+        "dispatch_item_popp_att_rel",
+        "item_id",
+        "attachment_id",
+        string="POPP Evidence",
+        help="Proof of Pickup Pallet photos — max 4 per physical pallet.",
+    )
     notes = fields.Text()
 
     # ── Load Plan / pallet-position extension (Phase 2) ───────────────

@@ -629,7 +629,23 @@
                      ══════════════════════════════════════════════════════ -->
                 <input type="hidden" name="route_stops_json" id="route_stops_json" value=""/>
                 <input type="hidden" name="pallet_movements_json" id="pallet_movements_json" value=""/>
-                <div class="col-12 mt-3">
+                <!-- ROUTE SUMMARY — shown ONLY for a simple multi-delivery
+                     route (1 pickup + N deliveries, no shared pallets):
+                     a plain name chain, never 'Pickup 1 → Pickup 1'. -->
+                <div class="col-12 mt-3" id="route_summary_card" style="display:none">
+                    <div class="card border-info">
+                        <div class="card-header bg-info bg-opacity-10">
+                            <strong>ROUTE SUMMARY</strong>
+                        </div>
+                        <div class="card-body py-2">
+                            <div class="route-summary-chain fs-6 fw-semibold text-dark"
+                                 id="route_summary_chain"></div>
+                        </div>
+                    </div>
+                </div>
+                <!-- MILK-RUN ROUTE BUILDER — shown ONLY for complex routes:
+                     multiple pickups and/or shared pallets. -->
+                <div class="col-12 mt-3" id="milk_run_builder_card" style="display:none">
                     <div class="card border-success">
                         <div class="card-header bg-success bg-opacity-10 d-flex justify-content-between align-items-center">
                             <div><strong>MILK-RUN ROUTE BUILDER</strong>
@@ -642,7 +658,7 @@
                         </div>
                         <div class="card-body py-2">
                             <div id="route_stops_summary" class="small text-muted mb-1">
-                                Route: <strong>Pickup 1</strong><span id="route_stops_chain"></span>
+                                Route: <span id="route_stops_chain"></span>
                             </div>
                             <div id="extra_pickup_cards"></div>
                             <div id="extra_delivery_cards"></div>
@@ -942,7 +958,19 @@
                 var deLat = parseFloat(document.querySelector('input[name="delivery_lat"]')?.value || 0);
                 var deLng = parseFloat(document.querySelector('input[name="delivery_lng"]')?.value || 0);
 
-                if (!puLat || !deLat) {
+                // The COMPLETE stop list: pickup + EVERY delivery saved
+                // location. The backend evaluates the whole route — all
+                // delivery stops, pallet count, capacity, equipment — never
+                // just the first delivery.
+                var puLocId = (document.querySelector('input[name="pickup_loc_id"]') || {}).value || '';
+                var deliveryLocIds = [];
+                document.querySelectorAll('.delivery-stop-breakdown-row input[name^="delivery_loc_id_"]').forEach(function(inp) {
+                    if (inp.value && deliveryLocIds.indexOf(inp.value) === -1) { deliveryLocIds.push(inp.value); }
+                });
+                var singleDel = document.querySelector('input[name="delivery_loc_id_1"]');
+                if (!deliveryLocIds.length && singleDel && singleDel.value) { deliveryLocIds.push(singleDel.value); }
+
+                if ((!puLat && !puLocId) || (!deLat && !deliveryLocIds.length)) {
                     cardsDiv.innerHTML = '<div class="col-12 text-muted py-2">Select pickup and delivery locations to see available dates.</div>';
                     return;
                 }
@@ -955,6 +983,10 @@
                     '&pallets=' + (parseInt(palletsEl?.value) || 1) +
                     '&weight_lbs=' + (parseFloat(weightEl?.value) || 500) +
                     '&equipment=' + equip;
+                if (puLocId && deliveryLocIds.length) {
+                    params += '&pickup_loc_id=' + encodeURIComponent(puLocId) +
+                        '&delivery_loc_ids=' + encodeURIComponent(deliveryLocIds.join(','));
+                }
 
                 fetch('/my/booking/eligible-dates?' + params, {credentials: 'same-origin'})
                     .then(function(r) { return r.json(); })
@@ -1406,7 +1438,7 @@
                 el.innerHTML = stopCardHtml(key, 'pickup', extraPickupCount + 1);
                 document.getElementById('extra_pickup_cards').appendChild(el.firstChild);
                 bindStopCard(key);
-                refreshRouteChain();
+                refreshRouteSections();
                 buildMovementGrid();
             };
             window.addExtraDeliveryCard = function() {
@@ -1416,7 +1448,7 @@
                 el.innerHTML = stopCardHtml(key, 'delivery', extraDeliveryCount + 1);
                 document.getElementById('extra_delivery_cards').appendChild(el.firstChild);
                 bindStopCard(key);
-                refreshRouteChain();
+                refreshRouteSections();
                 buildMovementGrid();
             };
 
@@ -1445,7 +1477,7 @@
             window.removeStopCard = function(key) {
                 var card = document.querySelector('.extra-stop-card[data-stop-key="' + key + '"]');
                 if (card) card.remove();
-                refreshRouteChain();
+                refreshRouteSections();
                 buildMovementGrid();
             };
 
@@ -1474,14 +1506,70 @@
                 return stops;
             }
 
+            function savedLocById(id) {
+                if (!id) return null;
+                for (var i = 0; i < SAVED_LOCS.length; i++) {
+                    if (String(SAVED_LOCS[i].id) === String(id)) { return SAVED_LOCS[i]; }
+                }
+                return null;
+            }
+            function locDisplayName(loc) {
+                if (!loc) return '';
+                return loc.business_name || loc.name || loc.city || '';
+            }
+            // The saved-location id behind a stop (legacy fields or card
+            // selects) so the route chain can show real facility names —
+            // never 'Pickup 1 → Pickup 1'.
+            function stopSavedId(s) {
+                if (s.legacy) {
+                    if (s.type === 'pickup') {
+                        var puLoc = document.querySelector('input[name="pickup_loc_id"]');
+                        return puLoc ? (parseInt(puLoc.value) || null) : null;
+                    }
+                    return legacyDeliveryLocId(s.index);
+                }
+                var sel = s.card ? s.card.querySelector('.stop-saved-location') : null;
+                return sel ? (parseInt(sel.value) || null) : null;
+            }
+            function stopLabel(s, fallbackIndex) {
+                var name = locDisplayName(savedLocById(stopSavedId(s)));
+                if (name) return name;
+                return (s.type === 'pickup' ? 'Pickup ' : 'Delivery ') + fallbackIndex;
+            }
+
             function refreshRouteChain() {
-                var chain = '';
-                deliveryStops().forEach(function(d) { chain += ' → Delivery '; });
-                document.getElementById('route_stops_chain').textContent = '';
                 var parts = [];
-                pickupStops().forEach(function(p, i) { parts.push('Pickup ' + (i + 1)); });
-                deliveryStops().forEach(function(d, i) { parts.push('Delivery ' + (i + 1)); });
-                document.getElementById('route_stops_chain').textContent = ' → ' + parts.join(' → ');
+                pickupStops().forEach(function(p, i) { parts.push(stopLabel(p, i + 1)); });
+                deliveryStops().forEach(function(d, i) { parts.push(stopLabel(d, i + 1)); });
+                var chain = parts.join(' → ');
+                document.getElementById('route_stops_chain').textContent = chain;
+                document.getElementById('route_summary_chain').textContent = chain;
+            }
+
+            // Display rules:
+            //   A. 1 pickup + 1 delivery  → NO builder, NO route summary.
+            //   B. 1 pickup + N deliveries → ROUTE SUMMARY (name chain).
+            //   C. multiple pickups and/or shared pallets → MILK-RUN ROUTE
+            //      BUILDER.
+            function refreshRouteSections() {
+                var builder = document.getElementById('milk_run_builder_card');
+                var summary = document.getElementById('route_summary_card');
+                if (!builder || !summary) return;
+                refreshRouteChain();
+                var complex = builderActive();
+                if (complex) {
+                    builder.style.display = '';
+                    summary.style.display = 'none';
+                    return;
+                }
+                var deCount = deliveryStops().length;
+                if (deCount > 1) {
+                    summary.style.display = '';
+                    builder.style.display = 'none';
+                    return;
+                }
+                builder.style.display = 'none';
+                summary.style.display = 'none';
             }
 
             function builderActive() {
@@ -1525,6 +1613,7 @@
                     html += '</div></div>';
                 }
                 body.innerHTML = html;
+                refreshRouteSections();
             }
 
             function legacyDeliveryLocId(idx) {
@@ -1609,7 +1698,7 @@
                 });
             }
 
-            refreshRouteChain();
+            refreshRouteSections();
         });
     ]]></script>
 </template>

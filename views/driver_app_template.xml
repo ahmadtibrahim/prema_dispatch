@@ -30,7 +30,7 @@
       <div class="da-geo-title">You've arrived!</div>
       <div id="geoCountdown" class="da-geo-sub"></div>
     </div>
-    <button class="da-btn da-btn-green da-btn-sm" onclick="APP.confirmArrived()">✓ Yes</button>
+    <button class="da-btn da-btn-green da-btn-sm" onclick="APP.confirmArrived()">✓ Arrived</button>
     <button class="da-btn da-btn-ghost da-btn-sm" onclick="APP.dismissGeo()">Not yet</button>
   </div>
 
@@ -71,13 +71,20 @@
     <!-- Today's summary -->
     <div id="todaySummary" class="da-today-summary"></div>
 
+    <!-- Workday card — START WORK / WORK IN PROGRESS / WORK COMPLETED
+         (Phase 2, spec §8/§29) -->
+    <div id="startWorkCard" class="da-startwork-wrap" style="display:none"></div>
+    <div id="workDaySummary" class="da-workday-wrap" style="display:none"></div>
+
     <!-- Load Plan status chip — prominent, not buried, per spec -->
     <div id="loadPlanChip" class="da-loadplan-chip" style="display:none" onclick="openLoadPlan()"></div>
 
-    <!-- Home / Stops tabs -->
+    <!-- Home / Stops / Navigation tabs (spec §6 — exactly 3 primary tabs,
+         Navigation a persistent tab, not a temporary embedded button) -->
     <div class="da-view-tabs">
       <button id="tabHome"  class="da-view-tab active" onclick="APP.showHomeTab()">Home</button>
       <button id="tabStops" class="da-view-tab" onclick="APP.showStopsTab()">Stops</button>
+      <button id="tabNav"   class="da-view-tab" onclick="APP.showNavTab()">Navigation</button>
     </div>
 
     <div id="weekDays" class="da-week-days"></div>
@@ -131,6 +138,13 @@
         <button class="da-map-fab" onclick="APP.toggleNavFullscreen()" id="navFsBtn" title="Fullscreen — hide other panels">⛶</button>
       </div>
       <div id="navDistBadge" class="da-dist-badge">…</div>
+    </div>
+    <!-- The Navigation screen carries its own copy of the 3 primary tabs so
+         Home / Stops stay reachable while navigating (spec §6). -->
+    <div class="da-view-tabs da-nav-tabs">
+      <button id="tabNavHome"  class="da-view-tab" onclick="APP.showHomeTab()">Home</button>
+      <button id="tabNavStops" class="da-view-tab" onclick="APP.showStopsTab()">Stops</button>
+      <button id="tabNavNav"   class="da-view-tab active" onclick="APP.showNavTab()">Navigation</button>
     </div>
     <div class="da-nav-body" id="navBody">
       <div id="navInstruction" class="da-nav-instruction">Calculating route…</div>
@@ -225,8 +239,10 @@
         <button id="scanRetakeBtn" class="da-btn da-btn-ghost" onclick="retakeScan()">↺ Retake</button>
         <button id="scanAddPageBtn" class="da-btn da-btn-secondary" onclick="addScanPage()">＋ Add Page</button>
         <button id="scanEnhanceBtn" class="da-btn da-btn-secondary" onclick="toggleScanEnhance()">✨ Enhance</button>
-        <button id="scanUseBtn" class="da-btn da-btn-primary" onclick="useScan()">✓ Use This</button>
+        <button id="scanUseBtn" class="da-btn da-btn-primary" onclick="useScan()">✓ Use Page</button>
+        <button id="scanCompleteBtn" class="da-btn da-btn-primary" onclick="completeScan()" style="display:none">📄 Complete PDF</button>
       </div>
+      <div id="scanPagesList" class="da-scan-pages" style="display:none"></div>
       <div id="scanStatusRow" class="da-ev-status-row" style="display:none"></div>
     </div>
   </div>

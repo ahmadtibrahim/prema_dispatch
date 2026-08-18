@@ -297,11 +297,16 @@ class TestDriverDateAndPickupWorkflow(TestStopsPendingBase):
             "actual_received_pallet_count": 10,
             "route_sheet_received": True,
         })
-        self.assertTrue(result["success"])
+        # Phase 4 (§21/§23): actuals are recorded and the confirmation
+        # attempt is idempotent, but the Pickup Confirmation gate blocks
+        # (success False, pickup_gate_blocked) until pallets are assigned
+        # to delivery stops AND POPP'd or an override is on file — the
+        # driver app surfaces `missing` in the intake flow.
+        self.assertFalse(result["success"])
+        self.assertEqual(result["code"], "pickup_gate_blocked")
         self.job.invalidate_recordset()
         self.assertTrue(self.job.pickup_actuals_confirmed_at)
-        self.assertEqual(result["actual_received_pallet_count"], 10)
-        self.assertEqual(result["layout_type"], "straight")
+        self.assertEqual(self.job.actual_received_pallet_count, 10)
         self.assertEqual(len(self.job.item_ids.filtered(lambda item: item.status != "cancelled" and not item.pending_future_pickup)), 10)
         self.assertFalse(any(self.job.item_ids.filtered(lambda item: item.status != "cancelled").mapped("pending_future_pickup")))
         self.Job.with_user(self.driver_user).driver_confirm_pickup_actuals(self.pickup_stop.id, {

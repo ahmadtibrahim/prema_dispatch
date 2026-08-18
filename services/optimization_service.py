@@ -481,7 +481,11 @@ class DispatchOptimizationService:
         ltl_jobs = []
         excluded_ftl = []
         for job in jobs:
-            booking = job.logistics_booking_id
+            # prema_logistics_booking adds logistics_booking_id to
+            # prema.dispatch.job and loads after dispatch in the module
+            # graph (booking depends on dispatch) — at_install tests can
+            # run before the field exists. Same guard as dispatch_stop.py.
+            booking = job.logistics_booking_id if "logistics_booking_id" in job._fields else False
             is_ftl = bool(booking and booking.shipment_type == "ftl")
             if not is_ftl and booking and booking.corridor_id:
                 corridor = booking.corridor_id

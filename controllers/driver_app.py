@@ -61,8 +61,28 @@ class DriverAppController(http.Controller):
         return request.env["prema.dispatch.job"].driver_add_evidence(stop_id, ev_type, data_b64, filename)
 
     @http.route("/dispatch/driver/evidence/remove", type="json", auth="user", methods=["POST"])
-    def remove_evidence(self, stop_id, ev_type, att_id, **kwargs):
-        return request.env["prema.dispatch.job"].driver_remove_evidence(stop_id, ev_type, att_id)
+    def remove_evidence(self, stop_id, ev_type, att_id, extra=None, **kwargs):
+        return request.env["prema.dispatch.job"].driver_remove_evidence(
+            stop_id, ev_type, att_id, extra=extra or {})
+
+    @http.route("/dispatch/driver/evidence/scan-complete", type="json", auth="user", methods=["POST"])
+    def scan_complete(self, stop_id, ev_type, session, **kwargs):
+        """Merge a multi-page scan session into ONE PDF (spec §17)."""
+        return request.env["prema.dispatch.job"].driver_complete_scan(int(stop_id), ev_type, session)
+
+    @http.route("/dispatch/driver/evidence/scan-cancel", type="json", auth="user", methods=["POST"])
+    def scan_cancel(self, stop_id, session, **kwargs):
+        """Discard the pages of a scan session (driver cancelled)."""
+        return request.env["prema.dispatch.job"].driver_cancel_scan(int(stop_id), session)
+
+    @http.route("/dispatch/driver/pickup/popp-override", type="json", auth="user", methods=["POST"])
+    def popp_override(self, stop_id, reason, seal_number="", seal_photo_b64=None,
+                      lat=None, lng=None, reason_other="", **kwargs):
+        """Record a No Access / Sealed Load override (spec §22)."""
+        return request.env["prema.dispatch.job"].driver_create_popp_override(
+            int(stop_id), reason, seal_number=seal_number or "",
+            seal_photo_b64=seal_photo_b64, lat=lat, lng=lng,
+            reason_other=reason_other or "")
 
     @http.route("/dispatch/driver/chat/init", type="json", auth="user", methods=["POST"])
     def chat_init(self, **kwargs):
@@ -175,6 +195,40 @@ class DriverAppController(http.Controller):
     @http.route("/dispatch/driver/job/start-route", type="json", auth="user", methods=["POST"])
     def start_route(self, job_id, **kwargs):
         return request.env["prema.dispatch.job"].driver_start_route(job_id)
+
+    # ── Workday: START WORK / END DAY ────────────────────────────
+
+    @http.route("/dispatch/driver/work/start", type="json", auth="user", methods=["POST"])
+    def driver_work_start(self, lat=None, lng=None, **kwargs):
+        """Driver taps START WORK — records work_started_at + GPS and syncs
+        the day's open jobs so the Booking Board shows the driver started."""
+        from odoo.addons.prema_dispatch.services.dispatch_auth import get_driver_partner
+        partner = get_driver_partner(request.env)
+        if not partner:
+            return {"success": False, "error": "Not authorized — driver access required"}
+        workday = request.env["prema.dispatch.driver.workday"]._get_or_create_for(
+            partner.id, request.env["prema.dispatch.job"]._user_today())
+        try:
+            return workday.action_start_work(lat=lat, lng=lng)
+        except Exception as exc:
+            _logger.exception("driver_work_start failed")
+            return {"success": False, "error": str(exc)}
+
+    @http.route("/dispatch/driver/work/end-day", type="json", auth="user", methods=["POST"])
+    def driver_work_end_day(self, **kwargs):
+        """Driver taps END DAY — validates the day, persists the daily
+        summary, auto-completes remaining jobs, returns to HOME."""
+        from odoo.addons.prema_dispatch.services.dispatch_auth import get_driver_partner
+        partner = get_driver_partner(request.env)
+        if not partner:
+            return {"success": False, "error": "Not authorized — driver access required"}
+        workday = request.env["prema.dispatch.driver.workday"]._get_or_create_for(
+            partner.id, request.env["prema.dispatch.job"]._user_today())
+        try:
+            return workday.action_end_day()
+        except Exception as exc:
+            _logger.exception("driver_work_end_day failed")
+            return {"success": False, "error": str(exc)}
 
     # ── Entrance photo upload ────────────────────────────────────
 

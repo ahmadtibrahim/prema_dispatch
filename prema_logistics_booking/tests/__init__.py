@@ -29,3 +29,4 @@ from . import test_route_order_fix_booking
 from . import test_shared_pallet_portions
 from . import test_load_plan_population
 from . import test_repeated_pickup_promotion
+from . import test_phase1_booking_display

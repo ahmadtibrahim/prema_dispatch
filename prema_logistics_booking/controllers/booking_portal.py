@@ -413,29 +413,71 @@ class LogisticsBookingPortal(http.Controller):
                 headers=[("Content-Type", "application/json")],
             )
 
-        try:
-            pickup_lat = float(kwargs.get("pickup_lat", 0))
-            pickup_lng = float(kwargs.get("pickup_lng", 0))
-            delivery_lat = float(kwargs.get("delivery_lat", 0))
-            delivery_lng = float(kwargs.get("delivery_lng", 0))
-        except (ValueError, TypeError):
-            return request.make_response(
-                json.dumps({"error": "Invalid coordinates"}),
-                headers=[("Content-Type", "application/json")],
-            )
+        partner = request.env.user.partner_id.commercial_partner_id
+        SavedLocation = request.env["logistics.saved.location"].sudo()
 
-        if not pickup_lat or not delivery_lat:
-            return request.make_response(
-                json.dumps({"dates": []}),
-                headers=[("Content-Type", "application/json")],
-            )
+        # Preferred route: the full stop list. All delivery saved-location
+        # IDs are resolved server-side (ownership-validated) so the date
+        # engine evaluates the COMPLETE shipment — every delivery stop,
+        # pallet count, equipment and capacity — never just the first
+        # delivery's coordinates.
+        delivery_loc_ids = []
+        raw_ids = kwargs.get("delivery_loc_ids", "")
+        if isinstance(raw_ids, str):
+            delivery_loc_ids = [
+                int(x) for x in raw_ids.split(",") if x.strip().lstrip("-").isdigit()
+            ]
+        stops = []
+        pickup_loc_id = kwargs.get("pickup_loc_id")
+        if pickup_loc_id and delivery_loc_ids:
+            pickup_loc = SavedLocation.browse(int(pickup_loc_id))
+            delivery_locs = SavedLocation.browse(delivery_loc_ids)
+            if (pickup_loc.exists() and pickup_loc.commercial_partner_id.id == partner.id
+                    and pickup_loc.latitude
+                    and all(
+                        dl.exists() and dl.commercial_partner_id.id == partner.id and dl.latitude
+                        for dl in delivery_locs
+                    )):
+                stops.append({
+                    "stop_type": "pickup",
+                    "latitude": pickup_loc.latitude,
+                    "longitude": pickup_loc.longitude,
+                    "saved_location_id": pickup_loc.id,
+                })
+                for dl in delivery_locs:
+                    stops.append({
+                        "stop_type": "delivery",
+                        "latitude": dl.latitude,
+                        "longitude": dl.longitude,
+                        "saved_location_id": dl.id,
+                        "city": dl.city or "",
+                    })
+
+        if not stops:
+            # Legacy fallback: single coordinate pair (postal / step-1 URL).
+            try:
+                pickup_lat = float(kwargs.get("pickup_lat", 0))
+                pickup_lng = float(kwargs.get("pickup_lng", 0))
+                delivery_lat = float(kwargs.get("delivery_lat", 0))
+                delivery_lng = float(kwargs.get("delivery_lng", 0))
+            except (ValueError, TypeError):
+                return request.make_response(
+                    json.dumps({"error": "Invalid coordinates"}),
+                    headers=[("Content-Type", "application/json")],
+                )
+            if not pickup_lat or not delivery_lat:
+                return request.make_response(
+                    json.dumps({"dates": []}),
+                    headers=[("Content-Type", "application/json")],
+                )
+            stops.append({"stop_type": "pickup", "latitude": pickup_lat, "longitude": pickup_lng})
+            stops.append({"stop_type": "delivery", "latitude": delivery_lat, "longitude": delivery_lng})
 
         from ..services.shipment_routing_service import ShipmentRoutingService
         svc = ShipmentRoutingService(request.env)
-        dates = svc.get_eligible_pickup_dates(
-            pickup_lat, pickup_lng,
-            delivery_lat, delivery_lng,
-            pallets=int(kwargs.get("pallets", 1)),
+        dates = svc.get_eligible_pickup_dates_for_route(
+            stops,
+            physical_pallets=int(kwargs.get("pallets", 1)),
             weight_lbs=float(kwargs.get("weight_lbs", 500) or 500),
             equipment=kwargs.get("equipment", "dry"),
         )
@@ -539,6 +581,24 @@ class LogisticsBookingPortal(http.Controller):
                 delivery_loc_id = delivery_loc_ids[0]
 
             # Build template context
+            delivery_locs_payload = [{
+                "id": dl.id,
+                "name": dl.name or "",
+                "business_name": dl.business_name or "",
+                "city": dl.city or "",
+                "latitude": dl.latitude,
+                "longitude": dl.longitude,
+            } for dl in delivery_locs]
+            pickup_loc_payload = None
+            if pickup_loc and pickup_loc.exists():
+                pickup_loc_payload = {
+                    "id": pickup_loc.id,
+                    "name": pickup_loc.name or "",
+                    "business_name": pickup_loc.business_name or "",
+                    "city": pickup_loc.city or "",
+                    "latitude": pickup_loc.latitude,
+                    "longitude": pickup_loc.longitude,
+                }
             return request.render("prema_logistics_booking.portal_step2_shipment", {
                 "pickup_fsa": pickup_fsa, "delivery_fsa": delivery_fsa,
                 "pickup_loc": pickup_loc, "delivery_locs": delivery_locs,
@@ -550,6 +610,8 @@ class LogisticsBookingPortal(http.Controller):
                 "pickup_loc_ids": pickup_loc_ids,
                 "saved_locations_json": json.dumps(
                     _saved_locations_builder_payload(partner)),
+                "delivery_locs_json": json.dumps(delivery_locs_payload),
+                "pickup_loc_json": json.dumps(pickup_loc_payload),
             })
 
         # Route B: FSA postal code fallback

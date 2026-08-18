@@ -19,6 +19,8 @@ const S = {
     dragSrcIdx:null,
     navVoiceOn:true, navHeadingMode:false, navFullscreen:false, navTrafficOn:true,
     viewTab:"home",
+    workday:null,       // day-level workday payload from /stops (START WORK / END DAY)
+    navAsTab:false,     // true when the NAVIGATION tab opened sNav (vs. from a stop)
     _suppressHistoryPush:false,
     uploadState:null,   // {stopId, evType, filename, phase, progress, message, _file} — see runEvidenceUpload()
     loadPlan:null, lpSelectedCode:null,
@@ -297,39 +299,176 @@ function showApp() {
 
 function applyDay(day) {
     S.dayData=day; S.stops=day.stops||[];
+    S.workday=day.workday||null;
     S.loadPlan=null; S.lpSelectedCode=null; // stale for the previous date/truck
     const dn=q("#hDriverName"), tn=q("#hTruckName");
     if(dn) dn.textContent=day.driver_name||"";
     if(tn) tn.textContent=day.truck?.name?"🚛 "+day.truck.name:"";
     loadWeather();
     renderTodaySummary();
+    renderStartWork();
+    renderWorkDaySummary();
     renderLoadPlanChip();
 }
 
 function showViewTab(tab){
     S.viewTab=tab;
-    const isHome=tab==="home";
+    const isHome=tab==="home", isStops=tab==="stops", isNav=tab==="nav";
     q("#tabHome")?.classList.toggle("active",isHome);
-    q("#tabStops")?.classList.toggle("active",!isHome);
+    q("#tabStops")?.classList.toggle("active",isStops);
+    q("#tabNav")?.classList.toggle("active",isNav);
+    q("#tabNavHome")?.classList.toggle("active",isHome);
+    q("#tabNavStops")?.classList.toggle("active",isStops);
+    q("#tabNavNav")?.classList.toggle("active",isNav);
+    if(isNav){
+        // NAVIGATION is a proper persistent tab (spec §6/§11): show the
+        // nav screen targeting the next selected stop.
+        navTabShow();
+        return;
+    }
+    // Non-nav tabs live on the Schedule screen — return to it (covers the
+    // NAVIGATION tab's Home/Stops buttons and END DAY's jump home from a
+    // stop detail; renderStopList re-renders the split sections).
+    showScreen("sSchedule");
     if(q("#todaySummary"))q("#todaySummary").style.display=isHome?"flex":"none";
+    if(q("#startWorkCard"))q("#startWorkCard").style.display=isHome?"":"none";
+    if(q("#workDaySummary"))q("#workDaySummary").style.display=isHome?"":"none";
     if(q("#routeMapWrap"))q("#routeMapWrap").style.display=isHome?"none":"";
     if(q("#stopList"))q("#stopList").style.display=isHome?"none":"block";
-    if(!isHome&&S.mapsReady)setTimeout(()=>trigResize("route"),50);
+    if(isStops&&S.mapsReady)setTimeout(()=>trigResize("route"),50);
     syncHistory();
+}
+
+// NAVIGATION tab: fill and show the nav screen for the current target —
+// the stop the driver is viewing (or was navigating to), else the next
+// unfinished stop. No stops → an empty state instead of a blank screen.
+function navTabShow(){
+    if(!S.stops?.length){
+        showScreen("sNav");
+        const nb=q("#navBody");
+        if(nb) nb.innerHTML=`<div class="da-empty">
+            <div class="da-empty-icon">🧭</div>
+            <div class="da-empty-title">No navigation target</div>
+            <div class="da-empty-sub">You have no stops for this date.</div>
+        </div>`;
+        const badge=q("#navDistBadge"); if(badge) badge.textContent="";
+        return;
+    }
+    const target = (S.stop && S.stops.find(s=>s.id===S.stop.id)) || firstOpenStop() || S.stops[0];
+    openNav(target,{asTab:true});
 }
 
 function renderTodaySummary(){
     const el=q("#todaySummary"); if(!el)return;
     const jobIds=new Set(S.stops.map(s=>s.job_id));
     const r=S.routeSummary;
+    const picks=S.stops.filter(s=>isPickupLikeStop(s.type)).length;
+    const dels=S.stops.filter(s=>s.type==="dropoff"||s.type==="return").length;
+    const pallets=S.stops.reduce((n,s)=>n+(isPickupLikeStop(s.type)?(s.pallets_in||0):(s.pallets_out||0)),0);
+    // Spec §9: Jobs / Stops / Pickups / Deliveries / Pallets / Distance /
+    // Estimated duration — the compact TODAY'S WORK strip on HOME.
     el.innerHTML=`
-        <div class="da-sum-card"><div class="da-sum-val">${jobIds.size}</div><div class="da-sum-label">Jobs Today</div></div>
+        <div class="da-sum-card"><div class="da-sum-val">${jobIds.size}</div><div class="da-sum-label">Jobs</div></div>
         <div class="da-sum-card"><div class="da-sum-val">${S.stops.length}</div><div class="da-sum-label">Stops</div></div>
-        <div class="da-sum-card"><div class="da-sum-val">${r?fmtDur(r.totalMin):"—"}</div><div class="da-sum-label">Est. Total Time</div></div>
-        <div class="da-sum-card"><div class="da-sum-val">${r?r.km.toFixed(0)+" km":"—"}</div><div class="da-sum-label">Est. Distance</div></div>
+        <div class="da-sum-card"><div class="da-sum-val">${picks}</div><div class="da-sum-label">Pickups</div></div>
+        <div class="da-sum-card"><div class="da-sum-val">${dels}</div><div class="da-sum-label">Deliveries</div></div>
+        <div class="da-sum-card"><div class="da-sum-val">${pallets}</div><div class="da-sum-label">Pallets</div></div>
+        <div class="da-sum-card"><div class="da-sum-val">${r?r.km.toFixed(0)+" km":"—"}</div><div class="da-sum-label">Distance</div></div>
+        <div class="da-sum-card"><div class="da-sum-val">${r?fmtDur(r.totalMin):"—"}</div><div class="da-sum-label">Est. Time</div></div>
     `;
 }
 function fmtDur(mins){ const h=Math.floor(mins/60),m=Math.round(mins%60); return h?`${h}h ${m}m`:`${m}m`; }
+
+// ── START WORK (day-level dashboard, spec §8) ─────────────────────
+function renderStartWork(){
+    const card=q("#startWorkCard"); if(!card)return;
+    // START WORK only exists for TODAY — past/future days show nothing.
+    if(!S.dayData?.is_today){ card.style.display="none"; card.innerHTML=""; return; }
+    card.style.display="";
+    const wd=S.workday||{};
+    const hasWork=(S.stops||[]).length>0;
+    if(wd.state==="completed"){
+        card.innerHTML=`<div class="da-startwork-card da-startwork-done">
+            <div class="da-startwork-label">✓ WORK COMPLETED</div>
+            ${wd.work_finished_at?`<div class="da-startwork-sub">Finished ${fmtStopTime(wd.work_finished_at)}</div>`:""}
+        </div>`;
+        return;
+    }
+    if(wd.work_started_at){
+        card.innerHTML=`<div class="da-startwork-card da-startwork-progress">
+            <div class="da-startwork-label">🚛 WORK IN PROGRESS</div>
+            <div class="da-startwork-sub">Started ${fmtStopTime(wd.work_started_at)} · ${S.stops.filter(s=>!isClosedStopStatus(s.status)).length} stop${S.stops.filter(s=>!isClosedStopStatus(s.status)).length===1?"":"s"} remaining</div>
+        </div>`;
+        return;
+    }
+    if(!hasWork){
+        card.innerHTML=`<div class="da-startwork-card da-startwork-disabled">
+            <div class="da-startwork-label">NO WORK ASSIGNED</div>
+            <div class="da-startwork-sub">Contact your dispatcher for today's route.</div>
+        </div>`;
+        return;
+    }
+    card.innerHTML=`<button class="da-startwork-btn" onclick="startWork()">
+        <div class="da-startwork-btn-label">▶ START WORK</div>
+        <div class="da-startwork-btn-sub">${S.stops.length} stop${S.stops.length===1?"":"s"} · ${S.stops.filter(s=>isPickupLikeStop(s.type)).length} pickup${S.stops.filter(s=>isPickupLikeStop(s.type)).length===1?"":"s"} · ${S.stops.filter(s=>s.type==="dropoff"||s.type==="return").length} deliver${S.stops.filter(s=>s.type==="dropoff"||s.type==="return").length===1?"y":"ies"}</div>
+    </button>`;
+}
+
+async function startWork(){
+    if(!S.dayData?.is_today) return;
+    const btn=q(".da-startwork-btn");
+    if(btn){ btn.disabled=true; btn.style.opacity=.7; }
+    try{
+        const res=await rpc("/dispatch/driver/work/start",{lat:S.lat||0,lng:S.lng||0});
+        if(!res?.success){ toast(res?.error||"Could not start work"); if(btn){btn.disabled=false;btn.style.opacity=1;} return; }
+        S.workday=res;
+        toast("▶ Work started");
+        // The server also syncs every open job's route_started_at — refresh
+        // so the list shows routes as started.
+        await reloadDay();
+        showViewTab("stops");
+        highlightFirstOpenStop();
+    }catch(e){
+        toast("Could not start work — check your connection");
+        if(btn){ btn.disabled=false; btn.style.opacity=1; }
+    }
+}
+window.startWork=startWork;
+
+function highlightFirstOpenStop(){
+    const next=firstOpenStop();
+    if(!next) return;
+    const list=q("#stopList");
+    if(list){ const el=[...list.querySelectorAll(".da-stop-row")].find(r=>Number(r.dataset.idx)!==undefined && S.stops[Number(r.dataset.idx)]?.id===next.id); if(el){ el.scrollIntoView({behavior:"smooth",block:"center"}); el.classList.add("da-stop-pulse"); setTimeout(()=>el.classList.remove("da-stop-pulse"),2500);} }
+}
+
+// ── DAILY SUMMARY (persisted, spec §30) ───────────────────────────
+function renderWorkDaySummary(){
+    const el=q("#workDaySummary"); if(!el)return;
+    if(!S.dayData?.is_today || S.workday?.state!=="completed" || !S.workday?.summary){
+        el.style.display="none"; el.innerHTML=""; return;
+    }
+    el.style.display="";
+    const s=S.workday.summary;
+    const started=S.workday.work_started_at?fmtStopTime(S.workday.work_started_at):"—";
+    const finished=S.workday.work_finished_at?fmtStopTime(S.workday.work_finished_at):"—";
+    el.innerHTML=`
+        <div class="da-workday-card">
+            <div class="da-workday-title">DAILY SUMMARY</div>
+            <div class="da-workday-grid">
+                <div><span>Started</span><strong>${started}</strong></div>
+                <div><span>Finished</span><strong>${finished}</strong></div>
+                <div><span>Total</span><strong>${fmtDur(s.total_minutes||0)}</strong></div>
+                <div><span>Driving</span><strong>${fmtDur(s.driving_minutes||0)}</strong></div>
+                <div><span>Waiting</span><strong>${fmtDur(s.waiting_minutes||0)}</strong></div>
+                <div><span>Loading</span><strong>${fmtDur(s.loading_minutes||0)}</strong></div>
+                <div><span>Unloading</span><strong>${fmtDur(s.unloading_minutes||0)}</strong></div>
+                <div><span>Stops</span><strong>${s.stops||0}</strong></div>
+                <div><span>Distance</span><strong>${(s.distance_km||0).toFixed(0)} km</strong></div>
+                <div><span>Pallets handled</span><strong>${s.pallets||0}</strong></div>
+            </div>
+        </div>`;
+}
 
 async function loadWeather(){
     const badge=q("#weatherBadge"); if(!badge)return;
@@ -440,6 +579,7 @@ const APP = window.APP = {
     toggleMap:    () => { S.mapCollapsed=!S.mapCollapsed; q("#routeMapWrap")?.classList.toggle("collapsed",S.mapCollapsed); q("#mapToggleBtn") && (q("#mapToggleBtn").textContent=S.mapCollapsed?"▼":"▲"); if(!S.mapCollapsed&&S.mapsReady)setTimeout(()=>trigResize("route"),280); },
     showHomeTab:  () => showViewTab("home"),
     showStopsTab: () => showViewTab("stops"),
+    showNavTab:   () => showViewTab("nav"),
     callDispatch: () => {
         const target=normalizeCallTarget(DISPATCH_VOIP_URI||DISPATCH_PHONE);
         if(!target){toast("No dispatch number or VoIP URI configured");return;}
@@ -459,6 +599,7 @@ const APP = window.APP = {
     openPhoto:    (url) => { q("#photoImg").src=url; show("oPhoto"); },
     confirmArrived:()=> confirmGeoArrive(),
     dismissGeo:   () => dismissGeo(),
+    startWork:    () => startWork(),
     openChat:     () => openChat(),
     closeChat:    () => closeChat(),
     sendChat:     () => sendChat(),
@@ -617,6 +758,34 @@ function bindPickupDelegates(){
                 ev.preventDefault();
                 pickupAdjustActual(parseInt(btn.dataset.delta,10) || 0);
                 break;
+            case "pickup-toggle-popp-override":
+                ev.preventDefault();
+                poppToggleOverride();
+                break;
+            case "popp-override-seal-photo":
+                ev.preventDefault();
+                poppSealPhoto();
+                break;
+            case "popp-override-submit":
+                ev.preventDefault();
+                await poppSubmitOverride();
+                break;
+            case "pickup-popp-photo": {
+                ev.preventDefault();
+                const itemId=parseInt(btn.dataset.itemId,10);
+                const stop=currentPickupStop() || S.stop;
+                if(!stop || !itemId) break;
+                openPoppCamera(stop.id, itemId);
+                break;
+            }
+            case "pickup-popp-del":
+                ev.preventDefault();
+                await delEv(currentPickupStop()?.id || S.stop?.id, "popp", parseInt(btn.dataset.attId,10), parseInt(btn.dataset.itemId,10));
+                break;
+            case "pickup-popp-retake":
+                ev.preventDefault();
+                retakeEvidence(currentPickupStop()?.id || S.stop?.id, "popp", parseInt(btn.dataset.attId,10), parseInt(btn.dataset.itemId,10));
+                break;
             }
         }catch(err){
             toast(err.message || "Action failed");
@@ -668,6 +837,18 @@ function bindPickupDelegates(){
         }
         if(field==="pickup-variance-notes"){
             pickupSetVarianceNotes(el.value);
+            return;
+        }
+        if(field==="popp-override-reason"){
+            poppSetReason(el.value);
+            return;
+        }
+        if(field==="popp-override-other"){
+            poppSetOther(el.value);
+            return;
+        }
+        if(field==="popp-override-seal"){
+            poppSetSeal(el.value);
         }
     });
 
@@ -716,7 +897,9 @@ function renderWeek() {
     grid.innerHTML="";
     (wk.days||[]).slice(0,7).forEach(d=>{
         const cell=mk("div","da-day-cell"+(d.date===S.selDate?" selected":"")+(d.is_today?" today":"")+(d.is_past?" past":""));
-        cell.innerHTML=`<div class="da-day-wd">${d.weekday}</div><div class="da-day-num">${d.day_num}</div><div class="da-day-dot ${d.all_done?"all-done":d.job_count?"has-jobs":""}"></div>`;
+        // Completed workdays show a checkmark (spec §29).
+        cell.innerHTML=`<div class="da-day-wd">${d.weekday}</div><div class="da-day-num">${d.day_num}${d.day_completed?"<span class='da-day-check'>✓</span>":""}</div><div class="da-day-dot ${d.all_done?"all-done":d.job_count?"has-jobs":""}"></div>`;
+        cell.title=d.day_completed?"Workday completed":(d.work_started?"Work in progress":(d.job_count?d.job_count+" job(s)":"No work"));
         cell.onclick=()=>selectDay(d.date);
         grid.appendChild(cell);
     });
@@ -744,134 +927,167 @@ function renderStopList() {
         return;
     }
 
-    const next=S.stops.find(s=>!["completed","skipped","cancelled"].includes(s.status));
+    const openStops=S.stops.filter(s=>!["completed","skipped","cancelled"].includes(s.status));
+    const doneStops=S.stops.filter(s=>["completed","skipped"].includes(s.status));
+    const next=openStops[0];
+
+    // 1. NEXT STOP card (spec §10) — GO opens the NAVIGATION tab.
     if(next){
-        const banner=mk("div","da-start-banner");
-        banner.innerHTML=`<div><div class="da-start-banner-text">Next ${esc(stopTypeTitle(next.type))}</div><div class="da-start-banner-sub">${esc(stopCompany(next))}</div></div><div class="da-start-btn-badge">Go →</div>`;
-        banner.onclick=()=>openStop(next);
-        list.appendChild(banner);
+        const sched=next.scheduled_time
+            ?`Scheduled ${fmtStopTime(next.scheduled_time,next.tz_name)}`
+            :(next.estimated_arrival?`ETA ${fmtStopTime(next.estimated_arrival,next.tz_name)}`:"");
+        const card=mk("div","da-next-stop-card");
+        card.innerHTML=`
+            <div class="da-next-stop-head">
+                <div class="da-next-stop-type">${esc(stopTypeTitle(next.type))}</div>
+                ${sched?`<div class="da-next-stop-sched">${esc(sched)}</div>`:""}
+            </div>
+            <div class="da-next-stop-name">${esc(stopCompany(next))}</div>
+            <div class="da-next-stop-addr">${esc(next.address)}</div>
+            <div class="da-next-stop-actions">
+                <button class="da-btn da-btn-green da-next-go" id="nextStopGo">GO →</button>
+                <button class="da-btn da-btn-secondary" id="nextStopDetails">Details</button>
+            </div>`;
+        card.querySelector("#nextStopGo").onclick=()=>showViewTab("nav");
+        card.querySelector("#nextStopDetails").onclick=()=>openStop(next);
+        list.appendChild(card);
     }
 
-    const hint=mk("p","");
-    hint.style.cssText="font-size:11px;color:#aaa;text-align:center;margin:2px 0 6px;padding:0 12px";
-    hint.textContent="Hold and drag ↕ to reorder stops";
-    list.appendChild(hint);
+    // 2. UPCOMING STOPS — rows with route headers + drag reorder.
+    if(openStops.length){
+        const head=mk("div","da-list-section-title");
+        head.textContent=`UPCOMING STOPS · ${openStops.length}`;
+        list.appendChild(head);
+        if(openStops.length>1){
+            const hint=mk("p","");
+            hint.style.cssText="font-size:11px;color:#aaa;text-align:center;margin:2px 0 6px;padding:0 12px";
+            hint.textContent="Hold and drag ↕ to reorder stops";
+            list.appendChild(hint);
+        }
+        const routeHeadersShown=new Set();
+        const openIdx=new Set(openStops.map(s=>s.id));
+        S.stops.forEach((stop,idx)=>{
+            if(!openIdx.has(stop.id)) return;
+            const row=buildStopRow(stop,idx,true);
+            list.appendChild(row);
+            // Route header — one per job, before its first open stop.
+            const jid=stop.job_id;
+            if(jid && !routeHeadersShown.has(jid) && !stop.job_completed){
+                routeHeadersShown.add(jid);
+                const js=stop.job_summary||{};
+                const header=mk("div","da-route-header");
+                if(js.route_started){
+                    header.innerHTML=`🚚 ${esc(stop.job_name||"Route")} · <span class="da-route-started">▶ Route started${js.route_started_at?` ${fmtStopTime(js.route_started_at,stop.tz_name)}`:""}</span>`;
+                }else{
+                    header.innerHTML=`🚚 ${esc(stop.job_name||"Assigned route")} · <span style="opacity:.7">assigned route</span>`;
+                    const btn=mk("button","da-btn da-btn-green da-route-start-btn");
+                    btn.textContent="▶ Start Route";
+                    btn.onclick=async()=>{
+                        try{
+                            const res=await rpc("/dispatch/driver/job/start-route",{job_id:jid});
+                            if(res?.success){
+                                toast("▶ Route started");
+                                S.stops.forEach(s=>{
+                                    if(s.job_id===jid){
+                                        s.job_summary=s.job_summary||{};
+                                        s.job_summary.route_started=true;
+                                        s.job_summary.route_started_at=res.route_started_at;
+                                    }
+                                });
+                                renderStopList();
+                            }else{
+                                toast(res?.error||"Could not start route");
+                            }
+                        }catch(e){ toast("Could not start route — check your connection"); }
+                    };
+                    header.appendChild(btn);
+                }
+                list.insertBefore(header,row);
+            }
+        });
+    }
 
-    const routeHeadersShown=new Set();
-    S.stops.forEach((stop,idx)=>{
-        const isLast=idx===S.stops.length-1;
-        const isPickup=isPickupLikeStop(stop.type);
-        const isDone=["completed","skipped","cancelled"].includes(stop.status);
-        const isActive=["arrived","en_route"].includes(stop.status);
-        const hasPop=stop.pop_attachments?.length>0;
-        const hasPod=stop.pod_attachments?.length>0;
+    // 3. COMPLETED STOPS — collapsed by default (spec §10).
+    if(doneStops.length){
+        const det=mk("details","da-completed-details");
+        det.innerHTML=`<summary class="da-list-section-title">COMPLETED STOPS · ${doneStops.length}</summary>`;
+        const doneIdx=new Set(doneStops.map(s=>s.id));
+        S.stops.forEach((stop,idx)=>{
+            if(!doneIdx.has(stop.id)) return;
+            det.appendChild(buildStopRow(stop,idx,false));
+        });
+        // Job Finished — one row per job whose stops (in today's list) are all done
+        const jobIds=[...new Set(doneStops.map(s=>s.job_id).filter(Boolean))];
+        for(const jid of jobIds){
+            const jobStops=S.stops.filter(s=>s.job_id===jid);
+            if(!jobStops.every(s=>["completed","skipped"].includes(s.status)))continue;
+            const jobName=jobStops[0]?.job_name||"";
+            const row=mk("div","");
+            row.style.cssText="margin:8px 10px;padding:10px;border-radius:10px;text-align:center";
+            if(jobStops[0]?.job_completed){
+                row.style.background="#e8f5e9";row.style.color="#2e7d32";row.style.fontWeight="600";
+                row.textContent=`✅ ${jobName} — Job Finished`;
+            }else{
+                row.style.background="#fff3e0";
+                const btn=mk("button","da-btn da-btn-green");
+                btn.textContent=`🏁 Finish ${jobName}`;
+                btn.onclick=()=>finishJob(jid);
+                row.appendChild(btn);
+            }
+            det.appendChild(row);
+        }
+        list.appendChild(det);
+    }
+}
 
-        const row=mk("div","da-stop-row"+(isActive?" active-row":""));
-        row.draggable=!isDone;
-        row.dataset.idx=idx;
+// One stop row (shared by UPCOMING and COMPLETED sections). draggable only
+// for open stops; dataset.idx always indexes into S.stops so drag/reorder
+// keeps working after the list was split into sections.
+function buildStopRow(stop,idx,draggable){
+    const isPickup=isPickupLikeStop(stop.type);
+    const isDone=["completed","skipped","cancelled"].includes(stop.status);
+    const isActive=["arrived","en_route"].includes(stop.status);
+    const hasPop=stop.pop_attachments?.length>0;
+    const hasPod=stop.pod_attachments?.length>0;
 
-        // Touch drag events
+    const row=mk("div","da-stop-row"+(isActive?" active-row":""));
+    row.draggable=draggable;
+    row.dataset.idx=idx;
+
+    if(draggable){
         row.addEventListener("dragstart", e=>{S.dragSrcIdx=idx; e.dataTransfer.effectAllowed="move";});
         row.addEventListener("dragover",  e=>{e.preventDefault(); e.dataTransfer.dropEffect="move";});
         row.addEventListener("drop",      e=>{ e.preventDefault(); dropStop(idx); });
         row.addEventListener("dragend",   ()=>{ S.dragSrcIdx=null; });
-
-        const tl=mk("div","da-stop-timeline");
-        tl.innerHTML=`<div class="da-dot ${isPickup?"pickup ":""}${stop.status.replace("_route","_route")}"></div>${!isLast?'<div class="da-connector"></div>':""}`;
-
-        const timeStr=stop.actual_arrival_time
-            ? `Arrived ${fmtStopTime(stop.actual_arrival_time,stop.tz_name)}`
-            : stop.scheduled_time
-            ? fmtStopTime(stop.scheduled_time,stop.tz_name)
-            : stop.estimated_arrival
-            ? `ETA ${fmtStopTime(stop.estimated_arrival,stop.tz_name)}`
-            : "";
-
-        const ct=mk("div","da-stop-content");
-        ct.innerHTML=
-            `<div class="da-stop-type ${isPickup?"pickup":""}">${esc(stopTypeLabel(stop.type))} · <span style="opacity:.65">${esc(stop.job_name)}</span>${timeStr?` · <span class="da-stop-time">${esc(timeStr)}</span>`:""}</div>`+
-            `<div class="da-stop-name">${esc(stopCompany(stop))}</div>`+
-            `<div class="da-stop-addr">${esc(stop.address)}</div>`+
-            (isDone?`<span class="da-stop-badge green">✓ Done${hasPop||hasPod?" 📎":""}</span>`:
-             isActive?`<span class="da-stop-badge blue">In Progress</span>`:
-             (hasPop||hasPod?`<span class="da-stop-badge">📎 Evidence</span>`:""));
-        ct.onclick=()=>openStop(stop);
-
-        const handle=mk("div","");
-        handle.style.cssText="color:#ccc;font-size:20px;padding-top:4px;cursor:grab;flex-shrink:0";
-        handle.textContent="⠿";
-
-        row.append(tl,ct,handle);
-        list.appendChild(row);
-
-        // Route header — one per job, before its first stop: the
-        // ASSIGNED ROUTE → START ROUTE handshake. Shown until the job is
-        // started (or already finished — the Job Finished rows below take
-        // over then).
-        const jid=stop.job_id;
-        if(jid && !routeHeadersShown.has(jid) && !stop.job_completed && !isDone){
-            routeHeadersShown.add(jid);
-            const js=stop.job_summary||{};
-            const header=mk("div","da-route-header");
-            if(js.route_started){
-                header.innerHTML=`🚚 ${esc(stop.job_name||"Route")} · <span class="da-route-started">▶ Route started${js.route_started_at?` ${fmtStopTime(js.route_started_at,stop.tz_name)}`:""}</span>`;
-            }else{
-                header.innerHTML=`🚚 ${esc(stop.job_name||"Assigned route")} · <span style="opacity:.7">assigned route</span>`;
-                const btn=mk("button","da-btn da-btn-green da-route-start-btn");
-                btn.textContent="▶ Start Route";
-                btn.onclick=async()=>{
-                    try{
-                        const res=await rpc("/dispatch/driver/job/start-route",{job_id:jid});
-                        if(res?.success){
-                            toast("▶ Route started");
-                            S.stops.forEach(s=>{
-                                if(s.job_id===jid){
-                                    s.job_summary=s.job_summary||{};
-                                    s.job_summary.route_started=true;
-                                    s.job_summary.route_started_at=res.route_started_at;
-                                }
-                            });
-                            renderStopList();
-                        }else{
-                            toast(res?.error||"Could not start route");
-                        }
-                    }catch(e){ toast("Could not start route — check your connection"); }
-                };
-                header.appendChild(btn);
-            }
-            list.insertBefore(header,row);
-        }
-    });
-
-    // Progress
-    const done=S.stops.filter(s=>["completed","skipped"].includes(s.status)).length;
-    if(done>0){
-        const sum=mk("p","");
-        sum.style.cssText="text-align:center;font-size:12px;color:#888;padding:10px;border-top:1px solid #f0f2f5;margin:4px 0 0";
-        sum.textContent=`${done}/${S.stops.length} stops completed`;
-        list.appendChild(sum);
     }
 
-    // Job Finished — one row per job whose stops (in today's list) are all done
-    const jobIds=[...new Set(S.stops.map(s=>s.job_id).filter(Boolean))];
-    for(const jid of jobIds){
-        const jobStops=S.stops.filter(s=>s.job_id===jid);
-        if(!jobStops.every(s=>["completed","skipped"].includes(s.status)))continue;
-        const jobName=jobStops[0]?.job_name||"";
-        const row=mk("div","");
-        row.style.cssText="margin:8px 10px;padding:10px;border-radius:10px;text-align:center";
-        if(jobStops[0]?.job_completed){
-            row.style.background="#e8f5e9";row.style.color="#2e7d32";row.style.fontWeight="600";
-            row.textContent=`✅ ${jobName} — Job Finished`;
-        }else{
-            row.style.background="#fff3e0";
-            const btn=mk("button","da-btn da-btn-green");
-            btn.textContent=`🏁 Finish ${jobName}`;
-            btn.onclick=()=>finishJob(jid);
-            row.appendChild(btn);
-        }
-        list.appendChild(row);
-    }
+    const tl=mk("div","da-stop-timeline");
+    tl.innerHTML=`<div class="da-dot ${isPickup?"pickup ":""}${stop.status.replace("_route","_route")}"></div>`;
+
+    const timeStr=stop.actual_arrival_time
+        ? `Arrived ${fmtStopTime(stop.actual_arrival_time,stop.tz_name)}`
+        : stop.scheduled_time
+        ? fmtStopTime(stop.scheduled_time,stop.tz_name)
+        : stop.estimated_arrival
+        ? `ETA ${fmtStopTime(stop.estimated_arrival,stop.tz_name)}`
+        : "";
+
+    const ct=mk("div","da-stop-content");
+    ct.innerHTML=
+        `<div class="da-stop-type ${isPickup?"pickup":""}">${esc(stopTypeLabel(stop.type))} · <span style="opacity:.65">${esc(stop.job_name)}</span>${timeStr?` · <span class="da-stop-time">${esc(timeStr)}</span>`:""}</div>`+
+        `<div class="da-stop-name">${esc(stopCompany(stop))}</div>`+
+        `<div class="da-stop-addr">${esc(stop.address)}</div>`+
+        (isDone?`<span class="da-stop-badge green">✓ Done${hasPop||hasPod?" 📎":""}</span>`:
+         isActive?`<span class="da-stop-badge blue">In Progress</span>`:
+         (hasPop||hasPod?`<span class="da-stop-badge">📎 Evidence</span>`:""));
+    ct.onclick=()=>openStop(stop);
+
+    const handle=mk("div","");
+    handle.style.cssText="color:#ccc;font-size:20px;padding-top:4px;cursor:grab;flex-shrink:0";
+    handle.textContent="⠿";
+
+    row.append(tl,ct,handle);
+    return row;
 }
 
 async function finishJob(jobId){
@@ -1069,6 +1285,9 @@ function renderStopDetail() {
     const phone=stop.contact_phone||"";
     const pickupInfo=isPickup ? pickupSummary(stop) : null;
 
+    // Post-arrival order (spec §14): 1. header/status, 2. ARRIVED/ISSUE at
+    // top, 3. general POP/POD evidence, 4. pickup/delivery progress,
+    // 5/6. pallet/layout (Phase 4), 7. instructions, 8. confirmation + Done.
     body.innerHTML=
         `<div class="da-detail-info">`+
         `<div class="da-detail-ref">🗂 ${esc(stop.job_name)}</div>`+
@@ -1083,6 +1302,11 @@ function renderStopDetail() {
                    value="${stop.scheduled_time?fmtStopTime(stop.scheduled_time,stop.tz_name):""}"/>
             <button class="da-svc-btn" onclick="saveSchedTime()">Save</button>
         </div>`:"")+
+        `</div>`+
+        renderTopActions(stop,isDone,isActive)+
+        renderEvidence(stop)+
+        renderTransitEvidence(stop)+
+        `<div class="da-detail-info">`+
         (isPickup ? renderPickupActualsCard(stop) : "")+
         (stop.type==="pickup"
             ?`<div class="da-detail-meta" data-role="pickup-load-meta">📦 <strong>${pickupInfo?.actual ?? stop.pallets_in ?? "?"} pallets</strong> to pick up${stop.pallets_in_estimated?' <span class="da-est-badge" title="Estimated from downstream deliveries">✨ est.</span>':""}${pickupInfo && !pickupInfo.confirmed && pickupInfo.actual !== pickupInfo.expected ? ' <span class="da-est-badge" title="Changed on device but not confirmed yet">draft</span>' : ""}</div>`
@@ -1113,9 +1337,28 @@ function renderStopDetail() {
                 <div class="da-streetview-label">📍 Street View (no entrance photo saved yet)</div>
             </div>`:""))+
         `</div>`+
-        renderTransitEvidence(stop)+
-        renderEvidence(stop)+
         renderActions(stop,isDone,isActive);
+}
+
+// ── ARRIVED / ISSUE at the TOP of the stop screen (spec §12/§13) ────
+function renderTopActions(stop,isDone,isActive){
+    if(isDone) return "";
+    if(stop.type==="transfer"){
+        return `<div class="da-top-actions">${!isActive
+            ?`<button class="da-btn da-btn-green da-top-action" onclick="doArrived()">✓ I'm Here</button><button class="da-btn da-btn-orange da-top-action" onclick="doDelayed()">⚠ Issue</button>`
+            :`<button class="da-btn da-btn-green da-top-action" onclick="doExecuteTransfer()">✓ Finish Transfer</button><button class="da-btn da-btn-orange da-top-action" onclick="doDelayed()">⚠ Report Issue</button>`}
+        </div>`;
+    }
+    if(isCrossDockStop(stop.type)){
+        return `<div class="da-top-actions">${!isActive
+            ?`<button class="da-btn da-btn-green da-top-action" onclick="doArrived()">✓ Arrived</button><button class="da-btn da-btn-orange da-top-action" onclick="doDelayed()">⚠ Issue</button>`
+            :`<button class="da-btn da-btn-green da-top-action" onclick="doComplete()">✅ Finish ${stop.type==="cross_dock_drop"?"Cross-Dock Drop":"Cross-Dock Pickup"}</button><button class="da-btn da-btn-orange da-top-action" onclick="doDelayed()">⚠ Report Issue</button>`}
+        </div>`;
+    }
+    return `<div class="da-top-actions">${!isActive
+        ?`<button class="da-btn da-btn-green da-top-action" onclick="doArrived()">✓ Arrived</button><button class="da-btn da-btn-orange da-top-action" onclick="doDelayed()">⚠ Issue</button>`
+        :`<button class="da-btn da-btn-green da-top-action" onclick="doComplete()">✅ Complete &amp; Next Stop</button><button class="da-btn da-btn-orange da-top-action" onclick="doDelayed()">⚠ Report Issue</button>`}
+    </div>`;
 }
 
 function pickupSummary(stop){
@@ -1149,11 +1392,32 @@ function pickupSummary(stop){
         confirmedBy: job.pickup_actuals_confirmed_by || step.actual_confirmed_by || "",
         needsStopEntry: !!step.needs_stop_entry,
         canAssignPallets: confirmed && (step.confirmed_pallet_count || 0) > 0,
+        // Phase 4 (spec §21/§23): full Pickup Confirmation readiness —
+        // actuals + pallet assignment + POPP (or documented override).
+        gateReady: confirmed && !!step.pickup_gate_ready,
+        gateMissing: step.pickup_gate_missing || [],
     };
+}
+
+// Spec §5: "Variance" is customer/driver-facing "Pallet Difference".
+// Zero difference shows Expected/Loaded plainly; a mismatch shows a
+// WARNING line and requires notes (enforced server-side by the gate).
+function palletDifferenceLine(expected, actual){
+    const diff=Number(actual||0)-Number(expected||0);
+    if(diff===0) return `Expected: ${expected} — Loaded: ${actual||expected}`;
+    return `WARNING: ${diff>0?"+":""}${diff} Pallet Difference`;
+}
+function palletDifferenceWarning(expected, actual){
+    const diff=Number(actual||0)-Number(expected||0);
+    if(diff===0) return "";
+    return `<div class="da-pickup-warning">${palletDifferenceLine(expected, actual)} — notes required before confirmation.</div>`;
 }
 
 function pickupStatusLabel(stop){
     const summary=pickupSummary(stop);
+    if(summary.confirmed && !summary.gateReady){
+        return "Pallet checks pending — see Pickup Confirmation";
+    }
     if(summary.needsReconfirm){
         return "Actual changed — confirm pickup again";
     }
@@ -1181,7 +1445,7 @@ function renderPickupActualsCard(stop){
     const statusLabel=pickupStatusLabel(stop);
     const editDisabled=!summary.confirmed;
     const assignDisabled=!summary.confirmed || summary.deliveryStopCount===0 || !summary.canAssignPallets;
-    const confirmLabel=summary.needsReconfirm ? "Reconfirm Pickup" : (summary.confirmed ? "Pickup Confirmed" : "Confirm Pickup");
+    const confirmLabel=summary.needsReconfirm ? "Reconfirm Pickup" : (summary.confirmed ? (summary.gateReady ? "✓ PICKUP CONFIRMED" : "Pickup Confirmed") : "Confirm Pickup");
     const guidance=summary.confirmed
         ? (summary.deliveryStopCount ? "Pickup confirmed. Edit delivery stops, then assign stops to pallets, then optimize the remaining route." : "Pickup confirmed. Add delivery stops next, then assign stops to pallets.")
         : "Confirm pickup first, then edit delivery stops, then assign stops to pallets.";
@@ -1203,11 +1467,12 @@ function renderPickupActualsCard(stop){
         <div class="da-pickup-note">
             <span class="da-pickup-status ${pickupStatusClass(stop)}" data-role="pickup-status">${esc(statusLabel)}</span>
         </div>
-        <div class="da-pickup-note" data-role="pickup-variance">Variance: ${summary.variance>0?"+":""}${summary.variance}</div>
+        <div class="da-pickup-note" data-role="pickup-variance">${palletDifferenceLine(summary.expected, summary.confirmed ? summary.confirmedActual : summary.actual)}</div>
+        ${!summary.gateReady && summary.confirmed && summary.gateMissing.length ? `<div class="da-pickup-warning" data-role="pickup-gate-missing">${summary.gateMissing.map(m=>`• ${esc(m)}`).join("<br/>")}</div>` : ""}
         <div class="da-pickup-note" data-role="pickup-layout-line">Current layout: ${esc(summary.layoutType.replace("_","-"))} — ${summary.layoutCapacity ? `${summary.confirmed ? summary.confirmedActual : summary.actual} / ${summary.layoutCapacity}` : "capacity pending"}.</div>
         <div class="da-pickup-note" data-role="pickup-guidance">${guidance}</div>
         <div class="da-pickup-card-actions">
-            <button class="da-btn ${summary.confirmed && !summary.needsReconfirm ? "da-btn-primary" : "da-btn-secondary"}" type="button" data-action="confirm-pickup" data-stop-id="${stop.id}" data-role="pickup-confirm-btn">
+            <button class="da-btn ${summary.gateReady ? "da-btn-primary" : "da-btn-secondary"}" type="button" data-action="confirm-pickup" data-stop-id="${stop.id}" data-role="pickup-confirm-btn">
                 ${confirmLabel}
             </button>
             <button class="da-btn da-btn-primary" type="button" data-action="edit-delivery-stops" data-stop-id="${stop.id}" data-job-id="${stop.job_id}" data-role="pickup-edit-btn" ${editDisabled?"disabled aria-disabled=\"true\"":""}>
@@ -1301,29 +1566,24 @@ function renderEvidence(stop){
         h+=`<div class="da-evidence-item">
             <span class="da-ev-name">${esc(a.name)}</span>
             <a href="${esc(a.url)}" target="_blank" class="da-ev-view">View</a>
-            ${!isDone?`<button class="da-ev-del" onclick="delEv(${stop.id},'${evType}',${a.id})">✕</button>`:""}
+            ${!isDone?`<button class="da-ev-del" title="Retake" onclick="retakeEvidence(${stop.id},'${evType}',${a.id})">↻</button>
+             <button class="da-ev-del" title="Delete" onclick="delEv(${stop.id},'${evType}',${a.id})">✕</button>`:""}
         </div>`;
     });
     if(!atts.length) h+=`<div class="da-ev-empty">No evidence yet</div>`;
     h+=`</div>`;
     if(!isDone){
+        const pendingN=(S.pendingQueue||[]).filter(p=>p.stopId===stop.id && p.evType===evType).length;
         h+=`<div class="da-evidence-btns" data-stop="${stop.id}" data-evtype="${evType}">
             <label class="da-btn da-btn-secondary da-btn-sm da-ev-action-btn" ${busy?"disabled":""}>📷 Take Photo
                 <input type="file" accept="${EVIDENCE_IMAGE_ACCEPT}" capture="camera" style="display:none" ${busy?"disabled":""}
                        onchange="pickEvidenceFile(${stop.id},'${evType}',this)">
             </label>
-            <label class="da-btn da-btn-secondary da-btn-sm da-ev-action-btn" ${busy?"disabled":""}>🖼️ Choose Photo
-                <input type="file" accept="${EVIDENCE_IMAGE_ACCEPT}" style="display:none" ${busy?"disabled":""}
-                       onchange="pickEvidenceFile(${stop.id},'${evType}',this)">
-            </label>
-            <label class="da-btn da-btn-secondary da-btn-sm da-ev-action-btn" ${busy?"disabled":""}>📄 Upload PDF
-                <input type="file" accept="${EVIDENCE_PDF_ACCEPT}" style="display:none" ${busy?"disabled":""}
-                       onchange="pickEvidenceFile(${stop.id},'${evType}',this)">
-            </label>
-            <button class="da-btn da-btn-secondary da-btn-sm da-ev-action-btn" ${busy?"disabled":""} onclick="openScanner(${stop.id},'${evType}')">📄 Scan Doc</button>
+            <button class="da-btn da-btn-secondary da-btn-sm da-ev-action-btn" ${busy?"disabled":""} onclick="openScanner(${stop.id},'${evType}')">📄 Scan Document</button>
         </div>
+        ${pendingN?`<div class="da-ev-pending">⏳ Pending Upload (${pendingN}) — retries automatically when connected</div>`:""}
         <div id="evStatusRow-${stop.id}-${evType}" class="da-ev-status-row" style="display:none"></div>
-        <div class="da-evidence-hint">Take Photo uses the camera directly; Choose Photo picks from your library.${evType==="pod" ? " Camera photos are stamped with date, time, and GPS." : ""}</div>`;
+        <div class="da-evidence-hint">Camera-only capture. Photos are stamped with PREMA DISPATCH, date, time, and GPS. Scanned pages combine into one PDF.</div>`;
     }
     h+=`</div>`;
     if(S.uploadState && S.uploadState.stopId===stop.id && S.uploadState.evType===evType && S.uploadState.phase!=="idle"){
@@ -1510,10 +1770,14 @@ function refreshPickupCardMetrics(stopId){
     const assignBtn=card.querySelector(`[data-role="pickup-assign-btn"]`);
     const optimizeBtn=card.querySelector(`[data-role="pickup-optimize-btn"]`);
     if(actualDisplay) actualDisplay.textContent=summary.confirmed ? `${summary.actual} confirmed` : `${summary.actual}`;
-    if(variance) variance.textContent=`Variance: ${summary.variance>0?"+":""}${summary.variance}`;
+    if(variance) variance.textContent=palletDifferenceLine(summary.expected, summary.confirmed ? summary.confirmedActual : summary.actual);
     if(status){
         status.textContent=pickupStatusLabel(stop);
         status.className=`da-pickup-status ${pickupStatusClass(stop)}`.trim();
+    }
+    if(confirmBtn){
+        confirmBtn.textContent=summary.needsReconfirm ? "Reconfirm Pickup" : (summary.confirmed ? (summary.gateReady ? "✓ PICKUP CONFIRMED" : "Pickup Confirmed") : "Confirm Pickup");
+        confirmBtn.className=`da-btn ${summary.gateReady ? "da-btn-primary" : "da-btn-secondary"}`.trim();
     }
     if(layoutLine){
         layoutLine.textContent=`Current layout: ${String(summary.layoutType||"straight").replace("_","-")} — ${summary.layoutCapacity ? `${summary.confirmed ? summary.confirmedActual : summary.actual} / ${summary.layoutCapacity}` : "capacity pending"}.`;
@@ -2022,9 +2286,10 @@ function renderPickupConfirm(){
         <div class="da-pickup-confirm-grid">
             <div class="da-pickup-stat"><div class="da-pickup-stat-label">Expected</div><div class="da-pickup-stat-value">${summary.expected}</div></div>
             <div class="da-pickup-stat"><div class="da-pickup-stat-label">Actual Received</div><div class="da-pickup-stat-value">${state.actual}</div></div>
-            <div class="da-pickup-stat"><div class="da-pickup-stat-label">Variance</div><div class="da-pickup-stat-value">${state.actual-summary.expected>0?"+":""}${state.actual-summary.expected}</div></div>
+            <div class="da-pickup-stat"><div class="da-pickup-stat-label">Pallet Difference</div><div class="da-pickup-stat-value">${state.actual-summary.expected>0?"+":""}${state.actual-summary.expected}</div></div>
             <div class="da-pickup-stat"><div class="da-pickup-stat-label">Layout</div><div class="da-pickup-stat-value">${esc(String(layoutType||"straight").replace("_","-"))}${layoutCapacity ? ` — ${state.actual}/${layoutCapacity}` : ""}</div></div>
         </div>
+        ${palletDifferenceWarning(summary.expected, state.actual)}
         ${state.actual > (summary.layoutMaxCapacity || 999) ? `<div class="da-pickup-warning">This truck cannot carry ${state.actual} pallets.</div>` : ""}
         <div class="da-pickup-confirm-actions">
             <button class="da-btn da-btn-ghost" type="button" data-action="pickup-confirm-cancel">Cancel</button>
@@ -2043,12 +2308,15 @@ function renderPickupIntake(){
     let html=`<div class="da-pickup-steps">${steps.map(([id,label])=>`<button class="da-pickup-step ${flow.step===id?"active":""}" type="button" data-action="pickup-set-step" data-step="${id}">${label}</button>`).join("")}</div>`;
     if(flow.step===1){
         const variance=Number(flow.actual||0)-Number(expected||0);
+        const poppOverride=flow.poppOverride||{};
         html+=`<div class="da-pickup-section">
             <h4>Confirm Pickup</h4>
             <div class="da-pickup-stat-grid">
                 <div class="da-pickup-stat"><div class="da-pickup-stat-label">Expected</div><div class="da-pickup-stat-value">${expected}</div></div>
-                <div class="da-pickup-stat"><div class="da-pickup-stat-label">Variance</div><div class="da-pickup-stat-value">${variance>0?"+":""}${variance}</div></div>
+                <div class="da-pickup-stat"><div class="da-pickup-stat-label">Actual Received</div><div class="da-pickup-stat-value">${Number(flow.actual||0)}</div></div>
+                <div class="da-pickup-stat"><div class="da-pickup-stat-label">Pallet Difference</div><div class="da-pickup-stat-value">${variance>0?"+":""}${variance}</div></div>
             </div>
+            ${palletDifferenceWarning(expected, Number(flow.actual||0))}
             <div class="da-pickup-qty-label">Actual pallets received</div>
             <div class="da-pickup-qty">
                 <button class="da-svc-btn" type="button" data-action="pickup-adjust-actual" data-delta="-1">−</button>
@@ -2056,8 +2324,13 @@ function renderPickupIntake(){
                 <button class="da-svc-btn" type="button" data-action="pickup-adjust-actual" data-delta="1">+</button>
             </div>
             <label class="da-route-opt" style="border-bottom:none;padding-left:0"><input type="checkbox" ${flow.routeSheetReceived?"checked":""} data-field="pickup-route-sheet"/> Route sheet received</label>
-            <textarea class="da-pickup-textarea" placeholder="Over / short / damage notes" data-field="pickup-variance-notes">${esc(flow.varianceNotes||"")}</textarea>
+            <label class="da-route-opt" style="border-bottom:none;padding-left:0">${variance!==0?"⚠ ":"Notes "}<span data-role="pickup-notes-label">${variance!==0?"Required — ":""}Over / short / damage notes</span>
+                <textarea class="da-pickup-textarea" placeholder="Over / short / damage notes" data-field="pickup-variance-notes">${esc(flow.varianceNotes||"")}</textarea>
+            </label>
+            ${(flow.gateError||[]).length ? `<div class="da-pickup-error" data-role="pickup-gate-error">${flow.gateError.map(m=>`• ${esc(m)}`).join("<br/>")}</div>` : ""}
             ${(Number(flow.actual||0) > 14) ? `<div class="da-pickup-warning">More than 14 pallets exceeds the configured single-truck layouts. Split the load or use another truck.</div>` : ""}
+            <button class="da-btn da-btn-ghost" type="button" data-action="pickup-toggle-popp-override" style="width:100%;margin:6px 0 0">${poppOverride.open ? "▲ Hide" : "🔒 No Access / Sealed Load"}</button>
+            ${poppOverride.open ? poppOverridePanelHtml(flow) : ""}
             <div class="da-pickup-row">
                 <button class="da-btn da-btn-secondary" type="button" data-action="pickup-save-actuals" data-next-step="0">Save Draft</button>
                 <button class="da-btn da-btn-primary" type="button" data-action="pickup-save-actuals" data-next-step="2">Save & Next</button>
@@ -2089,7 +2362,7 @@ function renderPickupIntake(){
         html+=items.map(item=>{
             const selected=(item.stops||[]).map(s=>s.stop_id);
             return `<div class="da-pallet-card">
-                <div class="da-pallet-title">${esc(item.name)}</div>
+                <div class="da-pallet-title">${esc(item.name)} ${item.position_code ? `<span class="da-pallet-pos">Pos ${esc(item.position_code)}</span>` : ""}</div>
                 <div class="da-pallet-sub">Choose one to five delivery stops.</div>
                 <div class="da-stop-chips">${stopOptions.map(opt=>{
                     const active=selected.includes(opt.stop_id);
@@ -2097,6 +2370,7 @@ function renderPickupIntake(){
                 }).join("")}</div>
                 <div class="da-pallet-sub">Assigned: ${selected.length} stop(s)</div>
                 <div class="da-pallet-shared">${selected.length>1 ? `Shared Pallet — ${selected.length} Stops` : "Single Stop Pallet"}</div>
+                <div class="da-popp-box">${poppPhotoHtml(item)}</div>
             </div>`;
         }).join("") || `<div class="da-pickup-section"><div class="da-pickup-note">Save actual pallet count first to create physical pallets.</div></div>`;
         html+=`<div class="da-pickup-row">
@@ -2406,12 +2680,23 @@ async function pickupSaveRouteDetails(opts={}){
         const summary=pickupSummary(stop);
         if(summary.confirmed){
             values.actual_received_pallet_count=Number(summary.actual||0);
+            const coords=resolveStampCoords(stop);
+            if(coords.lat!==null) values.lat=coords.lat;
+            if(coords.lng!==null) values.lng=coords.lng;
         }
         const res=await rpc("/dispatch/driver/pickup/finalize",{
             stop_id:stop.id,
             values,
         });
+        if(res?.code==="pickup_gate_blocked"){
+            // Spec §21/§23: show exactly what is still missing.
+            flow.gateError=res.missing||[];
+            if(S.pickupIntake) renderPickupIntake();
+            toast(res.message||"Pickup Confirmation needs a few more things");
+            return;
+        }
         if(!res?.success){ toast(res?.error||"Could not save route details"); return; }
+        if(flow.gateError) flow.gateError=null;
         await reloadDay();
         await ensurePickupLoadPlan(true);
         S.stop=findStopById(stop.id)||S.stop;
@@ -2548,6 +2833,19 @@ async function submitPickupConfirm(){
                 version: S.loadPlan?.version || false,
             },
         });
+        if(res?.code==="pickup_gate_blocked"){
+            // Spec §21/§23: surface the missing items in the intake flow.
+            state.saving=false;
+            closePickupConfirm();
+            openPickupIntake(1);
+            if(S.pickupIntake){
+                S.pickupIntake.actual=actual;
+                S.pickupIntake.gateError=res.missing||[];
+                renderPickupIntake();
+            }
+            toast(res.message||"Pickup Confirmation needs a few more things");
+            return;
+        }
         if(!res?.success){
             state.error=res?.error||"Could not confirm pickup.";
             state.saving=false;
@@ -2572,47 +2870,41 @@ async function submitPickupConfirm(){
 }
 
 function renderActions(stop,isDone,isActive){
-    if(isDone) return `<div class="da-detail-actions"><div class="da-done-card">✅ Completed</div>${renderReceivingTruckSection(stop,true)}<div class="da-btn-row"><button class="da-btn da-btn-ghost" onclick="APP.goBack()">← Back</button><button class="da-btn da-btn-secondary" onclick="doRestoreStop()">↺ Restore</button></div></div>`;
-    if(stop.type==="transfer"){
-        const hasProof=(stop.pod_attachments||[]).length>0;
+    // Confirmation + DONE / DONE — NEXT STOP / END DAY (spec §27/§28).
+    if(isDone){
+        const more=firstOpenStop();
         return `<div class="da-detail-actions">
-            <div class="da-transfer-note">${stop.transfer_to_vehicle
-                ?`🤝 Transferring the selected freight to <strong>${esc(stop.transfer_to_driver||"another driver")}</strong> on <strong>${esc(stop.transfer_to_vehicle)}</strong>.`
-                :`📍 This transfer will unassign the selected freight and stage it at this meet point until another truck reloads it.`}
-                ${hasProof ? "Custody proof has been added." : "Custody proof is optional."}
+            <div class="da-done-card">✅ Completed</div>
+            ${renderReceivingTruckSection(stop,true)}
+            <div class="da-btn-row">
+                ${more
+                    ?`<button class="da-btn da-btn-green da-done-next" onclick="doneNextStop()">DONE — NEXT STOP</button>`
+                    :`<button class="da-btn da-btn-green da-done-next" onclick="endDay()">END DAY</button>`}
             </div>
-            ${renderReceivingTruckSection(stop,false)}
-            ${!isActive
-                ?`<button class="da-btn da-btn-nav" onclick="doNavigate()">🗺️ Navigate to Handoff Point</button>
-                  <div class="da-btn-row"><button class="da-btn da-btn-green" onclick="doArrived()">✓ I'm Here</button><button class="da-btn da-btn-orange" onclick="doDelayed()">⚠ Issue</button></div>`
-                :`<button class="da-btn da-btn-green" onclick="doExecuteTransfer()">✓ Finish Transfer</button>
-                  <div class="da-btn-row"><button class="da-btn da-btn-secondary" onclick="doNavigate()">🗺️ Open Map Again</button><button class="da-btn da-btn-orange" onclick="doDelayed()">⚠ Report Issue</button></div>`}
-            <button class="da-btn da-btn-ghost" onclick="doRestoreStop()">↺ Restore Stop</button>
+            <div class="da-btn-row">
+                <button class="da-btn da-btn-ghost" onclick="APP.goBack()">← Back</button>
+                <button class="da-btn da-btn-secondary" onclick="doRestoreStop()">↺ Restore</button>
+            </div>
         </div>`;
     }
-    if(isCrossDockStop(stop.type)){
-        const hasProof=(stop.pod_attachments||[]).length>0;
-        const isDrop=stop.type==="cross_dock_drop";
-        return `<div class="da-detail-actions">
-            <div class="da-transfer-note">${isDrop
-                ?`🏬 This is a temporary cross-dock unload, not final delivery. ${hasProof ? "Custody proof has been added." : "Custody proof is optional."}`
-                :`🏬 This is a cross-dock reload / transfer-out, not the original shipper pickup. ${hasProof ? "Custody proof has been added." : "Custody proof is optional."}`}
-            </div>
-            ${isDrop ? renderReceivingTruckSection(stop,false) : ""}
-            ${!isActive
-                ?`<button class="da-btn da-btn-nav" onclick="doNavigate()">🗺️ Navigate to Cross-Dock</button>
-                  <div class="da-btn-row"><button class="da-btn da-btn-green" onclick="doArrived()">✓ Arrived</button><button class="da-btn da-btn-orange" onclick="doDelayed()">⚠ Issue</button></div>`
-                :`<button class="da-btn da-btn-green" onclick="doComplete()">✅ Finish ${isDrop?"Cross-Dock Drop":"Cross-Dock Pickup"}</button>
-                  <div class="da-btn-row"><button class="da-btn da-btn-secondary" onclick="doNavigate()">🗺️ Open Map Again</button><button class="da-btn da-btn-orange" onclick="doDelayed()">⚠ Report Issue</button></div>`}
-            <button class="da-btn da-btn-ghost" onclick="doRestoreStop()">↺ Restore Stop</button>
-        </div>`;
-    }
+    const navLabel=stop.type==="transfer"?"🗺️ Navigate to Handoff Point"
+        :isCrossDockStop(stop.type)?"🗺️ Navigate to Cross-Dock"
+        :"🗺️ Navigate — Truck Route";
+    const note=stop.type==="transfer"
+        ?`${stop.transfer_to_vehicle
+            ?`🤝 Transferring the selected freight to <strong>${esc(stop.transfer_to_driver||"another driver")}</strong> on <strong>${esc(stop.transfer_to_vehicle)}</strong>.`
+            :`📍 This transfer will unassign the selected freight and stage it at this meet point until another truck reloads it.`}`
+        :isCrossDockStop(stop.type)
+        ?(stop.type==="cross_dock_drop"
+            ?`🏬 This is a temporary cross-dock unload, not final delivery.`
+            :`🏬 This is a cross-dock reload / transfer-out, not the original shipper pickup.`)
+        :"";
+    const hasProof=(stop.pod_attachments||[]).length>0;
     return `<div class="da-detail-actions">
-        <button class="da-btn da-btn-nav" onclick="doNavigate()">🗺️ Navigate — Truck Route</button>
-        ${!isActive
-            ?`<div class="da-btn-row"><button class="da-btn da-btn-green" onclick="doArrived()">✓ Arrived</button><button class="da-btn da-btn-orange" onclick="doDelayed()">⚠ Issue</button></div>`
-            :`<button class="da-btn da-btn-green" onclick="doComplete()">✅ Complete &amp; Next Stop</button><button class="da-btn da-btn-orange" onclick="doDelayed()">⚠ Report Issue</button>`}
+        ${note?`<div class="da-transfer-note">${note} ${(stop.type==="transfer"||isCrossDockStop(stop.type))?`${hasProof ? "Custody proof has been added." : "Custody proof is optional."}`:""}</div>`:""}
+        ${(stop.type==="transfer"||stop.type==="cross_dock_drop")?renderReceivingTruckSection(stop,false):""}
         <div class="da-btn-row">
+            <button class="da-btn da-btn-nav" onclick="doNavigate()">${navLabel}</button>
             <button class="da-btn da-btn-secondary" onclick="APP.openPinEdit()">📍 Edit Pin</button>
             <button class="da-btn da-btn-secondary" onclick="doRestoreStop()">↺ Restore</button>
             <button class="da-btn da-btn-ghost" onclick="doSkip()">↩ Skip</button>
@@ -2620,6 +2912,45 @@ function renderActions(stop,isDone,isActive){
         ${stop.status==="pending"?`<button class="da-btn da-btn-ghost da-btn-del" onclick="doDeleteStop()">🗑 Delete Stop</button>`:""}
     </div>`;
 }
+
+// ── DONE — NEXT STOP / END DAY (spec §27/§28/§29) ──────────────────
+async function doneNextStop(){
+    const next=firstOpenStop();
+    if(!next){ endDay(); return; }
+    S.stop=next;
+    await callStop(next.id,"en_route",{});
+    patchStopState(next.id,{status:"en_route"});
+    renderStopList();
+    openNav(next,{asTab:true});
+}
+window.doneNextStop=doneNextStop;
+
+async function endDay(){
+    // Spec §57: never end the day while evidence is still unsynced — the
+    // server-side proof gate already blocks completion of required stops;
+    // this catches queued non-required files too (explicit driver override
+    // via the confirm, as the spec allows).
+    const queued=loadPendingQueue().length;
+    if(queued && !confirm(`${queued} evidence file${queued>1?"s are":" is"} still pending upload. End the day anyway?`)){
+        flushPendingQueue();
+        return;
+    }
+    if(!confirm("End the workday? Remaining jobs will be finalized.")) return;
+    try{
+        const res=await rpc("/dispatch/driver/work/end-day",{});
+        if(!res?.success){
+            toast(res?.error||"Could not end the day");
+            return;
+        }
+        S.workday=res.workday;
+        await reloadDay();
+        showHomeTab();
+        toast("✓ Work completed");
+    }catch(e){
+        toast("Could not end the day — check your connection");
+    }
+}
+window.endDay=endDay;
 
 // ── Evidence ──────────────────────────────────────────────────────
 function readFileAsDataUrl(file){
@@ -2658,7 +2989,7 @@ async function maybeBuildStampedEvidence(stopId, evType, file){
     const fallback=await readFileAsDataUrl(file);
     const original={filename:file.name, data_b64:fallback.split(",")[1]};
     const isImage=/^image\//.test(file.type || "") || /\.(jpe?g|png|webp|heic|heif)$/i.test(file.name || "");
-    if(evType!=="pod" || !isImage) return original;
+    if(!isImage) return original;
 
     try{
         const stop=findStopById(stopId) || S.stop;
@@ -2678,14 +3009,18 @@ async function maybeBuildStampedEvidence(stopId, evType, file){
         }).format(now);
         const coords=resolveStampCoords(stop);
         const gpsText=(coords.lat!==null && coords.lng!==null)
-            ?`Lat ${coords.lat.toFixed(6)}  Lng ${coords.lng.toFixed(6)}`
+            ?`${coords.lat.toFixed(6)}, ${coords.lng.toFixed(6)}`
             :"GPS unavailable";
+        const locName=(stop?.name || "").trim().slice(0, 40);
+        const lines=["PREMA DISPATCH"].concat(
+            locName ? [locName] : [],
+            [dateText, timeText, gpsText]
+        );
 
         const inset=Math.max(18, Math.round(Math.min(canvas.width, canvas.height) * 0.05));
         const pad=Math.max(10, Math.round(canvas.width * 0.012));
         let fontSize=Math.max(18, Math.round(canvas.width * 0.022));
-        const lines=[dateText, timeText, gpsText];
-        const maxBoxWidth=Math.round(canvas.width * 0.52);
+        const maxBoxWidth=Math.round(canvas.width * 0.6);
         let metricsWidth=0;
         do{
             ctx.font=`700 ${fontSize}px "Segoe UI", Arial, sans-serif`;
@@ -2715,7 +3050,7 @@ async function maybeBuildStampedEvidence(stopId, evType, file){
             data_b64: canvas.toDataURL("image/jpeg", 0.92).split(",")[1],
         };
     }catch(err){
-        console.warn("POD stamp failed, uploading original image", err);
+        console.warn("Stamp failed, uploading original image", err);
         return original;
     }
 }
@@ -2727,11 +3062,11 @@ async function maybeBuildStampedEvidence(stopId, evType, file){
 // queue. The file is kept on the state object so Retry doesn't require
 // re-picking it, and is cleared only on confirmed success/duplicate or
 // an explicit Dismiss.
-function pickEvidenceFile(stopId,evType,input){
+function pickEvidenceFile(stopId,evType,input,palletId){
     const file=input.files[0]; if(!file)return;
     input.value=""; // safe to clear the <input> immediately — the File object itself is retained on S.uploadState, not re-read from this input
     if(S.uploadState && ["preparing","uploading"].includes(S.uploadState.phase)) return; // guard: an upload is already active for this stop/type
-    S.uploadState={stopId,evType,filename:file.name,phase:"selected",progress:0,message:"",_file:file};
+    S.uploadState={stopId,evType,palletId:palletId||null,filename:file.name,phase:"selected",progress:0,message:"",_file:file};
     if(S.stop?.id===stopId) renderStopDetail();
     runEvidenceUpload(stopId,evType);
 }
@@ -2758,14 +3093,24 @@ async function runEvidenceUpload(stopId,evType){
     const file=st._file;
     st.phase="preparing"; st.progress=0; st.message="Preparing file…";
     renderUploadStatus(stopId,evType);
+    let lastPayload=null;
     try{
         const payload=await maybeBuildStampedEvidence(stopId, evType, file);
+        lastPayload=payload;
         if(!S.uploadState||S.uploadState!==st)return; // superseded (dismissed/new pick) while preparing
         st.phase="uploading"; st.progress=0;
         renderUploadStatus(stopId,evType);
+        // Spec §16: capture metadata (when/where/device) travels with the
+        // file — the burned-in stamp is never the only record.
+        const meta={captured_at:new Date().toISOString(), device:(navigator.userAgent||"driver-app").slice(0,120)};
+        const coords=resolveStampCoords(findStopById(stopId)||S.stop);
+        if(coords.lat!==null) meta.lat=coords.lat;
+        if(coords.lng!==null) meta.lng=coords.lng;
+        if(evType==="popp" && st.palletId) meta.pallet_id=st.palletId; // spec §20
         const r=await rpcWithProgress("/dispatch/driver/evidence/add",{
             stop_id:stopId, ev_type:evType,
             data_b64:payload.data_b64, filename:payload.filename,
+            extra:meta,
         }, pct=>{
             if(S.uploadState!==st)return;
             st.progress=pct;
@@ -2773,16 +3118,21 @@ async function runEvidenceUpload(stopId,evType){
         });
         if(S.uploadState!==st)return; // dismissed/replaced while in flight
         if(r?.success){
-            const stop=S.stops.find(s=>s.id===stopId);
-            if(stop && !r.duplicate){
-                const key=evType==="pop"?"pop_attachments":"pod_attachments";
-                (stop[key]=stop[key]||[]).push({id:r.id,name:r.name,url:r.url});
+            if(evType==="popp" && st.palletId && !r.duplicate){
+                attachPoppToItem(st.palletId, {id:r.id,name:r.name,url:r.url});
+            } else {
+                const stop=S.stops.find(s=>s.id===stopId);
+                if(stop && !r.duplicate){
+                    const key=evType==="pop"?"pop_attachments":"pod_attachments";
+                    (stop[key]=stop[key]||[]).push({id:r.id,name:r.name,url:r.url});
+                }
             }
             st.phase=r.duplicate?"duplicate":"success";
             st.message=r.duplicate?(r.message||"Already uploaded"):"Upload complete";
             if(S.stop?.id===stopId) renderStopDetail(); else renderUploadStatus(stopId,evType);
             if(finishProofOpen() && S.finishFlow?.stopId===stopId) renderFinishProof();
-            setTimeout(()=>{ if(S.uploadState===st){ S.uploadState=null; if(S.stop?.id===stopId)renderStopDetail(); } },2000);
+            if(evType==="popp" && S.pickupIntake) renderPickupIntake();
+            setTimeout(()=>{ if(S.uploadState===st){ S.uploadState=null; if(S.stop?.id===stopId)renderStopDetail(); if(evType==="popp" && S.pickupIntake)renderPickupIntake(); } },2000);
         } else {
             st.phase="failed";
             st.message=r?.error||"Upload failed";
@@ -2793,20 +3143,301 @@ async function runEvidenceUpload(stopId,evType){
         st.phase="failed";
         st.message=e?.message||"Upload failed — check your connection";
         renderUploadStatus(stopId,evType);
+        // Spec §57: a network failure must not lose the evidence. The
+        // stamped payload (or the raw file if stamping itself failed) is
+        // parked in the offline queue and retried when the connection
+        // returns; the Pending Upload badge appears in the section.
+        if(lastPayload && navigator.onLine===false){
+            const coords=resolveStampCoords(findStopById(stopId)||S.stop);
+            const meta={captured_at:new Date().toISOString(), device:(navigator.userAgent||"driver-app").slice(0,120)};
+            if(coords.lat!==null) meta.lat=coords.lat;
+            if(coords.lng!==null) meta.lng=coords.lng;
+            if(evType==="popp" && st.palletId) meta.pallet_id=st.palletId;
+            enqueuePendingEvidence(stopId, evType, lastPayload.filename, lastPayload.data_b64, meta);
+        }
         console.warn("Evidence upload failed", e);
     }
 }
 
-async function delEv(stopId,evType,attId){
+async function delEv(stopId,evType,attId,palletId){
     if(!confirm("Remove this document?"))return;
-    await rpc("/dispatch/driver/evidence/remove",{stop_id:stopId,ev_type:evType,att_id:attId});
-    const stop=S.stops.find(s=>s.id===stopId);
-    if(stop){const key=evType==="pop"?"pop_attachments":"pod_attachments";stop[key]=(stop[key]||[]).filter(a=>a.id!==attId);}
-    if(S.stop?.id===stopId) renderStopDetail();
+    const extra=evType==="popp" && palletId ? {pallet_id:palletId} : {};
+    await rpc("/dispatch/driver/evidence/remove",{stop_id:stopId,ev_type:evType,att_id:attId,extra});
+    if(evType==="popp" && palletId){
+        detachPoppFromItem(palletId, attId);
+        if(S.pickupIntake) renderPickupIntake();
+    } else {
+        const stop=S.stops.find(s=>s.id===stopId);
+        if(stop){const key=evType==="pop"?"pop_attachments":"pod_attachments";stop[key]=(stop[key]||[]).filter(a=>a.id!==attId);}
+        if(S.stop?.id===stopId) renderStopDetail();
+    }
     if(finishProofOpen() && S.finishFlow?.stopId===stopId) renderFinishProof();
     toast("Removed");
 }
 window.delEv=delEv;
+
+function retakeEvidence(stopId,evType,attId,palletId){
+    // Spec §55: retake supersedes — delete the old proof, then open the
+    // camera again so the driver replaces it in one flow.
+    delEv(stopId,evType,attId,palletId).then(()=>{
+        if(evType==="popp" && palletId){
+            openPoppCamera(stopId, palletId);
+            return;
+        }
+        const input=document.querySelector(`.da-evidence-btns[data-stop="${stopId}"][data-evtype="${evType}"] input[type=file]`);
+        if(input) input.click();
+    });
+}
+window.retakeEvidence=retakeEvidence;
+
+// ── POPP — per-pallet Proof of Pickup Pallet (spec §19/§20) ─────────
+// Photos belong to a specific physical pallet (item). The server enforces
+// the 1-4 cap and owns the canonical evidence rows; here we keep the
+// S.loadPlan item dicts in sync so pallet cards re-render immediately.
+function loadPlanItems(){
+    const out=[];
+    [...(S.loadPlan?.unassigned_items||[]), ...(S.loadPlan?.positions||[]).map(p=>p.item).filter(Boolean), ...(S.loadPlan?.non_floor_items||[])]
+        .forEach(i=>{ if(i && i.id) out.push(i); });
+    return out;
+}
+function attachPoppToItem(itemId, photo){
+    const item=loadPlanItems().find(i=>i.id===itemId);
+    if(!item) return;
+    item.popp_photos=item.popp_photos||[];
+    if(!item.popp_photos.find(p=>p.id===photo.id)) item.popp_photos.push(photo);
+    item.popp_count=item.popp_photos.length;
+    item.popp_complete=item.popp_photos.length>0;
+}
+function detachPoppFromItem(itemId, attId){
+    const item=loadPlanItems().find(i=>i.id===itemId);
+    if(!item) return;
+    item.popp_photos=(item.popp_photos||[]).filter(p=>p.id!==attId);
+    item.popp_count=item.popp_photos.length;
+    item.popp_complete=item.popp_photos.length>0;
+}
+function openPoppCamera(stopId, itemId){
+    const input=document.createElement("input");
+    input.type="file"; input.accept="image/*"; input.capture="camera";
+    input.style.display="none";
+    document.body.appendChild(input);
+    input.addEventListener("change",()=>{
+        if(input.files[0]) pickEvidenceFile(stopId,"popp",input,itemId);
+        input.remove();
+    });
+    input.click();
+}
+function poppPhotoHtml(item){
+    const photos=item.popp_photos||[];
+    return `<div class="da-pallet-sub">POPP — Proof of Pickup Pallet ${photos.length>=4 ? "(max 4)" : ""}</div>
+        <div class="da-popp-photos">${photos.map(p=>`<div class="da-popp-photo"><img src="${p.url}" alt="${esc(p.name)}"/><div class="da-popp-photo-actions">
+            <button class="da-btn da-btn-ghost da-btn-sm" type="button" data-action="pickup-popp-del" data-item-id="${item.id}" data-att-id="${p.id}" title="Remove photo">✕</button>
+            <button class="da-btn da-btn-ghost da-btn-sm" type="button" data-action="pickup-popp-retake" data-item-id="${item.id}" data-att-id="${p.id}" title="Retake photo">↻</button>
+        </div></div>`).join("")}</div>
+        <button class="da-btn da-btn-sm ${photos.length>=4?"da-btn-ghost":"da-btn-secondary"}" type="button" data-action="pickup-popp-photo" data-item-id="${item.id}" ${photos.length>=4?"disabled aria-disabled=\"true\"":""}>
+            ${photos.length ? `📷 Add Photo (${photos.length}/4)` : "📷 POPP — TAKE PHOTO"}
+        </button>`;
+}
+
+// ── No Access / Sealed Load override panel (spec §22) ───────────────
+const POPP_REASONS=[
+    ["dock_prohibited","Driver prohibited from dock"],
+    ["security_restriction","Security restriction"],
+    ["preloaded_sealed","Preloaded sealed truck"],
+    ["sealed_before_access","Freight sealed before driver access"],
+    ["policy_no_photography","Customer policy prevents photography"],
+    ["other","Other"],
+];
+function poppOverridePanelHtml(flow){
+    const popp=flow.poppOverride||{};
+    return `<div class="da-popp-override-panel">
+        <div class="da-pallet-sub">Pickup Confirmation may bypass per-pallet POPP only with this documented override — reason, driver, timestamp and GPS are recorded on the job.</div>
+        <label class="da-route-opt" style="border-bottom:none;padding-left:0">Reason
+            <select class="da-pickup-qty-input" data-field="popp-override-reason">
+                <option value="">— choose a reason —</option>
+                ${POPP_REASONS.map(([v,l])=>`<option value="${v}" ${popp.reason===v?"selected":""}>${l}</option>`).join("")}
+            </select>
+        </label>
+        ${popp.reason==="other" ? `<textarea class="da-pickup-textarea" placeholder="Explain the other reason" data-field="popp-override-other">${esc(popp.reasonOther||"")}</textarea>` : ""}
+        <label class="da-route-opt" style="border-bottom:none;padding-left:0">Seal Number (sealed loads)
+            <input class="da-pickup-qty-input" type="text" value="${esc(popp.sealNumber||"")}" data-field="popp-override-seal" placeholder="e.g. S-482913"/>
+        </label>
+        ${popp.sealPhoto ? `<div class="da-popp-photo da-popp-seal"><img src="${popp.sealPhoto}" alt="Seal photo"/></div>` : ""}
+        <button class="da-btn da-btn-secondary" type="button" data-action="popp-override-seal-photo" style="width:100%;margin:4px 0">${popp.sealPhoto?"↻ Retake Seal Photo":"📷 TAKE SEAL PHOTO"}</button>
+        ${popp.submitting
+            ? `<div class="da-pickup-note">Recording override…</div>`
+            : `<button class="da-btn da-btn-primary" type="button" data-action="popp-override-submit" style="width:100%;margin:4px 0" ${popp.reason?"":"disabled aria-disabled=\"true\""}>Record Override</button>`}
+        ${popp.done ? `<div class="da-pickup-note" style="color:#1d7a3e;font-weight:600">✓ Override recorded${popp.done.seal_number?` — Seal: ${esc(popp.done.seal_number)}`:""}</div>` : ""}
+    </div>`;
+}
+function poppToggleOverride(){
+    const flow=currentPickupFlow();
+    if(!flow) return;
+    flow.poppOverride=flow.poppOverride||{};
+    flow.poppOverride.open=!flow.poppOverride.open;
+    renderPickupIntake();
+}
+window.poppToggleOverride=poppToggleOverride;
+function poppSetReason(value){
+    const flow=currentPickupFlow();
+    if(!flow) return;
+    flow.poppOverride=flow.poppOverride||{};
+    flow.poppOverride.reason=value||"";
+    renderPickupIntake();
+}
+window.poppSetReason=poppSetReason;
+function poppSetOther(value){
+    const flow=currentPickupFlow();
+    if(!flow) return;
+    flow.poppOverride=flow.poppOverride||{};
+    flow.poppOverride.reasonOther=value||"";
+}
+window.poppSetOther=poppSetOther;
+function poppSetSeal(value){
+    const flow=currentPickupFlow();
+    if(!flow) return;
+    flow.poppOverride=flow.poppOverride||{};
+    flow.poppOverride.sealNumber=value||"";
+}
+window.poppSetSeal=poppSetSeal;
+function poppSealPhoto(){
+    const flow=currentPickupFlow();
+    if(!flow) return;
+    const stop=currentPickupStop();
+    if(!stop) return;
+    const input=document.createElement("input");
+    input.type="file"; input.accept="image/*"; input.capture="camera";
+    input.style.display="none";
+    document.body.appendChild(input);
+    input.addEventListener("change",async ()=>{
+        const file=input.files[0];
+        input.remove();
+        if(!file) return;
+        try{
+            const stamped=await maybeBuildStampedEvidence(stop.id,"seal",file);
+            const preview=await readFileAsDataUrl(file);
+            flow.poppOverride=flow.poppOverride||{};
+            flow.poppOverride.sealPhoto=preview;
+            flow.poppOverride.sealPhotoB64=stamped.data_b64;
+            flow.poppOverride.sealPhotoName=stamped.filename;
+            renderPickupIntake();
+        }catch(e){
+            toast(e.message||"Could not capture seal photo");
+        }
+    });
+    input.click();
+}
+window.poppSealPhoto=poppSealPhoto;
+async function poppSubmitOverride(){
+    const flow=currentPickupFlow();
+    const stop=currentPickupStop();
+    if(!flow||!stop) return;
+    flow.poppOverride=flow.poppOverride||{};
+    if(!flow.poppOverride.reason){ toast("Choose a reason first."); return; }
+    flow.poppOverride.submitting=true;
+    renderPickupIntake();
+    try{
+        const coords=resolveStampCoords(stop);
+        const res=await rpc("/dispatch/driver/pickup/popp-override",{
+            stop_id:stop.id,
+            reason:flow.poppOverride.reason,
+            reason_other:flow.poppOverride.reasonOther||"",
+            seal_number:flow.poppOverride.sealNumber||"",
+            seal_photo_b64:flow.poppOverride.sealPhotoB64||null,
+            lat:coords.lat, lng:coords.lng,
+        });
+        flow.poppOverride.submitting=false;
+        if(res?.success){
+            flow.poppOverride.done={seal_number:res.seal_number||""};
+            toast("Override recorded — POPP requirement waived for this pickup");
+            if(res.overridden_at && S.stop) S.stop.pickup_step_state={...(S.stop.pickup_step_state||{}), pickup_gate_ready:false};
+            await reloadDay();
+            S.stop=findStopById(stop.id)||S.stop;
+            renderStopDetail();
+            renderPickupIntake();
+        } else {
+            toast(res?.error||"Could not record override");
+            renderPickupIntake();
+        }
+    }catch(e){
+        flow.poppOverride.submitting=false;
+        toast(e.message||"Could not record override");
+        renderPickupIntake();
+    }
+}
+window.poppSubmitOverride=poppSubmitOverride;
+
+// ── Offline pending-evidence queue (spec §56/§57) ─────────────────
+// When an upload fails because the network dropped, the file is kept in
+// localStorage and retried automatically when connectivity returns (and
+// every 20s while online). The evidence section shows a Pending Upload
+// badge. Required proof can never be silently lost: the stop-completion
+// gate needs the attachment on the server, so END DAY stays blocked
+// while required evidence is queued.
+const PENDING_QUEUE_KEY="da_pending_evidence_v1";
+function loadPendingQueue(){
+    try{ S.pendingQueue=JSON.parse(localStorage.getItem(PENDING_QUEUE_KEY))||[]; }
+    catch(e){ S.pendingQueue=[]; }
+    return S.pendingQueue;
+}
+function savePendingQueue(){
+    try{ localStorage.setItem(PENDING_QUEUE_KEY, JSON.stringify(S.pendingQueue||[])); }catch(e){}
+}
+function pendingCount(stopId, evType){
+    return (S.pendingQueue||[]).filter(p=>!stopId || (p.stopId===stopId && (!evType || p.evType===evType))).length;
+}
+function enqueuePendingEvidence(stopId, evType, filename, dataB64, meta){
+    loadPendingQueue();
+    S.pendingQueue.push({id:Date.now()+"_"+Math.random().toString(36).slice(2,8), stopId, evType, filename, dataB64, meta:meta||{}, ts:Date.now()});
+    savePendingQueue();
+    if(S.stop?.id===stopId) renderStopDetail();
+    if(finishProofOpen() && S.finishFlow?.stopId===stopId) renderFinishProof();
+    toast("Saved offline — will upload when connected");
+}
+async function flushPendingQueue(){
+    loadPendingQueue();
+    if(!S.pendingQueue.length) return;
+    if(navigator.onLine===false) return;
+    let changed=false;
+    for(const entry of [...S.pendingQueue]){
+        try{
+            const r=await rpc("/dispatch/driver/evidence/add",{
+                stop_id:entry.stopId, ev_type:entry.evType,
+                data_b64:entry.dataB64, filename:entry.filename,
+                extra:entry.meta||{},
+            });
+            if(r?.success){
+                if(entry.evType==="popp" && (entry.meta||{}).pallet_id && !r.duplicate){
+                    attachPoppToItem(Number(entry.meta.pallet_id), {id:r.id,name:r.name,url:r.url});
+                } else {
+                    const stop=S.stops.find(s=>s.id===entry.stopId);
+                    if(stop && !r.duplicate && entry.evType!=="scan"){
+                        // Scanner pages never appear in the evidence list —
+                        // only the merged PDF does.
+                        const key=entry.evType==="pop"?"pop_attachments":"pod_attachments";
+                        (stop[key]=stop[key]||[]).push({id:r.id,name:r.name,url:r.url});
+                    }
+                }
+                S.pendingQueue=S.pendingQueue.filter(p=>p.id!==entry.id);
+                changed=true;
+                if(S.stop?.id===entry.stopId) renderStopDetail();
+                if(finishProofOpen() && S.finishFlow?.stopId===entry.stopId) renderFinishProof();
+            } else {
+                // Server rejected the file (e.g. the job was cancelled) —
+                // drop it rather than retrying a file that can never
+                // succeed; the toast tells the driver what happened.
+                S.pendingQueue=S.pendingQueue.filter(p=>p.id!==entry.id);
+                changed=true;
+                toast(`Upload failed for ${entry.filename}: ${r?.error||"rejected"}`);
+            }
+        }catch(e){
+            break; // still offline — keep everything queued, try later
+        }
+    }
+    if(changed){ savePendingQueue(); renderTodaySummary(); }
+}
+window.flushPendingQueue=flushPendingQueue;
+window.addEventListener("online", ()=>{ flushPendingQueue(); });
+setInterval(()=>{ if(navigator.onLine!==false) flushPendingQueue(); }, 20000);
 
 // ── Document Scanner (jscanify + OpenCV.js — both free, no API cost) ───────
 // OpenCV.js is loaded from the official docs.opencv.org build, only when
@@ -2815,7 +3446,10 @@ window.delEv=delEv;
 // doesn't depend on a third-party CDN at runtime.
 let _scannerLoading=null, _scannerReady=false, _jscanify=null;
 let _scanStream=null, _scanContext=null, _scanStopId=null, _scanEvType=null, _scanCapturedCanvas=null, _scanEnhanced=false;
-let _scanPages=[];       // multi-page scans: captured page payloads awaiting upload
+let _scanPages=[];       // uploaded pages: {attId, name, index}
+let _scanPendingPages=[]; // pages waiting in the offline queue: {b64, index}
+let _scanSession=null;    // session id grouping pages into one PDF
+let _scanMerged=false;    // true once the session was merged
 let _scannerPopHandler=null;  // browser-Back closes the scanner (see armScannerBackButton)
 
 function loadScannerLibs(){
@@ -2849,7 +3483,9 @@ function loadJscanify(resolve,reject){
 async function openScanner(contextOrStopId,evType){
     const ctx = (typeof contextOrStopId === "object" && contextOrStopId) ? contextOrStopId : {mode:"stop_evidence", stopId:contextOrStopId, evidenceType:evType};
     _scanContext=ctx; _scanStopId=ctx.stopId||0; _scanEvType=ctx.evidenceType||ctx.documentType||evType; _scanEnhanced=false;
-    _scanPages=[]; updateScanPageBadge();
+    _scanSession="s_"+Date.now()+"_"+Math.random().toString(36).slice(2,8);
+    _scanPages=[]; _scanPendingPages=[]; _scanMerged=false;
+    renderScanPages();
     show("oScanner");
     armScannerBackButton();
     renderScanStatus("idle"); setScanButtonsDisabled(false);
@@ -2931,7 +3567,7 @@ function retakeScan(){ renderScanStatus("idle"); setScanButtonsDisabled(false); 
 window.retakeScan=retakeScan;
 
 function setScanButtonsDisabled(disabled){
-    ["scanUseBtn","scanRetakeBtn","scanEnhanceBtn"].forEach(id=>{ const el=q("#"+id); if(el)el.disabled=disabled; });
+    ["scanUseBtn","scanRetakeBtn","scanEnhanceBtn","scanAddPageBtn","scanCompleteBtn"].forEach(id=>{ const el=q("#"+id); if(el)el.disabled=disabled; });
 }
 function renderScanStatus(phase,message){
     const row=q("#scanStatusRow"); if(!row)return;
@@ -2943,114 +3579,200 @@ function renderScanStatus(phase,message){
         `<span class="da-ev-status-msg da-ev-status-err">✕ ${esc(message||"Upload failed")}</span>`+
         `<button class="da-btn da-btn-secondary da-btn-sm" onclick="useScan()">Retry</button>`;
 }
-async function useScan(){
-    const out=q("#scanPreviewCanvas");
-    if(!out)return;
-    const dataUrl=out.toDataURL("image/jpeg",0.92);
-    const b64=dataUrl.split(",")[1];
-
-    if(_scanContext?.mode==="location_extract"){
-        // Extraction always uses the single page on screen.
-        setScanButtonsDisabled(true);
-        renderScanStatus("uploading");
-        try{
-            const r=await rpc("/dispatch/driver/location/extract",{
-                job_id:_scanContext.jobId,
-                stop_id:_scanContext.stopId||null,
-                extraction_context:_scanContext.extractionContext||"ship_to",
-                data_b64:b64,
-                filename:`ship_to_${Date.now()}.jpg`,
-                mimetype:"image/jpeg",
-            });
-            if(r?.success){
-                if(S.pickupIntake){
-                    S.pickupIntake.locationMode="manual";
-                    S.pickupIntake.manual={...S.pickupIntake.manual,...(r.extraction||{})};
-                    renderPickupIntake();
-                }
-                renderScanStatus("success", "Fields extracted");
-                setTimeout(()=>{ closeScanner(); renderScanStatus("idle"); }, 900);
-                return;
-            }
-            renderScanStatus("failed", r?.error||"Upload failed");
-        }catch(e){
-            renderScanStatus("failed", e?.message||"Upload error — check your connection");
-        }
-        setScanButtonsDisabled(false);
-        return;
-    }
-
-    // Evidence / load-plan: upload every collected page plus the page on
-    // screen, sequentially — the backend accepts one file per call.
-    const pages=[..._scanPages,b64];
-    setScanButtonsDisabled(true);
-    let failed=false,lastErr="",uploaded=0;
-    for(let i=0;i<pages.length;i++){
-        if(pages.length>1) renderScanStatus("uploading",`Uploading ${i+1}/${pages.length}…`);
-        else renderScanStatus("uploading");
-        try{
-            const r=await uploadOneScanPage(pages[i]);
-            if(r?.success){
-                uploaded++;
-                const stop=S.stops.find(s=>s.id===_scanStopId);
-                if(stop && !r.duplicate){
-                    const key=_scanEvType==="pop"?"pop_attachments":"pod_attachments";
-                    (stop[key]=stop[key]||[]).push({id:r.id,name:r.name,url:r.url});
-                }
-                if(S.stop?.id===_scanStopId) renderStopDetail();
-                if(finishProofOpen() && S.finishFlow?.stopId===_scanStopId) renderFinishProof();
-            }else{
-                failed=true; lastErr=r?.error||"Upload failed";
-            }
-        }catch(e){
-            failed=true; lastErr=e?.message||"Upload error — check your connection";
-        }
-    }
-    _scanPages=[];
-    updateScanPageBadge();
-    if(failed){
-        renderScanStatus("failed", `${lastErr}${pages.length>1?` (page ${uploaded+1} of ${pages.length})`:""}`);
-        setScanButtonsDisabled(false);
-        return;
-    }
-    if(pages.length===1){
-        // Single page: keep the scanner open for consecutive scans, as before.
-        renderScanStatus("success", "Scan saved");
-        setTimeout(()=>{ renderScanStatus("idle"); setScannerStage("camera"); },1200);
-        return; // buttons re-enabled by the next scan's setScannerStage
-    }
-    renderScanStatus("success", `${pages.length} pages saved`);
-    setTimeout(()=>{ closeScanner(); renderScanStatus("idle"); }, 900);
-}
-window.useScan=useScan;
-
-async function uploadOneScanPage(b64){
+async function uploadOneScanPage(b64, idx){
     let route="/dispatch/driver/evidence/add";
-    let payload={stop_id:_scanStopId, ev_type:_scanEvType, data_b64:b64, filename:`scan_${Date.now()}_${(Math.random()*1e4)|0}.jpg`};
+    let payload={stop_id:_scanStopId, ev_type:"scan", data_b64:b64, filename:`scan_${Date.now()}_${(Math.random()*1e4)|0}.jpg`};
     if(_scanContext?.mode==="load_plan_document"){
         route="/dispatch/driver/loadplan/document/upload";
         payload={load_plan_id:_scanContext.loadPlanId, document_type:_scanContext.documentType||"loading_photo", item_id:_scanContext.itemId||null, data_b64:b64, filename:`loadplan_${Date.now()}_${(Math.random()*1e4)|0}.jpg`};
+    }else if(_scanSession){
+        // Scanner page: held server-side under the session until the
+        // session is merged into the final PDF.
+        const meta={captured_at:new Date().toISOString(), device:(navigator.userAgent||"driver-app").slice(0,120), scan_session:_scanSession, scan_page_index:idx||0};
+        const coords=resolveStampCoords(findStopById(_scanStopId)||S.stop);
+        if(coords.lat!==null) meta.lat=coords.lat;
+        if(coords.lng!==null) meta.lng=coords.lng;
+        payload.extra=meta;
     }
     return rpc(route,payload);
 }
 
-/** Multi-page scans: keep this page, go back to the camera for the next
- * one. "Use This" then uploads the collected pages + the current page. */
-function addScanPage(){
+/** Multi-page scans (spec §17): every page is uploaded to the server
+ * immediately (ev_type 'scan', tagged with the session id) so a network
+ * drop or app crash never loses a page. "Complete PDF" then merges ALL
+ * pages of the session into ONE PDF server-side and attaches it as the
+ * stop's pop/pod proof. */
+function useScan(){
     const out=q("#scanPreviewCanvas");
     if(!out||!_scanCapturedCanvas)return;
     const dataUrl=out.toDataURL("image/jpeg",0.92);
     if(!dataUrl)return;
-    _scanPages.push(dataUrl.split(",")[1]);
-    updateScanPageBadge();
-    renderScanStatus("idle");
-    setScannerStage("camera");
+
+    if(_scanContext?.mode==="location_extract"){
+        // Extraction always uses the single page on screen.
+        const b64=dataUrl.split(",")[1];
+        setScanButtonsDisabled(true);
+        renderScanStatus("uploading");
+        (async()=>{
+            try{
+                const r=await rpc("/dispatch/driver/location/extract",{
+                    job_id:_scanContext.jobId,
+                    stop_id:_scanContext.stopId||null,
+                    extraction_context:_scanContext.extractionContext||"ship_to",
+                    data_b64:b64,
+                    filename:`ship_to_${Date.now()}.jpg`,
+                    mimetype:"image/jpeg",
+                });
+                if(r?.success){
+                    if(S.pickupIntake){
+                        S.pickupIntake.locationMode="manual";
+                        S.pickupIntake.manual={...S.pickupIntake.manual,...(r.extraction||{})};
+                        renderPickupIntake();
+                    }
+                    renderScanStatus("success", "Fields extracted");
+                    setTimeout(()=>{ closeScanner(); renderScanStatus("idle"); }, 900);
+                    return;
+                }
+                renderScanStatus("failed", r?.error||"Upload failed");
+            }catch(e){
+                renderScanStatus("failed", e?.message||"Upload error — check your connection");
+            }
+            setScanButtonsDisabled(false);
+        })();
+        return;
+    }
+
+    if(_scanContext?.mode==="load_plan_document"){
+        setScanButtonsDisabled(true);
+        renderScanStatus("uploading");
+        uploadOneScanPage(dataUrl.split(",")[1]).then(r=>{
+            if(r?.success){
+                renderScanStatus("success", "Document saved");
+                setTimeout(()=>{ closeScanner(); renderScanStatus("idle"); }, 900);
+            }else{
+                renderScanStatus("failed", r?.error||"Upload failed");
+                setScanButtonsDisabled(false);
+            }
+        }).catch(e=>{
+            renderScanStatus("failed", e?.message||"Upload error — check your connection");
+            setScanButtonsDisabled(false);
+        });
+        return;
+    }
+
+    // Stop evidence: this page joins the session; the PDF is built on
+    // Complete (scan-complete merges every page of this session).
+    const idx=_scanPages.length + _scanPendingPages.length;
+    setScanButtonsDisabled(true);
+    renderScanStatus("uploading", `Saving page ${idx+1}…`);
+    uploadOneScanPage(dataUrl.split(",")[1], idx).then(r=>{
+        setScanButtonsDisabled(false);
+        if(r?.success){
+            _scanPages.push({attId:r.id, name:r.name, index:idx});
+            renderScanPages();
+            renderScanStatus("success", `Page ${idx+1} saved`);
+            setTimeout(()=>{ renderScanStatus("idle"); setScannerStage("camera"); }, 900);
+        }else{
+            renderScanStatus("failed", r?.error||"Upload failed");
+        }
+    }).catch(e=>{
+        setScanButtonsDisabled(false);
+        // Offline: park the page in the pending queue, keep scanning.
+        const meta={captured_at:new Date().toISOString(), device:(navigator.userAgent||"driver-app").slice(0,120), scan_session:_scanSession, scan_page_index:idx};
+        const coords=resolveStampCoords(findStopById(_scanStopId)||S.stop);
+        if(coords.lat!==null) meta.lat=coords.lat;
+        if(coords.lng!==null) meta.lng=coords.lng;
+        _scanPendingPages.push({b64:dataUrl.split(",")[1], index:idx});
+        enqueuePendingEvidence(_scanStopId, "scan", `scan_page_${idx+1}.jpg`, dataUrl.split(",")[1], meta);
+        renderScanPages();
+        renderScanStatus("idle");
+        setScannerStage("camera");
+    });
 }
+window.useScan=useScan;
+
+function addScanPage(){ useScan(); }
 window.addScanPage=addScanPage;
+
+function deleteScanPage(index){
+    const page=_scanPages.find(p=>p.index===index);
+    if(!page) return;
+    if(!confirm(`Delete page ${index+1}?`)) return;
+    rpc("/dispatch/driver/evidence/remove",{stop_id:_scanStopId, ev_type:"scan", att_id:page.attId}).then(()=>{
+        _scanPages=_scanPages.filter(p=>p.index!==index);
+        renderScanPages();
+        toast("Page deleted");
+    }).catch(()=> toast("Could not delete page — check your connection"));
+}
+window.deleteScanPage=deleteScanPage;
+
+function completeScan(){
+    const pending=_scanPendingPages.length;
+    if(pending){
+        toast(`${pending} page${pending>1?"s":""} still pending upload — retrying now`);
+        flushPendingQueue().then(()=>{
+            loadPendingQueue();
+            if((S.pendingQueue||[]).some(p=>p.meta?.scan_session===_scanSession)) return;
+            doCompleteScan();
+        });
+        return;
+    }
+    if(!_scanPages.length){ toast("Scan at least one page first"); return; }
+    doCompleteScan();
+}
+window.completeScan=completeScan;
+
+async function doCompleteScan(){
+    setScanButtonsDisabled(true);
+    renderScanStatus("uploading", "Building PDF…");
+    try{
+        const r=await rpc("/dispatch/driver/evidence/scan-complete",{
+            stop_id:_scanStopId, ev_type:_scanEvType, session:_scanSession,
+        });
+        if(r?.success){
+            _scanMerged=true;
+            const stop=S.stops.find(s=>s.id===_scanStopId);
+            if(stop){
+                const key=_scanEvType==="pop"?"pop_attachments":"pod_attachments";
+                (stop[key]=stop[key]||[]).push({id:r.id,name:r.name,url:r.url});
+            }
+            if(S.stop?.id===_scanStopId) renderStopDetail();
+            if(finishProofOpen() && S.finishFlow?.stopId===_scanStopId) renderFinishProof();
+            renderScanStatus("success", `PDF saved (${r.pages||_scanPages.length} page${(r.pages||_scanPages.length)>1?"s":""})`);
+            setTimeout(()=>{ closeScanner(); renderScanStatus("idle"); }, 900);
+        }else{
+            renderScanStatus("failed", r?.error||"Could not build the PDF");
+            setScanButtonsDisabled(false);
+        }
+    }catch(e){
+        renderScanStatus("failed", e?.message||"PDF upload error — check your connection");
+        setScanButtonsDisabled(false);
+    }
+}
+
+function renderScanPages(){
+    const list=q("#scanPagesList");
+    if(!list) return;
+    const total=_scanPages.length+_scanPendingPages.length;
+    if(!total){ list.style.display="none"; list.innerHTML=""; updateScanPageBadge(); return; }
+    list.style.display="flex";
+    list.innerHTML=_scanPages.map(p=>
+        `<span class="da-scan-page-chip">Page ${p.index+1} ✓ <button class="da-ev-del" onclick="deleteScanPage(${p.index})">✕</button></span>`
+    ).concat(_scanPendingPages.map(p=>
+        `<span class="da-scan-page-chip da-scan-page-pending">Page ${p.index+1} ⏳</span>`
+    )).join("");
+    updateScanPageBadge();
+}
 
 function updateScanPageBadge(){
     const btn=q("#scanUseBtn");
-    if(btn) btn.textContent=_scanPages.length ? `✓ Use (${_scanPages.length+1})` : "✓ Use This";
+    if(btn) btn.textContent="✓ Use Page";
+    const done=q("#scanCompleteBtn");
+    if(done){
+        const total=_scanPages.length+_scanPendingPages.length;
+        done.style.display=total?"inline-block":"none";
+        done.textContent=`📄 Complete PDF (${total})`;
+    }
 }
 
 // Browser Back closes the scanner (a pushed history entry + popstate), so
@@ -3069,10 +3791,18 @@ function isScannerOpen(){ const el=q("#oScanner"); return !!el && el.style.displ
 function closeScanner(){
     disarmScannerBackButton();
     stopScanCamera();
-    _scanPages=[]; updateScanPageBadge();
+    // Discard any pages that were never merged into a PDF — the server
+    // drops the session (spec §17/§55: only the completed document is
+    // evidence, not half-scanned pages).
+    if((_scanPages.length||_scanPendingPages.length) && !_scanMerged && _scanSession){
+        try{ rpc("/dispatch/driver/evidence/scan-cancel",{stop_id:_scanStopId, session:_scanSession}); }catch(e){}
+    }
+    _scanPages=[]; _scanPendingPages=[]; _scanSession=null; _scanMerged=false;
+    renderScanPages();
     hide("oScanner");
 }
 window.closeScanner=closeScanner;
+
 
 // ── Load Plan (Phase 4) ──────────────────────────────────────────────
 // Same batched prema.dispatch.load.plan methods the Dispatcher panel
@@ -3320,8 +4050,32 @@ function doNavigate(){
 // distance/ETA badge, and the next-turn instruction text from the
 // Directions API, refreshed periodically as the driver moves. "Open in
 // Maps app" remains available for spoken turn-by-turn guidance.
-function openNav(stop){
+function openNav(stop, opts){
+    opts=opts||{};
     S.stop=stop;
+    S.navAsTab=!!opts.asTab;
+    // Restore the nav body when it was replaced by the empty state.
+    const nb=q("#navBody");
+    if(nb && nb.querySelector(".da-empty")) nb.innerHTML=`
+        <div id="navInstruction" class="da-nav-instruction">Calculating route…</div>
+        <div class="da-nav-info">
+          <div id="navDestType" class="da-nav-dest"></div>
+          <div id="navDestName" class="da-nav-name"></div>
+          <div id="navDestAddr" class="da-nav-addr"></div>
+        </div>
+        <div class="da-nav-actions">
+          <button class="da-btn da-btn-secondary" onclick="APP.openExternalNav()">🗺️ Open in Maps app (voice guidance)</button>
+          <button class="da-btn da-btn-green" onclick="APP.navArrived()">✓ I'm Here</button>
+        </div>
+        <div class="da-nav-actions da-nav-actions-row">
+          <button class="da-btn da-btn-secondary" onclick="APP.callDispatch()" title="Call Dispatch">📞 Dispatch</button>
+          <button class="da-btn da-btn-orange" onclick="doDelayed()" title="Report a problem with this stop">⚠ Report Issue</button>
+          <button class="da-btn da-btn-secondary" onclick="APP.recenterNav()" title="Recenter map on my location">🎯 Recenter</button>
+        </div>
+        <div class="da-nav-actions da-nav-actions-row da-nav-actions-row-compact">
+          <button class="da-btn da-btn-ghost" onclick="APP.closeNav()">${opts.asTab?"← Home":"← Back to Stop"}</button>
+          <button class="da-btn da-btn-ghost" onclick="doRestoreStop()">↺ Restore Stop</button>
+        </div>`;
     showScreen("sNav");
     const dt=q("#navDestType"), dn=q("#navDestName"), da=q("#navDestAddr");
     if(dt)dt.textContent=stopTypeTitle(stop.type);
@@ -3331,14 +4085,16 @@ function openNav(stop){
     if(S.mapsReady) initNavMap();
     // "Navigate — Truck Route" should land the driver straight into a
     // fullscreen map, matching what a real nav app does — not an inline
-    // map the driver has to separately tap ⛶ to expand.
-    if(!document.fullscreenElement) toggleNavFullscreen();
+    // map the driver has to separately tap ⛶ to expand. When the driver
+    // switches to the NAVIGATION tab itself, skip the auto-fullscreen.
+    if(!opts.asTab && !document.fullscreenElement) toggleNavFullscreen();
     if(S.navTimer)clearInterval(S.navTimer);
     S.navTimer=setInterval(()=>{ if(visibleScreen()==="sNav") refreshNavRoute(); }, 20000);
 }
 
 function closeNav(){
     if(S.navTimer){ clearInterval(S.navTimer); S.navTimer=null; }
+    if(S.navAsTab){ showViewTab("home"); return; }
     showScreen("sStop");
     renderStopDetail();
 }
@@ -3660,6 +4416,7 @@ function doDelayed(){
     hide("issueOtherRow");
     const inp=q("#issueOtherInput"); if(inp)inp.value="";
 }
+window.doDelayed=doDelayed;
 function closeIssue(){ hide("oIssue"); }
 
 function openRouteSettings(){
@@ -3712,8 +4469,16 @@ window.doExecuteTransfer=doExecuteTransfer;
 
 async function doSkip(){
     if(!confirm("Skip this stop?"))return;
-    await callStop(S.stop.id,"en_route",{});
-    S.stop.status="skipped";await reloadDay();advanceNext();
+    try{
+        const r=await callStop(S.stop.id,"skipped",{});
+        if(r?.success){
+            S.stop.status="skipped";await reloadDay();advanceNext();
+        } else {
+            // Already closed server-side — just re-sync local state.
+            toast(r?.error||"Could not skip stop");
+            await reloadDay();advanceNext();
+        }
+    }catch(e){ toast("Error: "+(e.message||"failed")); }
 }
 
 async function bumpSvcTime(delta){
@@ -3794,17 +4559,20 @@ function checkGeo(){
     if(haversine(S.lat,S.lng,s.lat,s.lng)<=S.GEO_M) triggerGeo();
 }
 function triggerGeo(){
+    // Spec §11: entering the stop geofence must NOT auto-mark Arrived.
+    // Switch from the NAVIGATION tab to the Stop Detail screen and surface
+    // ARRIVED / ISSUE at the top — the driver confirms arrival themselves.
     if(S.geoTimer)return; S.geoArmed=false;
-    let secs=S.GEO_SEC; show("geoBanner");
-    const cd=q("#geoCountdown"); if(cd)cd.textContent=`Auto-arriving in ${secs}s…`;
-    S.geoTimer=setInterval(()=>{
-        secs--;
-        if(cd)cd.textContent=secs>0?`Auto-arriving in ${secs}s…`:"Marking arrived…";
-        if(secs<=0){clearGeoTimer();confirmGeoArrive();}
-    },1000);
+    if(S.stop && visibleScreen()==="sNav"){
+        S.navAsTab=false;
+        showScreen("sStop");
+        renderStopDetail();
+    }
+    show("geoBanner");
+    const cd=q("#geoCountdown"); if(cd)cd.textContent="Tap Arrived when you're at the door.";
 }
 async function confirmGeoArrive(){
-    clearGeoTimer(); hide("geoBanner"); await doArrived();
+    hide("geoBanner"); await doArrived();
     if(visibleScreen()==="sNav") closeNav();
 }
 async function navConfirmArrived(){ await doArrived(); closeNav(); }
@@ -3951,6 +4719,7 @@ function currentNavParams(){
     p.set("screen",scr);
     p.set("date",S.selDate||today());
     if(scr==="sSchedule") p.set("tab",S.viewTab==="stops"?"stops":"home");
+    if(scr==="sNav" && S.navAsTab) p.set("tab","nav");
     if((scr==="sStop"||scr==="sNav"||scr==="sPickupStops")&&S.stop?.id) p.set("stop",String(S.stop.id));
     if(scr==="sPickupStops" && S.pickupStops?.jobId) p.set("job", String(S.pickupStops.jobId));
     if(scr==="sPickupStops" && S.pickupStops?.returnScreen) p.set("return", S.pickupStops.returnScreen);
@@ -3984,7 +4753,7 @@ function parseNavParams(source){
         stopId:stopParam?parseInt(stopParam,10):null,
         jobId:jobParam?parseInt(jobParam,10):null,
         returnScreen:returnScreen==="sSchedule"?"sSchedule":"sStop",
-        tab:tab==="stops"?"stops":"home",
+        tab:["stops","nav"].includes(tab)?tab:"home",
     };
 }
 

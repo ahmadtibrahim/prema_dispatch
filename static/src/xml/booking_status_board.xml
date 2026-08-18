@@ -39,7 +39,7 @@
                 <div class="o_bsb_col_truck">Truck</div>
                 <div class="o_bsb_col_driver">Driver</div>
                 <div class="o_bsb_col_handoff">Handoff</div>
-                <div class="o_bsb_col_feasibility">Feasibility</div>
+                <div class="o_bsb_col_live_progress">Live Progress</div>
                 <div class="o_bsb_col_notes">Notes</div>
                 <div class="o_bsb_col_actions"/>
             </div>
@@ -76,10 +76,10 @@
                         <span t-if="row.handoff_label" class="o_bsb_handoff_badge"><t t-esc="row.handoff_label"/></span>
                         <span t-else="">—</span>
                     </div>
-                    <div class="o_bsb_col_feasibility">
-                        <span t-attf-class="o_bsb_badge feas-#{row.feasibility}"
-                              t-att-title="row.feasibility_reason"
-                              t-esc="feasibilityLabel(row.feasibility)"/>
+                    <div class="o_bsb_col_live_progress">
+                        <span t-attf-class="o_bsb_badge lprog-#{row.live_progress}"
+                              t-att-title="row.live_progress_label"
+                              t-esc="row.live_progress_label"/>
                     </div>
                     <div class="o_bsb_col_notes text-truncate" t-att-title="row.notes"><t t-esc="row.notes"/></div>
                     <div class="o_bsb_col_actions">

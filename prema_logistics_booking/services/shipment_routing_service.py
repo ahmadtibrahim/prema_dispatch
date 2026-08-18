@@ -163,7 +163,7 @@ class ShipmentRoutingService:
                 return ShipmentRoute(False, f"Invalid pickup date: {requested_pickup_date}",
                                      "INVALID_DATE", [], pallets, weight_lbs, None, snapshot)
         else:
-            pickup_date = datetime.utcnow() + timedelta(days=1)
+            pickup_date = self._op_today() + timedelta(days=1)
 
         pickup_day = pickup_date.strftime("%A").lower()
 
@@ -635,48 +635,160 @@ class ShipmentRoutingService:
             routing_snapshot=snapshot,
         )
 
+    # ── Operational timezone (section 3: never UTC calendar dates) ─────
+
+    _OP_TZ_PARAM = "prema_logistics_booking.operational_tz"
+
+    def _op_tz(self):
+        """The company's operational timezone. Default America/Toronto;
+        overridable via an ir.config_parameter."""
+        import pytz
+        name = self.env["ir.config_parameter"].sudo().get_param(
+            self._OP_TZ_PARAM, "America/Toronto")
+        try:
+            return pytz.timezone(name)
+        except Exception:
+            return pytz.timezone("America/Toronto")
+
+    def _op_today(self):
+        """Today's calendar date in the OPERATIONAL timezone — the customer's
+        and driver's operational date. Never datetime.utcnow() (which flips
+        the operational date to tomorrow before midnight locally)."""
+        import pytz
+        return pytz.utc.localize(datetime.utcnow()).astimezone(self._op_tz()).date()
+
     def get_eligible_pickup_dates(self, pickup_lat, pickup_lng,
                                    delivery_lat, delivery_lng,
                                    pallets=1, weight_lbs=500,
                                    equipment="dry",
                                    horizon_weeks=8):
-        """Return eligible pickup dates for a movement within the booking horizon.
+        """Eligible pickup dates for a single-pickup / single-delivery
+        movement (legacy signature). Delegates to the full-route engine —
+        one code path for every booking shape."""
+        stops = [
+            {"stop_type": "pickup", "latitude": pickup_lat, "longitude": pickup_lng},
+            {"stop_type": "delivery", "latitude": delivery_lat, "longitude": delivery_lng},
+        ]
+        return self.get_eligible_pickup_dates_for_route(
+            stops, physical_pallets=pallets, weight_lbs=weight_lbs,
+            equipment=equipment, horizon_weeks=horizon_weeks)
 
-        Each date includes routing metadata: feeder corridor, onward corridor,
-        earliest departure, and expected delivery date.
+    def get_eligible_pickup_dates_for_route(self, stops, physical_pallets=1,
+                                            weight_lbs=500, equipment="dry",
+                                            horizon_weeks=8):
+        """Return eligible pickup dates for a COMPLETE multi-stop route.
+
+        The date is eligible ONLY when the entire shipment can move:
+        every delivery stop must resolve onto a directionally-compatible
+        corridor that departs on that pickup date (or a valid onward
+        departure within the custody hold), the departure vehicle must
+        accept the equipment type, and the peak physical pallet count
+        (shared pallets count ONCE) must fit the vehicle's canonical
+        capacity together with existing reservations.
+
+        Never evaluates just the first delivery. Never hardcodes capacity.
+
+        stops: ordered route stops as dicts with stop_type, latitude,
+               longitude, stop_key, city. The first pickup with coordinates
+               is the origin; every delivery with coordinates is evaluated.
 
         Returns:
-            list of dicts with keys: date (YYYY-MM-DD), day_name, feeder_corridor,
-            onward_corridor, departure_date, estimated_delivery, leg_count
+            list of dicts: date, day_name, feeder_corridor, onward_corridor,
+            departure_date, estimated_delivery, leg_count, per_stop,
+            remaining_capacity, max_capacity, layout_code, layout_name
         """
-        from datetime import datetime as dt_module, timedelta
+        from datetime import timedelta
         from ..services.region_resolver import RegionResolver
         from ..services.direct_delivery_service import DirectDeliveryService
+        from ..services.vehicle_capacity_service import VehicleCapacityService
+        from .temperature_compat import vehicle_accepts
 
         region_resolver = RegionResolver(self.env)
         direct_svc = DirectDeliveryService(self.env)
+        cap_svc = VehicleCapacityService(self.env)
 
-        # Resolve regions (same as plan_route)
-        pickup_result = region_resolver.resolve(pickup_lat, pickup_lng)
+        # Enrich coordinates from saved locations (same rule as
+        # plan_milk_run_route: client coords win, saved location supplements).
+        SavedLocation = self.env["logistics.saved.location"]
+        enriched = []
+        for stop in stops or []:
+            stop = dict(stop)
+            if not (stop.get("latitude") and stop.get("longitude")):
+                loc_id = stop.get("saved_location_id")
+                if loc_id:
+                    loc = SavedLocation.browse(int(loc_id))
+                    if loc.exists() and loc.latitude and loc.longitude:
+                        stop["latitude"] = loc.latitude
+                        stop["longitude"] = loc.longitude
+            enriched.append(stop)
+        stops = enriched
+
+        # Origin: the first pickup with coordinates (never a silent
+        # degradation to a delivery).
+        origin = None
+        for stop in stops:
+            if stop.get("stop_type") == "pickup" and stop.get("latitude") and stop.get("longitude"):
+                origin = stop
+                break
+        if not origin:
+            return []
+
+        deliveries = [
+            s for s in stops
+            if s.get("stop_type") == "delivery" and s.get("latitude") and s.get("longitude")
+        ]
+        if not deliveries:
+            return []
+
+        pickup_result = region_resolver.resolve(float(origin["latitude"]), float(origin["longitude"]))
         if not pickup_result.matched_region:
             return []
-        delivery_result = region_resolver.resolve(delivery_lat, delivery_lng)
-        if not delivery_result.matched_region:
+        origin_region = region_resolver.canonical_region(pickup_result.matched_region)
+        if not origin_region:
             return []
 
-        origin = region_resolver.canonical_region(pickup_result.matched_region)
-        dest = region_resolver.canonical_region(delivery_result.matched_region)
-        if not origin or not dest:
-            return []
         hub = self._get_default_hub()
 
-        # Check routing decision
-        routing = direct_svc.decide(origin.id, dest.id)
-        if routing.decision == "MANUAL_REVIEW":
+        # Per-delivery region + routing decision (cached per delivery).
+        # A delivery that cannot even be resolved to a region makes the
+        # whole route infeasible — it must NEVER be silently dropped (the
+        # old bug: availability computed from the first delivery only).
+        delivery_plans = []
+        unresolved = []
+        for stop in deliveries:
+            result = region_resolver.resolve(float(stop["latitude"]), float(stop["longitude"]))
+            if not result.matched_region:
+                unresolved.append({
+                    "stop_key": stop.get("stop_key", ""),
+                    "city": stop.get("city", ""),
+                })
+                continue
+            dest = region_resolver.canonical_region(result.matched_region)
+            if not dest:
+                unresolved.append({
+                    "stop_key": stop.get("stop_key", ""),
+                    "city": stop.get("city", ""),
+                })
+                continue
+            routing = direct_svc.decide(origin_region.id, dest.id)
+            delivery_plans.append({
+                "stop": stop,
+                "dest": dest,
+                "routing": routing,
+            })
+        if not delivery_plans:
+            # Every delivery unresolved → nothing can be served at all.
+            return []
+        if unresolved:
+            # Some deliveries cannot be served anywhere: no pickup date is
+            # eligible for the complete route.
             return []
 
         eligible = []
-        today = dt_module.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+        # "Today" is the OPERATIONAL calendar date (Toronto by default) —
+        # never UTC, so the calendar does not flip to tomorrow before
+        # midnight locally.
+        today = self._op_today()
         horizon_end = today + timedelta(weeks=horizon_weeks)
 
         current = today + timedelta(days=1)  # start from tomorrow (same-day needs cutoff check)
@@ -684,49 +796,98 @@ class ShipmentRoutingService:
             day_name = current.strftime("%A").lower()
             date_str = current.strftime("%Y-%m-%d")
 
-            # Check pickup day is valid for origin region
-            if not self._is_valid_pickup_day(origin, day_name):
+            # Pickup day must be served for the origin region.
+            if not self._is_valid_pickup_day(origin_region, day_name):
                 current += timedelta(days=1)
                 continue
 
-            # Build legs to verify full route feasibility
-            legs_info = self._probe_legs(
-                origin, dest, hub, routing, current, day_name,
-                pickup_lat, pickup_lng, delivery_lat, delivery_lng,
-                pallets, weight_lbs, equipment,
-            )
-
-            if legs_info and legs_info.get("feasible"):
-                # Compute remaining capacity for the departure
-                remaining = 0
-                max_cap = 13
-                dep_date = legs_info.get("departure_date", date_str)
-                departure = self.env["logistics.corridor.departure"].sudo().search([
-                    ("departure_date", "=", dep_date),
-                    ("active", "=", True),
-                    ("status", "not in", ("cancelled", "completed")),
-                ], limit=1)
-                if departure and departure.vehicle_id:
-                    cap = departure.vehicle_id.pin_wheel_pallet_capacity or 13
-                    max_cap = cap
-                    # Sum physical pallets from non-cancelled bookings on this departure
-                    active_bookings = self.env["logistics.booking"].sudo().search([
-                        ("departure_id", "=", departure.id),
-                        ("state", "not in", ("cancelled", "draft")),
-                    ])
-                    peak = sum(b.physical_pallets or b.pallets for b in active_bookings)
-                    remaining = max(0, cap - peak)
-                eligible.append({
-                    "date": date_str,
-                    "day_name": day_name.capitalize(),
-                    "feeder_corridor": legs_info.get("feeder_corridor", ""),
-                    "onward_corridor": legs_info.get("onward_corridor", ""),
+            # Evaluate EVERY delivery stop on this pickup date. The date is
+            # eligible only when the whole route can move.
+            per_stop = []
+            route_feasible = True
+            feeder_names = []
+            onward_names = []
+            leg_count = 0
+            estimated_delivery = ""
+            for plan in delivery_plans:
+                legs_info = self._probe_legs(
+                    origin_region, plan["dest"], hub, plan["routing"],
+                    current, day_name,
+                    float(origin["latitude"]), float(origin["longitude"]),
+                    float(plan["stop"]["latitude"]), float(plan["stop"]["longitude"]),
+                    physical_pallets, weight_lbs, equipment,
+                )
+                if not legs_info or not legs_info.get("feasible"):
+                    route_feasible = False
+                    per_stop.append({
+                        "stop_key": plan["stop"].get("stop_key", ""),
+                        "city": plan["stop"].get("city", ""),
+                        "feasible": False,
+                    })
+                    continue
+                per_stop.append({
+                    "stop_key": plan["stop"].get("stop_key", ""),
+                    "city": plan["stop"].get("city", ""),
+                    "feasible": True,
+                    "corridor": legs_info.get("feeder_corridor") or legs_info.get("onward_corridor", ""),
                     "departure_date": legs_info.get("departure_date", date_str),
-                    "estimated_delivery": legs_info.get("estimated_delivery", ""),
-                    "leg_count": legs_info.get("leg_count", 1),
-                    "remaining_capacity": remaining,
-                    "max_capacity": max_cap,
                 })
+                if legs_info.get("feeder_corridor"):
+                    feeder_names.append(legs_info["feeder_corridor"])
+                if legs_info.get("onward_corridor"):
+                    onward_names.append(legs_info["onward_corridor"])
+                leg_count = max(leg_count, legs_info.get("leg_count", 1))
+                # The latest expected delivery across the route.
+                if legs_info.get("estimated_delivery", "") > estimated_delivery:
+                    estimated_delivery = legs_info["estimated_delivery"]
+
+            if not route_feasible:
+                current += timedelta(days=1)
+                continue
+
+            # ── Canonical capacity check on the pickup departure ──────
+            # Peak physical onboard = physical_pallets: shared pallets are
+            # ONE physical position until their final stop. Capacity comes
+            # from VehicleCapacityService (vehicle layout rows / legacy
+            # fields) — never a hardcoded 12/13/14.
+            cap = cap_svc.for_pickup_date(self.env, origin_region, date_str)
+            if not cap.get("available"):
+                current += timedelta(days=1)
+                continue
+            if cap["remaining_pallets"] < physical_pallets:
+                current += timedelta(days=1)
+                continue
+            # Equipment capability of the departure vehicle.
+            departure = self.env["logistics.corridor.departure"].sudo().search([
+                ("id", "=", cap.get("departure_id")),
+            ], limit=1)
+            vehicle = departure.vehicle_id if departure else self.env["fleet.vehicle"]
+            if vehicle and not vehicle_accepts(
+                    vehicle_is_reefer=bool(vehicle.x_reefer), requested_mode=equipment):
+                current += timedelta(days=1)
+                continue
+            # Payload: vehicle max payload must cover the route weight.
+            payload = vehicle.x_max_payload_lbs or 0.0
+            if payload and weight_lbs and weight_lbs > payload:
+                current += timedelta(days=1)
+                continue
+
+            eligible.append({
+                "date": date_str,
+                "day_name": day_name.capitalize(),
+                "feeder_corridor": ", ".join(sorted(set(feeder_names))),
+                "onward_corridor": ", ".join(sorted(set(onward_names))),
+                "departure_date": cap.get("departure_date") or date_str,
+                "estimated_delivery": estimated_delivery,
+                "leg_count": leg_count,
+                "per_stop": per_stop,
+                "remaining_capacity": cap.get("remaining_pallets", 0),
+                "remaining_sellable_capacity": cap.get("remaining_sellable_capacity",
+                                                        cap.get("remaining_pallets", 0)),
+                "max_capacity": cap.get("max_pallets", 0),
+                "layout_code": cap.get("layout_code", ""),
+                "layout_name": cap.get("layout_name", ""),
+            })
 
             current += timedelta(days=1)
 

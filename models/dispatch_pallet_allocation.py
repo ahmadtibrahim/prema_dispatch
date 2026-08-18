@@ -30,6 +30,20 @@ class PremaDispatchPalletStopAllocation(models.Model):
          "This pallet already has an allocation for this stop."),
     ]
 
+    def create(self, vals_list):
+        allocs = super().create(vals_list)
+        # Spec §34: a pallet assigned to a stop propagates to the timeline
+        # (Booking Board + customer tracking both read it).
+        for alloc in allocs:
+            if alloc.job_id and alloc.active:
+                alloc.job_id._post_timeline(
+                    alloc.job_id, "pallet_assigned",
+                    notes=f"{alloc.dispatch_item_id.name} assigned to "
+                          f"{alloc.stop_id.address or alloc.stop_id.stop_type}",
+                    stop=alloc.stop_id,
+                )
+        return allocs
+
     @api.constrains("dispatch_item_id", "stop_id", "active")
     def _check_allocation_rules(self):
         for alloc in self.filtered("active"):

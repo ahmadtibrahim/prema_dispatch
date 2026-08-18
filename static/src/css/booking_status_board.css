@@ -41,7 +41,7 @@
 
 .o_bsb_row {
     display: grid;
-    grid-template-columns: 36px 130px 1fr 110px 90px 90px 1.4fr 60px 90px 90px 110px 110px 130px 100px 1.2fr 34px;
+    grid-template-columns: 36px 130px 1fr 110px 90px 90px 1.4fr 60px 90px 90px 110px 110px 130px 170px 1.2fr 34px;
     gap: 10px;
     padding: 8px 14px;
     border-bottom: 1px solid #333c52;
@@ -117,10 +117,19 @@
 .o_bsb_badge.status-cancelled   { background: #444; color: #999; }
 .o_bsb_badge.status-delivered   { background: #27ae60; color: #fff; }
 
-.o_bsb_badge.feas-feasible     { background: #1f8b4c; color: #fff; }
-.o_bsb_badge.feas-risky        { background: #d68910; color: #1a1a1a; }
-.o_bsb_badge.feas-not_feasible { background: #c0392b; color: #fff; }
-.o_bsb_badge.feas-unknown      { background: #4a5169; color: #c7cee2; }
+/* Live Progress (§33) — one badge per phase of the trip. */
+.o_bsb_badge.lprog-planned          { background: #2c3e50; color: #ecf0f1; }
+.o_bsb_badge.lprog-driver_started   { background: #4a5169; color: #c7cee2; }
+.o_bsb_badge.lprog-en_route_pickup  { background: #5b8cff; color: #fff; }
+.o_bsb_badge.lprog-arrived_pickup   { background: #5b8cff; color: #fff; animation: bsb-pulse 1.6s infinite; }
+.o_bsb_badge.lprog-loading          { background: #8e44ad; color: #fff; }
+.o_bsb_badge.lprog-pickup_complete  { background: #16a085; color: #fff; }
+.o_bsb_badge.lprog-delivering       { background: #16a085; color: #fff; }
+.o_bsb_badge.lprog-en_route_delivery{ background: #5b8cff; color: #fff; }
+.o_bsb_badge.lprog-arrived_delivery { background: #5b8cff; color: #fff; animation: bsb-pulse 1.6s infinite; }
+.o_bsb_badge.lprog-at_transfer      { background: #6f42c1; color: #fff; }
+.o_bsb_badge.lprog-en_route         { background: #5b8cff; color: #fff; }
+.o_bsb_badge.lprog-completed        { background: #27ae60; color: #fff; }
 
 .o_bsb_priority {
     font-size: 10px;

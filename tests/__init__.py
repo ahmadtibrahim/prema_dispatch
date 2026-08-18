@@ -8,3 +8,7 @@ from . import test_route_adviser
 from . import test_route_order_fix
 from . import test_milk_run_operations
 from . import test_driver_app_workflow
+from . import test_driver_workday
+from . import test_evidence_workflow
+from . import test_pallet_popp
+from . import test_live_sync

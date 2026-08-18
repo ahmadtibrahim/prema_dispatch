@@ -85,6 +85,13 @@
             <field name="groups" eval="[(4, ref('group_dispatch_driver'))]"/>
         </record>
 
+        <record id="rule_driver_workday_driver_own" model="ir.rule">
+            <field name="name">prema.dispatch.driver.workday: driver sees only their own workdays</field>
+            <field name="model_id" ref="model_prema_dispatch_driver_workday"/>
+            <field name="domain_force">[('driver_id', '=', user.partner_id.id)]</field>
+            <field name="groups" eval="[(4, ref('group_dispatch_driver'))]"/>
+        </record>
+
         <!-- Phase 2/5: Warehouse Loader — authenticated, minimal scope. Never
              the Driver group (different job: loads trucks, not routes them),
              never given accounting/invoice/truck-reassignment access. -->
@@ -104,6 +111,28 @@
             <field name="name">prema.dispatch.load.plan: driver sees only their own load plans</field>
             <field name="model_id" ref="model_prema_dispatch_load_plan"/>
             <field name="domain_force">[('driver_id', '=', user.partner_id.id)]</field>
+            <field name="groups" eval="[(4, ref('group_dispatch_driver'))]"/>
+        </record>
+
+        <!-- Canonical evidence records (Phase 3, spec §35): drivers may
+             read evidence on their own stops' jobs only. Creation happens
+             through driver_add_evidence (auth'd, sudo'd) — no direct
+             driver create needed, but read lets the app list records. -->
+        <record id="rule_dispatch_evidence_driver_own" model="ir.rule">
+            <field name="name">prema.dispatch.evidence: driver sees only evidence on their own jobs</field>
+            <field name="model_id" ref="model_prema_dispatch_evidence"/>
+            <field name="domain_force">[('job_id.driver_id', '=', user.partner_id.id)]</field>
+            <field name="groups" eval="[(4, ref('group_dispatch_driver'))]"/>
+        </record>
+
+        <!-- No Access / Sealed Load overrides (Phase 4, spec §22): drivers
+             see only their own jobs' overrides; dispatchers/managers see
+             everything. Creation happens through driver_create_popp_override
+             (auth'd, sudo'd). -->
+        <record id="rule_popp_override_driver_own" model="ir.rule">
+            <field name="name">prema.dispatch.popp.override: driver sees only their own jobs' overrides</field>
+            <field name="model_id" ref="model_prema_dispatch_popp_override"/>
+            <field name="domain_force">[('job_id.driver_id', '=', user.partner_id.id)]</field>
             <field name="groups" eval="[(4, ref('group_dispatch_driver'))]"/>
         </record>
     </data>
