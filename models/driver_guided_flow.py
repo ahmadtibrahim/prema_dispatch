@@ -1,10 +1,6 @@
-import logging
-
 from markupsafe import Markup, escape
 
 from odoo import api, fields, models
-
-_logger = logging.getLogger(__name__)
 
 
 _DEFER_REASONS = [
@@ -66,14 +62,14 @@ class PremaDispatchJobGuidedFlow(models.Model):
 
     @api.model
     def driver_update_stop(self, stop_id, action, data=None):
-        """Handle v7 guided-flow transitions before falling back to core actions.
+        """Handle guided Driver App transitions before core stop actions.
 
-        Deferred and Exception are deliberately *open* operational states. They
-        never mean delivered, picked up, skipped, cancelled, or commercially
-        completed. This keeps route/job completion blocked until the driver or
-        dispatcher resolves the stop.
+        Deferred and Exception are deliberately *open* operational states.
+        They never mean delivered, picked up, skipped, cancelled, or
+        commercially completed.
         """
-        if action not in {"defer", "resume_deferred", "report_problem", "resume_exception", "make_next"}:
+        guided_actions = {"defer", "resume_deferred", "report_problem", "resume_exception", "make_next"}
+        if action not in guided_actions:
             return super().driver_update_stop(stop_id, action, data)
 
         from odoo.addons.prema_dispatch.services.dispatch_auth import check_stop_access
@@ -84,8 +80,8 @@ class PremaDispatchJobGuidedFlow(models.Model):
             return {"success": False, "error": "Stop not found"}
         if not check_stop_access(self.env, stop, raise_on_fail=False):
             return {"success": False, "error": "Not authorized for this stop"}
-        if stop.status in ("completed", "cancelled"):
-            return {"success": False, "error": "Completed or cancelled stops cannot be changed by the driver"}
+        if stop.status in ("completed", "cancelled", "skipped"):
+            return {"success": False, "error": "Closed stops cannot be changed by the driver"}
 
         if action == "defer":
             return self._driver_defer_stop(stop, data)
@@ -111,6 +107,10 @@ class PremaDispatchJobGuidedFlow(models.Model):
             "message": message or "",
         }
 
+    def _post_driver_audit(self, job, body):
+        """Write operational audit notes without emailing job followers."""
+        job.message_post(body=body, subtype_xmlid="mail.mt_note")
+
     def _driver_defer_stop(self, stop, data):
         reason = data.get("reason") or "other"
         allowed = dict(_DEFER_REASONS)
@@ -127,7 +127,7 @@ class PremaDispatchJobGuidedFlow(models.Model):
         siblings = stop.job_id.stop_ids.filtered(lambda s: s.id != stop.id and s.status != "cancelled")
         max_sequence = max(siblings.mapped("sequence") or [stop.sequence or 10])
         original_sequence = stop.driver_deferred_original_sequence or stop.sequence or 10
-        vals = {
+        stop.write({
             "status": "deferred",
             "driver_deferred_reason": reason,
             "driver_deferred_reason_other": reason_other if reason == "other" else False,
@@ -135,17 +135,16 @@ class PremaDispatchJobGuidedFlow(models.Model):
             "driver_deferred_at": fields.Datetime.now(),
             "driver_deferred_by": self.env.user.id,
             "driver_deferred_original_sequence": original_sequence,
-            # Put the stop after the currently serviceable stops. It remains
-            # open and visible; this is not the old terminal "skipped" state.
+            # Deferred stays visible/open but moves behind serviceable stops.
             "sequence": max_sequence + 10,
-        }
-        stop.write(vals)
+        })
         label = reason_other or allowed.get(reason) or "Come Back Later"
         when = f" · return after {fields.Datetime.to_string(until)}" if until else ""
-        stop.job_id.message_post(
-            body=Markup("Driver deferred stop <b>%s</b>: %s%s") % (
+        self._post_driver_audit(
+            stop.job_id,
+            Markup("Driver deferred stop <b>%s</b>: %s%s") % (
                 escape(stop.name or stop.address or str(stop.id)), escape(label), escape(when)
-            )
+            ),
         )
         return self._guided_stop_result(stop, "Stop saved for later. Continue to the next eligible stop.")
 
@@ -156,7 +155,7 @@ class PremaDispatchJobGuidedFlow(models.Model):
             lambda s: s.id != stop.id and s.status not in ("completed", "cancelled", "skipped", "deferred", "exception")
         )
         if data.get("make_current", True) and siblings:
-            new_sequence = max(1, min(siblings.mapped("sequence")) - 1)
+            new_sequence = max(0, min(siblings.mapped("sequence")) - 1)
         else:
             new_sequence = stop.driver_deferred_original_sequence or stop.sequence
         stop.write({
@@ -169,8 +168,9 @@ class PremaDispatchJobGuidedFlow(models.Model):
             "driver_deferred_by": False,
             "driver_deferred_original_sequence": 0,
         })
-        stop.job_id.message_post(
-            body=Markup("Driver returned stop <b>%s</b> to the active route") % escape(stop.name or stop.address or str(stop.id))
+        self._post_driver_audit(
+            stop.job_id,
+            Markup("Driver returned stop <b>%s</b> to the active route") % escape(stop.name or stop.address or str(stop.id)),
         )
         return self._guided_stop_result(stop, "Stop returned to the active route")
 
@@ -189,12 +189,14 @@ class PremaDispatchJobGuidedFlow(models.Model):
             "driver_exception_opened_by": self.env.user.id,
             "driver_exception_previous_status": previous or "pending",
         })
-        stop.job_id.message_post(
-            body=Markup("Driver reported a stop exception at <b>%s</b>: %s%s") % (
+        note_html = Markup("<br/>%s") % escape(notes) if notes else Markup("")
+        self._post_driver_audit(
+            stop.job_id,
+            Markup("Driver reported a stop exception at <b>%s</b>: %s%s") % (
                 escape(stop.name or stop.address or str(stop.id)),
                 escape(allowed.get(reason) or "Other"),
-                Markup("<br/>%s") % escape(notes) if notes else Markup(""),
-            )
+                note_html,
+            ),
         )
         return self._guided_stop_result(stop, "Problem reported to Dispatch. The stop remains open.")
 
@@ -212,8 +214,9 @@ class PremaDispatchJobGuidedFlow(models.Model):
             "driver_exception_opened_by": False,
             "driver_exception_previous_status": False,
         })
-        stop.job_id.message_post(
-            body=Markup("Driver resumed stop <b>%s</b> after resolving its exception") % escape(stop.name or stop.address or str(stop.id))
+        self._post_driver_audit(
+            stop.job_id,
+            Markup("Driver resumed stop <b>%s</b> after resolving its exception") % escape(stop.name or stop.address or str(stop.id)),
         )
         return self._guided_stop_result(stop, "Exception cleared; stop resumed")
 
@@ -222,7 +225,7 @@ class PremaDispatchJobGuidedFlow(models.Model):
         siblings = stop.job_id.stop_ids.filtered(
             lambda s: s.id != stop.id and s.status not in ("completed", "cancelled", "skipped", "deferred", "exception")
         )
-        new_sequence = max(1, min(siblings.mapped("sequence")) - 1) if siblings else stop.sequence
+        new_sequence = max(0, min(siblings.mapped("sequence")) - 1) if siblings else stop.sequence
         old_sequence = stop.sequence
         stop.write({
             "sequence": new_sequence,
@@ -230,9 +233,10 @@ class PremaDispatchJobGuidedFlow(models.Model):
             "driver_sequence_override_at": fields.Datetime.now(),
             "driver_sequence_override_by": self.env.user.id,
         })
-        stop.job_id.message_post(
-            body=Markup("Driver changed stop sequence for <b>%s</b> (%s → %s): %s") % (
+        self._post_driver_audit(
+            stop.job_id,
+            Markup("Driver changed stop sequence for <b>%s</b> (%s → %s): %s") % (
                 escape(stop.name or stop.address or str(stop.id)), old_sequence, new_sequence, escape(reason)
-            )
+            ),
         )
         return self._guided_stop_result(stop, "Stop moved to the front of this route")
