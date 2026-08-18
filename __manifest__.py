@@ -1,6 +1,6 @@
 {
     "name": "Prema Dispatch",
-    "version": "18.0.3.3.1",
+    "version": "18.0.3.4.0",
     "summary": "Booking, planning, live GPS tracking, driver mobile app, interactive truck Load Plans, warehouse loading mode, AI document extraction, VoIP calling and reporting for PremaFirm dispatch operations",
     "category": "Logistics",
     "description": """
@@ -51,13 +51,20 @@ Live Map & Customer Tracking
 
 Driver App
 ----------
-* Mobile web app (/dispatch/driver) with weekly schedule, stop list and
-  in-app turn-by-turn navigation (route options: avoid tolls/highways/
-  ferries, north-up/heading-up, voice guidance).
-* Per-stop actions: arrival geofencing, service-time tracking, stop
-  reordering, pin drop/"Use Address", entrance photos, POD/delivery-photo
-  evidence, document scanner for BOLs, and one-tap Report Issue reasons.
-* Built-in chat with dispatch and click-to-call.
+* Mobile web app (/dispatch/driver) with weekly schedule, guided stop workflow,
+  and a reference route map; the primary Navigate action hands turn-by-turn
+  guidance to the Google Maps mobile app.
+* Route-level Start Route lives on Home. Stop work unlocks only after the
+  driver confirms arrival, then proceeds one required step at a time.
+* Pickup flow: verify freight, verify/assign destinations, assign physical
+  load positions, capture pallet photos and pickup proof, review, then confirm.
+* Delivery flow: verify stop-specific freight, confirm unload, capture POD,
+  review, then confirm.
+* Come Back Later is a non-terminal Deferred state; operational exceptions
+  remain open until resolved. Neither state counts as freight completion.
+* Per-stop arrival geofencing, service-time tracking, pin drop/"Use Address",
+  entrance photos, POD/delivery-photo evidence, multi-page document scanner,
+  built-in chat with dispatch, and click-to-call.
 
 Load Plan & Pallet Positioning
 -------------------------------
@@ -169,13 +176,15 @@ A full in-app user manual is available from the Prema Dispatch app menu.
             "prema_dispatch/static/src/js/booking_status_board.js",
             "prema_dispatch/static/src/js/google_places_widget.js",
         ],
-        # The canonical loader also ships on portal pages (where-we-go map,
-        # saved-locations autocomplete). The two v6 files are hard-guarded to
-        # /dispatch/driver and wait for the standalone app's APP/S state.
+        # Driver layers are hard-guarded to /dispatch/driver. V7 loads last so
+        # it can turn the existing feature-rich app into a guided phone flow
+        # without duplicating the underlying RPC/evidence/load-plan logic.
         "web.assets_frontend": [
             "prema_dispatch/static/src/js/google_maps_loader.js",
             "prema_dispatch/static/src/js/driver_flow_v6.js",
             "prema_dispatch/static/src/js/driver_native_nav_v6.js",
+            "prema_dispatch/static/src/css/driver_guided_flow_v7.css",
+            "prema_dispatch/static/src/js/driver_guided_flow_v7.js",
         ],
     },
     "installable": True,
