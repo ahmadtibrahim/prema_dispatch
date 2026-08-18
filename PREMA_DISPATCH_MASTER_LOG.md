@@ -2374,3 +2374,199 @@ must be Monday.
 4. Card moved/resized/cancelled → agreement unchanged, next week normal
    (tests 03/11); due bookings generate and deduplicate with the job
    generator (tests 08/09).
+
+---
+
+## PRODUCTION DEPLOYMENT — PHASE 7 WEEKLY CAPACITY PLANNER (2026-08-18)
+
+### DEPLOYMENT
+- Branch: feature/multi-pickup-multi-delivery (approved) — code already on the
+  shared addons_path (/opt/odoo/custom-addons); deployment = DB upgrade + restart.
+- Backup taken BEFORE upgrade:
+  /opt/odoo/backups/Prod-db_pre_phase7_weekly_planner_20260818_1254.dump
+  (pg_dump -Fc, 26M, 1213 tables verified via pg_restore --list).
+- Upgrade command (EXIT 0):
+  cd /opt/odoo/odoo18 && sudo -u odoo18 /opt/odoo/venv-18/bin/python3 \
+    odoo-bin -c /etc/odoo18.conf -d Prod-db -i prema_dispatch \
+    -u prema_logistics_booking --stop-after-init \
+    --logfile=/tmp/prod_upgrade_20260818.log
+  (-i for prema_dispatch, -u for prema_logistics_booking per the Odoo 18
+  gotcha: -u silently skips NEW modules; -i updates installed ones.)
+- Module versions: prema_dispatch 18.0.3.1.0 → 18.0.3.3.0;
+  prema_logistics_booking 18.0.11.0.0 → 18.0.12.0.0 (includes the pricing
+  engine redesign — Step3=Step4 fix, temp surcharges, editable discounts,
+  human route names).
+- Service restarted: systemd odoo18.service active, 6 processes, Registry
+  loaded in 3.889s, 301 modules. Browser bundles regenerated (frontend
+  bundle 200 / 688KB). UAT instance (port 8070) untouched.
+
+### SCHEMA / MENUS / CRONS
+- 3 new tables (logistics_weekly_plan, _plan_day, _plan_reservation), 3 new
+  menus + pre-existing menu_v4_weekly_svcs, 3 new crons (weekly plan
+  generator, recurring generator, departure-horizon reconcile), 7 new views,
+  3 models registered (logistics.weekly.plan/.day/.reservation).
+
+### SMOKE TEST (production, 2026-08-18 16:5x)
+- Admin auth OK (uid 2). Driver App /dispatch/driver 200. Customer Booking
+  Portal /booking 200 (admin is beta tester; anonymous 404 is the designed
+  portal gating). Schedule board 303 → planner action (designed). Saved
+  locations 52. Bookings/jobs intact (4 bookings / 4 jobs at table level;
+  admin sees only his own company's bookings via the pre-existing
+  rule_logistics_booking_customer_own record rule — not a regression).
+
+### LOG ERRORS / WARNINGS (post-restart)
+- NEW signature: 18x "column crm_tag.active does not exist" (16:57-16:58,
+  during CRM lead view reads). ROOT CAUSE: pre-existing schema drift in
+  premafirm_ai_engine — crm_tag_cleanup.py (declares active on crm.tag,
+  mtime 2026-08-18 02:24) was deployed to addons_path but the module was
+  never upgraded in any DB, so the ORM never created the column. Exposed by
+  the restart this deployment required; NOT caused by the prema_dispatch /
+  prema_logistics_booking upgrade. Fix (outside deployment scope, run when
+  approved): -u premafirm_ai_engine on Prod-db.
+- Pre-existing noise (unchanged, not from this upgrade): legacy
+  premafirm_* "has no table" lines, fetchmail IMAP traceback, GeoIP mmdb
+  DEBUG, and 178 older unrelated "bad query" lines (plaid, logistics_lane).
+
+---
+
+## 2026-08-18 17:0x–17:3x — PREMAFIRM_AI_ENGINE PRODUCTION UPGRADE (18.0.6.6.0 → 18.0.6.28.0)
+
+APPROVED CRM-engine production deployment (branch feature/crm-mail-threading-workflow,
+HEAD 06cf9d3 — 2 commits ahead of UAT-tested 742f2fe: webhook `request.get_json_data()`
+fix (4026420, exactly the required step-3 change) + docstring-only 06cf9d3; zero
+`request.jsonrequest` anywhere in custom-addons). Source delta judged non-material.
+
+### BACKUP
+- /opt/odoo/backups/Prod-db_pre_crm_engine_20260818_1314.dump (pg_dump exit 0, non-zero size,
+  pg_restore --list OK).
+
+### UPGRADE
+- Stop → `cd /opt/odoo/odoo18 && sudo -u odoo18 /opt/odoo/venv-18/bin/python3 odoo-bin -c
+  /etc/odoo18.conf -d Prod-db -u premafirm_ai_engine --stop-after-init
+  --logfile=/tmp/prod_crm_upgrade_20260818_r2.log`
+- Run 1 FAILED (exit 255): ParseError at crm_data_cleanup_views.xml:55 — `ref=
+  premafirm_inbound_queue_form` forward reference; manifest ordering bug (inbound_queue_views.xml
+  loaded AFTER crm_data_cleanup_views.xml). FIX (only source change): moved inbound_queue_views.xml
+  in __manifest__.py data list to directly before crm_data_cleanup_views.xml; regex scan confirmed
+  it was the only forward ref. Run 2 EXIT 0, zero ERROR.
+- Branch was NEVER installed in any DB before (Prod & UAT both at 18.0.6.6.0) — the ordering bug
+  was latent. The webhook `request.jsonrequest` obsolete code had ALREADY been replaced at 4026420.
+- crm.tag `active` column created by ORM during upgrade (8th column of crm_tag) — the
+  "column crm_tag.active does not exist" drift from the Phase 7 log is RESOLVED; 0 occurrences
+  since restart. Migrations ran: legacy follow-up crons OFF, CDR cron code normalized
+  (`model.fetch_from_voipms(days=2)`), new models/views/security loaded, no sales-history deletion.
+
+### POST-UPGRADE CONFIG
+- Follow-up: `crm.followup.send_mode = draft` (NOT auto). New Consolidated Follow-Up cron (143)
+  OFF (operator opt-in); six legacy crons 113/114/115/116/117/118 all OFF; old+new systems never
+  run together.
+- Fetch Now whitelist `premafirm.crm_immediate_fetch_server_ids = 1,5,6,7,8,10,11,14`
+  (generic Premafirm 1/5/7, Logistics OPS 6, Ahmad 8, Dispatcher Logistics 10, Accounts Logistics
+  11, Accounts Sales Team 14). Excluded: 2 notifications, 3 catchall, 4 bounce, 12 Aladdin
+  (personal), 13 Grace (inactive). Manual Fetch Now now works; cron independent.
+  NOTE: earlier session's param writes never persisted (odoo shell rollback on exit — no
+  explicit commit); re-set with commit in this deployment and re-verified.
+- Webhook secret: premafirm.mail.webhook_secret = 64-hex generated (stored in
+  /tmp/premafirm_webhook_secret.txt + DB only, NOT in git). Verified live:
+  wrong secret → {"status":"unauthorized"}; correct secret + harmless unresolved delivered event
+  → {"status":"ok","processed":1}; same event again → {"deduped":1}; ledger row state=unresolved.
+- Service restarted 17:23: clean, PIDs 3025351/3025374/3025376, Registry 2.915s, 301 modules.
+
+### SMOKE TEST (production, live mail, lead 988 then archived)
+- Outbound via canonical `premafirm.mail.threading.build_mail_values` → mail.mail 1980
+  (email_from notifications@premafirm.com owner identity, reply_to accounts@premafirm.com,
+  auto_delete=False) → sent, thread message 32956 stored with Message-ID. Reply from external
+  catchall@premafirm.com with In-Reply-To/References → delivered to accounts@ → Fetch Now
+  (server 14) → message 32958 threaded onto the SAME lead. Verified: needs_reply=True,
+  last_inbound_classification='normal_reply', stage → ENGAGED / REPLIED (automation), ZERO new
+  RE: leads, second Fetch Now added nothing (UID claims: 1 per message; fingerprint dedup held).
+- Outbound copy fetched back absorbed silently (no duplicate message, no new lead) — PHASE 32
+  internal-sender path confirmed in production.
+- Webhook + threading tests cleaned up: smoke lead 988 archived (active=False), smoke partner
+  deleted. No stray leads (SMOKE TEST count = 1 before cleanup).
+- Data safety: leads 961 (Cinelli, 18 msgs), 984 (bounce), 985 (dup reply) all intact; counts
+  crm_lead 247 / mail_message 25195 / mail_mail 168.
+- Bounce/OOO: no live bounce performed (per deployment rules); covered by the module's automated
+  battery (73/73 green in UAT) + event-ledger design.
+
+### LOG ERRORS / WARNINGS (post-restart)
+- 0 UndefinedColumn, 0 crm_tag.active, 0 tracebacks from the upgrade. ONE pre-existing issue
+  surfaced: fetchmail IMAP server "Dispatcher Logistics" (server 10) has stale IMAP credentials
+  (AUTHENTICATIONFAILED — 6,461 occurrences in log history, predates this deployment by weeks).
+  Flag for ops: refresh dispatch@logistics.premafirm.com IMAP password in Settings → Incoming
+  Mail; manual Fetch Now on server 10 will fail until then. All other fetchmail servers fetch
+  clean (cron runs 'done').
+- DNS: NOT modified. logistics.premafirm.com SPF/Resend alignment remains a separate follow-up.
+
+### CRONS (post-upgrade state)
+- ACTIVE: 7 Mail: Fetchmail Service (required for threading), 106 CRM: Process Bulk Email Queue
+  (kept per business operation; NO campaign launched), 54 IAP enrich (pre-existing).
+- OFF: 113/114/115/116/117/118 (legacy follow-up/rotation), 143 (Consolidated Follow-Up, new),
+  144 CRM: VoIP.ms CDR Sync (code verified `model.fetch_from_voipms(days=2)`), 53 Lead Assignment.
+- ROLLBACK NOT REQUIRED. FINAL PRODUCTION CRM STATUS: LIVE at 18.0.6.28.0, threading verified
+  end-to-end, draft-mode follow-up only, manual Fetch Now configured, webhook secured.
+
+---
+
+## 2026-08-18 — PHASE 41: CRM PIPELINE WAIT-QUEUE SORTING (18.0.6.29.0) — DEPLOYED TO PROD 18:38, ZERO ERRORS
+
+### WHAT
+- New stored computed field `crm.lead.x_meaningful_activity_at` — last meaningful CRM
+  interaction (customer email, sales outbound, human note, reply); untouched leads fall
+  back to create_date so born-waiting leads rise to the TOP of every stage.
+- Noise excluded at message level: mt_note/notification types, OdooBot authors,
+  field-tracking chatter.
+- `_order = 'x_meaningful_activity_at asc, create_date asc, id asc'`; default_order applied
+  on both kanban views (Pipeline + Leads) and the Leads list view. x_needs_attention stays
+  a visual badge only — never a sort key.
+- 8 new tests TestCrmLeadOrdering — green on Prod-db-test1a.
+- Commit 89c9c13 on feature/crm-mail-threading-workflow.
+
+### TEST-DB REPAIR (latent bugs found while getting tests green)
+- data/ml_cron.xml: stale `premafirm_ml.model_premafirm_ml_ingestion` ref (dead module) —
+  fresh installs crashed; prod survived via leftover ir.model.data row. Now refs the
+  engine's own premafirm.ml.ingestion. (This is why the module's own test suite had NEVER
+  run on a test DB before today.)
+- Fixed 2 stale tests exposed by the first-ever full suite run:
+  - test_mail_activity_stage_guard.py: exact-name stage lookup missed canonical names
+    (ONBOARDING/ENGAGED / REPLIED); guard only restores from canonical "qualified / data
+    collected", test used legacy "Data Collection" — now case-insensitive + canonical.
+  - test_ai_lead_generation.py: asserted lead.partner_id == contact, but PHASE 11 rule
+    repoints opportunity partner to the parent COMPANY on create (by design) — assertion
+    now expects company + contact.parent_id == company.
+
+### NOTIFICATION CLEANUP (task #29 — DONE, no deletes)
+- 174 unread inbox notifications for Ahmad (user 2 / partner 3), ALL crm.lead, ALL Aug
+  2026, 173/174 mass-generated "Carrier Outreach — X: assigned to you" user_notifications
+  from the outreach automation. Marked is_read=True + read_date (ORM write, rows kept,
+  history intact). Same pattern spams Aladdin (56) + Grace (39) — reported, not touched.
+
+### DEPLOYMENT (18:38 UTC-4, 2026-08-18)
+- Backup: /tmp/backup_prod_phase41_20260818_1437.dump (27.6MB, pg_restore --list OK).
+- Upgrade: stop odoo18 → `-u premafirm_ai_engine` → start; 0 ERROR/CRITICAL lines;
+  ir_module_module = 18.0.6.29.0; service active.
+- Kanban verified with REAL prod data, 4 populated stages (order used by the actual
+  Pipeline kanban = x_meaningful_activity_at ASC, create_date ASC, id ASC):
+  * NEW / UNCONTACTED top = KW Surplus (untouched, created 04-21 — born-waiting first)
+  * OUTREACH SENT top = Ippolito (04-30), then 05-13s — oldest wait first
+  * ENGAGED / REPLIED top = Sunnyside (06-26), MoverOne (06-30), Liberate (07-06)
+  * QUALIFIED / DATA COLLECTED top = 05-11 pair, then 06-01 — oldest first
+  * Needs Attention is badge-only: attention leads sit at positions 8 and 17 of 19.
+  * 0 NULL x_meaningful_activity_at across 403 leads.
+- Commits: 89c9c13 (sort), 8a8c13a (stale-test repair) on feature/crm-mail-threading-workflow.
+
+### STAGE + NOTIFICATION STATUS (audit closes)
+- 13 legacy stages archived (fold=True, 0 records) — nothing to delete, nothing moved.
+- LOST (11) + PAUSED / ON HOLD (19) folded by design (terminal/pause stages); 19 paused
+  records classified — all has-partner, real logistics accounts, last activity
+  2026-02-20 → 2026-08-17; no retail leads among them. No moves needed.
+- Notifications: Ahmad's 174 unread crm.lead inbox notifications (Aug 2026, all
+  "Carrier Outreach — X assigned to you" automation notices) marked read via ORM
+  (is_read + read_date, rows kept). Same pattern on Aladdin (56) / Grace (39) — reported.
+- Activities: 202 open CRM for Ahmad — 7 overdue (oldest deadline 07-22), 195 valid,
+  0 auto-generated summaries. Report-only per rules.
+- Contacts/freight audit: crm.lead.contact + crm.lead.freight.lane tables EXIST but
+  hold 0 rows; ALL 23 freight-profile fields on crm.lead are 0/403 populated; no code
+  reads or writes them (view-only). receives_email/receives_quotes have NO consumers
+  (display-only). Design recommendation: company-level Freight Profile (res.partner)
+  + opportunity overrides is lossless-by-construction (zero data to migrate).
