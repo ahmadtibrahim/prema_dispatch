@@ -16,6 +16,7 @@ class TestDriverGuidedFlowV7(TransactionCase):
         super().setUpClass()
         cls.root = Path(get_module_path("prema_dispatch"))
         cls.js = (cls.root / "static/src/js/driver_guided_flow_v7.js").read_text(encoding="utf-8")
+        cls.hotfix = (cls.root / "static/src/js/driver_guided_flow_v7_hotfix.js").read_text(encoding="utf-8")
         cls.css = (cls.root / "static/src/css/driver_guided_flow_v7.css").read_text(encoding="utf-8")
         cls.py = (cls.root / "models/driver_guided_flow.py").read_text(encoding="utf-8")
         cls.manifest = (cls.root / "__manifest__.py").read_text(encoding="utf-8")
@@ -23,9 +24,14 @@ class TestDriverGuidedFlowV7(TransactionCase):
     def test_assets_loaded_after_v6(self):
         self.assertIn("static/src/css/driver_guided_flow_v7.css", self.manifest)
         self.assertIn("static/src/js/driver_guided_flow_v7.js", self.manifest)
+        self.assertIn("static/src/js/driver_guided_flow_v7_hotfix.js", self.manifest)
         self.assertGreater(
             self.manifest.index("driver_guided_flow_v7.js"),
             self.manifest.index("driver_native_nav_v6.js"),
+        )
+        self.assertGreater(
+            self.manifest.index("driver_guided_flow_v7_hotfix.js"),
+            self.manifest.index("driver_guided_flow_v7.js"),
         )
 
     def test_stop_model_has_non_terminal_deferred_and_exception_states(self):
@@ -47,6 +53,12 @@ class TestDriverGuidedFlowV7(TransactionCase):
         self.assertIn("resume_deferred", self.py)
         self.assertIn("returnToDeferred", self.js)
         self.assertIn("Return to This Stop", self.js)
+        self.assertIn("driver_deferred_until", self.py)
+        self.assertIn("When should this stop come back up?", self.hotfix)
+
+    def test_driver_audit_events_are_internal_notes(self):
+        self.assertIn('subtype_xmlid="mail.mt_note"', self.py)
+        self.assertIn("_post_driver_audit", self.py)
 
     def test_start_route_is_home_level_and_stop_route_button_removed(self):
         self.assertIn("START ROUTE", self.js)
@@ -73,6 +85,11 @@ class TestDriverGuidedFlowV7(TransactionCase):
         self.assertIn('"/dispatch/driver/loadplan/assign"', self.js)
         self.assertIn("Take Pallet Photo", self.js)
         self.assertIn("Confirm Pickup", self.js)
+
+    def test_pickup_actual_count_can_advance_before_final_gate(self):
+        self.assertIn('result?.code === "pickup_gate_blocked"', self.hotfix)
+        self.assertIn("Pallet count saved — continue the pickup steps", self.hotfix)
+        self.assertIn("ensurePickupLoadPlan(true)", self.hotfix)
 
     def test_delivery_is_sequential_and_stop_specific(self):
         self.assertIn("Unload only the freight for this stop", self.js)
