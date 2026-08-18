@@ -14,3 +14,4 @@ from . import test_pallet_popp
 from . import test_live_sync
 from . import test_location_timing
 from . import test_weekly_planner
+from . import test_driver_flow_v6_contract

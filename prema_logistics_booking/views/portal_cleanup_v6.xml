@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- The canonical customer dashboard entry is portal_my_home_bookings
+         from portal_booking_templates.xml and links to /my/bookings.
+         Disable the older /request-a-quote tile so customers see one
+         Bookings entry, not two visually identical cards. -->
+    <record id="portal_my_home_booking_card" model="ir.ui.view">
+        <field name="active" eval="False"/>
+    </record>
+</odoo>

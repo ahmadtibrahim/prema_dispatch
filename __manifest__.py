@@ -1,6 +1,6 @@
 {
     "name": "Prema Dispatch",
-    "version": "18.0.3.3.0",
+    "version": "18.0.3.3.1",
     "summary": "Booking, planning, live GPS tracking, driver mobile app, interactive truck Load Plans, warehouse loading mode, AI document extraction, VoIP calling and reporting for PremaFirm dispatch operations",
     "category": "Logistics",
     "description": """
@@ -170,10 +170,12 @@ A full in-app user manual is available from the Prema Dispatch app menu.
             "prema_dispatch/static/src/js/google_places_widget.js",
         ],
         # The canonical loader also ships on portal pages (where-we-go map,
-        # saved-locations autocomplete) so `window.loadGoogleMaps` is
-        # available to their inline scripts.
+        # saved-locations autocomplete). The two v6 files are hard-guarded to
+        # /dispatch/driver and wait for the standalone app's APP/S state.
         "web.assets_frontend": [
             "prema_dispatch/static/src/js/google_maps_loader.js",
+            "prema_dispatch/static/src/js/driver_flow_v6.js",
+            "prema_dispatch/static/src/js/driver_native_nav_v6.js",
         ],
     },
     "installable": True,
