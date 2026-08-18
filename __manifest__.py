@@ -170,13 +170,12 @@ A full in-app user manual is available from the Prema Dispatch app menu.
             "prema_dispatch/static/src/js/google_places_widget.js",
         ],
         # The canonical loader also ships on portal pages (where-we-go map,
-        # saved-locations autocomplete) so `window.loadGoogleMaps` is
-        # available to their inline scripts. driver_flow_v6.js is a guarded
-        # post-load layer that activates only when the standalone driver app
-        # has created APP/S state, so it is harmless on other portal pages.
+        # saved-locations autocomplete). The two v6 files are hard-guarded to
+        # /dispatch/driver and wait for the standalone app's APP/S state.
         "web.assets_frontend": [
             "prema_dispatch/static/src/js/google_maps_loader.js",
             "prema_dispatch/static/src/js/driver_flow_v6.js",
+            "prema_dispatch/static/src/js/driver_native_nav_v6.js",
         ],
     },
     "installable": True,
