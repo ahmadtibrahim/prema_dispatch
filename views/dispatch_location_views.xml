@@ -162,6 +162,14 @@
                             <field name="fastest_stop_minutes" readonly="1"/>
                             <field name="longest_stop_minutes" readonly="1"/>
                         </group>
+                        <group string="Historical (Phase 6 — from visit samples)">
+                            <field name="median_dwell_minutes" readonly="1"/>
+                            <field name="avg_last10_dwell_minutes" readonly="1"/>
+                            <field name="avg_loading_minutes" readonly="1"/>
+                            <field name="avg_unloading_minutes" readonly="1"/>
+                            <field name="visit_sample_ids" readonly="1" nolabel="1"
+                                   view_id="location_visit_sample_tree"/>
+                        </group>
                         <group string="Reliability">
                             <field name="average_delay_minutes" readonly="1"/>
                             <field name="appointment_compliance_pct" readonly="1"/>
@@ -324,6 +332,22 @@
                 Saved locations remember the exact parking pin and entrance photo
                 for each warehouse or customer site, so drivers always know where to park.
             </p>
+        </field>
+    </record>
+
+    <!-- Phase 6: read-only raw visit samples (referenced from the form) -->
+    <record id="location_visit_sample_tree" model="ir.ui.view">
+        <field name="name">prema.dispatch.location.visit.sample.tree</field>
+        <field name="model">prema.dispatch.location.visit.sample</field>
+        <field name="arch" type="xml">
+            <list create="false" delete="false" edit="false">
+                <field name="visited_at"/>
+                <field name="stop_type"/>
+                <field name="dwell_minutes"/>
+                <field name="service_minutes"/>
+                <field name="wait_minutes"/>
+                <field name="stop_id"/>
+            </list>
         </field>
     </record>
 

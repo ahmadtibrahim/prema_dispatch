@@ -906,12 +906,15 @@ class LogisticsCorridorDeparture(models.Model):
             departure.remaining_sellable_capacity = result["remaining_sellable_capacity"]
             departure.exclusive_vehicle_reserved = result["exclusive_vehicle_reserved"]
             exclusive_ids = result["exclusive_booking_ids"] or []
-            if exclusive_ids:
-                names = self.env["logistics.booking"].browse(exclusive_ids).mapped(
-                    lambda b: b.booking_number or "Booking %s" % b.id)
-                departure.exclusive_booking_ref = ", ".join(names)
-            else:
-                departure.exclusive_booking_ref = ""
+            names = self.env["logistics.booking"].browse(exclusive_ids).mapped(
+                lambda b: b.booking_number or "Booking %s" % b.id)
+            # Phase 7: FTL weekly-plan reservations hold the truck exactly
+            # like an FTL booking — surface them next to the booking refs.
+            reservation_ids = result.get("exclusive_reservation_ids") or []
+            if reservation_ids:
+                names += self.env["logistics.weekly.plan.reservation"].browse(
+                    reservation_ids).mapped("name")
+            departure.exclusive_booking_ref = ", ".join(names)
 
     @api.constrains("capacity_layout_override_id", "vehicle_id")
     def _check_layout_override_valid(self):

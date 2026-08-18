@@ -137,6 +137,8 @@ class VehicleCapacityService:
             "reserved_ltl_positions": reserved_ltl,
             "exclusive_vehicle_reserved": exclusive,
             "exclusive_booking_ids": peak.get("exclusive_booking_ids", []),
+            "exclusive_reservation_ids": peak.get(
+                "exclusive_reservation_ids", []),
             "remaining_sellable_capacity": remaining_sellable,
             "proposed_pallets": proposed_pallets,
             "proposed_total": 0,

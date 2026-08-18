@@ -2073,3 +2073,304 @@ tables on `-u` (verified on Prod-db-test1a). No manual script.
    (test 08).
 3. Actual ≠ expected → gate demands variance notes → with notes, confirmation
    passes; GPS recorded (tests 09, 12).
+
+---
+
+## PHASE 5 — LIVE SYNC (spec §32-§34): Booking Board LIVE PROGRESS + Timeline Propagation + Server-side Skip
+
+Implemented 2026-08-18 on branch `feature/multi-pickup-multi-delivery` (not deployed to production).
+
+### FILES CHANGED
+- `models/dispatch_job.py` — NEW `_board_live_progress()` (§33) replacing the
+  FEASIBILITY column; `get_booking_status_board_data` now emits
+  `live_progress` / `live_progress_label` (no more `feasibility` /
+  `feasibility_reason` keys); timeline events wired into
+  `driver_start_route` (route_started), `driver_update_stop` (issue_reported,
+  NEW server-side `"skipped"` action → stop_skipped), `driver_confirm_pickup_actuals`
+  (pickup_confirmed on gate-pass), `driver_add_evidence` (pod_uploaded /
+  evidence_uploaded, popp_captured), `driver_create_popp_override` (popp_override),
+  `driver_complete_scan` (document_scanned).
+- `models/dispatch_timeline.py` — TIMELINE_EVENTS extended (10 new types).
+- `models/dispatch_workday.py` — `action_end_day` posts `day_ended` per job.
+- `models/dispatch_pallet_allocation.py` — `create()` posts `pallet_assigned`.
+- `static/src/js/booking_status_board.js` — FEASIBILITY_LABELS + feasibilityLabel removed.
+- `static/src/xml/booking_status_board.xml` — Feasibility column → Live Progress.
+- `static/src/css/booking_status_board.css` — grid 100px → 170px; `.lprog-*` badges.
+- `controllers/portal.py` — `track_shipment` + `track_live` carry live_progress.
+- `views/portal_tracking_templates.xml` — LIVE PROGRESS badge + 30s JS poll
+  (first real consumer of the /live endpoint).
+- `static/src/js/driver_app.js` — `doSkip` now calls the server-side
+  `"skipped"` action (was a client-only status flip).
+- `tests/test_live_sync.py` (NEW) — 11 tests.
+
+### ROOT CAUSES FIXED
+- The tracking portal's `/dispatch/track/<num>/live` endpoint had NO frontend
+  consumer — the "30s poll" existed server-side only. Added the poll + badge
+  swap to `portal_tracking_templates.xml`.
+- Driver-app Skip was faked client-side (`callStop(en_route)` + local status
+  flip): board/timeline/job-completion never agreed. Now a real
+  `driver_update_stop(stop_id, "skipped")` action with an idempotent
+  "already closed" guard.
+
+### BACKEND CHANGES
+`_board_live_progress()` computes granular phases: planned / driver_started /
+en_route_pickup / arrived_pickup / loading (arrived + actuals confirmed) /
+pickup_complete / delivering (n/M DELIVERED) / en_route_delivery /
+arrived_delivery (idx/count) / at_transfer / completed — mirrored verbatim
+to customer tracking.
+
+### DRIVER APP CHANGES
+Skip button now reports server truth; errors surface as toasts; local state
+re-syncs on failure (server may already have closed the stop).
+
+### CUSTOMER PORTAL CHANGES
+Tracking page shows a colored LIVE PROGRESS badge beside the stage status,
+refreshed in place every 30s via the existing /live JSON endpoint; timeline
+now includes all driver-action events (§34).
+
+### DISPATCH CHANGES
+Booking Board Live Progress column (replaces Feasibility, which remains on
+the job form + route adviser); 20s poll unchanged; every driver action now
+lands on the job timeline.
+
+### DATABASE-MIGRATION CHANGES
+None — timeline events reuse `prema_dispatch_timeline_event`; no new tables.
+
+### TESTS ADDED
+`tests/test_live_sync.py` (11): progress states planned→completed,
+pickup phases, delivery phases; board payload has live_progress keys and no
+feasibility keys; route_started / stop_skipped (idempotent guard) /
+issue_reported / pickup_confirmed (full gate) / pallet_assigned /
+pod_uploaded / document_scanned / day_ended timeline events.
+
+### TEST RESULTS
+- `tests/test_live_sync.py`: 11/11 green.
+- Full module regression: **284/284 green** (includes 13/13 evidence, 12/12
+  pallet, and all pre-existing suites — zero failures).
+
+### KNOWN REMAINING ISSUES
+- The `/live` poll is badge-only (stops table + timeline still need a reload
+  to refresh — acceptable; the badge is the §33 contract).
+
+### E2E (spec §61 Phase-5 scenarios)
+1. Driver taps Start Route → board flips to LIVE PROGRESS, customer portal
+   badge updates within 30s (tests 04-05).
+2. Driver skips a stop → server records status=skipped + timeline event;
+   re-skip rejected (test 06).
+3. Full pickup gate (assign + POPP) → pickup_confirmed event; variance-free
+   confirmations need no notes (test 08).
+
+---
+
+## PHASE 6 — HISTORICAL STOP TIMING & DWELL ESTIMATES (spec PHASE 6)
+
+Implemented 2026-08-18 on branch `feature/multi-pickup-multi-delivery` (not deployed to production).
+
+### FILES CHANGED
+- `models/dispatch_location.py` — NEW model `prema.dispatch.location.visit.sample`
+  (one raw timing sample per completed stop at a saved location); new fields
+  `visit_sample_ids` / `median_dwell_minutes` / `avg_last10_dwell_minutes` /
+  `avg_loading_minutes` / `avg_unloading_minutes`; `record_visit_stats()`
+  archives each sample and recomputes the exact statistics via
+  `_recompute_sample_stats()`.
+- `models/dispatch_stop.py` — `_saved_location_values()` now carries the
+  location's learned `service_time_minutes`; `_apply_saved_location()` fills
+  it only as a default (never overwrites an explicit value, never zeroes one
+  when the location has no learned time).
+- `views/dispatch_location_views.xml` — "Historical (Phase 6 — from visit
+  samples)" group on the form + read-only samples list view.
+- `security/ir.model.access.csv` — access for the sample model
+  (driver read/create, dispatcher CRUD, manager CRUD).
+- `tests/test_location_timing.py` (NEW) — 4 tests.
+
+### ROOT CAUSES FIXED
+- Running averages alone (average_wait/unload/total) can't answer "what's
+  the typical dwell here?" — outliers skew them and there's no recency
+  signal. Raw per-visit samples are the only honest source for median /
+  last-10 / per-type figures (§63: new model justified — existing fields
+  cannot represent the raw data).
+- My first wiring of the learned service time into `_apply_saved_location`
+  clobbered caller-supplied values on stop CREATE (stop.create() calls
+  `_apply_saved_location` for every stop with a saved location, and a
+  location without a learned time wrote `False` → 0). Guard restructured:
+  learned time only fills stops still at the field-default placeholder.
+
+### BACKEND CHANGES
+Every stop completion at a linked location archives
+{visited_at, stop_type, dwell, service, wait}; the location then exposes
+exact median dwell, mean dwell of the most recent 10 visits, and
+per-type loading (pickup) / unloading (dropoff/return) averages.
+
+### DISPATCH CHANGES
+Saved-Location form shows the new "Historical" group + raw sample table;
+`recommended_service_time_minutes` (now fed by exact unloading averages)
+defaults new stops at known facilities, so route windows
+(route_service.py reads service_time_minutes) plan with learned dwells.
+
+### DRIVER APP CHANGES
+None — drivers keep working; their completed stops feed the samples.
+
+### CUSTOMER PORTAL CHANGES
+None.
+
+### DATABASE-MIGRATION CHANGES
+Odoo auto-creates `prema_dispatch_location_visit_sample` on `-u`
+(verified on Prod-db-test1a). No manual script.
+
+### TESTS ADDED
+`tests/test_location_timing.py` (4): sample archive + median/last-10/type
+averages (incl. no-pickup-yet case), loading-vs-unloading breakdown, last-10
+window with 12 visits, learned service time wiring (fresh stop gets 45,
+explicit 20 preserved).
+
+### TEST RESULTS
+- `tests/test_location_timing.py`: 4/4 green.
+- Full module regression: **573 tests, 0 failures**.
+
+### KNOWN REMAINING ISSUES
+- Sample retention is unbounded (one row per completed stop) — acceptable
+  at dispatch volumes; a pruning cron can be added if it ever grows.
+- "Explicit 15" on a stop is indistinguishable from the default, so a
+  location with a learned time may override it — acceptable trade-off.
+
+### E2E (spec §61 Phase-6 scenarios)
+1. Driver completes 3 visits at one facility → median/last-10/unloading
+   figures exact (test 01); pickup vs delivery split (test 02).
+2. New stop created at a learned facility → service time pre-filled from
+   history (test 04).
+
+---
+
+## PHASE 7 — WEEKLY CAPACITY PLANNER + RECURRING INTEGRATION (spec §39-§48, §63)
+
+Implemented 2026-08-18 on branch `feature/multi-pickup-multi-delivery` (not deployed to production).
+
+### FILES CHANGED
+- `prema_logistics_booking/models/logistics_weekly_plan.py` (NEW) — three models:
+  `logistics.weekly.plan` (week container: Monday-validated week_start, state,
+  generate_days_before default 5, corridor filter, idempotent
+  action_generate_week / action_refresh_grid / action_confirm /
+  action_generate_due_bookings + daily cron entry), `logistics.weekly.plan.day`
+  (truck×day grid cells; capacity/committed/available via
+  VehicleCapacityService.maximum_capacity + departure peak; is_holiday from
+  corridor holiday calendars), `logistics.weekly.plan.reservation` (draggable
+  recurring cards: one occurrence each, defaults from the job at create,
+  one-off values are card-local — the agreement is never modified (§45),
+  anchor-to-departure, force generate, one-off cancel / reactivate,
+  is_due = plan_date within generate_days_before window, is_blocked with
+  holiday / cancelled-departure / past-date reasons (§46)).
+- `prema_logistics_booking/services/capacity_engine.py` — `compute_departure_peak`
+  now folds planned weekly-plan reservations into the peak: anchored cards count
+  on their departure, unanchored cards on any scheduled departure for their truck
+  on the plan date; LTL cards reserve pallets+weight flat (whole route —
+  conservative, becomes segment-aware at generation), FTL cards set
+  exclusive_vehicle_reserved + exclusive_reservation_ids (§42/§47).
+- `prema_logistics_booking/services/vehicle_capacity_service.py` — `evaluate()`
+  result carries `exclusive_reservation_ids` through to consumers.
+- `prema_logistics_booking/models/logistics_corridor.py` —
+  `_compute_capacity_display` appends weekly-plan FTL reservation names to
+  `exclusive_booking_ref`.
+- `prema_logistics_booking/views/logistics_weekly_plan_views.xml` (NEW) — plan
+  list/form, capacity-grid day tree (decoration-warning ≤2, decoration-danger
+  0/holiday), card kanbans By Day (drag = move date) and By Truck (drag =
+  assign truck), card list/form, 3 actions, 3 menuitems under Dispatch
+  Operations (Weekly Capacity Planner, Recurring Cards By Day/By Truck).
+- `prema_logistics_booking/security/ir.model.access.csv` — 18 rows for the 3
+  new models (pricing admin full, pricing/booking managers CRUD, dispatcher
+  CRUD, dispatch manager CRUD+unlink, viewer read).
+- `prema_logistics_booking/data/logistics_cron.xml` — new daily
+  `ir_cron_logistics_generate_weekly_plan_bookings` →
+  `logistics.weekly.plan._generate_due_bookings()`.
+- `prema_logistics_booking/__manifest__.py` — 18.0.11.0.0 → 18.0.12.0.0; view
+  file registered after logistics_recurring_agreement_views.xml.
+- `prema_logistics_booking/models/__init__.py` — `logistics_weekly_plan`
+  imported.
+- `prema_dispatch/tests/test_weekly_planner.py` (NEW) — 12 tests; `tests/__init__.py`
+  registers it.
+
+### ROOT CAUSES FIXED
+- The grid must show a corridor's OWN scheduled departure day: the canonical
+  `_default_vehicle_for_date` deliberately returns empty when the default truck
+  already has a departure that day, so the first grid build produced no cell for
+  the truck's own route day. `_operating_days` now prefers the corridor's
+  scheduled departure vehicle on the date, falling back to the default truck
+  only when the corridor has no row yet (and the truck is free).
+- The CapacityEngine reservation hook set a local `exclusive_vehicle_reserved`
+  that the returned dict never read (it used the bookings-only
+  `bool(exclusive_ids)`) — FTL cards reserved positions but did not hold the
+  vehicle. Merged: `bool(exclusive_ids or exclusive_reservation_ids)`.
+- Test fixture: corridor.create auto-reconciles the departure horizon, which
+  pre-created the test departure and collided with the explicit create
+  (`_check_vehicle_day_conflicts`). Fixture now creates corridor + departure
+  with `skip_departure_reconcile` context, mirroring `test_vehicle_capacity.py`.
+
+### BACKEND CHANGES
+Weekly plans layer ON the existing recurring agreement/job system (§39 kept,
+§43 separated: agreement = commercial, plan = operational). Generation reuses
+BookingOrchestrationService (pricing_method="corridor", source_channel
+"recurring", idempotency_key "weekly-plan:{card}:{date}") and shares the
+(recurring_job_id, pickup_date, state≠cancelled) dedup business key with the
+job generator — whichever runs first wins, the other dedups, so the two
+generators can never double-book. Capacity authority stays
+VehicleCapacityService at its canonical choke point; the portal
+(for_pickup_date / check_and_reserve) automatically sees planned cards and
+cannot overbook them. `logistics.corridor.departure` vehicle-day conflict
+checking applies to generation like any booking.
+
+### DISPATCH CHANGES
+Three new menus under Dispatch Operations; dispatchers drag cards between
+day/truck columns (group-by kanbans), move/resize/cancel one occurrence
+without touching the agreement, anchor cards to a scheduled departure, force
+generate, and read blocked reasons. Grid cells flag ≤2 (warning) / 0 or
+holiday (danger) available pallets.
+
+### DRIVER APP CHANGES
+None — generated bookings flow through the existing booking pipeline.
+
+### CUSTOMER PORTAL CHANGES
+None directly — but portal availability (for_pickup_date / check_and_reserve)
+now deducts planned weekly cards, so the portal cannot sell a truck/day the
+planner has committed (§42 no-overbooking guarantee, §47 canonical capacity).
+
+### DATABASE-MIGRATION CHANGES
+Odoo auto-creates `logistics_weekly_plan`, `logistics_weekly_plan_day`,
+`logistics_weekly_plan_reservation` + cron on `-u prema_logistics_booking`
+(verified on Prod-db-test1a). No manual script. Module version bumped.
+
+### TESTS ADDED
+`prema_dispatch/tests/test_weekly_planner.py` (12): generate-week card per
+occurrence with job defaults; idempotent regeneration + biweekly occurrence
+walk; one-off move/resize leaves agreement untouched and next week normal;
+capacity grid cell 13/3/10 from canonical legacy layouts; holiday flag on the
+cell; LTL card reduces portal capacity (11 refused / 10 accepted) and feeds
+departure display; FTL card holds the whole vehicle (exclusive flag + refs,
+LTL refused); due booking generates N days before with shared-dedup idempotence
+vs the job generator; not-due waits, force generates; holiday blocks card and
+generation; one-off cancel frees capacity and next week continues; week_start
+must be Monday.
+
+### TEST RESULTS
+- `prema_dispatch/tests/test_weekly_planner.py`: 12/12 green.
+- Full `--test-tags "/prema_dispatch"` regression (52 post-tests incl. all
+  Phase 1-6 suites): **273 tests, 0 failures** (EXIT 0).
+
+### KNOWN REMAINING ISSUES
+- Reserved positions are a flat whole-route reserve until generation, which
+  then converts to real segment-aware bookings — conservative by design.
+- The grid's committed number uses the max reserved-pallets across the
+  truck's departures that date (a truck can pair corridors); fine at current
+  fleet scale.
+- Reservation samples/pallets are user-entered on the card at drag time;
+  no auto-split of a card across two trucks.
+
+### E2E (spec §61 Phase-7 scenarios)
+1. Dispatcher creates plan → Generate Week → cards appear on Friday; drag to
+   truck → grid shows 13 capacity / 3 committed / 10 available; portal
+   refuses 11 pallets, accepts 10 (tests 01/04/06).
+2. FTL card dragged → truck held, portal LTL request refused, departure
+   display names the card (test 07).
+3. Holiday added to corridor calendar → cell flagged, card blocked, force
+   generation refused with reason (tests 05/10).
+4. Card moved/resized/cancelled → agreement unchanged, next week normal
+   (tests 03/11); due bookings generate and deduplicate with the job
+   generator (tests 08/09).

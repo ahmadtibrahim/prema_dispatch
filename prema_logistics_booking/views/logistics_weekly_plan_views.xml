@@ -1,0 +1,394 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <!-- ════════════════════════════════════════════════════════════════════
+         WEEKLY CAPACITY PLAN — form / list
+         ════════════════════════════════════════════════════════════════════ -->
+    <record id="view_logistics_weekly_plan_list" model="ir.ui.view">
+        <field name="name">logistics.weekly.plan.list</field>
+        <field name="model">logistics.weekly.plan</field>
+        <field name="arch" type="xml">
+            <list decoration-muted="state == 'draft'">
+                <field name="name"/>
+                <field name="week_start"/>
+                <field name="state" widget="badge"/>
+                <field name="generate_days_before" string="Generate Before (Days)"/>
+                <field name="reservation_count" string="Cards"/>
+                <field name="committed_pallets" string="Committed Pallets"/>
+                <field name="day_count" string="Truck-Day Cells"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="view_logistics_weekly_plan_form" model="ir.ui.view">
+        <field name="name">logistics.weekly.plan.form</field>
+        <field name="model">logistics.weekly.plan</field>
+        <field name="arch" type="xml">
+            <form string="Weekly Capacity Plan">
+                <header>
+                    <button name="action_generate_week" type="object"
+                            string="Generate Week (Cards + Grid)"
+                            class="btn-primary"
+                            invisible="state == 'confirmed'"/>
+                    <button name="action_refresh_grid" type="object"
+                            string="Refresh Grid"/>
+                    <button name="action_generate_due_bookings" type="object"
+                            string="Generate Due Bookings"/>
+                    <button name="action_confirm" type="object"
+                            string="Confirm" invisible="state != 'draft'"/>
+                    <field name="state" widget="statusbar"
+                           statusbar_visible="draft,confirmed"/>
+                </header>
+                <sheet>
+                    <div class="alert alert-info" role="alert"
+                         invisible="reservation_count">
+                        <i class="fa fa-info-circle me-1"/>
+                        Press <b>Generate Week</b> to pull this week's
+                        recurring customer occurrences onto the boards and
+                        build the truck × day capacity grid. Dragging a card
+                        to another day or truck reserves that truck/day's
+                        capacity — the agreement itself is never modified.
+                    </div>
+                    <group>
+                        <group string="Plan">
+                            <field name="week_start"/>
+                            <field name="name" readonly="1"/>
+                            <field name="generate_days_before"
+                                   help="Actual bookings are created this many days before each occurrence's pickup date (spec §44)."/>
+                            <field name="corridor_ids" widget="many2many_tags"/>
+                        </group>
+                        <group string="Week Summary">
+                            <field name="reservation_count" string="Cards" readonly="1"/>
+                            <field name="committed_pallets" string="Committed Pallets" readonly="1"/>
+                            <field name="day_count" string="Truck-Day Cells" readonly="1"/>
+                            <button name="action_open_cards_by_day" type="object"
+                                    string="Cards — By Day" class="btn-secondary"/>
+                            <button name="action_open_cards_by_truck" type="object"
+                                    string="Cards — By Truck" class="btn-secondary"/>
+                        </group>
+                    </group>
+                    <notebook>
+                        <page string="Capacity Grid (Truck × Day)" name="grid">
+                            <field name="day_ids" readonly="1" nolabel="1"
+                                   view_id="view_logistics_weekly_plan_day_tree"/>
+                        </page>
+                        <page string="Recurring Cards" name="cards">
+                            <field name="reservation_ids" readonly="1" nolabel="1"
+                                   view_id="view_logistics_weekly_plan_reservation_list"/>
+                        </page>
+                    </notebook>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <record id="action_logistics_weekly_plan" model="ir.actions.act_window">
+        <field name="name">Weekly Capacity Planner</field>
+        <field name="res_model">logistics.weekly.plan</field>
+        <field name="view_mode">list,form</field>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">
+                No weekly capacity plans yet.
+            </p>
+            <p>
+                Create a plan for a week (Monday start), press
+                <b>Generate Week</b>, then drag the recurring customer cards
+                onto trucks and days. Planned positions reserve capacity —
+                the booking portal can never overbook them.
+            </p>
+        </field>
+    </record>
+
+    <!-- ════════════════════════════════════════════════════════════════════
+         DAY CELLS — capacity grid
+         ════════════════════════════════════════════════════════════════════ -->
+    <record id="view_logistics_weekly_plan_day_tree" model="ir.ui.view">
+        <field name="name">logistics.weekly.plan.day.tree</field>
+        <field name="model">logistics.weekly.plan.day</field>
+        <field name="arch" type="xml">
+            <list create="false" delete="false" edit="false"
+                  decoration-warning="available_pallets &lt;= 2 and available_pallets &gt; 0"
+                  decoration-danger="available_pallets == 0 or is_holiday"
+                  string="Truck × Day Capacity">
+                <field name="plan_date"/>
+                <field name="weekday_label"/>
+                <field name="vehicle_id"/>
+                <field name="corridor_id"/>
+                <field name="capacity_pallets" string="Capacity"/>
+                <field name="committed_pallets" string="Committed"/>
+                <field name="available_pallets" string="Available"/>
+                <field name="is_holiday" string="Holiday/Blackout" widget="badge"/>
+            </list>
+        </field>
+    </record>
+
+    <!-- ════════════════════════════════════════════════════════════════════
+         RESERVATION — draggable recurring cards
+         ════════════════════════════════════════════════════════════════════ -->
+
+    <!-- By Day: dragging a card to another column moves the occurrence date -->
+    <record id="weekly_plan_reservation_kanban_day" model="ir.ui.view">
+        <field name="name">logistics.weekly.plan.reservation.kanban.day</field>
+        <field name="model">logistics.weekly.plan.reservation</field>
+        <field name="arch" type="xml">
+            <kanban default_group_by="plan_date" group_create="false"
+                    group_delete="false" group_edit="false"
+                    quick_create="false" class="o_kanban_mobile">
+                <field name="name"/>
+                <field name="partner_id"/>
+                <field name="plan_date"/>
+                <field name="weekday_label"/>
+                <field name="vehicle_id"/>
+                <field name="pallets"/>
+                <field name="load_type"/>
+                <field name="state"/>
+                <field name="is_due"/>
+                <field name="is_blocked"/>
+                <field name="blocked_reason"/>
+                <field name="booking_number"/>
+                <field name="change_note"/>
+                <templates>
+                    <t t-name="kanban-box">
+                        <div class="oe_kanban_card" t-attf-class="oe_kanban_card #{state == 'cancelled' ? 'o_kanban_color_1' : ''}">
+                            <div class="o_kanban_record_top">
+                                <div class="fw-bold text-truncate" title="Customer">
+                                    <field name="partner_id"/>
+                                </div>
+                                <span t-if="state == 'booking_generated'" class="badge text-bg-success">BOOKED</span>
+                                <span t-else-if="state == 'cancelled'" class="badge text-bg-secondary">CANCELLED</span>
+                                <span t-else="" class="badge text-bg-primary">PLANNED</span>
+                            </div>
+                            <div class="o_kanban_record_body">
+                                <div class="text-truncate" title="Route">
+                                    <i class="fa fa-route me-1 text-muted"/>
+                                    <field name="name"/>
+                                </div>
+                                <div>
+                                    <i class="fa fa-calendar-day me-1 text-muted"/>
+                                    <span class="me-2"><field name="weekday_label"/></span>
+                                    <i class="fa fa-boxes me-1 text-muted"/>
+                                    <span class="me-1"><field name="pallets"/> pallet(s)</span>
+                                    <span t-if="load_type == 'ftl'" class="badge text-bg-dark ms-1">FTL</span>
+                                </div>
+                                <div>
+                                    <i class="fa fa-truck me-1 text-muted"/>
+                                    <field name="vehicle_id"/>
+                                </div>
+                            </div>
+                            <div class="o_kanban_record_footer">
+                                <span t-if="is_due and state == 'planned'" class="badge text-bg-warning">Due for booking</span>
+                                <span t-if="is_blocked and state == 'planned'"
+                                      class="badge text-bg-danger" title="Blocked reason">
+                                    <i class="fa fa-exclamation-triangle me-1"/>
+                                    Blocked
+                                </span>
+                                <span t-if="booking_number" class="text-muted">
+                                    <i class="fa fa-file-invoice me-1"/>
+                                    <field name="booking_number"/>
+                                </span>
+                                <span t-if="change_note" class="text-muted text-truncate d-inline-block"
+                                      style="max-width: 180px;" title="Change note">
+                                    <i class="fa fa-pencil-alt me-1"/>
+                                    <field name="change_note"/>
+                                </span>
+                            </div>
+                        </div>
+                    </t>
+                </templates>
+            </kanban>
+        </field>
+    </record>
+
+    <!-- By Truck: dragging a card to another column (re)assigns the truck -->
+    <record id="weekly_plan_reservation_kanban_truck" model="ir.ui.view">
+        <field name="name">logistics.weekly.plan.reservation.kanban.truck</field>
+        <field name="model">logistics.weekly.plan.reservation</field>
+        <field name="arch" type="xml">
+            <kanban default_group_by="vehicle_id" group_create="false"
+                    group_delete="false" group_edit="false"
+                    quick_create="false" class="o_kanban_mobile">
+                <field name="name"/>
+                <field name="partner_id"/>
+                <field name="plan_date"/>
+                <field name="weekday_label"/>
+                <field name="vehicle_id"/>
+                <field name="pallets"/>
+                <field name="load_type"/>
+                <field name="state"/>
+                <field name="is_due"/>
+                <field name="is_blocked"/>
+                <field name="blocked_reason"/>
+                <field name="booking_number"/>
+                <field name="change_note"/>
+                <templates>
+                    <t t-name="kanban-box">
+                        <div class="oe_kanban_card" t-attf-class="oe_kanban_card #{state == 'cancelled' ? 'o_kanban_color_1' : ''}">
+                            <div class="o_kanban_record_top">
+                                <div class="fw-bold text-truncate" title="Customer">
+                                    <field name="partner_id"/>
+                                </div>
+                                <span t-if="state == 'booking_generated'" class="badge text-bg-success">BOOKED</span>
+                                <span t-else-if="state == 'cancelled'" class="badge text-bg-secondary">CANCELLED</span>
+                                <span t-else="" class="badge text-bg-primary">PLANNED</span>
+                            </div>
+                            <div class="o_kanban_record_body">
+                                <div class="text-truncate" title="Route">
+                                    <i class="fa fa-route me-1 text-muted"/>
+                                    <field name="name"/>
+                                </div>
+                                <div>
+                                    <i class="fa fa-calendar-day me-1 text-muted"/>
+                                    <span class="me-2"><field name="plan_date"/></span>
+                                    <i class="fa fa-boxes me-1 text-muted"/>
+                                    <span class="me-1"><field name="pallets"/> pallet(s)</span>
+                                    <span t-if="load_type == 'ftl'" class="badge text-bg-dark ms-1">FTL</span>
+                                </div>
+                            </div>
+                            <div class="o_kanban_record_footer">
+                                <span t-if="is_due and state == 'planned'" class="badge text-bg-warning">Due for booking</span>
+                                <span t-if="is_blocked and state == 'planned'"
+                                      class="badge text-bg-danger" title="Blocked reason">
+                                    <i class="fa fa-exclamation-triangle me-1"/>
+                                    Blocked
+                                </span>
+                                <span t-if="booking_number" class="text-muted">
+                                    <i class="fa fa-file-invoice me-1"/>
+                                    <field name="booking_number"/>
+                                </span>
+                            </div>
+                        </div>
+                    </t>
+                </templates>
+            </kanban>
+        </field>
+    </record>
+
+    <record id="view_logistics_weekly_plan_reservation_list" model="ir.ui.view">
+        <field name="name">logistics.weekly.plan.reservation.list</field>
+        <field name="model">logistics.weekly.plan.reservation</field>
+        <field name="arch" type="xml">
+            <list decoration-muted="state == 'cancelled'"
+                  decoration-danger="is_blocked and state == 'planned'"
+                  string="Recurring Cards">
+                <field name="plan_date"/>
+                <field name="weekday_label"/>
+                <field name="partner_id"/>
+                <field name="recurring_job_id"/>
+                <field name="pallets"/>
+                <field name="weight_lbs"/>
+                <field name="load_type"/>
+                <field name="vehicle_id"/>
+                <field name="state" widget="badge"/>
+                <field name="is_due" string="Due"/>
+                <field name="is_blocked" string="Blocked"/>
+                <field name="booking_number"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="view_logistics_weekly_plan_reservation_form" model="ir.ui.view">
+        <field name="name">logistics.weekly.plan.reservation.form</field>
+        <field name="model">logistics.weekly.plan.reservation</field>
+        <field name="arch" type="xml">
+            <form string="Recurring Card">
+                <header>
+                    <button name="action_generate_booking" type="object"
+                            string="Generate Booking Now"
+                            class="btn-primary"
+                            invisible="state != 'planned'"/>
+                    <button name="action_attach_departure" type="object"
+                            string="Attach to Departure"
+                            invisible="state != 'planned'"/>
+                    <button name="action_cancel_occurrence" type="object"
+                            string="Cancel This Occurrence"
+                            class="btn-danger"
+                            invisible="state != 'planned'"/>
+                    <button name="action_reactivate" type="object"
+                            string="Re-activate"
+                            invisible="state != 'cancelled'"/>
+                    <field name="state" widget="statusbar"
+                           statusbar_visible="planned,booking_generated,cancelled"/>
+                </header>
+                <sheet>
+                    <div class="alert alert-danger" role="alert"
+                         invisible="not is_blocked">
+                        <i class="fa fa-exclamation-triangle me-1"/>
+                        <field name="blocked_reason" nolabel="1" readonly="1"/>
+                    </div>
+                    <div class="alert alert-warning" role="alert"
+                         invisible="not is_due or state != 'planned'">
+                        <i class="fa fa-clock me-1"/>
+                        Due for booking — the actual logistics.booking is
+                        generated automatically a configurable number of days
+                        before this pickup date (see the plan's
+                        "Generate Booking" setting).
+                    </div>
+                    <group>
+                        <group string="Occurrence">
+                            <field name="partner_id" readonly="1"/>
+                            <field name="recurring_job_id" readonly="1"/>
+                            <field name="agreement_id" readonly="1"/>
+                            <field name="plan_date"/>
+                            <field name="weekday_label" readonly="1"/>
+                            <field name="plan_id"/>
+                        </group>
+                        <group string="Operational Assignment">
+                            <field name="vehicle_id"
+                                   domain="[('x_operational_logistics', '=', True)]"/>
+                            <field name="corridor_departure_id"/>
+                        </group>
+                    </group>
+                    <group string="Load (one-off values — the agreement is never modified)">
+                        <group>
+                            <field name="pallets"/>
+                            <field name="weight_lbs"/>
+                            <field name="load_type"/>
+                        </group>
+                        <group>
+                            <field name="temperature_mode"/>
+                            <field name="required_temperature_c"
+                                   invisible="temperature_mode != 'reefer'"/>
+                            <field name="change_note"/>
+                        </group>
+                    </group>
+                    <group string="Generated Booking" invisible="not booking_id">
+                        <field name="booking_number" readonly="1"/>
+                        <field name="booking_id" readonly="1"/>
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <record id="action_logistics_weekly_plan_cards_day" model="ir.actions.act_window">
+        <field name="name">Recurring Cards — By Day</field>
+        <field name="res_model">logistics.weekly.plan.reservation</field>
+        <field name="view_mode">kanban,list,form</field>
+        <field name="view_id" ref="weekly_plan_reservation_kanban_day"/>
+        <field name="domain">[('state', '!=', 'cancelled')]</field>
+        <field name="context">{'search_default_group_by_plan_date': 1}</field>
+    </record>
+
+    <record id="action_logistics_weekly_plan_cards_truck" model="ir.actions.act_window">
+        <field name="name">Recurring Cards — By Truck</field>
+        <field name="res_model">logistics.weekly.plan.reservation</field>
+        <field name="view_mode">kanban,list,form</field>
+        <field name="view_id" ref="weekly_plan_reservation_kanban_truck"/>
+        <field name="domain">[('state', '!=', 'cancelled')]</field>
+        <field name="context">{'search_default_group_by_vehicle_id': 1}</field>
+    </record>
+
+    <!-- ════════════════════════════════════════════════════════════════════
+         MENUS (inside Prema Dispatch → Dispatch Operations)
+         ════════════════════════════════════════════════════════════════════ -->
+    <menuitem id="menu_v4_weekly_planner" name="Weekly Capacity Planner"
+              parent="menu_v4_operations" action="action_logistics_weekly_plan"
+              sequence="22"/>
+    <menuitem id="menu_v4_weekly_cards_day" name="Recurring Cards — By Day"
+              parent="menu_v4_operations" action="action_logistics_weekly_plan_cards_day"
+              sequence="23"/>
+    <menuitem id="menu_v4_weekly_cards_truck" name="Recurring Cards — By Truck"
+              parent="menu_v4_operations" action="action_logistics_weekly_plan_cards_truck"
+              sequence="24"/>
+
+</odoo>

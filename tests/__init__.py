@@ -12,3 +12,5 @@ from . import test_driver_workday
 from . import test_evidence_workflow
 from . import test_pallet_popp
 from . import test_live_sync
+from . import test_location_timing
+from . import test_weekly_planner

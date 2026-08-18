@@ -540,6 +540,15 @@ class PremaDispatchStop(models.Model):
         confirmed_lat = self.latitude
         confirmed_lng = self.longitude
         vals = self._saved_location_values(location)
+        # Phase 6: the learned service time (recommended_service_time_minutes
+        # from visit samples) is a DEFAULT — it fills stops still at the
+        # field-default placeholder (or unset), never overwrites an explicit
+        # value, and a location with no learned time never zeroes one.
+        learned = vals.get("service_time_minutes")
+        default_svc = self._fields["service_time_minutes"].default(self)
+        if not learned or (self.service_time_minutes and
+                           self.service_time_minutes != default_svc):
+            vals.pop("service_time_minutes", None)
         warning = ""
         mismatch = False
         if (confirmed_lat or confirmed_lng) and (location.pin_lat or location.pin_lng):
@@ -593,6 +602,10 @@ class PremaDispatchStop(models.Model):
             "pin_lat": location.pin_lat or 0.0,
             "pin_lng": location.pin_lng or 0.0,
             "pin_set": bool(location.pin_set),
+            # Phase 6: a known facility starts new stops at its learned
+            # service time (recommended_service_time_minutes from the visit
+            # samples) — the route planner's windows benefit immediately.
+            "service_time_minutes": location.recommended_service_time_minutes or False,
         }
 
     # ── Onchange ──────────────────────────────────────────────────

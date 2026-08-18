@@ -228,6 +228,19 @@ class PremaDispatchLocation(models.Model):
     appointment_compliance_pct = fields.Float(string="Appointment Compliance %", readonly=True)
     arrival_accuracy_pct = fields.Float(string="Arrival Accuracy %", readonly=True)
 
+    # ── Phase 6: sample-based timing statistics ("Historical stop timing and
+    #    dwell estimates") — exact figures over the raw visit-sample table
+    #    (visit_sample_ids), complementing the rolling running-averages above.
+    visit_sample_ids = fields.One2many(
+        "prema.dispatch.location.visit.sample", "location_id",
+        string="Visit Samples", readonly=True,
+    )
+    median_dwell_minutes = fields.Float(string="Median Dwell (min)", readonly=True)
+    avg_last10_dwell_minutes = fields.Float(
+        string="Avg Dwell — Last 10 (min)", readonly=True)
+    avg_loading_minutes = fields.Float(string="Avg Loading (min)", readonly=True)
+    avg_unloading_minutes = fields.Float(string="Avg Unloading (min)", readonly=True)
+
     # AI/heuristic scores (readonly, computed — simple heuristics, not real ML)
     recommended_service_time_minutes = fields.Integer(string="Recommended Service Time (min)", readonly=True)
     best_arrival_window_start = fields.Char(string="Best Arrival Window Start", readonly=True)
@@ -1207,4 +1220,72 @@ class PremaDispatchLocation(models.Model):
 
         if vals:
             self.write(vals)
+
+        # Phase 6: archive the raw sample so median / last-10 / per-type
+        # statistics are exact (computed from the sample table, not the
+        # rolling averages above).
+        if total_minutes is not None:
+            self.env["prema.dispatch.location.visit.sample"].create({
+                "location_id":     self.id,
+                "stop_id":         stop.id,
+                "visited_at":      arrival or fields.Datetime.now(),
+                "stop_type":       stop.stop_type,
+                "dwell_minutes":   total_minutes,
+                "service_minutes": unload_minutes or 0.0,
+                "wait_minutes":    max(total_minutes - (unload_minutes or 0.0), 0.0),
+            })
+            self._recompute_sample_stats()
         return True
+
+    def _recompute_sample_stats(self):
+        """Median dwell, last-10 dwell average, per-type loading/unloading
+        averages — exact figures over the raw visit-sample table (Phase 6)."""
+        self.ensure_one()
+        import statistics
+        ordered = self.visit_sample_ids.sorted("id")  # chronological
+        dwells = [s.dwell_minutes for s in ordered if s.dwell_minutes]
+        vals = {}
+        if dwells:
+            vals["median_dwell_minutes"] = statistics.median(sorted(dwells))
+            recent = dwells[-10:]  # most recent 10 samples
+            vals["avg_last10_dwell_minutes"] = sum(recent) / len(recent)
+        load_svc = [s.service_minutes for s in ordered
+                    if s.is_loading and s.service_minutes]
+        unload_svc = [s.service_minutes for s in ordered
+                      if s.is_unloading and s.service_minutes]
+        if load_svc:
+            vals["avg_loading_minutes"] = sum(load_svc) / len(load_svc)
+        if unload_svc:
+            vals["avg_unloading_minutes"] = sum(unload_svc) / len(unload_svc)
+        if vals:
+            self.write(vals)
+
+
+class PremaDispatchLocationVisitSample(models.Model):
+    _name = "prema.dispatch.location.visit.sample"
+    _description = "Saved-Location Visit Timing Sample"
+    _order = "visited_at asc, id asc"
+
+    location_id = fields.Many2one(
+        "prema.dispatch.location", required=True, ondelete="cascade",
+        index=True,
+    )
+    stop_id = fields.Many2one("prema.dispatch.stop", ondelete="set null")
+    visited_at = fields.Datetime(required=True)
+    stop_type = fields.Char(string="Stop Type")
+    dwell_minutes = fields.Float(string="Dwell (min)")
+    service_minutes = fields.Float(string="Service (min)")
+    wait_minutes = fields.Float(string="Wait (min)")
+    is_loading = fields.Boolean(
+        compute="_compute_sample_kind", string="Loading",
+        store=False,
+    )
+    is_unloading = fields.Boolean(
+        compute="_compute_sample_kind", string="Unloading",
+        store=False,
+    )
+
+    def _compute_sample_kind(self):
+        for s in self:
+            s.is_loading = s.stop_type == "pickup"
+            s.is_unloading = s.stop_type in ("dropoff", "return")

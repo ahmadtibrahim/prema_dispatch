@@ -258,14 +258,54 @@ class CapacityEngine:
             max_weight = max(max_weight, seg_weight)
             max_ltl = max(max_ltl, seg_ltl)
 
+        # Phase 7 — Weekly Capacity Planner reservations (spec §42, §47):
+        # planned occurrences reserve physical positions on the departure,
+        # exactly like confirmed bookings. An anchored card counts only on
+        # its chosen departure; an unanchored card counts on any scheduled
+        # departure for its truck on the plan date. FTL cards hold the whole
+        # vehicle like an FTL booking. The reserve is flat (whole route) —
+        # conservative — and becomes a real segment-aware booking at
+        # generation time. This flows into VehicleCapacityService
+        # reserved_pallets / evaluate / for_pickup_date / check_and_reserve,
+        # so the portal can never overbook a planned position.
+        Reservation = self.env["logistics.weekly.plan.reservation"]
+        reservations = Reservation.search([
+            ("state", "=", "planned"),
+            "|",
+            ("corridor_departure_id", "=", departure.id),
+            ("corridor_departure_id", "=", False),
+        ])
+        exclusive_reservation_ids = []
+        if reservations:
+            anchored = reservations.filtered(
+                lambda r: r.corridor_departure_id.id == departure.id)
+            unanchored = reservations.filtered(
+                lambda r: not r.corridor_departure_id)
+            day_match = unanchored.filtered(
+                lambda r: (r.plan_date == departure.departure_date
+                           and r.vehicle_id.id == departure.vehicle_id.id))
+            counted = anchored | day_match
+            if counted:
+                ltl_cards = counted.filtered(lambda r: r.load_type != "ftl")
+                ftl_cards = counted.filtered(lambda r: r.load_type == "ftl")
+                if ltl_cards:
+                    max_pallets += sum(ltl_cards.mapped("pallets"))
+                    max_weight += sum(ltl_cards.mapped("weight_lbs"))
+                    max_ltl += sum(ltl_cards.mapped("pallets"))
+                if ftl_cards:
+                    exclusive_vehicle_reserved = True
+                    exclusive_reservation_ids = ftl_cards.ids
+
         return {
             "peak_pallets": max_pallets,
             "peak_weight": max_weight,
             "total_handled": sum(bs["pallets"] for bs in booking_segments),
             "segment_details": segment_details,
             "reserved_ltl_positions": max_ltl,
-            "exclusive_vehicle_reserved": bool(exclusive_ids),
+            "exclusive_vehicle_reserved": bool(
+                exclusive_ids or exclusive_reservation_ids),
             "exclusive_booking_ids": exclusive_ids,
+            "exclusive_reservation_ids": exclusive_reservation_ids,
         }
 
     def _booking_segments(self, corridor_stops, booking):

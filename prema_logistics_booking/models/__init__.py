@@ -42,3 +42,4 @@ from . import logistics_daily_local
 from . import res_partner_logistics
 from . import res_config_settings
 from . import logistics_hub
+from . import logistics_weekly_plan
