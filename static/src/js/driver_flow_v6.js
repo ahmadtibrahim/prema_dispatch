@@ -2,8 +2,14 @@
 "use strict";
 
 (function () {
+    // This asset is bundled in web.assets_frontend, but it belongs ONLY to the
+    // standalone Driver App. Never poll for APP on normal customer portal pages.
+    if (!location.pathname.startsWith("/dispatch/driver")) return;
+
     const $ = (sel) => document.querySelector(sel);
-    const $$ = (sel) => Array.from(document.querySelectorAll(sel));
+    const RETURN_KEY = "prema_driver_returning_to_base";
+    let baseCache = null;
+    let baseCheckBusy = false;
 
     function safeToast(message) {
         try { if (typeof toast === "function") toast(message); }
@@ -14,9 +20,16 @@
         return ["completed", "skipped", "cancelled", "issue"].includes(status || "");
     }
 
+    function openOperationalStops() {
+        try { return (S.stops || []).filter(s => s.type !== "return" && !isClosed(s.status)); }
+        catch (_) { return []; }
+    }
+
     function allOperationalStopsClosed() {
-        try { return (S.stops || []).filter(s => s.type !== "return").every(s => isClosed(s.status)); }
-        catch (_) { return false; }
+        try {
+            const operational = (S.stops || []).filter(s => s.type !== "return");
+            return operational.length > 0 && operational.every(s => isClosed(s.status));
+        } catch (_) { return false; }
     }
 
     function closeBlockingOverlays() {
@@ -40,6 +53,7 @@
                 const updated = findStopById(stop.id);
                 if (updated) S.stop = updated;
             }
+            // Arrival is a state transition to THIS stop, not "close navigation".
             S.navAsTab = false;
             if (S.navTimer) { clearInterval(S.navTimer); S.navTimer = null; }
             showScreen("sStop");
@@ -52,49 +66,136 @@
         }
     }
 
+    function mapsDestinationUrl(destination) {
+        const params = new URLSearchParams({api: "1", travelmode: "driving", dir_action: "navigate"});
+        if (destination.lat && destination.lng) {
+            params.set("destination", `${destination.lat},${destination.lng}`);
+        } else if (destination.address) {
+            params.set("destination", destination.address);
+        }
+        if (destination.google_place_id) params.set("destination_place_id", destination.google_place_id);
+        return `https://www.google.com/maps/dir/?${params.toString()}`;
+    }
+
     function openGoogleMapsApp() {
         try {
             const stop = S.stop;
-            if (!stop?.lat || !stop?.lng) {
-                safeToast("No GPS pin for this stop");
+            if (!stop?.lat && !stop?.address) {
+                safeToast("No destination available for this stop");
                 return;
             }
-            const params = new URLSearchParams({
-                api: "1",
-                destination: `${stop.lat},${stop.lng}`,
-                travelmode: "driving",
-                dir_action: "navigate",
-            });
-            if (stop.google_place_id) params.set("destination_place_id", stop.google_place_id);
-            // Universal Maps URL: installed Google Maps app handles it on supported phones;
-            // otherwise the browser opens Google Maps.
-            window.location.href = `https://www.google.com/maps/dir/?${params.toString()}`;
+            // Google Maps universal URL opens the installed Google Maps app on
+            // supported phones and falls back to maps.google.com otherwise.
+            window.location.href = mapsDestinationUrl(stop);
         } catch (err) {
             console.error("driver-flow-v6 maps", err);
         }
     }
 
-    function stopHasPoppOverride(stop) {
-        return !!(
-            stop?.popp_override_id || stop?.popp_override || stop?.popp_override_active ||
-            stop?.pickup_step_state?.popp_override || stop?.job_summary?.popp_override
-        );
+    async function getHomeBase(force) {
+        if (baseCache && !force) return baseCache;
+        try {
+            const result = await rpc("/dispatch/driver/work/base", {});
+            if (result?.success && result.base) {
+                baseCache = result.base;
+                return baseCache;
+            }
+        } catch (err) {
+            console.warn("Could not load return-to-base destination", err);
+        }
+        return null;
+    }
+
+    function metersBetween(lat1, lng1, lat2, lng2) {
+        const R = 6371000;
+        const rad = Math.PI / 180;
+        const dLat = (lat2 - lat1) * rad;
+        const dLng = (lng2 - lng1) * rad;
+        const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * rad) * Math.cos(lat2 * rad) * Math.sin(dLng / 2) ** 2;
+        return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    }
+
+    async function endWorkNow() {
+        if (baseCheckBusy) return;
+        baseCheckBusy = true;
+        try {
+            if (!allOperationalStopsClosed()) {
+                const remaining = openOperationalStops().length;
+                safeToast(`${remaining} stop${remaining === 1 ? "" : "s"} still open — finish the route first.`);
+                return;
+            }
+            const result = await rpc("/dispatch/driver/work/end-day", {});
+            if (!result?.success) {
+                safeToast(result?.error || "Could not end work");
+                return;
+            }
+            sessionStorage.removeItem(RETURN_KEY);
+            S.workday = result;
+            await reloadDay();
+            closeBlockingOverlays();
+            showScreen("sSchedule");
+            showViewTab("home");
+            if (typeof renderStartWork === "function") renderStartWork();
+            if (typeof renderWorkDaySummary === "function") renderWorkDaySummary();
+            safeToast("✓ Work completed");
+        } catch (err) {
+            console.error("driver-flow-v6 end work", err);
+            safeToast("Could not end work — check your connection");
+        } finally {
+            baseCheckBusy = false;
+        }
+    }
+
+    async function maybeAutoEndAtBase() {
+        if (sessionStorage.getItem(RETURN_KEY) !== "1" || !allOperationalStopsClosed()) return;
+        const base = await getHomeBase();
+        if (!base?.lat || !base?.lng || !S?.lat || !S?.lng) return;
+        const dist = metersBetween(Number(S.lat), Number(S.lng), Number(base.lat), Number(base.lng));
+        if (dist <= Number(base.radius_m || 200)) {
+            await endWorkNow();
+        }
+    }
+
+    async function startReturnToBase() {
+        if (!allOperationalStopsClosed()) {
+            safeToast("Finish all customer stops before returning to base.");
+            return;
+        }
+        const base = await getHomeBase(true);
+        if (!base || (!base.address && !base.lat)) {
+            safeToast("Home base is not configured. Ask Dispatch to configure the terminal address.");
+            return;
+        }
+        sessionStorage.setItem(RETURN_KEY, "1");
+        closeBlockingOverlays();
+        showScreen("sSchedule");
+        showViewTab("home");
+        normalizeHomeActions();
+        // User gesture launches Google Maps; the web app remains the work state
+        // authority and will auto-End Work when GPS enters the configured base radius.
+        window.location.href = mapsDestinationUrl(base);
     }
 
     function pickupGate(stop) {
         try {
             const summary = pickupSummary(stop);
-            const allocationReady = summary.confirmedPalletCount > 0 && summary.allocatedPalletCount >= summary.confirmedPalletCount;
-            let poppReady = false;
-            if (stopHasPoppOverride(stop)) poppReady = true;
-            else if (typeof pickupItemsForJob === "function") {
-                const items = pickupItemsForJob(stop.job_id) || [];
-                poppReady = !!items.length && items.every(it => it.popp_complete || Number(it.popp_count || 0) > 0);
-            }
-            return {summary, allocationReady, poppReady};
+            const state = stop.pickup_step_state || {};
+            return {
+                summary,
+                allocationReady: summary.confirmedPalletCount > 0 && summary.allocatedPalletCount >= summary.confirmedPalletCount,
+                gateReady: !!(state.pickup_gate_ready || summary.gateReady),
+                missing: state.pickup_gate_missing || summary.gateMissing || [],
+            };
         } catch (_) {
-            return {summary: null, allocationReady: false, poppReady: false};
+            return {summary: null, allocationReady: false, gateReady: false, missing: []};
         }
+    }
+
+    function gateMessage(gate) {
+        const missing = (gate.missing || []).map(String);
+        if (!gate.allocationReady) return "Assign all pallets to their delivery stops first.";
+        if (missing.length) return missing.join(" · ");
+        return "Capture POPP for every pallet, or record No Access / Sealed Load first.";
     }
 
     function enforcePickupActionOrder() {
@@ -105,11 +206,9 @@
         const body = $("#stopDetailBody");
         if (!body) return;
 
-        // Before ARRIVED, keep operational intake/evidence hidden. The driver should
-        // see facility info + ARRIVED/ISSUE only.
-        const arrived = stop.status === "arrived" || stop.actual_arrival_time || stop.status === "completed";
+        // Before ARRIVED, expose facility/navigation/arrival controls only.
+        const arrived = stop.status === "arrived" || !!stop.actual_arrival_time || stop.status === "completed";
         body.classList.toggle("da-v6-before-arrival", !arrived);
-
         if (!arrived || stop.status === "completed") return;
 
         const assign = body.querySelector('[data-action="assign-stops-pallets"], [data-role="pickup-assign-btn"]');
@@ -119,21 +218,20 @@
         const actionParent = assign?.parentElement || confirm?.parentElement;
 
         if (actionParent) {
-            // Guided order: stops if needed -> assignment -> POPP/override -> confirm -> optimize.
-            if (edit) actionParent.appendChild(edit);
+            // Driver-facing workflow order: assignment/POPP first; confirmation
+            // only after the backend pickup gate says the load is ready.
             if (assign) actionParent.insertBefore(assign, actionParent.firstChild);
+            if (edit) actionParent.appendChild(edit);
             if (confirm) actionParent.appendChild(confirm);
             if (optimize) actionParent.appendChild(optimize);
         }
 
         if (confirm) {
             const gate = pickupGate(stop);
-            const allow = gate.allocationReady && gate.poppReady;
-            confirm.disabled = !allow;
-            confirm.setAttribute("aria-disabled", String(!allow));
-            confirm.title = allow ? "Confirm the loaded pickup" : "Assign all pallets and capture POPP, or record No Access / Sealed Load first";
-            if (!allow) confirm.classList.add("da-v6-disabled-confirm");
-            else confirm.classList.remove("da-v6-disabled-confirm");
+            confirm.disabled = !gate.gateReady;
+            confirm.setAttribute("aria-disabled", String(!gate.gateReady));
+            confirm.title = gate.gateReady ? "Confirm the loaded pickup" : gateMessage(gate);
+            confirm.classList.toggle("da-v6-disabled-confirm", !gate.gateReady);
         }
     }
 
@@ -141,7 +239,7 @@
         let stops = [];
         try { stops = S.stops || []; } catch (_) { return; }
         const week = $("#weekDays");
-        if (!week || !week.parentNode) return;
+        if (!week?.parentNode) return;
         let card = $("#v6TripRequirements");
         if (!card) {
             card = document.createElement("details");
@@ -151,19 +249,54 @@
         }
         const req = new Set();
         for (const s of stops) {
-            if (s.temperature_c !== undefined && s.temperature_c !== null && s.temperature_c !== "") req.add(`🌡 Reefer ${s.temperature_c}°C`);
-            if (s.required_temperature_c !== undefined && s.required_temperature_c !== null && s.required_temperature_c !== "") req.add(`🌡 Reefer ${s.required_temperature_c}°C`);
-            if (s.liftgate_required || s.liftgate_pickup || s.liftgate_delivery) req.add("🛗 Liftgate required");
+            const job = s.job_summary || {};
+            const temp = s.temperature_c ?? s.required_temperature_c ?? job.temp_requirement;
+            if (temp !== undefined && temp !== null && temp !== "") req.add(`🌡 Reefer: ${temp}${String(temp).includes("°") ? "" : "°C"}`);
+            if (s.liftgate_required || s.liftgate_pickup || s.liftgate_delivery || job.requires_liftgate) req.add("🛗 Liftgate required");
             if (s.pallet_jack_required || s.pumptruck_required) req.add("🛒 Pallet jack / pump truck required");
             if (s.safety_shoes_required || s.csa_footwear_required) req.add("🥾 CSA safety footwear required");
             if (s.hi_vis_required || s.high_visibility_required) req.add("🦺 High-visibility vest required");
             if (s.seal_required) req.add("🔒 Seal procedure required");
-            if (s.appointment_required) req.add("🕒 Appointment-controlled stop(s)");
-            if (s.driver_instructions) req.add("📋 Special stop instructions");
+            if (s.appointment_required || job.appointment_required) req.add("🕒 Appointment-controlled stop(s)");
+            if (s.instructions || s.driver_instructions) req.add("📋 Special stop instructions");
         }
         const items = [...req];
         card.innerHTML = `<summary>Today's Route Requirements <span>${items.length ? items.length : "Standard"}</span></summary>` +
-            (items.length ? `<div class="da-v6-requirement-list">${items.map(x => `<div>${x}</div>`).join("")}</div>` : `<div class="da-v6-requirement-list"><div>Standard route requirements</div></div>`);
+            (items.length
+                ? `<div class="da-v6-requirement-list">${items.map(x => `<div>${x}</div>`).join("")}</div>`
+                : `<div class="da-v6-requirement-list"><div>Standard route requirements</div></div>`);
+    }
+
+    function renderWorkPrimaryAction() {
+        const card = $("#startWorkCard");
+        if (!card || !S?.dayData?.is_today) return;
+        const wd = S.workday || {};
+        if (wd.state === "completed") return;
+
+        if (wd.work_started_at && allOperationalStopsClosed()) {
+            const returning = sessionStorage.getItem(RETURN_KEY) === "1";
+            card.style.display = "";
+            card.innerHTML = `<div class="da-startwork-card da-startwork-progress">
+                <button class="da-startwork-btn" id="v6ReturnBaseBtn">
+                    <div class="da-startwork-btn-label">${returning ? "🏠 RETURNING TO BASE" : "🏠 RETURN TO BASE"}</div>
+                    <div class="da-startwork-btn-sub">${returning ? "Work ends automatically when you arrive at base" : "All customer stops complete — navigate back to the terminal"}</div>
+                </button>
+                ${returning ? `<button class="da-btn da-btn-secondary da-v6-endwork" id="v6EndWorkBtn">END WORK AT BASE</button>` : ""}
+            </div>`;
+            $("#v6ReturnBaseBtn")?.addEventListener("click", startReturnToBase);
+            $("#v6EndWorkBtn")?.addEventListener("click", endWorkNow);
+            return;
+        }
+
+        if (wd.work_started_at) {
+            const remaining = openOperationalStops().length;
+            card.style.display = "";
+            card.innerHTML = `<button class="da-startwork-btn da-v6-endwork-pending" id="v6EndWorkPendingBtn">
+                <div class="da-startwork-btn-label">END WORK</div>
+                <div class="da-startwork-btn-sub">${remaining} stop${remaining === 1 ? "" : "s"} remaining — complete the route first</div>
+            </button>`;
+            $("#v6EndWorkPendingBtn")?.addEventListener("click", endWorkNow);
+        }
     }
 
     function normalizeHomeActions() {
@@ -174,6 +307,51 @@
         const start = $("#startWorkCard");
         if (start && S?.dayData?.is_today) start.style.display = "";
         renderTripRequirements();
+        renderWorkPrimaryAction();
+    }
+
+    function rewriteCompletedModal() {
+        const overlay = $("#oFinishProof");
+        if (!overlay || overlay.style.display === "none") return;
+        const note = Array.from(overlay.querySelectorAll(".da-finish-note")).find(el => (el.textContent || "").includes("No remaining open stops"));
+        if (!note || !allOperationalStopsClosed()) return;
+        const actions = overlay.querySelector(".da-finish-actions");
+        if (!actions || actions.dataset.v6Final === "1") return;
+        actions.dataset.v6Final = "1";
+        actions.innerHTML = `
+            <button class="da-btn da-btn-secondary" id="v6CompletedHome">Back to Home</button>
+            <button class="da-btn da-btn-green" id="v6CompletedReturn">🏠 Return to Base</button>`;
+        $("#v6CompletedHome")?.addEventListener("click", () => {
+            closeBlockingOverlays();
+            showScreen("sSchedule");
+            showViewTab("home");
+        });
+        $("#v6CompletedReturn")?.addEventListener("click", startReturnToBase);
+    }
+
+    function guideSaveRouteDetails(event) {
+        const btn = event.target.closest("button");
+        if (!btn || (btn.textContent || "").trim() !== "Save Route Details") return;
+        // Let the existing save run first; if the modal remains because the
+        // pickup gate is incomplete, send the driver directly to the missing
+        // assignment/POPP step instead of leaving a toast-only dead end.
+        setTimeout(() => {
+            try {
+                const stop = S.stop;
+                if (!stop || stop.type !== "pickup") return;
+                const gate = pickupGate(stop);
+                if (gate.gateReady) return;
+                if (!gate.allocationReady && typeof openPickupIntake === "function") {
+                    openPickupIntake(3);
+                    safeToast("Next: assign every pallet to its delivery stop.");
+                    return;
+                }
+                if (typeof openPickupIntake === "function") {
+                    openPickupIntake(3);
+                    safeToast("Next: take POPP photos, or record No Access / Sealed Load.");
+                }
+            } catch (_) {}
+        }, 450);
     }
 
     function completionModalLifecycleFix(event) {
@@ -187,10 +365,7 @@
             if (typeof openLoadPlan === "function") openLoadPlan();
             return;
         }
-        if (text === "Back to Schedule") {
-            // Ensure no completion overlay can remain above the schedule.
-            setTimeout(closeBlockingOverlays, 0);
-        }
+        if (text === "Back to Schedule") setTimeout(closeBlockingOverlays, 0);
     }
 
     function scannerEscapeHardening(event) {
@@ -213,7 +388,9 @@
             .da-v6-requirements>summary{padding:12px 14px;font-weight:800;cursor:pointer;list-style:none;display:flex;justify-content:space-between;gap:8px}
             .da-v6-requirements>summary span{font-size:12px;color:#51657f}
             .da-v6-requirement-list{padding:0 14px 12px;font-size:13px;line-height:1.7}
-            .da-v6-disabled-confirm{opacity:.55!important;cursor:not-allowed!important}
+            .da-v6-disabled-confirm{opacity:.45!important;cursor:not-allowed!important}
+            .da-v6-endwork{width:100%;margin-top:8px}
+            .da-v6-endwork-pending{filter:saturate(.7)}
             #stopDetailBody.da-v6-before-arrival .da-evidence-section,
             #stopDetailBody.da-v6-before-arrival .da-pickup-section,
             #stopDetailBody.da-v6-before-arrival [data-role="pickup-load-meta"],
@@ -228,22 +405,31 @@
         APP.navArrived = fixedArriveFromNavigation;
         APP.confirmArrived = fixedArriveFromNavigation;
         APP.openExternalNav = openGoogleMapsApp;
+        APP.returnToBase = startReturnToBase;
+        APP.endWork = endWorkNow;
         return true;
     }
 
     function auditDom() {
         normalizeHomeActions();
         enforcePickupActionOrder();
+        rewriteCompletedModal();
+        if (sessionStorage.getItem(RETURN_KEY) === "1") maybeAutoEndAtBase();
     }
 
     function boot() {
+        const app = document.getElementById("app");
+        if (!app?.classList.contains("da-app")) return;
         addStyles();
         const tryPatch = () => {
             if (!patchApp()) return setTimeout(tryPatch, 50);
             document.addEventListener("click", completionModalLifecycleFix, true);
+            document.addEventListener("click", guideSaveRouteDetails, true);
             document.addEventListener("keydown", scannerEscapeHardening, true);
+            document.addEventListener("visibilitychange", () => { if (!document.hidden) maybeAutoEndAtBase(); });
+            window.addEventListener("focus", maybeAutoEndAtBase);
             const obs = new MutationObserver(() => requestAnimationFrame(auditDom));
-            obs.observe(document.getElementById("app") || document.body, {subtree: true, childList: true, attributes: true, attributeFilter: ["style", "class"]});
+            obs.observe(app, {subtree: true, childList: true, attributes: true, attributeFilter: ["style", "class"]});
             auditDom();
         };
         tryPatch();
