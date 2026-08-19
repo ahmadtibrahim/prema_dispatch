@@ -2645,3 +2645,35 @@ fix (4026420, exactly the required step-3 change) + docstring-only 06cf9d3; zero
 - Upgrade: -u prema_dispatch --no-http (twice). No Odoo restart required — workers
   picked up the new registry via signaling; log clean (only pre-existing IMAP auth
   warning unrelated to this change).
+
+## 2026-08-19 22:35 GMT — HOTFIX: "Unknown field location_search" OwlError (18.0.3.5.0, same version)
+
+### INCIDENT
+- A dispatcher's long-lived browser tab (pre-upgrade bundle b9aba9e) hit
+  `Unknown field location_search` in SearchArchParser after the search deploy:
+  the tab's fresh get_views response carried the NEW arch, but the client's
+  in-memory cached field payload lacked the brand-new `location_search` field
+  (SearchModel.load keeps a truthy stale `searchViewFields` via
+  `searchViewFields = searchViewFields || result.fields`).
+- Server responses were always consistent (verified by exact-call repro as
+  admin + dispatcher); the fault was client-cache mixing across the upgrade.
+
+### FIX (commit f87a654)
+- Attached `search="_search_location_anywhere"` to `location_display_label`
+  (non-stored computed Char — the ORM consults search methods on non-stored
+  fields, and this field exists in EVERY payload version since it is the
+  list's Display Name column). Removed the `location_search` field entirely.
+- Search view leads with `<field name="location_display_label" string="All
+  Fields"/>`; the arch now references only fields that predate this feature,
+  so no client state (fresh or stale) can ever throw an unknown-field error.
+- Live-search JS targets `location_display_label` instead. **Rule for future
+  search-view work: never put a brand-new field name in a search view arch —
+  attach the search method to a long-existing field.**
+
+### VERIFICATION
+- get_views as dispatcher: every `<field>` name in the arch present in the
+  fields payload; all 16 required searches + extras pass through the new leaf
+  `('location_display_label','ilike',q)`; 9 locations (533-541) and 22 dup
+  flags intact. 43/43 saved-location tests. Users with open tabs should
+  hard-refresh; Odoo's reload prompt self-heals subsequent navigations.
+- Backup: /opt/odoo/backups/Prod-db_pre_search_hotfix_20260819.dump.
