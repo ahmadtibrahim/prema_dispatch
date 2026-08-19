@@ -14,6 +14,8 @@
     let guide = null;
     let speedMps = null;
     let rendering = false;
+    let auditQueued = false;
+    let lastGuideRenderKey = null;
 
     const $ = (sel) => document.querySelector(sel);
     const html = (value) => {
@@ -23,6 +25,9 @@
     const tell = (message) => {
         try { if (typeof toast === "function") toast(message); else console.info(message); }
         catch (_) { console.info(message); }
+    };
+    const safeJson = (value) => {
+        try { return JSON.stringify(value); } catch (_) { return String(value); }
     };
 
     function closed(status) {
@@ -268,24 +273,57 @@
 
     function renderGuide() {
         if (rendering || !guide) return;
-        rendering = true;
-        try {
-            const stop = (S.stops || []).find(s => s.id === guide.stopId) || S.stop;
-            if (!stop) return closeGuide();
-            const pickup = guide.mode === "pickup";
-            const total = pickup ? 6 : 3;
-            guide.step = Math.max(1, Math.min(total, guide.step));
-            $("#v7GuideKicker").textContent = `${pickup ? "Pickup" : "Delivery"} · Step ${guide.step} of ${total}`;
-            $("#v7GuideTitle").textContent = stopTitle(stop);
-            $("#v7GuideProgress").innerHTML = progressDots(total, guide.step);
-            $("#v7GuideBody").innerHTML = pickup ? pickupStepBody(stop, guide.step) : deliveryStepBody(stop, guide.step);
-            const back = $('[data-v7="back"]');
-            const cont = $('[data-v7="continue"]');
-            back.style.visibility = guide.step === 1 ? "hidden" : "visible";
-            cont.textContent = guide.step === total ? (pickup ? "✓ Confirm Pickup" : "✓ Confirm Delivery") : "Continue";
+        const stop = (S.stops || []).find(s => s.id === guide.stopId) || S.stop;
+        if (!stop) return closeGuide();
+        const pickup = guide.mode === "pickup";
+        const total = pickup ? 6 : 3;
+        guide.step = Math.max(1, Math.min(total, guide.step));
+
+        // Render signature: every input the guide content reads (stop id,
+        // workflow mode/step, completion state, full stop snapshot, load-plan
+        // state, and pending-evidence state). When it has not changed since
+        // the last render, skip ALL DOM writes — rebuilding v7GuideProgress /
+        // v7GuideBody on every audit pass was one of the confirmed v7 render
+        // storm sites (it also dropped input focus mid-typing).
+        const contentKey = safeJson([
+            stop.id, guide.mode, guide.step, guide.unloadConfirmed ? 1 : 0,
+            stop, pickup ? S.loadPlan : null,
+            hasPendingEvidence(stop.id, pickup ? "pop" : "pod") ? 1 : 0,
+        ]);
+        if (contentKey !== lastGuideRenderKey) {
+            rendering = true;
+            try {
+                const kicker = $("#v7GuideKicker");
+                const title = $("#v7GuideTitle");
+                const progress = $("#v7GuideProgress");
+                const body = $("#v7GuideBody");
+                const back = $('[data-v7="back"]');
+                const cont = $('[data-v7="continue"]');
+                const kickerText = `${pickup ? "Pickup" : "Delivery"} · Step ${guide.step} of ${total}`;
+                const titleText = stopTitle(stop);
+                const progressHtml = progressDots(total, guide.step);
+                const bodyHtml = pickup ? pickupStepBody(stop, guide.step) : deliveryStepBody(stop, guide.step);
+                const contText = guide.step === total ? (pickup ? "✓ Confirm Pickup" : "✓ Confirm Delivery") : "Continue";
+                if (kicker.textContent !== kickerText) kicker.textContent = kickerText;
+                if (title.textContent !== titleText) title.textContent = titleText;
+                if (progress.innerHTML !== progressHtml) progress.innerHTML = progressHtml;
+                if (body.innerHTML !== bodyHtml) body.innerHTML = bodyHtml;
+                back.style.visibility = guide.step === 1 ? "hidden" : "visible";
+                if (cont.textContent !== contText) cont.textContent = contText;
+                lastGuideRenderKey = contentKey;
+                window.__v7Perf.guideRenders++;
+            } finally { rendering = false; }
+        }
+
+        // Driving lock mirrors live GPS state on every pass, independent of
+        // the content signature. classList.toggle(force)/disabled writes are
+        // no-ops when the value is unchanged, so they never re-trigger the
+        // observer loop.
+        const cont = $('[data-v7="continue"]');
+        if (cont) {
             cont.classList.toggle("da-v7-danger-lock", movingNow());
             cont.disabled = movingNow();
-        } finally { rendering = false; }
+        }
     }
 
     async function saveActualAndContinue(stop) {
@@ -492,23 +530,40 @@
         if (!["pickup", "dropoff"].includes(stop.type) || closed(stop.status)) return;
         const body = $("#stopDetailBody");
         if (!body) return;
+
+        // Stable render signature for the current stop state: stop id/type,
+        // status (deferred/exception), arrival state, pickup/delivery pallet
+        // summary, every field simplifiedInfo prints, and the out-of-sequence
+        // action state. The key is stamped onto the rendered card itself —
+        // innerHTML replaces only the body's CHILDREN, so a base-app
+        // renderStopDetail() that overwrites our card also clears the key and
+        // the next audit pass restores the v7 view. When nothing changed and
+        // our card is still in place, skip the write entirely: unconditional
+        // innerHTML here was the primary confirmed v7 render-storm site.
+        const arrived = stop.status === "arrived" || !!stop.actual_arrival_time;
+        const expected = stop.type === "pickup" ? (stop.pickup_step_state?.expected ?? stop.pallets_in ?? 0) : (stop.pallets_out ?? 0);
+        const next = !arrived ? nextEligibleStop() : null;
+        const outOfSequence = !!next && next.id !== stop.id;
+        const renderKey = safeJson([
+            stop.id, stop.type, stop.status, arrived ? 1 : 0, expected,
+            stopTitle(stop), stop.address || "", stop.scheduled_time || "",
+            stop.tz_name || "", stop.dock_door || "", stop.instructions || "",
+            stop.contact_phone || "", stop.contact_name || "",
+            outOfSequence ? stopTitle(next) : "",
+        ]);
+        const rootCard = body.firstElementChild;
+        if (rootCard?.dataset?.v7RenderKey === renderKey) return;
         rendering = true;
         try {
-            const next = nextEligibleStop();
+            let html;
             if (stop.status === "deferred") {
-                body.innerHTML = `${simplifiedInfo(stop)}<div class="da-v7-state-card deferred"><b>Come Back Later</b><span>This stop is still open and has not been completed.</span></div>
+                html = `${simplifiedInfo(stop)}<div class="da-v7-state-card deferred"><b>Come Back Later</b><span>This stop is still open and has not been completed.</span></div>
                     <div class="da-v7-stop-actions"><button class="da-v7-btn da-v7-btn-primary" data-v7="return-deferred">↩ Return to This Stop</button><button class="da-v7-btn da-v7-btn-secondary" data-v7="report-problem">⚠ Report Problem</button></div>`;
-                return;
-            }
-            if (stop.status === "exception") {
-                body.innerHTML = `${simplifiedInfo(stop)}<div class="da-v7-state-card exception"><b>Problem reported</b><span>The stop remains open until the issue is resolved.</span></div>
+            } else if (stop.status === "exception") {
+                html = `${simplifiedInfo(stop)}<div class="da-v7-state-card exception"><b>Problem reported</b><span>The stop remains open until the issue is resolved.</span></div>
                     <div class="da-v7-stop-actions"><button class="da-v7-btn da-v7-btn-primary" data-v7="resume-exception">Problem Resolved — Resume Stop</button><button class="da-v7-btn da-v7-btn-secondary" onclick="APP.callDispatch()">📞 Call Dispatch</button></div>`;
-                return;
-            }
-            const arrived = stop.status === "arrived" || !!stop.actual_arrival_time;
-            if (!arrived) {
-                const outOfSequence = next && next.id !== stop.id;
-                body.innerHTML = `${simplifiedInfo(stop)}${outOfSequence ? `<div class="da-v7-warning">Planned next stop: <b>${html(stopTitle(next))}</b></div>` : ""}
+            } else if (!arrived) {
+                html = `${simplifiedInfo(stop)}${outOfSequence ? `<div class="da-v7-warning">Planned next stop: <b>${html(stopTitle(next))}</b></div>` : ""}
                     <div class="da-v7-stop-actions">
                         <button class="da-v7-btn da-v7-btn-primary" data-v7="navigate">🗺️ ${outOfSequence ? "Go Here Instead" : "Navigate"}</button>
                         <button class="da-v7-btn da-v7-btn-success" data-v7="arrive">✓ I'm Here</button>
@@ -516,9 +571,12 @@
                         <button class="da-v7-btn da-v7-btn-warning" data-v7="report-problem">⚠ Report a Problem</button>
                     </div>`;
             } else {
-                body.innerHTML = `${simplifiedInfo(stop)}<div class="da-v7-state-card arrived"><b>✓ Arrived</b><span>Stop work is now unlocked. The app will guide you one step at a time.</span></div>
+                html = `${simplifiedInfo(stop)}<div class="da-v7-state-card arrived"><b>✓ Arrived</b><span>Stop work is now unlocked. The app will guide you one step at a time.</span></div>
                     <div class="da-v7-stop-actions"><button class="da-v7-btn da-v7-btn-primary" data-v7="open-guide">${stop.type === "pickup" ? "Continue Pickup" : "Continue Delivery"}</button><button class="da-v7-btn da-v7-btn-secondary" data-v7="defer">↪ Come Back Later</button><button class="da-v7-btn da-v7-btn-warning" data-v7="report-problem">⚠ Report a Problem</button></div>`;
             }
+            body.innerHTML = html;
+            if (body.firstElementChild) body.firstElementChild.dataset.v7RenderKey = renderKey;
+            window.__v7Perf.stopRenders++;
         } finally { rendering = false; }
     }
 
@@ -534,17 +592,30 @@
             row.classList.toggle("da-v7-exception-row", stop?.status === "exception");
             row.querySelectorAll("div").forEach(el => { if (el.textContent === "⠿") el.style.display = "none"; });
             const badge = row.querySelector(".da-stop-badge");
-            if (badge && stop?.status === "deferred") { badge.textContent = "↪ Come Back Later"; badge.className = "da-stop-badge da-v7-deferred-badge"; }
-            if (badge && stop?.status === "exception") { badge.textContent = "⚠ Exception"; badge.className = "da-stop-badge da-v7-exception-badge"; }
+            if (badge && stop?.status === "deferred" && badge.textContent !== "↪ Come Back Later") {
+                badge.textContent = "↪ Come Back Later";
+                badge.className = "da-stop-badge da-v7-deferred-badge";
+            }
+            if (badge && stop?.status === "exception" && badge.textContent !== "⚠ Exception") {
+                badge.textContent = "⚠ Exception";
+                badge.className = "da-stop-badge da-v7-exception-badge";
+            }
         });
         const nextButton = $("#nextStopGo");
         if (nextButton) {
-            nextButton.textContent = "Navigate";
-            nextButton.onclick = async (ev) => {
-                ev?.preventDefault?.();
-                const next = nextEligibleStop();
-                if (next) await navigateToStop(next, false);
-            };
+            // Compare-then-write: same-value textContent still replaces the
+            // text node (a mutation), and assigning a fresh onclick function
+            // rewrites the reflected attribute — both re-trigger the audit
+            // observer on every pass if left unconditional.
+            if (nextButton.textContent !== "Navigate") nextButton.textContent = "Navigate";
+            if (!nextButton.dataset.v7Bound) {
+                nextButton.dataset.v7Bound = "1";
+                nextButton.onclick = async (ev) => {
+                    ev?.preventDefault?.();
+                    const next = nextEligibleStop();
+                    if (next) await navigateToStop(next, false);
+                };
+            }
         }
         const hint = Array.from(list.querySelectorAll("p")).find(p => (p.textContent || "").includes("Hold and drag"));
         if (hint) hint.remove();
@@ -566,12 +637,20 @@
     function postProcessLoadPlan() {
         const body = $("#loadPlanBody");
         if (!body) return;
-        body.querySelectorAll(".da-lp-warn-badge").forEach(el => { el.textContent = "Plan updated"; });
+        body.querySelectorAll(".da-lp-warn-badge").forEach(el => {
+            if (el.textContent !== "Plan updated") el.textContent = "Plan updated";
+        });
         body.querySelectorAll(".da-lp-unverified-banner").forEach(el => {
             const acknowledged = /Acknowledged by dispatcher/i.test(el.textContent || "");
-            el.innerHTML = acknowledged
+            const intended = acknowledged
                 ? "<b>Load plan ready</b><div>Dispatcher has acknowledged the vehicle layout.</div>"
                 : "<b>Load plan not ready</b><div>Vehicle layout must be confirmed by Dispatch before loading can be confirmed.</div>";
+            // Compare-then-write: rewriting identical banner markup on every
+            // audit pass was one of the confirmed v7 render-storm sites.
+            if (el.innerHTML !== intended) {
+                el.innerHTML = intended;
+                window.__v7Perf.lpWrites++;
+            }
         });
     }
 
@@ -619,13 +698,29 @@
 
     function auditDom() {
         if (rendering || typeof S === "undefined") return;
+        window.__v7Perf.audits++;
         postProcessHome();
         postProcessList();
         postProcessLoadPlan();
         if ($("#sStop")?.style.display !== "none") renderSimplifiedStop();
         if (guide && $("#oGuidedV7")?.style.display !== "none") renderGuide();
-        const navTab = $("#tabNav"); if (navTab) navTab.textContent = "Map";
-        const navTab2 = $("#tabNavNav"); if (navTab2) navTab2.textContent = "Map";
+        const navTab = $("#tabNav"); if (navTab && navTab.textContent !== "Map") navTab.textContent = "Map";
+        const navTab2 = $("#tabNavNav"); if (navTab2 && navTab2.textContent !== "Map") navTab2.textContent = "Map";
+    }
+
+    function queueAudit() {
+        // Coalesce every mutation burst into ONE audit pass per animation
+        // frame. The previous observer callback queued a rAF per mutation
+        // record, so each audit pass — which wrote DOM — queued N more
+        // callbacks, growing per frame until the main thread stalled
+        // (5.5s → 9.4s → 90.7s in UAT). With idempotent renderers, one pass
+        // settles and the loop terminates by construction.
+        if (auditQueued) return;
+        auditQueued = true;
+        requestAnimationFrame(() => {
+            auditQueued = false;
+            auditDom();
+        });
     }
 
     function addDrivingBadge() {
@@ -641,11 +736,15 @@
     function boot() {
         const app = $("#app");
         if (!app?.classList.contains("da-app")) return;
+        // UAT/telemetry counters: audit passes and actual DOM writes per
+        // renderer. Integer increments only — negligible overhead, and the
+        // storm fix is verified by these staying flat while the UI is idle.
+        window.__v7Perf = {audits: 0, stopRenders: 0, guideRenders: 0, lpWrites: 0};
         ensureGuideOverlay();
         addDrivingBadge();
         document.addEventListener("click", handleClick, true);
         startDrivingWatcher();
-        const obs = new MutationObserver(() => requestAnimationFrame(auditDom));
+        const obs = new MutationObserver(queueAudit);
         obs.observe(app, {subtree: true, childList: true, attributes: true, attributeFilter: ["style", "class"]});
         auditDom();
     }

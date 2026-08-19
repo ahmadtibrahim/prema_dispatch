@@ -220,10 +220,17 @@
         if (actionParent) {
             // Driver-facing workflow order: assignment/POPP first; confirmation
             // only after the backend pickup gate says the load is ready.
-            if (assign) actionParent.insertBefore(assign, actionParent.firstChild);
-            if (edit) actionParent.appendChild(edit);
-            if (confirm) actionParent.appendChild(confirm);
-            if (optimize) actionParent.appendChild(optimize);
+            // Reorder only when the current order differs — moving nodes on
+            // every audit pass re-triggers the MutationObserver loop.
+            const desired = [assign, edit, confirm, optimize].filter(Boolean);
+            const present = Array.from(actionParent.children).filter(el => desired.includes(el));
+            const needsFix = present.length !== desired.length
+                || desired.some((el, i) => present[i] !== el)
+                || (assign && actionParent.firstChild !== assign);
+            if (needsFix) {
+                if (assign) actionParent.insertBefore(assign, actionParent.firstChild);
+                [edit, confirm, optimize].forEach(el => { if (el) actionParent.appendChild(el); });
+            }
         }
 
         if (confirm) {
@@ -439,7 +446,18 @@
             document.addEventListener("keydown", scannerEscapeHardening, true);
             document.addEventListener("visibilitychange", () => { if (!document.hidden) maybeAutoEndAtBase(); });
             window.addEventListener("focus", maybeAutoEndAtBase);
-            const obs = new MutationObserver(() => requestAnimationFrame(auditDom));
+            let auditQueued = false;
+            const obs = new MutationObserver(() => {
+                // Coalesce mutation bursts into ONE audit per animation frame.
+                // Queuing a rAF per mutation record let each audit pass
+                // schedule N more callbacks — the v6 half of the render storm.
+                if (auditQueued) return;
+                auditQueued = true;
+                requestAnimationFrame(() => {
+                    auditQueued = false;
+                    auditDom();
+                });
+            });
             obs.observe(app, {subtree: true, childList: true, attributes: true, attributeFilter: ["style", "class"]});
             auditDom();
         };
