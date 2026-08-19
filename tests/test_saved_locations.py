@@ -371,3 +371,183 @@ class TestSavedLocationDuplicate(TransactionCase):
         loc.write({"street": "212 Bell Blvd"})
         self.assertFalse(loc.google_verified)
         self.assertFalse(loc.google_place_id)
+
+    # ─────────────────────────────────────────────────────────────────
+    # Search-anywhere (location_search) — the Saved Locations search box
+    # ─────────────────────────────────────────────────────────────────
+
+    def _make_chain(self, **kw):
+        """Create a chain-store style location (chain + branch + address)."""
+        defaults = {
+            "name": "TEST - Branch",
+            "chain_name": "TEST",
+            "business_name": "TEST",
+            "branch_name": "Branch",
+        }
+        defaults.update(kw)
+        return self._make(**defaults)
+
+    def _search_box(self, query):
+        """Simulate the web client's search-box facet domain."""
+        return self.Location.search([("location_search", "ilike", query)])
+
+    def test_search_anywhere_partial_branch(self):
+        self._make_chain(chain_name="NOFRILLS", business_name="NOFRILLS",
+                         branch_name="Brandon's", name="NOFRILLS - Brandon's",
+                         address="53 West Side Rd, Port Colborne, ON L3K 5Y7",
+                         street="53 West Side Rd", city="Port Colborne",
+                         postal_code="L3K 5Y7")
+        self.assertTrue(self._search_box("bran"))
+        self.assertEqual(self._search_box("bran").branch_name, "Brandon's")
+
+    def test_search_anywhere_store_number(self):
+        self._make_chain(chain_name="SOBEYS", business_name="SOBEYS",
+                         branch_name="South Pelham", location_number="6729",
+                         name="SOBEYS - South Pelham",
+                         address="609 S Pelham Rd, Welland, ON L3C 3C7",
+                         street="609 S Pelham Rd", city="Welland",
+                         postal_code="L3C 3C7")
+        self.assertTrue(self._search_box("6729"))
+        # Street number is searchable too
+        self.assertTrue(self._search_box("609"))
+
+    def test_search_anywhere_street_number(self):
+        self._make_chain(chain_name="LONGO'S", business_name="LONGO'S",
+                         branch_name="Huntington DC", name="LONGO'S - Huntington DC",
+                         receiving_entrance="Receiving Area 5",
+                         address="8800 Huntington Rd, Vaughan, ON L4H 3M6",
+                         street="8800 Huntington Rd", city="Vaughan",
+                         postal_code="L4H 3M6")
+        self.assertTrue(self._search_box("8800"))
+        self.assertTrue(self._search_box("hunt"))
+
+    def test_search_anywhere_door_info(self):
+        self._make_chain(chain_name="LONGO'S", business_name="LONGO'S",
+                         branch_name="Huntington DC", name="LONGO'S - Huntington DC",
+                         receiving_entrance="Receiving Area 5",
+                         address="8800 Huntington Rd, Vaughan, ON L4H 3M6",
+                         street="8800 Huntington Rd", city="Vaughan",
+                         postal_code="L4H 3M6")
+        res = self._search_box("receiving area")
+        self.assertTrue(res)
+        self.assertEqual(res.receiving_entrance, "Receiving Area 5")
+
+    def test_search_anywhere_multiword_cross_field(self):
+        self._make_chain(chain_name="HEALTHY PLANET", business_name="HEALTHY PLANET",
+                         branch_name="Niagara Falls", name="HEALTHY PLANET - Niagara Falls",
+                         unit="Unit C2",
+                         address="7481 Oakwood Dr, Unit C2, Niagara Falls, ON L2G 0J5",
+                         street="7481 Oakwood Dr", city="Niagara Falls",
+                         postal_code="L2G 0J5")
+        # 'health' lives in chain_name, 'niag' in branch/city — word-AND over
+        # the combined search key must still match.
+        self.assertTrue(self._search_box("health niag"))
+        # And the single-word query narrows to all Niagara locations
+        self.assertTrue(self._search_box("niag"))
+
+    def test_search_anywhere_punctuation_tolerance(self):
+        self._make_chain(chain_name="NOFRILLS", business_name="NOFRILLS",
+                         branch_name="Brandon's", name="NOFRILLS - Brandon's",
+                         address="53 West Side Rd, Port Colborne, ON L3K 5Y7",
+                         street="53 West Side Rd", city="Port Colborne",
+                         postal_code="L3K 5Y7")
+        for query in ("no frills", "nofrills", "NOFRILLS"):
+            self.assertTrue(self._search_box(query), "query %r should match" % query)
+        for query in ("brandon", "brandon's", "BRANDONS"):
+            self.assertTrue(self._search_box(query), "query %r should match" % query)
+
+    def test_search_anywhere_postal_prefix(self):
+        self._make_chain(chain_name="HEALTHY PLANET", business_name="HEALTHY PLANET",
+                         branch_name="St. Catharines", name="HEALTHY PLANET - St. Catharines",
+                         address="285 Geneva St, St. Catharines, ON L2N 2E9",
+                         street="285 Geneva St", city="St. Catharines",
+                         postal_code="L2N 2E9")
+        self.assertTrue(self._search_box("L2N"))
+        self.assertTrue(self._search_box("geneva"))
+
+    def test_search_anywhere_customer_name(self):
+        partner = self.env["res.partner"].create({"name": "Green Grocer Co"})
+        self._make_chain(chain_name="CHAIN", business_name="CHAIN",
+                         branch_name="Downtown", partner_id=partner.id,
+                         address="1 King St, Toronto, ON M5V 1A1",
+                         street="1 King St", city="Toronto",
+                         postal_code="M5V 1A1")
+        res = self._search_box("green grocer")
+        self.assertEqual(res.partner_id, partner)
+
+    def test_search_anywhere_unit(self):
+        self._make_chain(chain_name="CHAIN", business_name="CHAIN",
+                         branch_name="North", unit="Unit C2",
+                         address="10 Test Ave, Toronto, ON M5V 1A1",
+                         street="10 Test Ave", city="Toronto",
+                         postal_code="M5V 1A1")
+        self.assertTrue(self._search_box("C2"))
+
+    def test_search_anywhere_case_insensitive(self):
+        self._make_chain(chain_name="SOBEYS", business_name="SOBEYS",
+                         branch_name="South Pelham", location_number="6729",
+                         name="SOBEYS - South Pelham",
+                         address="609 S Pelham Rd, Welland, ON L3C 3C7",
+                         street="609 S Pelham Rd", city="Welland",
+                         postal_code="L3C 3C7")
+        self.assertTrue(self._search_box("sobeys"))
+        self.assertTrue(self._search_box("Sobeys"))
+        self.assertTrue(self._search_box("sObEyS"))
+
+    def test_name_search_uses_search_anywhere(self):
+        self._make_chain(chain_name="LONGO'S", business_name="LONGO'S",
+                         branch_name="Huntington DC", name="LONGO'S - Huntington DC",
+                         address="8800 Huntington Rd, Vaughan, ON L4H 3M6",
+                         street="8800 Huntington Rd", city="Vaughan",
+                         postal_code="L4H 3M6")
+        found = self.Location.name_search("hunt", limit=10)
+        self.assertTrue(found)
+
+    def test_normalize_search_token(self):
+        self.assertEqual(self.Location._normalize_search_token("No Frills"), "NO FRILLS")
+        self.assertEqual(self.Location._normalize_search_token("Joe's"), "JOES")
+        self.assertEqual(self.Location._normalize_search_token("Niagara-Falls"), "NIAGARA FALLS")
+        self.assertEqual(self.Location._normalize_search_token("A & B"), "A AND B")
+
+    # ─────────────────────────────────────────────────────────────────
+    # RULE 11 — same street + postal → possible duplicate
+    # ─────────────────────────────────────────────────────────────────
+
+    def test_rule11_street_postal_flagged_possible(self):
+        # Portal-sync style duplicate: same street+postal, empty business/brand
+        self._make(name="Warehouse A", address="400 Test Rd, Toronto, ON M5V 1A1",
+                   street="400 Test Rd", city="Toronto",
+                   province_code="ON", postal_code="M5V 1A1")
+        loc2 = self._make(name="Warehouse A", address="400 Test Rd, Toronto, ON M5V 1A1",
+                          street="400 Test Rd", city="Toronto",
+                          province_code="ON", postal_code="M5V 1A1")
+        self.assertTrue(loc2.exists())          # non-blocking
+        self.assertEqual(loc2.duplicate_status, "possible")
+
+    def test_rule11_different_units_still_clean(self):
+        # Two tenants at one address are genuinely different delivery points
+        self._make(name="Tenant A", unit="F",
+                   address="400 Test Rd, Toronto, ON M5V 1A1",
+                   street="400 Test Rd", city="Toronto",
+                   province_code="ON", postal_code="M5V 1A1")
+        loc2 = self._make(name="Tenant B", unit="G",
+                          address="400 Test Rd, Toronto, ON M5V 1A1",
+                          street="400 Test Rd", city="Toronto",
+                          province_code="ON", postal_code="M5V 1A1")
+        self.assertEqual(loc2.duplicate_status, "clean")
+
+    def test_rule11_different_branches_of_same_chain_clean(self):
+        # HEALTHY PLANET - Niagara Falls and HEALTHY PLANET - St. Catharines
+        # are two valid separate locations — same brand must not flag them.
+        self._make_chain(chain_name="HEALTHY PLANET", business_name="HEALTHY PLANET",
+                         branch_name="Niagara Falls",
+                         address="7481 Oakwood Dr, Niagara Falls, ON L2G 0J5",
+                         street="7481 Oakwood Dr", city="Niagara Falls",
+                         postal_code="L2G 0J5")
+        loc2 = self._make_chain(chain_name="HEALTHY PLANET", business_name="HEALTHY PLANET",
+                                branch_name="St. Catharines",
+                                address="285 Geneva St, St. Catharines, ON L2N 2E9",
+                                street="285 Geneva St", city="St. Catharines",
+                                postal_code="L2N 2E9")
+        self.assertTrue(loc2.exists())
+        self.assertEqual(loc2.duplicate_status, "clean")

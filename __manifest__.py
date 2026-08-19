@@ -1,6 +1,6 @@
 {
     "name": "Prema Dispatch",
-    "version": "18.0.3.4.0",
+    "version": "18.0.3.5.0",
     "summary": "Booking, planning, live GPS tracking, driver mobile app, interactive truck Load Plans, warehouse loading mode, AI document extraction, VoIP calling and reporting for PremaFirm dispatch operations",
     "category": "Logistics",
     "description": """
@@ -175,6 +175,7 @@ A full in-app user manual is available from the Prema Dispatch app menu.
             "prema_dispatch/static/src/js/dispatch_board.js",
             "prema_dispatch/static/src/js/booking_status_board.js",
             "prema_dispatch/static/src/js/google_places_widget.js",
+            "prema_dispatch/static/src/js/saved_location_search.js",
         ],
         # Driver layers are hard-guarded to /dispatch/driver. V7 loads last so
         # it can turn the existing feature-rich app into a guided phone flow
