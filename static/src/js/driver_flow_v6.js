@@ -261,10 +261,13 @@
             if (s.instructions || s.driver_instructions) req.add("📋 Special stop instructions");
         }
         const items = [...req];
-        card.innerHTML = `<summary>Today's Route Requirements <span>${items.length ? items.length : "Standard"}</span></summary>` +
+        // Compare-then-write: auditDom runs on every #app mutation, so an
+        // unconditional innerHTML here self-triggers the observer loop.
+        const html = `<summary>Today's Route Requirements <span>${items.length ? items.length : "Standard"}</span></summary>` +
             (items.length
                 ? `<div class="da-v6-requirement-list">${items.map(x => `<div>${x}</div>`).join("")}</div>`
                 : `<div class="da-v6-requirement-list"><div>Standard route requirements</div></div>`);
+        if (card.innerHTML !== html) card.innerHTML = html;
     }
 
     function renderWorkPrimaryAction() {
@@ -275,26 +278,34 @@
 
         if (wd.work_started_at && allOperationalStopsClosed()) {
             const returning = sessionStorage.getItem(RETURN_KEY) === "1";
-            card.style.display = "";
-            card.innerHTML = `<div class="da-startwork-card da-startwork-progress">
+            const html = `<div class="da-startwork-card da-startwork-progress">
                 <button class="da-startwork-btn" id="v6ReturnBaseBtn">
                     <div class="da-startwork-btn-label">${returning ? "🏠 RETURNING TO BASE" : "🏠 RETURN TO BASE"}</div>
                     <div class="da-startwork-btn-sub">${returning ? "Work ends automatically when you arrive at base" : "All customer stops complete — navigate back to the terminal"}</div>
                 </button>
                 ${returning ? `<button class="da-btn da-btn-secondary da-v6-endwork" id="v6EndWorkBtn">END WORK AT BASE</button>` : ""}
             </div>`;
+            // Compare-then-write so auditDom's per-mutation pass doesn't
+            // re-trigger its own observer (see renderTripRequirements).
+            card.style.display = "";
+            if (card.innerHTML !== html) card.innerHTML = html;
             $("#v6ReturnBaseBtn")?.addEventListener("click", startReturnToBase);
             $("#v6EndWorkBtn")?.addEventListener("click", endWorkNow);
             return;
         }
 
         if (wd.work_started_at) {
+            // v7 takes over this card (renames the label, marks the button
+            // .da-v7-status-only). Re-rendering "END WORK" every auditDom
+            // pass flips it back and fights v7's rename forever.
+            if (card.querySelector(".da-v7-status-only")) return;
             const remaining = openOperationalStops().length;
-            card.style.display = "";
-            card.innerHTML = `<button class="da-startwork-btn da-v6-endwork-pending" id="v6EndWorkPendingBtn">
+            const html = `<button class="da-startwork-btn da-v6-endwork-pending" id="v6EndWorkPendingBtn">
                 <div class="da-startwork-btn-label">END WORK</div>
                 <div class="da-startwork-btn-sub">${remaining} stop${remaining === 1 ? "" : "s"} remaining — complete the route first</div>
             </button>`;
+            card.style.display = "";
+            if (card.innerHTML !== html) card.innerHTML = html;
             $("#v6EndWorkPendingBtn")?.addEventListener("click", endWorkNow);
         }
     }

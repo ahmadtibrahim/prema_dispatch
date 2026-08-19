@@ -555,7 +555,10 @@
         if (!start) return;
         start.querySelectorAll(".da-startwork-btn-label").forEach(el => {
             if ((el.textContent || "").includes("START WORK")) el.textContent = "▶ START ROUTE";
-            if ((el.textContent || "").includes("END WORK")) el.textContent = "ROUTE IN PROGRESS";
+            // Only the pending-state placeholder (exact label). The return
+            // card's "END WORK AT BASE" is a real action button — renaming it
+            // would fight v6's return-card re-render.
+            if ((el.textContent || "").trim() === "END WORK" && el.closest(".da-v6-endwork-pending")) el.textContent = "ROUTE IN PROGRESS";
         });
         start.querySelectorAll(".da-v6-endwork-pending").forEach(btn => { btn.disabled = true; btn.classList.add("da-v7-status-only"); });
     }
