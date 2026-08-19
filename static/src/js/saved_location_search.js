@@ -9,18 +9,23 @@
  * Enter required.
  *
  * The typed text is applied as the standard search facet on the
- * ``location_search`` search-view field (server-side normalized word-AND
- * matching, see _search_location_anywhere), so normal filters, group bys,
- * pagination, saved filters and record opening all keep working untouched —
- * this is just the same facet the user could create by hand, created for them
- * as they type.
+ * ``location_display_label`` search-view field (server-side normalized
+ * word-AND matching, see _search_location_anywhere), so normal filters, group
+ * bys, pagination, saved filters and record opening all keep working
+ * untouched — this is just the same facet the user could create by hand,
+ * created for them as they type.
+ *
+ * NOTE: the target must stay ``location_display_label`` — a field present in
+ * every client's cached field payload. Targeting a brand-new field name makes
+ * stale (pre-upgrade) browser tabs throw "Unknown field" in the search
+ * arch parser.
  */
 import { patch } from "@web/core/utils/patch";
 import { debounce } from "@web/core/utils/timing";
 import { SearchBar } from "@web/search/search_bar/search_bar";
 
 const MODEL = "prema.dispatch.location";
-const SEARCH_FIELD = "location_search";
+const SEARCH_FIELD = "location_display_label";
 const DEBOUNCE_MS = 250;
 
 patch(SearchBar.prototype, {

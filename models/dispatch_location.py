@@ -48,17 +48,16 @@ class PremaDispatchLocation(models.Model):
     normalized_unit = fields.Char(compute="_compute_location_search_fields", store=True, index=True)
 
     location_search_key = fields.Char(compute="_compute_location_search_fields", store=True, index=True)
-    location_search = fields.Char(
-        string="All Text Fields",
-        compute="_compute_location_search",
+    location_display_label = fields.Char(
+        compute="_compute_location_search_fields",
         search="_search_location_anywhere",
-        help="Free-text search across every stored location attribute — display "
-             "name, chain/brand, business, branch, store #, unit, address, city, "
-             "postal code, customer and door/receiving info. Normalized and "
-             "matched word-by-word so partial, multi-word and "
-             "punctuation-tolerant queries all work.",
+        help="Display label (Business — City), and the Saved Locations search "
+             "box entry point: its search method routes every query through "
+             "normalized word-AND matching over location_search_key. This field "
+             "(rather than a brand-new one) must remain the search-view target "
+             "so clients with pre-upgrade cached field payloads never see an "
+             "unknown field.",
     )
-    location_display_label = fields.Char(compute="_compute_location_search_fields")
     street = fields.Char()
     street2 = fields.Char()
     unit = fields.Char()
@@ -455,14 +454,6 @@ class PremaDispatchLocation(models.Model):
 
             loc.location_display_label = label or loc.address or "Location"
 
-    def _compute_location_search(self):
-        """Non-stored companion of ``location_search_key`` — exists purely so
-        the search view's search box can route through
-        :meth:`_search_location_anywhere` (a non-stored field's ``search``
-        method is what the ORM consults when resolving the domain)."""
-        for loc in self:
-            loc.location_search = ""
-
     @api.model
     def _search_location_anywhere(self, operator, value):
         """Server-side 'search everywhere' for the Saved Locations search box.
@@ -475,7 +466,7 @@ class PremaDispatchLocation(models.Model):
         ``_normalize_search_token``.
 
         This is the leaf the web client sends for the search-box facet:
-        ``('location_search', 'ilike', '<typed text>')``.
+        ``('location_display_label', 'ilike', '<typed text>')``.
         """
         if not isinstance(value, str):
             value = str(value)

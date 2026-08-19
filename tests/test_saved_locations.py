@@ -373,7 +373,8 @@ class TestSavedLocationDuplicate(TransactionCase):
         self.assertFalse(loc.google_place_id)
 
     # ─────────────────────────────────────────────────────────────────
-    # Search-anywhere (location_search) — the Saved Locations search box
+    # Search-anywhere (location_display_label search method) — the
+    # Saved Locations search box
     # ─────────────────────────────────────────────────────────────────
 
     def _make_chain(self, **kw):
@@ -388,8 +389,11 @@ class TestSavedLocationDuplicate(TransactionCase):
         return self._make(**defaults)
 
     def _search_box(self, query):
-        """Simulate the web client's search-box facet domain."""
-        return self.Location.search([("location_search", "ilike", query)])
+        """Simulate the web client's search-box facet domain.
+
+        location_display_label is the search-view target: its search method
+        routes the query through normalized word-AND matching."""
+        return self.Location.search([("location_display_label", "ilike", query)])
 
     def test_search_anywhere_partial_branch(self):
         self._make_chain(chain_name="NOFRILLS", business_name="NOFRILLS",
