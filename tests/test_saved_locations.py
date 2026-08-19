@@ -551,3 +551,22 @@ class TestSavedLocationDuplicate(TransactionCase):
                                 postal_code="L2N 2E9")
         self.assertTrue(loc2.exists())
         self.assertEqual(loc2.duplicate_status, "clean")
+
+    def test_rule11_primary_with_visits_stays_clean(self):
+        # The canonical master with visit history must never be flagged as the
+        # duplicate — the empty portal copy points at IT instead.
+        primary = self._make(name="United Dairy", business_name="United Dairy",
+                             address="145 Sun Pac Blvd, Brampton, ON L6S 5Z6",
+                             street="145 Sun Pac Blvd", city="Brampton",
+                             province_code="ON", postal_code="L6S 5Z6")
+        primary.write({"use_count": 3})
+        dup = self._make(name="United Dairy",
+                         address="145 Sun Pac Boulevard, Brampton, ON L6S 5Z6",
+                         street="145 Sun Pac Boulevard", city="Brampton",
+                         province_code="ON", postal_code="L6S 5Z6")
+        # Re-evaluating the primary after the copy exists must still keep it
+        # clean — it has the visit history, the empty copy points at it.
+        primary._update_duplicate_status()
+        self.assertEqual(primary.duplicate_status, "clean")
+        self.assertEqual(dup.duplicate_status, "possible")
+        self.assertEqual(dup.duplicate_of_id, primary)

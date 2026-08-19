@@ -643,6 +643,12 @@ class PremaDispatchLocation(models.Model):
         for candidate in candidates:
             for rule_name in self.POSSIBLE_RULES:
                 if getattr(self, rule_name)(candidate):
+                    # RULE 11 pairs portal-synced copies against the canonical
+                    # master facility. When this record has more real visit
+                    # history than the candidate, THIS one is the primary —
+                    # leave it clean and let the weaker side point here.
+                    if rule_name == "_dup_rule11" and self.use_count > candidate.use_count:
+                        continue
                     result["duplicate_status"] = "possible"
                     result["duplicate_of_id"] = candidate.id
                     return result
