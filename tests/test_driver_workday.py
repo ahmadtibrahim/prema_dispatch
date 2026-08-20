@@ -49,10 +49,17 @@ class TestDriverWorkday(TransactionCase):
         self.driver_b_partner = self.env["res.partner"].create(
             {"name": "Workday Driver B"})
 
-        # Deterministic "today" (2026-08-18, a Tuesday). Stops are scheduled
-        # 14:00 UTC = 10:00 in America/Toronto on the same calendar date.
-        self.work_date = date(2026, 8, 18)
-        self.sched = datetime(2026, 8, 18, 14, 0)
+        # "Today" anchored to the driver's timezone — the app flags is_today /
+        # work_started in the driver's local calendar, so a fixed literal date
+        # (2026-08-18) drifted stale once the real date passed it (found in
+        # the 2026-08-20 full-suite run). Stops are scheduled 14:00 UTC, which
+        # is 09:00/10:00 in America/Toronto — always the SAME calendar date
+        # (UTC offset is at most ±5h, never a day flip).
+        import pytz
+        toronto_now = datetime.now(pytz.timezone("America/Toronto"))
+        self.work_date = toronto_now.date()
+        self.sched = datetime(self.work_date.year, self.work_date.month,
+                              self.work_date.day, 14, 0)
 
         self.driver_a_user = self._make_user(
             "workday_driver_a@example.com", self.driver_a_partner,

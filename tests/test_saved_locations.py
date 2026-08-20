@@ -559,14 +559,18 @@ class TestSavedLocationDuplicate(TransactionCase):
     def test_rule11_primary_with_visits_stays_clean(self):
         # The canonical master with visit history must never be flagged as the
         # duplicate — the empty portal copy points at IT instead.
+        # NOTE: the fixture must use a FICTIONAL address — the test ran at
+        # the real United Dairy Brampton address and collided with live UAT
+        # data (RULE 3 blocks the create against the real master, id 31);
+        # found in the 2026-08-20 full-suite run on Prod-db-uat.
         primary = self._make(name="United Dairy", business_name="United Dairy",
-                             address="145 Sun Pac Blvd, Brampton, ON L6S 5Z6",
-                             street="145 Sun Pac Blvd", city="Brampton",
+                             address="145 Test Park Blvd, Brampton, ON L6S 5Z6",
+                             street="145 Test Park Blvd", city="Brampton",
                              province_code="ON", postal_code="L6S 5Z6")
         primary.write({"use_count": 3})
         dup = self._make(name="United Dairy",
-                         address="145 Sun Pac Boulevard, Brampton, ON L6S 5Z6",
-                         street="145 Sun Pac Boulevard", city="Brampton",
+                         address="145 Test Park Boulevard, Brampton, ON L6S 5Z6",
+                         street="145 Test Park Boulevard", city="Brampton",
                          province_code="ON", postal_code="L6S 5Z6")
         # Re-evaluating the primary after the copy exists must still keep it
         # clean — it has the visit history, the empty copy points at it.

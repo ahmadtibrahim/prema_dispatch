@@ -1203,9 +1203,13 @@ class TestDispatchCrossDockCustody(TransactionCase):
         })
         # The driver payload only serves the 7-day window (yesterday → today+5),
         # so the fixture's hardcoded 2026-07-06 pickup would be clamped away.
-        # Schedule the job relative to today instead.
+        # Schedule the job relative to today instead — at NOON UTC so the
+        # stops' local date (America/Toronto, UTC-4/-5) can never straddle
+        # into yesterday when the suite runs near midnight UTC (found in the
+        # 2026-08-20 02:00 UTC full-suite run: 21:59 Toronto the day before).
         from datetime import date
-        job.scheduled_pickup = fields.Datetime.now()
+        job.scheduled_pickup = fields.Datetime.now().replace(
+            hour=12, minute=0, second=0, microsecond=0)
         payload = self.Job.with_user(user).get_driver_stops_for_date(str(date.today()))
         stop_payload = next(stop for stop in payload["stops"] if stop["id"] == cross_dock_drop.id)
 

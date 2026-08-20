@@ -361,7 +361,14 @@ class TestWeeklyPlanner(TransactionCase):
 
     def test_09_not_due_waits_and_manual_force_generates(self):
         job = self._generation_job()
-        self.plan.generate_days_before = 2  # plan_date today+3 → NOT due
+        # Anchor the plan to NEXT week: with the current week, the Friday
+        # occurrence lands within the generate_days_before=2 window on
+        # Wed/Thu/Fri (today / tomorrow / day-after), making the card "due"
+        # — the "not due" premise only held Mon/Tue/Sat/Sun. Found in the
+        # 2026-08-20 (Thursday) full-suite run. Next Friday is always
+        # >= 4 days out, so the assertion holds on every weekday.
+        self.plan.week_start = self.week_start + datetime.timedelta(days=7)
+        self.plan.generate_days_before = 2  # plan_date today+>=4 → NOT due
         self.plan.action_generate_week()
         card = self.Reservation.search([
             ("plan_id", "=", self.plan.id),
@@ -372,6 +379,15 @@ class TestWeeklyPlanner(TransactionCase):
         self.assertEqual(
             self.env["logistics.booking"].search_count(
                 [("recurring_job_id", "=", job.id)]), 0)
+        # give the corridor a departure on the card's date so the forced
+        # booking rides it (mirror test_08's same-day departure)
+        self.plan_env["logistics.corridor.departure"].create({
+            "corridor_id": self.corridor.id,
+            "departure_date": card.plan_date,
+            "departure_time": 7.0,
+            "status": "scheduled",
+            "vehicle_id": self.truck.id,
+        })
         # a dispatcher can still force-generate now (§44 manual override)
         self.assertTrue(card._generate_booking(force=True))
         self.assertEqual(card.state, "booking_generated")
