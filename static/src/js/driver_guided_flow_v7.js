@@ -433,6 +433,20 @@
         }
     }
 
+    // Guided transitions must never fail SILENTLY: rpc() throws on
+    // JSON-RPC errors (an unhandled server exception), and an unhandled
+    // rejection would leave the driver with zero feedback. UAT 2026-08-20:
+    // defer 500'd on an email-less driver account and the app showed
+    // nothing — the stop simply stayed en_route.
+    async function guidedStatusCall(stop, action, data, failMsg) {
+        try {
+            return await rpc("/dispatch/driver/stop/status", {stop_id: stop.id, action, data});
+        } catch (e) {
+            tell(`${failMsg}: ${e?.message || "server error"}`);
+            return null;
+        }
+    }
+
     async function deferCurrentStop() {
         const stop = S.stop;
         if (!stop || movingNow()) return;
@@ -440,8 +454,9 @@
         if (reason === null) return;
         const normalized = reason.toLowerCase();
         const map = normalized.includes("appointment") ? "appointment_later" : normalized.includes("dock") ? "dock_unavailable" : normalized.includes("wait") ? "long_wait" : normalized.includes("dispatch") ? "dispatcher_instructed" : normalized.includes("open") || normalized.includes("closed") ? "customer_closed" : "other";
-        const result = await rpc("/dispatch/driver/stop/status", {stop_id: stop.id, action: "defer", data: {reason: map, reason_other: map === "other" ? reason : ""}});
-        if (!result?.success) return tell(result?.error || "Could not save this stop for later");
+        const result = await guidedStatusCall(stop, "defer", {reason: map, reason_other: map === "other" ? reason : ""}, "Could not save this stop for later");
+        if (!result) return;
+        if (!result.success) return tell(result.error || "Could not save this stop for later");
         await reloadDay();
         showScreen("sSchedule");
         showViewTab("stops");
@@ -449,8 +464,9 @@
     }
 
     async function returnToDeferred(stop) {
-        const result = await rpc("/dispatch/driver/stop/status", {stop_id: stop.id, action: "resume_deferred", data: {make_current: true}});
-        if (!result?.success) return tell(result?.error || "Could not return to this stop");
+        const result = await guidedStatusCall(stop, "resume_deferred", {make_current: true}, "Could not return to this stop");
+        if (!result) return;
+        if (!result.success) return tell(result.error || "Could not return to this stop");
         await reloadDay();
         const updated = (S.stops || []).find(s => s.id === stop.id) || stop;
         S.stop = updated;
@@ -465,8 +481,9 @@
         const text = reason.toLowerCase();
         const map = text.includes("refus") ? "refused_freight" : text.includes("damag") ? "damaged_freight" : text.includes("short") ? "short_shipment" : text.includes("extra") ? "extra_freight" : text.includes("wrong") ? "wrong_freight" : text.includes("dock") ? "dock_inaccessible" : text.includes("appointment") ? "appointment_issue" : text.includes("address") ? "address_issue" : text.includes("temp") ? "temperature_issue" : text.includes("wait") ? "long_wait" : text.includes("closed") || text.includes("open") ? "customer_closed" : "other";
         const notes = prompt("Add a short note for Dispatch (optional)", "") || "";
-        const result = await rpc("/dispatch/driver/stop/status", {stop_id: stop.id, action: "report_problem", data: {reason: map, notes}});
-        if (!result?.success) return tell(result?.error || "Could not report the problem");
+        const result = await guidedStatusCall(stop, "report_problem", {reason: map, notes}, "Could not report the problem");
+        if (!result) return;
+        if (!result.success) return tell(result.error || "Could not report the problem");
         await reloadDay();
         S.stop = (S.stops || []).find(s => s.id === stop.id) || stop;
         renderSimplifiedStop();
@@ -474,8 +491,9 @@
     }
 
     async function resumeException(stop) {
-        const result = await rpc("/dispatch/driver/stop/status", {stop_id: stop.id, action: "resume_exception", data: {}});
-        if (!result?.success) return tell(result?.error || "Could not resume this stop");
+        const result = await guidedStatusCall(stop, "resume_exception", {}, "Could not resume this stop");
+        if (!result) return;
+        if (!result.success) return tell(result.error || "Could not resume this stop");
         await reloadDay();
         S.stop = (S.stops || []).find(s => s.id === stop.id) || stop;
         renderSimplifiedStop();
@@ -486,8 +504,9 @@
         if (!next || next.id === stop.id) return navigateToStop(stop, false);
         const reason = prompt(`This is not the planned next stop (${stopTitle(next)}). Why are you going here instead?`, "Customer / appointment timing");
         if (!reason) return;
-        const result = await rpc("/dispatch/driver/stop/status", {stop_id: stop.id, action: "make_next", data: {reason}});
-        if (!result?.success) return tell(result?.error || "Could not change the stop sequence");
+        const result = await guidedStatusCall(stop, "make_next", {reason}, "Could not change the stop sequence");
+        if (!result) return;
+        if (!result.success) return tell(result.error || "Could not change the stop sequence");
         await reloadDay();
         const updated = (S.stops || []).find(s => s.id === stop.id) || stop;
         return navigateToStop(updated, false);

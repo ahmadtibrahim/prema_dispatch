@@ -1,6 +1,10 @@
+import logging
+
 from markupsafe import Markup, escape
 
 from odoo import api, fields, models
+
+_logger = logging.getLogger(__name__)
 
 
 _DEFER_REASONS = [
@@ -108,8 +112,24 @@ class PremaDispatchJobGuidedFlow(models.Model):
         }
 
     def _post_driver_audit(self, job, body):
-        """Write operational audit notes without emailing job followers."""
-        job.message_post(body=body, subtype_xmlid="mail.mt_note")
+        """Write operational audit notes without emailing job followers.
+
+        Best-effort: the note must never fail the driver action it
+        accompanies. message_post raises when the author (the driver
+        account) has no configured email — true of any manually-created
+        driver account and of the UAT fixture — which previously rolled
+        back the defer/report/return state change the driver had just
+        made (found in the 2026-08-20 walkthrough: defer 500'd with
+        "Unable to send message, please configure the sender's email
+        address." and the app showed no error at all).
+        """
+        try:
+            job.message_post(body=body, subtype_xmlid="mail.mt_note")
+        except Exception:
+            _logger.warning(
+                "audit note skipped for job %s (author has no email or messaging failed)",
+                job.id,
+            )
 
     def _driver_defer_stop(self, stop, data):
         reason = data.get("reason") or "other"
