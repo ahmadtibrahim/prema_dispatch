@@ -9,6 +9,7 @@ UAT; these tests cover the server contract it relies on.
 """
 import base64
 import io
+import re
 
 from odoo.tests import TransactionCase, tagged
 
@@ -110,6 +111,24 @@ class TestEvidenceWorkflow(TransactionCase):
         self.assertTrue(ev.checksum_sha256)
         # canonical record links the same attachment the stop m2m holds
         self.assertIn(r["id"], self.stop.pop_attachment_ids.ids)
+
+    def test_01b_iso8601_captured_at_accepted(self):
+        # The app sends captured_at via new Date().toISOString()
+        # ("2026-08-20T00:53:35.722Z") — the ORM Datetime field only
+        # accepts "YYYY-MM-DD HH:MM:SS". Before the normalization in
+        # _create_evidence every upload raised ValueError, the generic
+        # catch returned success=False (while the row still committed),
+        # and the client never attached the photo — the guided pickup
+        # gate could not advance. Found in v7 browser UAT.
+        r = self._add("pop", _jpeg_b64(), "iso.jpg", extra={
+            "captured_at": "2026-08-20T00:53:35.722Z",
+        })
+        self.assertTrue(r.get("success"), r)
+        ev = self.env["prema.dispatch.evidence"].search(
+            [("attachment_id", "=", r["id"])], limit=1)
+        self.assertTrue(ev)
+        self.assertEqual(ev.captured_at.strftime("%Y-%m-%d %H:%M:%S"),
+                         "2026-08-20 00:53:35")
 
     def test_02_scan_page_held_apart_from_proof(self):
         r = self._add("scan", _jpeg_b64(), "page1.jpg", extra={
@@ -282,3 +301,44 @@ class TestEvidenceWorkflow(TransactionCase):
             self.stop.id, "pop", _jpeg_b64(), "x.jpg")
         self.assertFalse(r.get("success"))
         self.assertEqual(r.get("code"), "unauthorized")
+
+
+@tagged("post_install", "-at_install")
+class TestEvidenceControllerForwardsExtra(TransactionCase):
+    """Static contract pinning the HTTP layer to the model contract.
+
+    The model's driver_add_evidence() requires extra['pallet_id'] for POPP
+    (spec §20) and spec §16 metadata (captured_at/lat/lng/device) for every
+    upload — but the /dispatch/driver/evidence/add controller dropped the
+    extra param into **kwargs, so every pallet-photo upload was rejected
+    with "pallet_not_found" before reaching the model. Found in v7 browser
+    UAT; all pre-existing evidence tests called the model directly and
+    never exercised the controller. This pins the forwarding so the route
+    cannot silently regress again.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        from odoo.modules.module import get_module_path
+        from pathlib import Path
+        root = Path(get_module_path("prema_dispatch"))
+        cls.ctrl = (root / "controllers" / "driver_app.py").read_text(encoding="utf-8")
+
+    def test_route_signature_accepts_extra(self):
+        match = re.search(r"def add_evidence\(self, stop_id, ev_type, data_b64, filename=.photo.jpg., extra=None, \*\*kwargs\)", self.ctrl)
+        self.assertTrue(match, "add_evidence must accept extra=None explicitly")
+
+    def test_route_forwards_extra_to_model(self):
+        self.assertIn("driver_add_evidence(\n            stop_id, ev_type, data_b64, filename, extra=extra)", self.ctrl)
+
+    def test_model_contract_requires_popp_pallet_id(self):
+        # The popp branch of driver_add_evidence resolves the pallet from
+        # extra['pallet_id'] and rejects a missing/foreign pallet — the
+        # forwarding pinned above is what makes the route satisfy this.
+        from odoo.modules.module import get_module_path
+        from pathlib import Path
+        root = Path(get_module_path("prema_dispatch"))
+        model = (root / "models" / "dispatch_job.py").read_text(encoding="utf-8")
+        self.assertIn("pallet_id", model)
+        self.assertIn("This pallet does not belong to this pickup.", model)
