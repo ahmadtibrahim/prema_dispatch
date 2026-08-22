@@ -8,6 +8,10 @@
     <meta name="theme-color" content="#1565C0"/>
     <meta name="apple-mobile-web-app-capable" content="yes"/>
     <link t-attf-href="/prema_dispatch/static/src/css/driver_app.css?v=#{cache_ver}" rel="stylesheet"/>
+    <!-- Driver guided-flow layers (v6/v7). Registered in web.assets_frontend
+         for other pages, but this template overrides the layout head, so the
+         bundles never render here — load the files directly like driver_app.js. -->
+    <link t-attf-href="/prema_dispatch/static/src/css/driver_guided_flow_v7.css?v=#{cache_ver}" rel="stylesheet"/>
     <!-- Canonical Google Maps loader. The Maps API itself is NOT loaded here
          anymore — this file (also part of the web.assets_backend /
          web.assets_frontend bundles) injects the single API script tag and
@@ -319,6 +323,13 @@
 </div>
 
 <script t-attf-src="/prema_dispatch/static/src/js/driver_app.js?v=#{cache_ver}"/>
+<!-- Driver guided-flow layers (v6/v7) — loaded directly because the layout
+     head override suppresses the web.assets_frontend bundles on this page.
+     Order matters: v6 first, then v7, then the hotfix (wraps v7 handlers). -->
+<script t-attf-src="/prema_dispatch/static/src/js/driver_flow_v6.js?v=#{cache_ver}"/>
+<script t-attf-src="/prema_dispatch/static/src/js/driver_native_nav_v6.js?v=#{cache_ver}"/>
+<script t-attf-src="/prema_dispatch/static/src/js/driver_guided_flow_v7.js?v=#{cache_ver}"/>
+<script t-attf-src="/prema_dispatch/static/src/js/driver_guided_flow_v7_hotfix.js?v=#{cache_ver}"/>
 </t>
 </template>
 </odoo>

@@ -97,6 +97,17 @@ class PremaDispatchEvidence(models.Model):
         meta = meta or {}
         if not isinstance(meta, dict):
             meta = {}
+        captured_at = meta.get("captured_at") or False
+        # The app stamps evidence with new Date().toISOString()
+        # ("2026-08-20T00:53:35.722Z"); the ORM Datetime field only
+        # accepts "YYYY-MM-DD HH:MM:SS". Un-normalized, every upload was
+        # rejected with a ValueError (caught, logged, success=False) while
+        # the attachment/evidence row still committed — the client never
+        # saw success, so per-pallet photos never attached and the guided
+        # pickup gate stayed blocked. Found in v7 browser UAT; normalize
+        # here so pop/pod/popp/scan all accept both forms.
+        if isinstance(captured_at, str):
+            captured_at = captured_at.replace("T", " ").split(".")[0].rstrip("Z").strip()
         job = stop.job_id
         # prema_logistics_booking adds logistics_booking_id to
         # prema.dispatch.job — but its models load AFTER dispatch in the
@@ -111,7 +122,7 @@ class PremaDispatchEvidence(models.Model):
             "booking_id": booking.id if booking else False,
             "pallet_id": meta.get("pallet_id") or False,
             "driver_id": self.env.user.id,
-            "captured_at": meta.get("captured_at") or False,
+            "captured_at": captured_at,
             "lat": meta.get("lat"),
             "lng": meta.get("lng"),
             "device": meta.get("device") or "",

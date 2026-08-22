@@ -57,8 +57,13 @@ class DriverAppController(http.Controller):
         return request.env["prema.dispatch.job"].get_driver_stops_for_date(date_str)
 
     @http.route("/dispatch/driver/evidence/add", type="json", auth="user", methods=["POST"])
-    def add_evidence(self, stop_id, ev_type, data_b64, filename="photo.jpg", **kwargs):
-        return request.env["prema.dispatch.job"].driver_add_evidence(stop_id, ev_type, data_b64, filename)
+    def add_evidence(self, stop_id, ev_type, data_b64, filename="photo.jpg", extra=None, **kwargs):
+        # extra carries spec §16 metadata (captured_at/lat/lng/device) and —
+        # for POPP — the required pallet_id. The model rejects popp without
+        # it ("pallet_not_found"); dropping it here silently killed every
+        # pallet-photo upload at the controller layer (found in v7 UAT).
+        return request.env["prema.dispatch.job"].driver_add_evidence(
+            stop_id, ev_type, data_b64, filename, extra=extra)
 
     @http.route("/dispatch/driver/evidence/remove", type="json", auth="user", methods=["POST"])
     def remove_evidence(self, stop_id, ev_type, att_id, extra=None, **kwargs):

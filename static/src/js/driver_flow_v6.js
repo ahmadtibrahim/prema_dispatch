@@ -220,10 +220,17 @@
         if (actionParent) {
             // Driver-facing workflow order: assignment/POPP first; confirmation
             // only after the backend pickup gate says the load is ready.
-            if (assign) actionParent.insertBefore(assign, actionParent.firstChild);
-            if (edit) actionParent.appendChild(edit);
-            if (confirm) actionParent.appendChild(confirm);
-            if (optimize) actionParent.appendChild(optimize);
+            // Reorder only when the current order differs — moving nodes on
+            // every audit pass re-triggers the MutationObserver loop.
+            const desired = [assign, edit, confirm, optimize].filter(Boolean);
+            const present = Array.from(actionParent.children).filter(el => desired.includes(el));
+            const needsFix = present.length !== desired.length
+                || desired.some((el, i) => present[i] !== el)
+                || (assign && actionParent.firstChild !== assign);
+            if (needsFix) {
+                if (assign) actionParent.insertBefore(assign, actionParent.firstChild);
+                [edit, confirm, optimize].forEach(el => { if (el) actionParent.appendChild(el); });
+            }
         }
 
         if (confirm) {
@@ -261,10 +268,13 @@
             if (s.instructions || s.driver_instructions) req.add("📋 Special stop instructions");
         }
         const items = [...req];
-        card.innerHTML = `<summary>Today's Route Requirements <span>${items.length ? items.length : "Standard"}</span></summary>` +
+        // Compare-then-write: auditDom runs on every #app mutation, so an
+        // unconditional innerHTML here self-triggers the observer loop.
+        const html = `<summary>Today's Route Requirements <span>${items.length ? items.length : "Standard"}</span></summary>` +
             (items.length
                 ? `<div class="da-v6-requirement-list">${items.map(x => `<div>${x}</div>`).join("")}</div>`
                 : `<div class="da-v6-requirement-list"><div>Standard route requirements</div></div>`);
+        if (card.innerHTML !== html) card.innerHTML = html;
     }
 
     function renderWorkPrimaryAction() {
@@ -275,26 +285,34 @@
 
         if (wd.work_started_at && allOperationalStopsClosed()) {
             const returning = sessionStorage.getItem(RETURN_KEY) === "1";
-            card.style.display = "";
-            card.innerHTML = `<div class="da-startwork-card da-startwork-progress">
+            const html = `<div class="da-startwork-card da-startwork-progress">
                 <button class="da-startwork-btn" id="v6ReturnBaseBtn">
                     <div class="da-startwork-btn-label">${returning ? "🏠 RETURNING TO BASE" : "🏠 RETURN TO BASE"}</div>
                     <div class="da-startwork-btn-sub">${returning ? "Work ends automatically when you arrive at base" : "All customer stops complete — navigate back to the terminal"}</div>
                 </button>
                 ${returning ? `<button class="da-btn da-btn-secondary da-v6-endwork" id="v6EndWorkBtn">END WORK AT BASE</button>` : ""}
             </div>`;
+            // Compare-then-write so auditDom's per-mutation pass doesn't
+            // re-trigger its own observer (see renderTripRequirements).
+            card.style.display = "";
+            if (card.innerHTML !== html) card.innerHTML = html;
             $("#v6ReturnBaseBtn")?.addEventListener("click", startReturnToBase);
             $("#v6EndWorkBtn")?.addEventListener("click", endWorkNow);
             return;
         }
 
         if (wd.work_started_at) {
+            // v7 takes over this card (renames the label, marks the button
+            // .da-v7-status-only). Re-rendering "END WORK" every auditDom
+            // pass flips it back and fights v7's rename forever.
+            if (card.querySelector(".da-v7-status-only")) return;
             const remaining = openOperationalStops().length;
-            card.style.display = "";
-            card.innerHTML = `<button class="da-startwork-btn da-v6-endwork-pending" id="v6EndWorkPendingBtn">
+            const html = `<button class="da-startwork-btn da-v6-endwork-pending" id="v6EndWorkPendingBtn">
                 <div class="da-startwork-btn-label">END WORK</div>
                 <div class="da-startwork-btn-sub">${remaining} stop${remaining === 1 ? "" : "s"} remaining — complete the route first</div>
             </button>`;
+            card.style.display = "";
+            if (card.innerHTML !== html) card.innerHTML = html;
             $("#v6EndWorkPendingBtn")?.addEventListener("click", endWorkNow);
         }
     }
@@ -428,7 +446,18 @@
             document.addEventListener("keydown", scannerEscapeHardening, true);
             document.addEventListener("visibilitychange", () => { if (!document.hidden) maybeAutoEndAtBase(); });
             window.addEventListener("focus", maybeAutoEndAtBase);
-            const obs = new MutationObserver(() => requestAnimationFrame(auditDom));
+            let auditQueued = false;
+            const obs = new MutationObserver(() => {
+                // Coalesce mutation bursts into ONE audit per animation frame.
+                // Queuing a rAF per mutation record let each audit pass
+                // schedule N more callbacks — the v6 half of the render storm.
+                if (auditQueued) return;
+                auditQueued = true;
+                requestAnimationFrame(() => {
+                    auditQueued = false;
+                    auditDom();
+                });
+            });
             obs.observe(app, {subtree: true, childList: true, attributes: true, attributeFilter: ["style", "class"]});
             auditDom();
         };

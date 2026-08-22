@@ -48,7 +48,16 @@ class PremaDispatchLocation(models.Model):
     normalized_unit = fields.Char(compute="_compute_location_search_fields", store=True, index=True)
 
     location_search_key = fields.Char(compute="_compute_location_search_fields", store=True, index=True)
-    location_display_label = fields.Char(compute="_compute_location_search_fields")
+    location_display_label = fields.Char(
+        compute="_compute_location_search_fields",
+        search="_search_location_anywhere",
+        help="Display label (Business — City), and the Saved Locations search "
+             "box entry point: its search method routes every query through "
+             "normalized word-AND matching over location_search_key. This field "
+             "(rather than a brand-new one) must remain the search-view target "
+             "so clients with pre-upgrade cached field payloads never see an "
+             "unknown field.",
+    )
     street = fields.Char()
     street2 = fields.Char()
     unit = fields.Char()
@@ -346,6 +355,36 @@ class PremaDispatchLocation(models.Model):
         """Collapse whitespace and uppercase — used for free-text search keys."""
         return re.sub(r"\s+", " ", (value or "").strip().upper())
 
+    @api.model
+    def _normalize_search_token(self, value):
+        """Normalize one free-text search token (query word or key fragment).
+
+        - lowercase → uppercase
+        - & → and
+        - apostrophes removed (Brandon's → BRANDONS)
+        - punctuation and hyphens → space (no-frills → NO FRILLS)
+        - whitespace collapsed
+
+        The same normalizer runs on both the stored ``location_search_key``
+        and the user's query, so the two always compare consistently.
+        """
+        if not value:
+            return ""
+        v = str(value).lower().strip()
+        v = v.replace("&", " and ")
+        v = re.sub(r"'", "", v)                                  # Joe's → Joes
+        v = re.sub(r"[.,|\":;!@#$%^*()_+=\[\]{}<>?/\\~`-]", " ", v)
+        return re.sub(r"\s+", " ", v).strip().upper()
+
+    @api.model
+    def _normalize_search_words(self, value, max_words=8):
+        """Split a query into normalized individual search words.
+
+        ``max_words`` caps the word-AND domain size so a pasted paragraph
+        can't produce a pathological query.
+        """
+        return [w for w in self._normalize_search_token(value).split(" ") if w][:max_words]
+
     # ═══════════════════════════════════════════════════════════════════════
     # Computed Fields
     # ═══════════════════════════════════════════════════════════════════════
@@ -354,6 +393,8 @@ class PremaDispatchLocation(models.Model):
         "chain_name", "location_number", "business_name", "branch_name", "name",
         "city", "postal_code", "address", "street", "street2", "unit",
         "province_code", "country_id",
+        "dock_door", "receiving_entrance", "truck_entrance", "gate_code",
+        "partner_id.name",
     )
     def _compute_location_search_fields(self):
         for loc in self:
@@ -377,12 +418,19 @@ class PremaDispatchLocation(models.Model):
             )
 
             # ── Search key (free-text, all signals) ──
+            # Everything the Saved Locations search box must find: display
+            # name, chain/brand, business, branch, store #, unit, street/
+            # address, city, postal code, customer and door/receiving info.
             key_parts = [
                 loc.chain_name, loc.location_number_normalized,
                 loc.business_name, loc.branch_name, loc.name,
                 loc.city, loc.postal_code, loc.address, normalized,
+                loc.unit, loc.normalized_unit,
+                loc.dock_door, loc.receiving_entrance,
+                loc.truck_entrance, loc.gate_code,
+                loc.partner_id.name or "",
             ]
-            loc.location_search_key = self._normalize_text_key(
+            loc.location_search_key = self._normalize_search_token(
                 " ".join(p for p in key_parts if p)
             )
 
@@ -405,6 +453,35 @@ class PremaDispatchLocation(models.Model):
                 label = "%s — %s" % (label, loc.city)
 
             loc.location_display_label = label or loc.address or "Location"
+
+    @api.model
+    def _search_location_anywhere(self, operator, value):
+        """Server-side 'search everywhere' for the Saved Locations search box.
+
+        Splits the query into normalized words and requires every word to
+        match somewhere in the stored ``location_search_key`` (word-AND), so
+        multi-word queries like ``health niag`` match records whose words
+        live in different fields. Case-, space-, punctuation-, apostrophe-
+        and hyphen-insensitive — the query and the key go through the same
+        ``_normalize_search_token``.
+
+        This is the leaf the web client sends for the search-box facet:
+        ``('location_display_label', 'ilike', '<typed text>')``.
+        """
+        if not isinstance(value, str):
+            value = str(value)
+        if operator.endswith("like"):
+            words = self._normalize_search_words(value)
+            if not words:
+                # Optimize out the default criterion of ``like ''``.
+                return (expression.FALSE_DOMAIN
+                        if operator in expression.NEGATIVE_TERM_OPERATORS
+                        else expression.TRUE_DOMAIN)
+            return expression.AND([
+                [("location_search_key", operator, word)] for word in words
+            ])
+        # Non-like operators ('=', '!='): direct comparison on the key.
+        return [("location_search_key", operator, self._normalize_search_token(value))]
 
     # ═══════════════════════════════════════════════════════════════════════
     # Duplicate Detection
@@ -431,6 +508,14 @@ class PremaDispatchLocation(models.Model):
             domain_parts.append([
                 ("normalized_brand", "=", self.normalized_brand),
                 ("location_number_normalized", "=", self.location_number_normalized),
+            ])
+
+        # Same street + postal code (even different/empty business — catches
+        # portal-synced records whose brand/business fields are blank)
+        if self.street and self.postal_code:
+            domain_parts.append([
+                ("street", "=ilike", self.street.strip()),
+                ("postal_code", "=ilike", self.postal_code.strip()),
             ])
 
         domain = expression.OR(domain_parts)
@@ -499,8 +584,30 @@ class PremaDispatchLocation(models.Model):
             and self.normalized_business != other.normalized_business
         )
 
+    def _dup_rule11(self, other):
+        """RULE 11: Same Street + Same Postal Code  →  ALLOW but mark possible.
+
+        Catches records whose business/brand fields are empty or spelled
+        differently (e.g. portal saved-location syncs) that the
+        business-based rules miss. Records with two different units at the
+        same address are genuinely different delivery points (two tenants in
+        one plaza), so a unit mismatch opts out. Non-blocking: a dispatcher
+        reviews and merges.
+        """
+        units_conflict = (
+            self.normalized_unit and other.normalized_unit
+            and self.normalized_unit != other.normalized_unit
+        )
+        return (
+            self.street and other.street
+            and self.postal_code and other.postal_code
+            and not units_conflict
+            and self._normalize_address_street(self.street) == self._normalize_address_street(other.street)
+            and self._normalize_postal(self.postal_code) == self._normalize_postal(other.postal_code)
+        )
+
     BLOCKING_RULES = ("_dup_rule1", "_dup_rule2", "_dup_rule3", "_dup_rule4")
-    POSSIBLE_RULES = ("_dup_rule6", "_dup_rule10")
+    POSSIBLE_RULES = ("_dup_rule6", "_dup_rule10", "_dup_rule11")
 
     def _evaluate_duplicates(self):
         """Run all duplicate rules against candidates.
@@ -527,6 +634,12 @@ class PremaDispatchLocation(models.Model):
         for candidate in candidates:
             for rule_name in self.POSSIBLE_RULES:
                 if getattr(self, rule_name)(candidate):
+                    # RULE 11 pairs portal-synced copies against the canonical
+                    # master facility. When this record has more real visit
+                    # history than the candidate, THIS one is the primary —
+                    # leave it clean and let the weaker side point here.
+                    if rule_name == "_dup_rule11" and self.use_count > candidate.use_count:
+                        continue
                     result["duplicate_status"] = "possible"
                     result["duplicate_of_id"] = candidate.id
                     return result
@@ -929,9 +1042,9 @@ class PremaDispatchLocation(models.Model):
         offset = max(int(offset or 0), 0)
         if len(query) < 2:
             return {"success": True, "results": [], "limit": limit, "offset": offset}
-        norm = self._normalize_text_key(query)
+        norm = self._normalize_search_token(query)
         number = self._normalize_location_number(query.split()[-1])
-        words = [w for w in re.split(r"\s+", norm.replace("#", " ")) if w]
+        words = self._normalize_search_words(query)
         results = self.browse()
         if len(words) >= 2:
             chain_guess = " ".join(words[:-1])
@@ -995,19 +1108,19 @@ class PremaDispatchLocation(models.Model):
 
     @api.model
     def name_search(self, name="", args=None, operator="ilike", limit=100):
+        """Many2one autocomplete (stop pickers etc.) — same normalized
+        word-AND matching as the list-view search box, so partial and
+        multi-word queries behave consistently everywhere."""
         args = list(args or [])
         if name:
-            args = expression.AND([
-                args,
-                expression.OR([
-                    [("business_name", operator, name)],
-                    [("name", operator, name)],
-                    [("address", operator, name)],
-                    [("chain_name", operator, name)],
-                    [("location_number_normalized", operator, self._normalize_location_number(name))],
-                    [("location_search_key", operator, self._normalize_text_key(name))],
-                ]),
-            ])
+            if operator.endswith("like"):
+                args = expression.AND([
+                    args, self._search_location_anywhere(operator, name),
+                ])
+            else:
+                # Non-like operators (e.g. '=' quick-create lookups): exact
+                # match on the location name.
+                args = expression.AND([args, [("name", operator, name)]])
         return self.search(args, limit=limit).name_get()
 
     def _validate_address(self):

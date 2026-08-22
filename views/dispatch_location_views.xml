@@ -232,17 +232,30 @@
         <field name="model">prema.dispatch.location</field>
         <field name="arch" type="xml">
             <search>
-                <field name="location_display_label"/>
+                <!-- First field = what the search box applies on Enter / icon
+                     click. location_display_label carries the normalized
+                     search-everywhere search method (_search_location_anywhere)
+                     and exists in every client's cached field payload (it is
+                     also the list's Display Name column), so stale browser
+                     sessions can never hit an unknown field here. The specific
+                     fields below remain for the autocomplete dropdown and
+                     one-field searches. -->
+                <field name="location_display_label" string="All Fields"/>
                 <field name="name"/>
                 <field name="chain_name"/>
                 <field name="business_name"/>
                 <field name="location_number"/>
                 <field name="branch_name"/>
                 <field name="address"/>
+                <field name="street"/>
                 <field name="unit"/>
                 <field name="city"/>
                 <field name="postal_code"/>
                 <field name="partner_id"/>
+                <field name="dock_door"/>
+                <field name="receiving_entrance"/>
+                <field name="truck_entrance"/>
+                <field name="gate_code"/>
 
                 <separator/>
 

@@ -2570,3 +2570,110 @@ fix (4026420, exactly the required step-3 change) + docstring-only 06cf9d3; zero
   reads or writes them (view-only). receives_email/receives_quotes have NO consumers
   (display-only). Design recommendation: company-level Freight Profile (res.partner)
   + opportunity overrides is lossless-by-construction (zero data to migrate).
+
+## 2026-08-19 — SAVED LOCATIONS: SEARCH FIX + LIVE TYPE-AHEAD + 9 LOCATIONS + DUP RULE 11 (18.0.3.5.0) — DEPLOYED TO PROD 22:19, ZERO ERRORS
+
+### ROOT CAUSE OF "SEARCH NOT WORKING"
+- The list-view search box applies the FIRST search-view field on Enter / icon click.
+  That field was `location_display_label` — a non-stored computed field with no
+  `search` method, so the ORM resolved its domain leaf to NOTHING (error logged, zero
+  restriction) and every search returned the entire table.
+
+### WHAT CHANGED (models/dispatch_location.py, 18.0.3.4.0 → 18.0.3.5.0)
+- NEW non-stored `location_search` field (string "All Text Fields") with
+  `_search_location_anywhere(operator, value)` search method: splits the query into
+  normalized words and ANDs them over the stored `location_search_key`
+  (word-AND over the combined key). Case/space/punctuation/apostrophe/hyphen
+  tolerant; multi-word queries like "health niag" match across fields; numbers,
+  postal prefixes (L2N), street numbers (8800) and door info all match.
+- `location_search_key` now normalizes via `_normalize_search_token` (lower→upper,
+  & → and, apostrophes stripped, punctuation/hyphens → space) and its key parts now
+  include unit, normalized_unit, dock_door, receiving_entrance, truck_entrance,
+  gate_code and partner name (customer).
+- `name_search` (many2one pickers) and `driver_search_locations` now use the same
+  normalized word-AND domain — consistent behavior everywhere.
+- DUPLICATE DETECTION: NEW RULE 11 (`_dup_rule11`, non-blocking POSSIBLE): same
+  normalized street + same postal code (unit-compatible) → flagged possible; a unit
+  mismatch (two tenants, one plaza) opts out. Candidate discovery extended with a
+  street+postal branch. `_evaluate_duplicates` skips flagging a record whose
+  use_count beats the candidate's (the canonical master with visit history stays
+  clean; portal copies point at IT).
+- Views: search view now leads with `location_search`; added street / dock_door /
+  receiving_entrance / truck_entrance / gate_code search fields.
+- NEW static/src/js/saved_location_search.js: OWL patch on SearchBar — for
+  prema.dispatch.location only, input is debounced 250ms and applied as the standard
+  `location_search` facet (deactivateGroup + addAutoCompletionValues), so filters,
+  group by, pagination, favorites and record opening all keep working. No Enter
+  required. Odoo 18's control panel has no built-in search-as-you-type.
+
+### DATA — 9 NEW SAVED LOCATIONS (ids 533–541, all stop_type=delivery, portal_reusable=True)
+- 533 SOBEYS #6729 — South Pelham | 534 COMMISSO'S FRESH FOODS — Niagara Falls (Unit 14)
+- 535 FOOD BASICS #989 — St. Catharines | 536 LONGO'S — Huntington DC (receiving_entrance
+  "Receiving Area 5"; branch is "Huntington DC", NOT "Distribution Centre")
+- 537 FOODLAND #3677 — Vineland | 538 NOFRILLS — Brandon's
+- 539 HEALTHY PLANET — Niagara Falls (Unit C2) | 540 NATURE'S SIGNATURE — Niagara Falls
+  (Building B) | 541 HEALTHY PLANET — St. Catharines
+- All 9: verification_state=verified, source_type=dispatcher_manual. Dedup pre-checks
+  (chain+branch, chain+store#, street+postal, normalized full address) → 0 duplicates
+  existed; 0 skipped. Newport Gourmet Foods NOT created. No new 145 Sun Pac Blvd record.
+
+### PRE-EXISTING DUPLICATES (flagged, NOT deleted — 22 records now 'possible')
+- United Dairy 145 Sun Pac Blvd Brampton: primary id=31 (dock info, use_count 2); 9 empty
+  portal-sync copies (510,512,514,516,518,521,524,527,530) point at 31.
+- McDonough's YIG 1160 Beaverwood Rd Manotick: primary id=40 (use_count 1); 9 copies
+  (511,513,515,517,520,523,526,529,532) point at 40.
+- Healthy Planet Belleville 290 N Front St: canonical id=15 (dock info, correct postal
+  K8P 3C4); 4 junk records (522,525,528,531) share wrong postal K8N 4Z5 and flag each
+  other; id=519 is a mislabeled record (name says Healthy Planet Belleville, address is
+  1 Bell Blvd) — flagged nothing, reported only.
+- Merge decisions left to dispatchers (Merge button / Scan Duplicates action).
+
+### VERIFICATION
+- All 16 required searches pass on Prod-db via the exact search-box domain
+  ('location_search','ilike',q): 6729/bran/hunt/8800/989/health/health niag/niag/7835/
+  L2N/mcle/no frills/nofrills/brandon's/hart/receiving area + 3677/L2J extras.
+  Live update is the same facet applied on input (JS patch); server-side path fully
+  tested. Display labels use the module's em-dash convention ("SOBEYS #6729 — South
+  Pelham"); the `name` field stores the literal "CHAIN - Branch" hyphen form.
+- Tests: test_saved_locations.py 43/43 green (13 new). Full /prema_dispatch suite:
+  267 tests, 2 failures — same 2 (+1 weekly-planner) failures reproduce on the
+  PRE-CHANGE code (9075052) = pre-existing date-dependent flake (hardcoded
+  2026-08-18; today 08-19), not a regression.
+- Commits: 01b0d83 + 7113ca2 on feature/driver-guided-flow-v7 (branch matches
+  deployed code; main lags behind v7 work). Remote SHA 7113ca2.
+- Backup: /opt/odoo/backups/Prod-db_pre_saved_locations_search_20260819.dump (26.3MB).
+- Upgrade: -u prema_dispatch --no-http (twice). No Odoo restart required — workers
+  picked up the new registry via signaling; log clean (only pre-existing IMAP auth
+  warning unrelated to this change).
+
+## 2026-08-19 22:35 GMT — HOTFIX: "Unknown field location_search" OwlError (18.0.3.5.0, same version)
+
+### INCIDENT
+- A dispatcher's long-lived browser tab (pre-upgrade bundle b9aba9e) hit
+  `Unknown field location_search` in SearchArchParser after the search deploy:
+  the tab's fresh get_views response carried the NEW arch, but the client's
+  in-memory cached field payload lacked the brand-new `location_search` field
+  (SearchModel.load keeps a truthy stale `searchViewFields` via
+  `searchViewFields = searchViewFields || result.fields`).
+- Server responses were always consistent (verified by exact-call repro as
+  admin + dispatcher); the fault was client-cache mixing across the upgrade.
+
+### FIX (commit f87a654)
+- Attached `search="_search_location_anywhere"` to `location_display_label`
+  (non-stored computed Char — the ORM consults search methods on non-stored
+  fields, and this field exists in EVERY payload version since it is the
+  list's Display Name column). Removed the `location_search` field entirely.
+- Search view leads with `<field name="location_display_label" string="All
+  Fields"/>`; the arch now references only fields that predate this feature,
+  so no client state (fresh or stale) can ever throw an unknown-field error.
+- Live-search JS targets `location_display_label` instead. **Rule for future
+  search-view work: never put a brand-new field name in a search view arch —
+  attach the search method to a long-existing field.**
+
+### VERIFICATION
+- get_views as dispatcher: every `<field>` name in the arch present in the
+  fields payload; all 16 required searches + extras pass through the new leaf
+  `('location_display_label','ilike',q)`; 9 locations (533-541) and 22 dup
+  flags intact. 43/43 saved-location tests. Users with open tabs should
+  hard-refresh; Odoo's reload prompt self-heals subsequent navigations.
+- Backup: /opt/odoo/backups/Prod-db_pre_search_hotfix_20260819.dump.
