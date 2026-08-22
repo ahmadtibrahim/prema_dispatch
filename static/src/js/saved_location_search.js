@@ -30,14 +30,17 @@ const DEBOUNCE_MS = 250;
 
 patch(SearchBar.prototype, {
     setup() {
-        this._super(...arguments);
+        // Odoo 18 patch() chains previous implementations on the skeleton
+        // prototype — the `super` keyword calls the original; `this._super`
+        // (Odoo ≤16 API) is NOT provided and throws in setup().
+        super.setup();
         this.savedLocationLiveSearch = debounce((query) => {
             this._applySavedLocationSearch(query);
         }, DEBOUNCE_MS);
     },
 
     onSearchInput(ev) {
-        this._super(...arguments);
+        super.onSearchInput(ev);
         if (this.env.searchModel.resModel !== MODEL) {
             return;
         }
