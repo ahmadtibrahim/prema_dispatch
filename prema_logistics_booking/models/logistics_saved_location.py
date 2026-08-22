@@ -526,6 +526,22 @@ class LogisticsSavedLocation(models.Model):
             domain.append(("unit", "=", unit))
         return self.search(domain, limit=1)
 
+    @staticmethod
+    def _merge_location_type(existing, requested):
+        """Merge two usage types for the same physical location.
+
+        pickup + delivery → both, delivery + pickup → both,
+        both + anything → both, same + same → same.
+        Never shrinks: a type already used is never taken away.
+        """
+        if existing not in ("pickup", "delivery", "both"):
+            existing = "pickup"
+        if requested not in ("pickup", "delivery", "both"):
+            requested = existing
+        if existing == requested:
+            return existing
+        return "both"
+
     # ── Dispatch location sync ────────────────────────────────────────
 
     def _sync_dispatch_location(self):

@@ -707,19 +707,25 @@ class ShipmentRoutingService:
         direct_svc = DirectDeliveryService(self.env)
         cap_svc = VehicleCapacityService(self.env)
 
-        # Enrich coordinates from saved locations (same rule as
+        # Enrich coordinates + postal from saved locations (same rule as
         # plan_milk_run_route: client coords win, saved location supplements).
         SavedLocation = self.env["logistics.saved.location"]
         enriched = []
         for stop in stops or []:
             stop = dict(stop)
-            if not (stop.get("latitude") and stop.get("longitude")):
-                loc_id = stop.get("saved_location_id")
-                if loc_id:
-                    loc = SavedLocation.browse(int(loc_id))
-                    if loc.exists() and loc.latitude and loc.longitude:
+            loc_id = stop.get("saved_location_id")
+            loc = None
+            if loc_id:
+                loc = SavedLocation.browse(int(loc_id))
+                if not loc.exists():
+                    loc = None
+            if loc:
+                if not (stop.get("latitude") and stop.get("longitude")):
+                    if loc.latitude and loc.longitude:
                         stop["latitude"] = loc.latitude
                         stop["longitude"] = loc.longitude
+                if not stop.get("postal_code"):
+                    stop["postal_code"] = loc.postal_code or ""
             enriched.append(stop)
         stops = enriched
 
@@ -742,8 +748,13 @@ class ShipmentRoutingService:
 
         pickup_result = region_resolver.resolve(float(origin["latitude"]), float(origin["longitude"]))
         if not pickup_result.matched_region:
-            return []
-        origin_region = region_resolver.canonical_region(pickup_result.matched_region)
+            # Coordinate falls outside every region polygon (e.g. Mascouche
+            # J7K). Fall back to the origin postal/FSA through the
+            # canonical bridge — coords win, the postal is the safety net.
+            postal = (origin.get("postal_code") or "").strip().upper()
+            origin_region = region_resolver.canonical_region(postal) if postal else None
+        else:
+            origin_region = region_resolver.canonical_region(pickup_result.matched_region)
         if not origin_region:
             return []
 
@@ -758,12 +769,12 @@ class ShipmentRoutingService:
         for stop in deliveries:
             result = region_resolver.resolve(float(stop["latitude"]), float(stop["longitude"]))
             if not result.matched_region:
-                unresolved.append({
-                    "stop_key": stop.get("stop_key", ""),
-                    "city": stop.get("city", ""),
-                })
-                continue
-            dest = region_resolver.canonical_region(result.matched_region)
+                # Same postal/FSA safety net as the origin: a delivery
+                # outside every polygon still resolves via its postal.
+                postal = (stop.get("postal_code") or "").strip().upper()
+                dest = region_resolver.canonical_region(postal) if postal else None
+            else:
+                dest = region_resolver.canonical_region(result.matched_region)
             if not dest:
                 unresolved.append({
                     "stop_key": stop.get("stop_key", ""),

@@ -213,11 +213,17 @@ class LogisticsSavedLocationsPortal(http.Controller):
             if google_place_id:
                 dup = Saved._detect_duplicate(partner.id, google_place_id, unit)
                 if dup:
+                    # Merge the newly requested usage type into the existing
+                    # row (pickup + delivery → both) instead of discarding it.
+                    requested_type = kwargs.get("location_type", default_type)
+                    merged = Saved._merge_location_type(dup.location_type, requested_type)
+                    if merged != dup.location_type:
+                        dup.write({"location_type": merged})
                     # Mark used and return to booking if requested
                     dup.mark_used()
                     if return_to == "booking":
                         return request.redirect(
-                            f"/my/booking/new?new_loc_id={dup.id}&new_loc_type={dup.location_type}"
+                            f"/my/booking/new?new_loc_id={dup.id}&new_loc_type={merged}"
                         )
                     return request.redirect("/my/saved-locations")
 
@@ -314,6 +320,12 @@ class LogisticsSavedLocationsPortal(http.Controller):
             if google_place_id:
                 dup = Saved._detect_duplicate(partner.id, google_place_id, unit)
                 if dup and dup.id != loc.id:
+                    # Merge the requested usage type into the existing row
+                    # (pickup + delivery → both) instead of discarding it.
+                    requested_type = kwargs.get("location_type", loc.location_type)
+                    merged = Saved._merge_location_type(dup.location_type, requested_type)
+                    if merged != dup.location_type:
+                        dup.write({"location_type": merged})
                     dup.mark_used()
                     return request.redirect("/my/saved-locations")
 

@@ -859,6 +859,10 @@
                 capacityHint.textContent = 'Checking capacity…';
                 var params = 'pickup_date=' + encodeURIComponent(date) +
                     '&pickup_lat=' + puLat + '&pickup_lng=' + puLng;
+                var puLocId = (document.querySelector('input[name="pickup_loc_id"]') || {}).value || '';
+                var puFsa = (document.querySelector('input[name="pickup_fsa"]') || {}).value || '';
+                if (puLocId) { params += '&pickup_loc_id=' + encodeURIComponent(puLocId); }
+                if (puFsa) { params += '&pickup_fsa=' + encodeURIComponent(puFsa); }
                 fetch('/my/booking/capacity?' + params, {credentials: 'same-origin'})
                     .then(function(r) { return r.json(); })
                     .then(function(data) {

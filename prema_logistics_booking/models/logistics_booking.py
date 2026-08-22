@@ -461,12 +461,8 @@ class LogisticsBooking(models.Model):
         user_partner = self.env.user.partner_id
         commercial = user_partner.commercial_partner_id
 
-        # 1/2. authenticate + pricing-approval status (group membership is
-        # the technical gate at the controller; this is the belt-and-suspenders
-        # business-state check inside the transaction itself).
-        if commercial.logistics_pricing_status != "approved":
-            raise AccessError(_("Your account is not approved for booking."))
-
+        # The portal is open to any authenticated user; the ownership
+        # check below is what keeps a session tied to its creator.
         Session = self.env["logistics.pricing.session"].sudo()
         session = Session.search([("token", "=", token)], limit=1)
         if not session:

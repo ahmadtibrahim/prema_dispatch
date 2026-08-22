@@ -267,15 +267,6 @@ def require_visible():
         raise NotFound()
 
 
-def is_approved_customer():
-    user = request.env.user
-    if user._is_public():
-        return False
-    partner = user.partner_id.commercial_partner_id
-    # Any portal user whose company is approved can book — no separate group required
-    return partner.logistics_pricing_status == "approved"
-
-
 class LogisticsBookingPortal(http.Controller):
 
     @http.route("/booking", type="http", auth="public", website=True, sitemap=False)
@@ -284,8 +275,6 @@ class LogisticsBookingPortal(http.Controller):
         user = request.env.user
         if user._is_public():
             return request.render("prema_logistics_booking.portal_landing_anonymous", {})
-        if not is_approved_customer():
-            return request.render("prema_logistics_booking.portal_pending_approval", {})
         return request.redirect("/my/booking/new")
 
     # ------------------------------------------------------------------
@@ -294,8 +283,6 @@ class LogisticsBookingPortal(http.Controller):
     @http.route("/my/booking/new", type="http", auth="user", website=True, sitemap=False, methods=["GET", "POST"])
     def booking_step1(self, **kwargs):
         require_visible()
-        if not is_approved_customer():
-            return request.render("prema_logistics_booking.portal_pending_approval", {})
 
         user = request.env.user
         partner = user.partner_id.commercial_partner_id
@@ -407,11 +394,6 @@ class LogisticsBookingPortal(http.Controller):
     def eligible_pickup_dates(self, **kwargs):
         """JSON: return eligible pickup dates for the given movement coordinates."""
         require_visible()
-        if not is_approved_customer():
-            return request.make_response(
-                json.dumps({"error": "Not authorized"}),
-                headers=[("Content-Type", "application/json")],
-            )
 
         partner = request.env.user.partner_id.commercial_partner_id
         SavedLocation = request.env["logistics.saved.location"].sudo()
@@ -443,6 +425,7 @@ class LogisticsBookingPortal(http.Controller):
                     "latitude": pickup_loc.latitude,
                     "longitude": pickup_loc.longitude,
                     "saved_location_id": pickup_loc.id,
+                    "postal_code": pickup_loc.postal_code or "",
                 })
                 for dl in delivery_locs:
                     stops.append({
@@ -451,6 +434,7 @@ class LogisticsBookingPortal(http.Controller):
                         "longitude": dl.longitude,
                         "saved_location_id": dl.id,
                         "city": dl.city or "",
+                        "postal_code": dl.postal_code or "",
                     })
 
         if not stops:
@@ -490,8 +474,6 @@ class LogisticsBookingPortal(http.Controller):
     @http.route("/my/booking/details", type="http", auth="user", website=True, sitemap=False)
     def booking_step2(self, pickup=None, delivery=None, **kwargs):
         require_visible()
-        if not is_approved_customer():
-            return request.render("prema_logistics_booking.portal_pending_approval", {})
 
         pickup_lat = kwargs.get("pickup_lat")
         pickup_lng = kwargs.get("pickup_lng")
@@ -632,8 +614,6 @@ class LogisticsBookingPortal(http.Controller):
     @http.route("/my/booking/quote", type="http", auth="user", website=True, sitemap=False, methods=["POST"])
     def booking_quote(self, **kwargs):
         require_visible()
-        if not is_approved_customer():
-            return request.render("prema_logistics_booking.portal_pending_approval", {})
 
         Fsa = request.env["logistics.fsa"].sudo()
         SavedLocation = request.env["logistics.saved.location"].sudo()
@@ -774,7 +754,11 @@ class LogisticsBookingPortal(http.Controller):
 
         from ..services.booking_orchestration_service import BookingOrchestrationService
 
-        partner = request.env.user.partner_id
+        # Saved locations are owned by the commercial partner (same as
+        # every other handler in this file) — the bare user partner breaks
+        # ownership for contact-type users (e.g. admin) and silently drops
+        # their delivery stop, collapsing the quote to FSA-only mode.
+        partner = request.env.user.partner_id.commercial_partner_id
         service = BookingOrchestrationService(request.env)
 
         # Build pickup stops with coordinates when saved location is available
@@ -841,6 +825,15 @@ class LogisticsBookingPortal(http.Controller):
         # Fallback: single FSA-only mode
         if not delivery_stops:
             delivery_stops = [{"postal_code": delivery_fsa.fsa}]
+
+        # Also try coordinates from hidden form fields (mirror of the
+        # pickup fallback above — keeps the delivery stop geocoded when
+        # its saved location record has no stored coordinates).
+        de_lat = kwargs.get("delivery_lat")
+        de_lng = kwargs.get("delivery_lng")
+        if de_lat and de_lng and delivery_stops and not delivery_stops[0].get("latitude"):
+            delivery_stops[0]["latitude"] = float(de_lat)
+            delivery_stops[0]["longitude"] = float(de_lng)
 
         # Generalized milk-run payload: ordered stops with stable stop keys
         # drive BOTH the pickup and delivery stop lists. Ownership of every
@@ -956,23 +949,32 @@ class LogisticsBookingPortal(http.Controller):
         """Dynamic remaining pallet capacity for the departure serving the
         pickup region on the requested date. Consumed by the Total Physical
         Pallets stepper (max, helper text, disabled state)."""
+        require_visible()
         from ..services.region_resolver import RegionResolver
         from ..services.vehicle_capacity_service import VehicleCapacityService
 
+        resolver = RegionResolver(request.env)
         region = False
         if kwargs.get("pickup_lat") and kwargs.get("pickup_lng"):
             try:
-                match = RegionResolver(request.env).resolve(
+                match = resolver.resolve(
                     float(kwargs["pickup_lat"]), float(kwargs["pickup_lng"]))
                 region = match.matched_region
             except (ValueError, TypeError):
                 region = False
         if not region and kwargs.get("pickup_fsa"):
-            fsa = request.env["logistics.fsa"].sudo().search(
-                [("fsa", "=", str(kwargs["pickup_fsa"]).strip().upper()[:3])],
-                limit=1,
-            )
-            region = fsa.region_id
+            # Coordinates outside every polygon (Mascouche J7K …): bridge
+            # the FSA through the canonical mapping — never the raw
+            # logistics.fsa.region_id (those rows still carry OLD region
+            # ids, which no corridor stop references).
+            region = resolver.canonical_region(str(kwargs["pickup_fsa"]).strip().upper())
+        if not region and kwargs.get("pickup_loc_id"):
+            raw = str(kwargs["pickup_loc_id"]).strip()
+            if raw.lstrip("-").isdigit():
+                partner = request.env.user.partner_id.commercial_partner_id
+                loc = request.env["logistics.saved.location"].sudo().browse(int(raw))
+                if loc.exists() and loc.commercial_partner_id.id == partner.id and loc.postal_code:
+                    region = resolver.canonical_region(loc.postal_code)
         data = VehicleCapacityService.for_pickup_date(
             request.env, region, kwargs.get("pickup_date"))
         return request.make_json_response(data)
@@ -980,8 +982,6 @@ class LogisticsBookingPortal(http.Controller):
     @http.route("/my/booking/confirm", type="http", auth="user", website=True, sitemap=False, methods=["POST"])
     def booking_confirm(self, **kwargs):
         require_visible()
-        if not is_approved_customer():
-            return request.render("prema_logistics_booking.portal_pending_approval", {})
 
         token = kwargs.get("token")
         Session = request.env["logistics.pricing.session"].sudo()
@@ -1038,8 +1038,6 @@ class LogisticsBookingPortal(http.Controller):
     @http.route("/my/bookings/cancel", type="http", auth="user", website=True, sitemap=False, methods=["POST"])
     def booking_cancel(self, **kwargs):
         require_visible()
-        if not is_approved_customer():
-            return request.render("prema_logistics_booking.portal_pending_approval", {})
         booking_id = int(kwargs.get("booking_id", 0))
         reason = kwargs.get("reason", "").strip()
         if not reason:
@@ -1062,8 +1060,6 @@ class LogisticsBookingPortal(http.Controller):
     @http.route("/my/bookings", type="http", auth="user", website=True, sitemap=False)
     def my_bookings(self, **kwargs):
         require_visible()
-        if not is_approved_customer():
-            return request.render("prema_logistics_booking.portal_pending_approval", {})
         partner = request.env.user.partner_id.commercial_partner_id
         filter_status = kwargs.get("status", "all")
         domain = [("commercial_partner_id", "=", partner.id)]
@@ -1084,12 +1080,14 @@ class LogisticsBookingPortal(http.Controller):
     @http.route("/my/bookings/<int:booking_id>", type="http", auth="user", website=True, sitemap=False)
     def my_booking_detail(self, booking_id, **kwargs):
         require_visible()
-        if not is_approved_customer():
-            return request.render("prema_logistics_booking.portal_pending_approval", {})
-        booking = request.env["logistics.booking"].search([("id", "=", booking_id)], limit=1)
+        partner = request.env.user.partner_id.commercial_partner_id
+        booking = request.env["logistics.booking"].sudo().search([
+            ("id", "=", booking_id),
+            ("commercial_partner_id", "=", partner.id),
+        ], limit=1)
         if not booking:
-            # Record rule already scopes this to the caller's own company --
-            # an id belonging to another customer simply won't be found.
+            # Explicit ownership domain -- an id belonging to another
+            # customer simply won't be found.
             raise NotFound()
         try:
             return request.render("prema_logistics_booking.portal_booking_detail", {"booking": booking})
@@ -1105,6 +1103,7 @@ class LogisticsBookingPortal(http.Controller):
     @http.route("/my/network-topology", type="json", auth="user")
     def portal_network_topology(self, **kwargs):
         """Portal-safe corridor topology. No dispatch staff required."""
+        require_visible()
         Corridor = request.env["logistics.corridor"].sudo()
         Hub = request.env["logistics.hub"].sudo()
         Region = request.env["logistics.region"].sudo()
@@ -1139,8 +1138,6 @@ class LogisticsBookingPortal(http.Controller):
     @http.route("/my/where-we-go", type="http", auth="user", website=True, sitemap=False)
     def portal_where_we_go(self, **kwargs):
         require_visible()
-        if not is_approved_customer():
-            return request.render("prema_logistics_booking.portal_pending_approval", {})
         api_key = request.env["ir.config_parameter"].sudo().get_param("google_maps_api_key", "")
         return request.render("prema_logistics_booking.portal_where_we_go", {
             "google_maps_api_key": api_key,
