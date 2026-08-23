@@ -48,7 +48,12 @@ ProposedLeg = namedtuple("ProposedLeg", [
     "leg_price",            # float
     "transfer_hub_id",      # int or None
     "hub_ready_at",         # str — ISO datetime or None
-])
+    # Real service timing (corridor.stop config with travel-calc fallback):
+    "pickup_datetime",          # str — ISO datetime or None
+    "delivery_datetime",        # str — ISO datetime or None
+    "corridor_departure_datetime",  # str — ISO datetime or None
+    "timing_source",            # str — 'configured' | 'corridor_departure_time' | 'travel_calc_fallback'
+], defaults=[None, None, None, ""])
 
 
 class ShipmentRoutingService:
@@ -69,12 +74,285 @@ class ShipmentRoutingService:
         from ..services.region_resolver import RegionResolver
         return RegionResolver(self.env).canonical_region(region)
 
+    # ── ONE eligibility authority (calendar == quote) ─────────────────
+
+    def resolve_route_stops(self, stops):
+        """Strict stop resolution shared by the calendar and quote paths.
+
+        A pickup or delivery only counts as serviceable when the
+        RegionResolver returns a SCHEDULED_MATCH region — the exact rule
+        plan_route (Get Price) enforces. There is deliberately NO postal /
+        FSA fallback here: a coordinate outside every service polygon is a
+        MANUAL_QUOTE movement, and inventing a region for it is how the
+        calendar and the quote drifted apart.
+
+        Returns a dict: serviceable, manual_quote (show the Manual Quote
+        Required banner), reason (customer-facing), origin_region,
+        delivery_plans, hub.
+        """
+        from ..services.region_resolver import RegionResolver
+        from ..services.direct_delivery_service import DirectDeliveryService
+
+        region_resolver = RegionResolver(self.env)
+        direct_svc = DirectDeliveryService(self.env)
+
+        # Enrich coordinates + postal from saved locations (same rule as
+        # plan_milk_run_route: client coords win, saved location supplements).
+        SavedLocation = self.env["logistics.saved.location"]
+        enriched = []
+        for stop in stops or []:
+            stop = dict(stop)
+            loc_id = stop.get("saved_location_id")
+            loc = None
+            if loc_id:
+                loc = SavedLocation.browse(int(loc_id))
+                if not loc.exists():
+                    loc = None
+            if loc:
+                if not (stop.get("latitude") and stop.get("longitude")):
+                    if loc.latitude and loc.longitude:
+                        stop["latitude"] = loc.latitude
+                        stop["longitude"] = loc.longitude
+                if not stop.get("postal_code"):
+                    stop["postal_code"] = loc.postal_code or ""
+            enriched.append(stop)
+        stops = enriched
+
+        # Origin: the first pickup with coordinates (never a silent
+        # degradation to a delivery).
+        origin = None
+        for stop in stops:
+            if stop.get("stop_type") == "pickup" and stop.get("latitude") and stop.get("longitude"):
+                origin = stop
+                break
+
+        def verdict(serviceable, manual_quote, reason, **extra):
+            result = {
+                "serviceable": serviceable,
+                "manual_quote": manual_quote,
+                "reason": reason,
+                "origin_region": None,
+                "delivery_plans": [],
+                "hub": self._get_default_hub(),
+                "origin": origin,
+            }
+            result.update(extra)
+            return result
+
+        if not origin:
+            return verdict(False, False, "No pickup stop with coordinates on the route.")
+
+        deliveries = [
+            s for s in stops
+            if s.get("stop_type") == "delivery" and s.get("latitude") and s.get("longitude")
+        ]
+        if not deliveries:
+            return verdict(False, False, "No delivery stop with coordinates on the route.")
+
+        # Pickup: strict SCHEDULED_MATCH only.
+        pickup_result = region_resolver.resolve(
+            float(origin["latitude"]), float(origin["longitude"]),
+        )
+        if pickup_result.outcome == "NETWORK_DISABLED":
+            return verdict(
+                False, True,
+                "Scheduled service is not available for this pickup region.",
+            )
+        if pickup_result.outcome in ("MANUAL_QUOTE", "AMBIGUOUS") or not pickup_result.matched_region:
+            return verdict(
+                False, True,
+                "Manual Quote Required — this pickup is outside the scheduled "
+                "booking network.",
+            )
+        origin_region = region_resolver.canonical_region(pickup_result.matched_region)
+        if not origin_region:
+            return verdict(
+                False, True,
+                "Manual Quote Required — this pickup is outside the scheduled "
+                "booking network.",
+            )
+
+        # Every delivery: strict SCHEDULED_MATCH too. A delivery that
+        # cannot be resolved makes the whole route non-serviceable — it
+        # must never be silently dropped.
+        delivery_plans = []
+        for stop in deliveries:
+            result = region_resolver.resolve(float(stop["latitude"]), float(stop["longitude"]))
+            if result.outcome == "NETWORK_DISABLED":
+                return verdict(
+                    False, True,
+                    "Scheduled service is not available for this delivery region.",
+                )
+            if result.outcome in ("MANUAL_QUOTE", "AMBIGUOUS") or not result.matched_region:
+                return verdict(
+                    False, True,
+                    "Manual Quote Required — this delivery is outside the "
+                    "scheduled booking network.",
+                )
+            dest = region_resolver.canonical_region(result.matched_region)
+            if not dest:
+                return verdict(
+                    False, True,
+                    "Manual Quote Required — this delivery is outside the "
+                    "scheduled booking network.",
+                )
+            routing = direct_svc.decide(origin_region.id, dest.id)
+            delivery_plans.append({
+                "stop": stop,
+                "dest": dest,
+                "routing": routing,
+            })
+
+        return verdict(
+            True, False, "",
+            origin_region=origin_region,
+            delivery_plans=delivery_plans,
+        )
+
+    def calendar_availability(self, stops, physical_pallets=1, weight_lbs=500,
+                              equipment="dry", horizon_weeks=8):
+        """Canonical calendar verdict for the portal.
+
+        ONE authority: the same strict stop resolution the Get Price path
+        runs. When the pickup (or any delivery) is a MANUAL_QUOTE movement
+        the response carries manual_quote=True and NO dates — the portal
+        renders the Manual Quote Required banner instead of fake
+        selectable dates.
+
+        Returns {"manual_quote": bool, "reason": str, "dates": [...]}.
+        """
+        resolved = self.resolve_route_stops(stops)
+        if not resolved["serviceable"]:
+            return {"manual_quote": True, "reason": resolved["reason"], "dates": []}
+        dates = self.get_eligible_pickup_dates_for_route(
+            stops, physical_pallets=physical_pallets, weight_lbs=weight_lbs,
+            equipment=equipment, horizon_weeks=horizon_weeks,
+        )
+        return {"manual_quote": False, "reason": "", "dates": dates}
+
+    # ── Real service timing (corridor stop config + travel-calc fallback) ──
+
+    # Canonical planning speed for the travel-time fallback — the same
+    # figure _build_leg uses for estimated_drive_hrs.
+    _AVG_TRUCK_SPEED_KPH = 80.0
+
+    def _leg_timings(self, corridor, departure, origin_region, dest_region,
+                     distance_km, pickup_date):
+        """Real pickup / delivery datetimes for one scheduled corridor leg.
+
+        Authority order:
+          1. corridor.stop planned times via resolve_region_segment
+             (origin_departure_time / destination_arrival_time, plus the
+             configured day offsets)
+          2. the departure's own departure_time (= corridor.start_time)
+             for the pickup when the origin stop has no planned departure
+             time — never a hardcoded clock time
+          3. the canonical travel-time calculation (distance / 80 km/h)
+             for the delivery when the destination stop has no planned
+             arrival time — a clearly identified fallback.
+
+        Returns dict with datetime objects + per-side timing_source.
+        """
+        base = pickup_date
+        if isinstance(base, str):
+            base = datetime.strptime(base[:10], "%Y-%m-%d")
+
+        dep_hour = departure.departure_time if departure else 0.0
+        if not dep_hour and corridor:
+            dep_hour = corridor.start_time or 0.0
+        corridor_departure_dt = base + timedelta(hours=dep_hour or 0.0)
+
+        segment = corridor.resolve_region_segment(origin_region, dest_region) if corridor else False
+        origin_day = (segment.get("pickup_day_offset") or 0) if segment else 0
+        dest_day = (segment.get("delivery_day_offset") or 0) if segment else 0
+        origin_hour = segment.get("origin_departure_time") if segment else False
+        dest_hour = segment.get("destination_arrival_time") if segment else False
+
+        if origin_hour:
+            pickup_dt = base + timedelta(days=origin_day, hours=origin_hour)
+            pickup_source = "configured"
+        else:
+            pickup_dt = corridor_departure_dt + timedelta(days=origin_day)
+            pickup_source = "corridor_departure_time"
+
+        if dest_hour:
+            delivery_dt = base + timedelta(days=dest_day, hours=dest_hour)
+            delivery_source = "configured"
+        else:
+            km = distance_km or ((segment.get("distance_km") or 0.0) if segment else 0.0) or 0.0
+            delivery_dt = pickup_dt + timedelta(hours=km / self._AVG_TRUCK_SPEED_KPH)
+            delivery_source = "travel_calc_fallback"
+
+        if delivery_source == "travel_calc_fallback":
+            timing_source = "travel_calc_fallback"
+        elif pickup_source == "corridor_departure_time":
+            timing_source = "corridor_departure_time"
+        else:
+            timing_source = "configured"
+
+        return {
+            "pickup_datetime": pickup_dt,
+            "delivery_datetime": delivery_dt,
+            "corridor_departure_datetime": corridor_departure_dt,
+            "pickup_source": pickup_source,
+            "delivery_source": delivery_source,
+            "timing_source": timing_source,
+        }
+
+    def _iso_dt(self, dt):
+        return dt.isoformat() if dt else None
+
+    def _parse_iso_dt(self, iso):
+        if not iso:
+            return None
+        try:
+            return datetime.fromisoformat(str(iso))
+        except ValueError:
+            return None
+
+    def _date_part(self, iso):
+        """'2026-08-25T05:00:00' → '2026-08-25' ('' when absent)."""
+        dt = self._parse_iso_dt(iso)
+        return dt.strftime("%Y-%m-%d") if dt else ""
+
+    def _time_part(self, iso):
+        """'2026-08-25T05:00:00' → '5:00 AM' ('' when absent)."""
+        dt = self._parse_iso_dt(iso)
+        return dt.strftime("%-I:%M %p") if dt else ""
+
+    def _leg_info(self, leg):
+        """Compact dict for a built leg — what the calendar needs to bind
+        capacity and the quote to the EXACT departure."""
+        return {
+            "leg_type": leg.leg_type,
+            "corridor_id": leg.corridor_id,
+            "corridor_name": leg.corridor_name,
+            "departure_id": leg.departure_id,
+            "departure_date": leg.departure_date,
+            "pickup_datetime": leg.pickup_datetime,
+            "delivery_datetime": leg.delivery_datetime,
+            "corridor_departure_datetime": leg.corridor_departure_datetime,
+            "timing_source": leg.timing_source,
+        }
+
     # ── Public API ───────────────────────────────────────────────────
 
     def plan_route(self, pickup_lat, pickup_lng, delivery_lat, delivery_lng,
                    pallets=1, weight_lbs=0, requested_pickup_date=None,
                    equipment="dry", pickup_country=None, pickup_state=None,
-                   delivery_country=None, delivery_state=None, shipment_type="ltl"):
+                   delivery_country=None, delivery_state=None, shipment_type="ltl",
+                   requested_departure_id=None):
+        """Plan a complete shipment route from pickup to delivery coordinates.
+
+        requested_departure_id: the calendar-selected pickup departure.
+        Server-re-validated inside _build_leg — it must belong to the
+        corridor serving this route on the requested date, be active and
+        still scheduled; otherwise the route is refused (never silently
+        substituted with a different departure).
+
+        Returns ShipmentRoute with proposed legs, pricing, and audit trail.
+        Does NOT reserve capacity or create database records.
+        """
         """Plan a complete shipment route from pickup to delivery coordinates.
 
         Returns ShipmentRoute with proposed legs, pricing, and audit trail.
@@ -209,6 +487,7 @@ class ShipmentRoutingService:
                 equipment=equipment, transfer_hub=None,
                 pickup_lat=pickup_lat, pickup_lng=pickup_lng,
                 delivery_lat=delivery_lat, delivery_lng=delivery_lng,
+                requested_departure_id=requested_departure_id,
             )
             if leg:
                 legs.append(leg)
@@ -225,6 +504,7 @@ class ShipmentRoutingService:
                     equipment=equipment, transfer_hub=None,
                     pickup_lat=pickup_lat, pickup_lng=pickup_lng,
                     delivery_lat=delivery_lat, delivery_lng=delivery_lng,
+                    requested_departure_id=requested_departure_id,
                 )
                 if leg:
                     legs.append(leg)
@@ -239,12 +519,12 @@ class ShipmentRoutingService:
                     equipment=equipment, transfer_hub=hub,
                     pickup_lat=pickup_lat, pickup_lng=pickup_lng,
                     delivery_lat=delivery_lat, delivery_lng=delivery_lng,
+                    requested_departure_id=requested_departure_id,
                 )
                 if leg:
                     legs.append(leg)
             else:
                 # Leg 1: pickup → Hub
-                hub_ready = pickup_date  # simplified — same day arrival
                 leg1 = self._build_leg(
                     sequence=1, leg_type="feeder_to_hub",
                     origin_region=origin_region, dest_region=hub.canonical_region_id,
@@ -254,26 +534,41 @@ class ShipmentRoutingService:
                     pickup_lat=pickup_lat, pickup_lng=pickup_lng,
                     delivery_lat=hub.latitude or 43.589,
                     delivery_lng=hub.longitude or -79.644,
+                    requested_departure_id=requested_departure_id,
                 )
                 if leg1:
                     legs.append(leg1)
 
-                # Leg 2: Hub → delivery (next eligible departure)
-                leg2_pickup_date = self._next_departure_after(hub_ready, dest_region)
-                if leg2_pickup_date:
-                    leg2 = self._build_leg(
-                        sequence=2, leg_type="final_mile",
-                        origin_region=hub.canonical_region_id, dest_region=dest_region,
-                        pallets=pallets, weight_lbs=weight_lbs,
-                        pickup_date=leg2_pickup_date,
-                        pickup_day=leg2_pickup_date.strftime("%A").lower(),
-                        equipment=equipment, transfer_hub=hub,
-                        pickup_lat=hub.latitude or 43.589,
-                        pickup_lng=hub.longitude or -79.644,
-                        delivery_lat=delivery_lat, delivery_lng=delivery_lng,
-                    )
-                    if leg2:
-                        legs.append(leg2)
+                    # Leg 2: Hub → delivery. The onward leg departs on the
+                    # next ACTUAL scheduled departure after the feeder's
+                    # real arrival at the hub (never a same-day assumption).
+                    hub_ready = self._parse_iso_dt(leg1.delivery_datetime) or pickup_date
+                    leg2_pickup_date = self._next_departure_after(
+                        hub_ready, dest_region, origin_region=hub.canonical_region_id)
+                    if leg2_pickup_date:
+                        leg2 = self._build_leg(
+                            sequence=2, leg_type="final_mile",
+                            origin_region=hub.canonical_region_id, dest_region=dest_region,
+                            pallets=pallets, weight_lbs=weight_lbs,
+                            pickup_date=leg2_pickup_date,
+                            pickup_day=leg2_pickup_date.strftime("%A").lower(),
+                            equipment=equipment, transfer_hub=hub,
+                            pickup_lat=hub.latitude or 43.589,
+                            pickup_lng=hub.longitude or -79.644,
+                            delivery_lat=delivery_lat, delivery_lng=delivery_lng,
+                        )
+                        if leg2:
+                            # Max custody hold from REAL configured times —
+                            # the actual gap between this leg's pickup
+                            # datetime and the onward corridor departure.
+                            leg1_pickup_dt = self._parse_iso_dt(leg1.pickup_datetime)
+                            leg2_dep_dt = self._parse_iso_dt(leg2.corridor_departure_datetime)
+                            if leg1_pickup_dt and leg2_dep_dt:
+                                hold_hours = (leg2_dep_dt - leg1_pickup_dt).total_seconds() / 3600.0
+                                if hold_hours <= 24:
+                                    legs.append(leg2)
+                            else:
+                                legs.append(leg2)
 
         if not legs:
             return ShipmentRoute(False, "Could not build shipment legs.",
@@ -364,9 +659,12 @@ class ShipmentRoutingService:
             snapshot["pricing_mode"] = "corridor_per_km"
 
         # ── Step 8: Estimate delivery ──────────────────────────────
+        # The REAL delivery date from the corridor stop configuration
+        # (travel-calc fallback when stop times are unset) — never the
+        # departure date (a 550 km run is not same-day delivery).
         if legs:
             last_leg = legs[-1]
-            est_delivery = last_leg.departure_date
+            est_delivery = self._date_part(last_leg.delivery_datetime) or last_leg.departure_date
         else:
             est_delivery = None
 
@@ -417,7 +715,7 @@ class ShipmentRoutingService:
 
     def plan_milk_run_route(self, stops, pallets=1, weight_lbs=0,
                             requested_pickup_date=None, equipment="dry",
-                            shipment_type="ltl"):
+                            shipment_type="ltl", requested_departure_id=None):
         """Price the canonical milk-run itinerary at ROUTE LEVEL.
 
         Policy (current corridor configuration): the route is priced from
@@ -506,6 +804,7 @@ class ShipmentRoutingService:
                 pallets=pallets, weight_lbs=weight_lbs,
                 requested_pickup_date=requested_pickup_date,
                 equipment=equipment, shipment_type=shipment_type,
+                requested_departure_id=requested_departure_id,
             )
             billable_km = 0.0
             if route.available:
@@ -537,6 +836,7 @@ class ShipmentRoutingService:
                     pallets=pallets, weight_lbs=weight_lbs,
                     requested_pickup_date=requested_pickup_date,
                     equipment=equipment, shipment_type=shipment_type,
+                    requested_departure_id=requested_departure_id,
                 )
                 first_failure.routing_snapshot["milk_run"] = {
                     "basis": basis, "per_stop": per_stop,
@@ -680,11 +980,18 @@ class ShipmentRoutingService:
 
         The date is eligible ONLY when the entire shipment can move:
         every delivery stop must resolve onto a directionally-compatible
-        corridor that departs on that pickup date (or a valid onward
-        departure within the custody hold), the departure vehicle must
-        accept the equipment type, and the peak physical pallet count
-        (shared pallets count ONCE) must fit the vehicle's canonical
-        capacity together with existing reservations.
+        corridor that departs on that pickup date with an ACTUAL
+        scheduled departure (active, not cancelled/completed, truck
+        assigned), every one of those exact departures must pass the
+        same vehicle/equipment/payload/capacity rules the quote and
+        confirmation paths enforce, and the peak physical pallet count
+        (shared pallets count ONCE) must fit the truck together with
+        existing reservations.
+
+        Stop resolution is STRICT (resolve_route_stops): a pickup or
+        delivery outside every service polygon is MANUAL_QUOTE — the
+        calendar must not invent dates for it (the quote already refuses).
+        Callers that need the manual-quote marker use calendar_availability.
 
         Never evaluates just the first delivery. Never hardcodes capacity.
 
@@ -694,106 +1001,29 @@ class ShipmentRoutingService:
 
         Returns:
             list of dicts: date, day_name, feeder_corridor, onward_corridor,
-            departure_date, estimated_delivery, leg_count, per_stop,
-            remaining_capacity, max_capacity, layout_code, layout_name
+            corridor_id, departure_id, departure_date, estimated_delivery,
+            pickup_date/time/datetime, delivery_date/time/datetime,
+            corridor_departure_date/time/datetime, timing_source, transfer,
+            transfer_hub_name, leg_count, per_stop, remaining_capacity,
+            max_capacity, layout_code, layout_name
         """
         from datetime import timedelta
-        from ..services.region_resolver import RegionResolver
-        from ..services.direct_delivery_service import DirectDeliveryService
         from ..services.vehicle_capacity_service import VehicleCapacityService
-        from .temperature_compat import vehicle_accepts
+        from ..services.departure_resolver import DepartureResolver
+        from ..services.direct_delivery_service import DirectDeliveryService
 
-        region_resolver = RegionResolver(self.env)
-        direct_svc = DirectDeliveryService(self.env)
-        cap_svc = VehicleCapacityService(self.env)
-
-        # Enrich coordinates + postal from saved locations (same rule as
-        # plan_milk_run_route: client coords win, saved location supplements).
-        SavedLocation = self.env["logistics.saved.location"]
-        enriched = []
-        for stop in stops or []:
-            stop = dict(stop)
-            loc_id = stop.get("saved_location_id")
-            loc = None
-            if loc_id:
-                loc = SavedLocation.browse(int(loc_id))
-                if not loc.exists():
-                    loc = None
-            if loc:
-                if not (stop.get("latitude") and stop.get("longitude")):
-                    if loc.latitude and loc.longitude:
-                        stop["latitude"] = loc.latitude
-                        stop["longitude"] = loc.longitude
-                if not stop.get("postal_code"):
-                    stop["postal_code"] = loc.postal_code or ""
-            enriched.append(stop)
-        stops = enriched
-
-        # Origin: the first pickup with coordinates (never a silent
-        # degradation to a delivery).
-        origin = None
-        for stop in stops:
-            if stop.get("stop_type") == "pickup" and stop.get("latitude") and stop.get("longitude"):
-                origin = stop
-                break
-        if not origin:
+        # Strict shared stop resolution — the SAME authority the quote
+        # path uses. No postal/FSA fallback can invent serviceability.
+        resolved = self.resolve_route_stops(stops)
+        if not resolved["serviceable"]:
             return []
+        origin_region = resolved["origin_region"]
+        delivery_plans = resolved["delivery_plans"]
+        hub = resolved["hub"]
+        origin = resolved["origin"] or {}
 
-        deliveries = [
-            s for s in stops
-            if s.get("stop_type") == "delivery" and s.get("latitude") and s.get("longitude")
-        ]
-        if not deliveries:
-            return []
-
-        pickup_result = region_resolver.resolve(float(origin["latitude"]), float(origin["longitude"]))
-        if not pickup_result.matched_region:
-            # Coordinate falls outside every region polygon (e.g. Mascouche
-            # J7K). Fall back to the origin postal/FSA through the
-            # canonical bridge — coords win, the postal is the safety net.
-            postal = (origin.get("postal_code") or "").strip().upper()
-            origin_region = region_resolver.canonical_region(postal) if postal else None
-        else:
-            origin_region = region_resolver.canonical_region(pickup_result.matched_region)
-        if not origin_region:
-            return []
-
-        hub = self._get_default_hub()
-
-        # Per-delivery region + routing decision (cached per delivery).
-        # A delivery that cannot even be resolved to a region makes the
-        # whole route infeasible — it must NEVER be silently dropped (the
-        # old bug: availability computed from the first delivery only).
-        delivery_plans = []
-        unresolved = []
-        for stop in deliveries:
-            result = region_resolver.resolve(float(stop["latitude"]), float(stop["longitude"]))
-            if not result.matched_region:
-                # Same postal/FSA safety net as the origin: a delivery
-                # outside every polygon still resolves via its postal.
-                postal = (stop.get("postal_code") or "").strip().upper()
-                dest = region_resolver.canonical_region(postal) if postal else None
-            else:
-                dest = region_resolver.canonical_region(result.matched_region)
-            if not dest:
-                unresolved.append({
-                    "stop_key": stop.get("stop_key", ""),
-                    "city": stop.get("city", ""),
-                })
-                continue
-            routing = direct_svc.decide(origin_region.id, dest.id)
-            delivery_plans.append({
-                "stop": stop,
-                "dest": dest,
-                "routing": routing,
-            })
-        if not delivery_plans:
-            # Every delivery unresolved → nothing can be served at all.
-            return []
-        if unresolved:
-            # Some deliveries cannot be served anywhere: no pickup date is
-            # eligible for the complete route.
-            return []
+        departure_svc = DepartureResolver(self.env)
+        Departure = self.env["logistics.corridor.departure"]
 
         eligible = []
         # "Today" is the OPERATIONAL calendar date (Toronto by default) —
@@ -820,9 +1050,18 @@ class ShipmentRoutingService:
             onward_names = []
             leg_count = 0
             estimated_delivery = ""
+            latest_delivery_iso = ""
+            transfer_hub_name = ""
+            all_legs = []  # every leg dict across every delivery stop
+            direct_svc = DirectDeliveryService(self.env)
             for plan in delivery_plans:
+                # Re-decide per pickup DAY — the direct/hub decision can
+                # differ by day (rule allowed_service_days), and the quote
+                # path decides with the same pickup_day.
+                routing = direct_svc.decide(
+                    origin_region.id, plan["dest"].id, pickup_day=day_name)
                 legs_info = self._probe_legs(
-                    origin_region, plan["dest"], hub, plan["routing"],
+                    origin_region, plan["dest"], hub, routing,
                     current, day_name,
                     float(origin["latitude"]), float(origin["longitude"]),
                     float(plan["stop"]["latitude"]), float(plan["stop"]["longitude"]),
@@ -842,6 +1081,9 @@ class ShipmentRoutingService:
                     "feasible": True,
                     "corridor": legs_info.get("feeder_corridor") or legs_info.get("onward_corridor", ""),
                     "departure_date": legs_info.get("departure_date", date_str),
+                    "departure_id": legs_info.get("departure_id"),
+                    "corridor_id": legs_info.get("corridor_id"),
+                    "delivery_datetime": legs_info.get("delivery_datetime"),
                 })
                 if legs_info.get("feeder_corridor"):
                     feeder_names.append(legs_info["feeder_corridor"])
@@ -851,45 +1093,93 @@ class ShipmentRoutingService:
                 # The latest expected delivery across the route.
                 if legs_info.get("estimated_delivery", "") > estimated_delivery:
                     estimated_delivery = legs_info["estimated_delivery"]
+                if legs_info.get("delivery_datetime") and (
+                        not latest_delivery_iso
+                        or legs_info["delivery_datetime"] > latest_delivery_iso):
+                    latest_delivery_iso = legs_info["delivery_datetime"]
+                if legs_info.get("transfer_hub_name"):
+                    transfer_hub_name = legs_info["transfer_hub_name"]
+                all_legs += legs_info.get("legs") or []
 
             if not route_feasible:
                 current += timedelta(days=1)
                 continue
 
-            # ── Canonical capacity check on the pickup departure ──────
-            # Peak physical onboard = physical_pallets: shared pallets are
-            # ONE physical position until their final stop. Capacity comes
-            # from VehicleCapacityService (vehicle layout rows / legacy
-            # fields) — never a hardcoded 12/13/14.
-            cap = cap_svc.for_pickup_date(self.env, origin_region, date_str)
-            if not cap.get("available"):
+            # ── Exact-departure eligibility + capacity ─────────────────
+            # Capacity is evaluated against the EXACT departures the route
+            # legs selected — never an independently-searched departure for
+            # the origin region. Every leg's departure must be eligible
+            # (vehicle assigned + operational, equipment-compatible,
+            # payload OK, pallets fit) via the same DepartureResolver
+            # rules the confirmation path enforces.
+            unique_dep_ids = sorted({
+                leg["departure_id"] for leg in all_legs if leg.get("departure_id")
+            })
+            if not unique_dep_ids:
+                # _probe_legs already required a real departure per leg;
+                # this is a safety net, not a substitute.
                 current += timedelta(days=1)
                 continue
-            if cap["remaining_pallets"] < physical_pallets:
+            all_departures_eligible = True
+            for dep_id in unique_dep_ids:
+                dep = Departure.sudo().browse(dep_id)
+                ok, _reason, _vehicle = departure_svc.evaluate_departure(
+                    dep, equipment, physical_pallets, weight_lbs)
+                if not ok:
+                    all_departures_eligible = False
+                    break
+            if not all_departures_eligible:
                 current += timedelta(days=1)
                 continue
-            # Equipment capability of the departure vehicle.
-            departure = self.env["logistics.corridor.departure"].sudo().search([
-                ("id", "=", cap.get("departure_id")),
-            ], limit=1)
-            vehicle = departure.vehicle_id if departure else self.env["fleet.vehicle"]
-            if vehicle and not vehicle_accepts(
-                    vehicle_is_reefer=bool(vehicle.x_reefer), requested_mode=equipment):
-                current += timedelta(days=1)
-                continue
-            # Payload: vehicle max payload must cover the route weight.
-            payload = vehicle.x_max_payload_lbs or 0.0
-            if payload and weight_lbs and weight_lbs > payload:
-                current += timedelta(days=1)
-                continue
+
+            # Capacity display from the PICKUP (first) leg's exact
+            # departure — the same numbers the quote page will freeze.
+            first_leg = all_legs[0]
+            pickup_dep = Departure.sudo().browse(first_leg.get("departure_id"))
+            cap = {}
+            if pickup_dep and pickup_dep.vehicle_id:
+                cap_result = VehicleCapacityService(self.env).evaluate(
+                    pickup_dep.vehicle_id, pickup_dep, 0)
+                layout = cap_result["selected_layout"] or {}
+                cap = {
+                    "available": True,
+                    "departure_id": pickup_dep.id,
+                    "departure_date": pickup_dep.departure_date.isoformat()
+                    if pickup_dep.departure_date else date_str,
+                    "max_pallets": cap_result["maximum_capacity"],
+                    "reserved_pallets": cap_result["reserved_pallets"],
+                    "remaining_pallets": cap_result["remaining_pallets"],
+                    "remaining_sellable_capacity": cap_result["remaining_sellable_capacity"],
+                    "layout_code": layout.get("code", ""),
+                    "layout_name": layout.get("name", ""),
+                }
 
             eligible.append({
                 "date": date_str,
                 "day_name": day_name.capitalize(),
                 "feeder_corridor": ", ".join(sorted(set(feeder_names))),
                 "onward_corridor": ", ".join(sorted(set(onward_names))),
-                "departure_date": cap.get("departure_date") or date_str,
+                # The exact service option this date sells:
+                "corridor_id": first_leg.get("corridor_id"),
+                "corridor_name": first_leg.get("corridor_name"),
+                "departure_id": first_leg.get("departure_id"),
+                "departure_date": first_leg.get("departure_date") or date_str,
+                "departure_time": self._time_part(first_leg.get("corridor_departure_datetime")),
+                # Real service timing (corridor stop config + travel-calc
+                # fallback) — estimated_delivery is NEVER the departure date.
+                "pickup_date": self._date_part(first_leg.get("pickup_datetime")) or date_str,
+                "pickup_time": self._time_part(first_leg.get("pickup_datetime")),
+                "pickup_datetime": first_leg.get("pickup_datetime"),
+                "delivery_date": self._date_part(latest_delivery_iso) or estimated_delivery,
+                "delivery_time": self._time_part(latest_delivery_iso),
+                "delivery_datetime": latest_delivery_iso,
                 "estimated_delivery": estimated_delivery,
+                "corridor_departure_date": first_leg.get("departure_date") or date_str,
+                "corridor_departure_time": self._time_part(first_leg.get("corridor_departure_datetime")),
+                "corridor_departure_datetime": first_leg.get("corridor_departure_datetime"),
+                "timing_source": first_leg.get("timing_source", ""),
+                "transfer": bool(leg_count == 2),
+                "transfer_hub_name": transfer_hub_name,
                 "leg_count": leg_count,
                 "per_stop": per_stop,
                 "remaining_capacity": cap.get("remaining_pallets", 0),
@@ -908,7 +1198,12 @@ class ShipmentRoutingService:
                     pickup_lat, pickup_lng, delivery_lat, delivery_lng,
                     pallets, weight_lbs, equipment):
         """Quick-probe leg feasibility for a candidate pickup date. Returns
-        dict with corridor/departure info if feasible, or empty dict."""
+        dict with corridor/departure info if feasible, or empty dict.
+
+        A leg is feasible ONLY with an actual scheduled departure — the
+        corridor's operating-day checkbox alone is never sufficient.
+        Every returned leg carries its exact departure_id; the caller
+        evaluates capacity against those exact departures."""
         origin = self._canonical_region(origin)
         dest = self._canonical_region(dest)
         if not origin or not dest:
@@ -925,13 +1220,25 @@ class ShipmentRoutingService:
                 pickup_lat=pickup_lat, pickup_lng=pickup_lng,
                 delivery_lat=delivery_lat, delivery_lng=delivery_lng,
             )
-            if leg and leg.corridor_id:
-                result["feasible"] = True
-                result["feeder_corridor"] = leg.corridor_name
-                result["onward_corridor"] = ""
-                result["departure_date"] = leg.departure_date
-                result["estimated_delivery"] = leg.departure_date
-                result["leg_count"] = 1
+            if leg and leg.departure_id:
+                result.update({
+                    "feasible": True,
+                    "feeder_corridor": leg.corridor_name,
+                    "onward_corridor": "",
+                    "departure_date": leg.departure_date,
+                    "estimated_delivery": self._date_part(leg.delivery_datetime),
+                    "pickup_datetime": leg.pickup_datetime,
+                    "delivery_datetime": leg.delivery_datetime,
+                    "corridor_departure_datetime": leg.corridor_departure_datetime,
+                    "corridor_id": leg.corridor_id,
+                    "corridor_name": leg.corridor_name,
+                    "departure_id": leg.departure_id,
+                    "timing_source": leg.timing_source,
+                    "transfer": False,
+                    "transfer_hub_name": "",
+                    "leg_count": 1,
+                    "legs": [self._leg_info(leg)],
+                })
 
         elif routing.decision == "HUB_TRANSFER_REQUIRED":
             if dest.id == (hub.canonical_region_id.id if hub.canonical_region_id else None):
@@ -944,12 +1251,25 @@ class ShipmentRoutingService:
                     pickup_lat=pickup_lat, pickup_lng=pickup_lng,
                     delivery_lat=delivery_lat, delivery_lng=delivery_lng,
                 )
-                if leg1 and leg1.corridor_id:
-                    result["feasible"] = True
-                    result["feeder_corridor"] = leg1.corridor_name
-                    result["departure_date"] = leg1.departure_date
-                    result["estimated_delivery"] = leg1.departure_date
-                    result["leg_count"] = 1
+                if leg1 and leg1.departure_id:
+                    result.update({
+                        "feasible": True,
+                        "feeder_corridor": leg1.corridor_name,
+                        "onward_corridor": "",
+                        "departure_date": leg1.departure_date,
+                        "estimated_delivery": self._date_part(leg1.delivery_datetime),
+                        "pickup_datetime": leg1.pickup_datetime,
+                        "delivery_datetime": leg1.delivery_datetime,
+                        "corridor_departure_datetime": leg1.corridor_departure_datetime,
+                        "corridor_id": leg1.corridor_id,
+                        "corridor_name": leg1.corridor_name,
+                        "departure_id": leg1.departure_id,
+                        "timing_source": leg1.timing_source,
+                        "transfer": False,
+                        "transfer_hub_name": "",
+                        "leg_count": 1,
+                        "legs": [self._leg_info(leg1)],
+                    })
             elif origin == hub.canonical_region_id:
                 # Pickup is already inside the Hub's own region — no phantom
                 # feeder leg; one corridor segment serves the movement.
@@ -962,13 +1282,25 @@ class ShipmentRoutingService:
                     pickup_lat=pickup_lat, pickup_lng=pickup_lng,
                     delivery_lat=delivery_lat, delivery_lng=delivery_lng,
                 )
-                if leg1 and leg1.corridor_id:
-                    result["feasible"] = True
-                    result["feeder_corridor"] = ""
-                    result["onward_corridor"] = leg1.corridor_name
-                    result["departure_date"] = leg1.departure_date
-                    result["estimated_delivery"] = leg1.departure_date
-                    result["leg_count"] = 1
+                if leg1 and leg1.departure_id:
+                    result.update({
+                        "feasible": True,
+                        "feeder_corridor": "",
+                        "onward_corridor": leg1.corridor_name,
+                        "departure_date": leg1.departure_date,
+                        "estimated_delivery": self._date_part(leg1.delivery_datetime),
+                        "pickup_datetime": leg1.pickup_datetime,
+                        "delivery_datetime": leg1.delivery_datetime,
+                        "corridor_departure_datetime": leg1.corridor_departure_datetime,
+                        "corridor_id": leg1.corridor_id,
+                        "corridor_name": leg1.corridor_name,
+                        "departure_id": leg1.departure_id,
+                        "timing_source": leg1.timing_source,
+                        "transfer": False,
+                        "transfer_hub_name": "",
+                        "leg_count": 1,
+                        "legs": [self._leg_info(leg1)],
+                    })
             else:
                 leg1 = self._build_leg(
                     sequence=1, leg_type="feeder_to_hub",
@@ -980,28 +1312,16 @@ class ShipmentRoutingService:
                     delivery_lat=hub.latitude or 43.589,
                     delivery_lng=hub.longitude or -79.644,
                 )
-                if not leg1 or not leg1.corridor_id:
+                if not leg1 or not leg1.departure_id:
                     return {}
 
-                hub_ready = pickup_date
-                leg2_pickup_date = self._next_departure_after(hub_ready, dest)
+                # Onward leg departs on the next ACTUAL scheduled departure
+                # after the feeder's real arrival at the hub.
+                hub_ready = self._parse_iso_dt(leg1.delivery_datetime) or pickup_date
+                leg2_pickup_date = self._next_departure_after(
+                    hub_ready, dest, origin_region=hub.canonical_region_id)
                 if not leg2_pickup_date:
                     return {}
-
-                # Max custody hold: compute actual hours between pickup and onward departure.
-                # Use departure_time (hour float, e.g. 1.0 = 1:00 AM) from the onward departure.
-                onward_dep = self.env["logistics.corridor.departure"].sudo().search([
-                    ("departure_date", "=", leg2_pickup_date),
-                    ("corridor_id.stop_ids.region_id", "=", dest.id),
-                    ("active", "=", True),
-                    ("status", "not in", ("cancelled", "completed")),
-                ], limit=1)
-                onward_departure_hour = onward_dep.departure_time if onward_dep else 1.0
-                pickup_datetime = datetime.combine(pickup_date, datetime.min.time()) + timedelta(hours=8)  # assume 8AM pickup
-                onward_datetime = datetime.combine(leg2_pickup_date, datetime.min.time()) + timedelta(hours=onward_departure_hour)
-                hold_hours = (onward_datetime - pickup_datetime).total_seconds() / 3600.0
-                if hold_hours > 24:
-                    return {}  # reject — max 24h custody hold
 
                 leg2 = self._build_leg(
                     sequence=2, leg_type="final_mile",
@@ -1014,13 +1334,38 @@ class ShipmentRoutingService:
                     pickup_lng=hub.longitude or -79.644,
                     delivery_lat=delivery_lat, delivery_lng=delivery_lng,
                 )
-                if leg2 and leg2.corridor_id:
-                    result["feasible"] = True
-                    result["feeder_corridor"] = leg1.corridor_name
-                    result["onward_corridor"] = leg2.corridor_name
-                    result["departure_date"] = leg1.departure_date
-                    result["estimated_delivery"] = leg2.departure_date
-                    result["leg_count"] = 2
+                if not leg2 or not leg2.departure_id:
+                    return {}
+
+                # Max custody hold from REAL configured times — never a
+                # hardcoded 8 AM pickup assumption. The hold is the actual
+                # gap between this leg's pickup datetime and the onward
+                # leg's corridor departure datetime.
+                leg1_pickup_dt = self._parse_iso_dt(leg1.pickup_datetime)
+                leg2_dep_dt = self._parse_iso_dt(leg2.corridor_departure_datetime)
+                if leg1_pickup_dt and leg2_dep_dt:
+                    hold_hours = (leg2_dep_dt - leg1_pickup_dt).total_seconds() / 3600.0
+                    if hold_hours > 24:
+                        return {}  # reject — max 24h custody hold
+
+                result.update({
+                    "feasible": True,
+                    "feeder_corridor": leg1.corridor_name,
+                    "onward_corridor": leg2.corridor_name,
+                    "departure_date": leg1.departure_date,
+                    "estimated_delivery": self._date_part(leg2.delivery_datetime),
+                    "pickup_datetime": leg1.pickup_datetime,
+                    "delivery_datetime": leg2.delivery_datetime,
+                    "corridor_departure_datetime": leg1.corridor_departure_datetime,
+                    "corridor_id": leg1.corridor_id,
+                    "corridor_name": leg1.corridor_name,
+                    "departure_id": leg1.departure_id,
+                    "timing_source": leg2.timing_source,
+                    "transfer": True,
+                    "transfer_hub_name": hub.public_name if hub else "",
+                    "leg_count": 2,
+                    "legs": [self._leg_info(leg1), self._leg_info(leg2)],
+                })
 
         return result
 
@@ -1089,12 +1434,25 @@ class ShipmentRoutingService:
             dt += timedelta(days=1)
         return from_date + timedelta(days=7)  # fallback
 
-    def _next_departure_after(self, after_date, dest_region):
-        """Find the next departure serving the destination region."""
+    def _next_departure_after(self, after_date, dest_region, origin_region=None):
+        """Find the next departure carrying origin_region → dest_region.
+
+        Only directionally-compatible corridors count: a transfer leg
+        leaving the Hub rides the corridor whose direction runs Hub →
+        dest — never the corridor that merely serves dest as a delivery
+        stop on the reverse run. origin_region defaults to the Hub's
+        canonical region (transfer legs always start there)."""
         # Corridor stops are keyed by official-LTL region (142-159);
         # normalize old lane regions (1-20) before searching.
         dest_region = self._canonical_region(dest_region)
         if not dest_region:
+            return None
+        if origin_region is None:
+            hub = self._get_default_hub()
+            origin_region = hub.canonical_region_id if hub else False
+        else:
+            origin_region = self._canonical_region(origin_region)
+        if not origin_region:
             return None
         Departure = self.env["logistics.corridor.departure"]
         Stop = self.env["logistics.corridor.stop"]
@@ -1109,11 +1467,21 @@ class ShipmentRoutingService:
         corridor_ids = stops.mapped("corridor_id").ids
         if not corridor_ids:
             return None
+        # Direction filter: the onward corridor must run origin → dest.
+        directionally_ok = []
+        for corridor in Corridor.search([("id", "in", corridor_ids), ("active", "=", True)]):
+            if self._directionally_compatible(corridor, origin_region, dest_region):
+                directionally_ok.append(corridor.id)
+        if not directionally_ok:
+            return None
 
         start = after_date.strftime("%Y-%m-%d") if hasattr(after_date, 'strftime') else str(after_date)[:10]
         departures = Departure.search([
-            ("corridor_id", "in", corridor_ids),
+            ("corridor_id", "in", directionally_ok),
             ("departure_date", ">=", start),
+            ("active", "=", True),
+            ("status", "not in", ("cancelled", "completed")),
+            ("vehicle_id", "!=", False),
         ], order="departure_date", limit=1)
 
         if departures:
@@ -1123,8 +1491,19 @@ class ShipmentRoutingService:
 
     def _build_leg(self, sequence, leg_type, origin_region, dest_region,
                    pallets, weight_lbs, pickup_date, pickup_day, equipment,
-                   transfer_hub, pickup_lat, pickup_lng, delivery_lat, delivery_lng):
-        """Build a ProposedLeg with corridor, departure, distance, and price."""
+                   transfer_hub, pickup_lat, pickup_lng, delivery_lat, delivery_lng,
+                   requested_departure_id=None):
+        """Build a ProposedLeg with corridor, departure, distance, and price.
+
+        A leg is feasible ONLY with an actual scheduled departure row
+        (active, not cancelled/completed, with a vehicle assigned). The
+        corridor's operating-day checkbox alone is never a departure.
+
+        When the calendar sent a requested_departure_id (so the quote binds
+        to the exact departure the customer selected), it is server-
+        re-validated here: it must exist, belong to this corridor, be on the
+        requested pickup date, and be active/viable. Any mismatch → None —
+        an arbitrary portal-supplied departure id is never trusted."""
         from ..services.region_resolver import RegionResolver
 
         # Normalize both endpoints through the region bridge: corridor
@@ -1167,12 +1546,38 @@ class ShipmentRoutingService:
             # corridor-less synthetic leg.
             return None
 
-        # Find departure
+        # Find departure — exact match on corridor + date, and ONLY a real
+        # scheduled departure (active, not cancelled/completed, vehicle
+        # assigned) makes this leg feasible.
         date_str = pickup_date.strftime("%Y-%m-%d") if hasattr(pickup_date, 'strftime') else str(pickup_date)[:10]
-        departure = Departure.search([
-            ("corridor_id", "=", corridor.id if corridor else 0),
-            ("departure_date", "=", date_str),
-        ], limit=1)
+        departure = False
+        if requested_departure_id:
+            # Server-side re-validation of the departure the customer
+            # selected on the calendar: must EXIST, belong to THIS corridor,
+            # be on THIS pickup date, and be active/viable. An arbitrary or
+            # stale portal-supplied id falls through to the corridor's own
+            # exact-date departure — never a different date or corridor.
+            requested = Departure.browse(int(requested_departure_id)).exists()
+            if (requested
+                    and requested.corridor_id.id == corridor.id
+                    and str(requested.departure_date)[:10] == date_str
+                    and requested.active
+                    and requested.status not in ("cancelled", "completed")
+                    and requested.vehicle_id):
+                departure = requested
+        if not departure:
+            departure = Departure.search([
+                ("corridor_id", "=", corridor.id),
+                ("departure_date", "=", date_str),
+                ("active", "=", True),
+                ("status", "not in", ("cancelled", "completed")),
+                ("vehicle_id", "!=", False),
+            ], limit=1)
+        if not departure:
+            # No actual scheduled departure on this date — the leg is not
+            # feasible even if the corridor operates today. The calendar
+            # must never show a date the truck is not scheduled.
+            return None
 
         # Distance priority: the corridor's canonical ordered segment
         # distance, then the legacy straight-line × 1.4 estimate when the
@@ -1197,6 +1602,12 @@ class ShipmentRoutingService:
         pallet_rate = rate_per_km / max(planned_pallets, 1)
         leg_price = est_km * pallet_rate * pallets
 
+        # Real pickup / delivery times from the configured corridor stop
+        # times (never a hardcoded 8 AM), with the corridor's departure time
+        # and the canonical travel calculation as identified fallbacks.
+        timings = self._leg_timings(
+            corridor, departure, origin_region, dest_region, est_km, date_str)
+
         return ProposedLeg(
             sequence=sequence,
             leg_type=leg_type,
@@ -1214,6 +1625,10 @@ class ShipmentRoutingService:
             leg_price=round(leg_price, 2),
             transfer_hub_id=transfer_hub.id if transfer_hub else None,
             hub_ready_at=None,
+            pickup_datetime=self._iso_dt(timings["pickup_datetime"]),
+            delivery_datetime=self._iso_dt(timings["delivery_datetime"]),
+            corridor_departure_datetime=self._iso_dt(timings["corridor_departure_datetime"]),
+            timing_source=timings["timing_source"],
         )
 
     def confirm_route(self, booking):

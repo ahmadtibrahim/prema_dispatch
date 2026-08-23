@@ -26,6 +26,12 @@ class LogisticsPricingSession(models.TransientModel):
         "logistics.corridor", string="Priced Corridor", readonly=True,
         help="Primary operational corridor frozen by the active quote.",
     )
+    departure_id = fields.Many2one(
+        "logistics.corridor.departure", string="Selected Departure", readonly=True,
+        help="The EXACT scheduled departure this quote is bound to — the "
+             "same departure the customer selected on the booking calendar. "
+             "Confirmation re-validates it (corridor, date, active, status).",
+    )
     service_offering_id = fields.Many2one("logistics.service.offering")
     rate_plan_id = fields.Many2one("logistics.rate.plan")
 

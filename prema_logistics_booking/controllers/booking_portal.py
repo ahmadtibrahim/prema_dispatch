@@ -459,7 +459,12 @@ class LogisticsBookingPortal(http.Controller):
 
         from ..services.shipment_routing_service import ShipmentRoutingService
         svc = ShipmentRoutingService(request.env)
-        dates = svc.get_eligible_pickup_dates_for_route(
+        # ONE eligibility authority: the same strict stop resolution the
+        # Get Price path runs. When the pickup (or any delivery) is outside
+        # the scheduled network the response carries manual_quote=True and
+        # NO dates — the portal renders the Manual Quote Required banner
+        # instead of fake selectable dates.
+        verdict = svc.calendar_availability(
             stops,
             physical_pallets=int(kwargs.get("pallets", 1)),
             weight_lbs=float(kwargs.get("weight_lbs", 500) or 500),
@@ -467,7 +472,11 @@ class LogisticsBookingPortal(http.Controller):
         )
 
         return request.make_response(
-            json.dumps({"dates": dates}),
+            json.dumps({
+                "dates": verdict["dates"],
+                "manual_quote": verdict["manual_quote"],
+                "reason": verdict["reason"],
+            }),
             headers=[("Content-Type", "application/json")],
         )
 
@@ -878,6 +887,16 @@ class LogisticsBookingPortal(http.Controller):
         # Requested pickup date from form
         requested_pickup_date = kwargs.get("requested_pickup_date", "").strip() or None
 
+        # Calendar-selected EXACT departure (hidden input set when the
+        # customer picks a card). Server-re-validated inside the routing
+        # service (_build_leg): it must belong to the corridor serving this
+        # route on the requested date, be active and still scheduled — an
+        # arbitrary portal-supplied departure id is never trusted.
+        pickup_departure_id = None
+        raw_departure_id = str(kwargs.get("pickup_departure_id") or "").strip()
+        if raw_departure_id and raw_departure_id.lstrip("-").isdigit():
+            pickup_departure_id = int(raw_departure_id)
+
         try:
             normalized = service.normalize_request({
                 "partner_id": partner.id,
@@ -906,7 +925,7 @@ class LogisticsBookingPortal(http.Controller):
                 "pricing_method": "corridor",
                 "requested_pickup_date": requested_pickup_date,
             }, source_channel="portal")
-            quote = service.prepare_quote(normalized)
+            quote = service.prepare_quote(normalized, requested_departure_id=pickup_departure_id)
         except UserError as exc:
             return request.render("prema_logistics_booking.portal_not_available", {
                 "reason": str(exc),
@@ -939,6 +958,7 @@ class LogisticsBookingPortal(http.Controller):
             "pickup_loc": pickup_loc,
             "delivery_stops": _allocated_stop_weights(session, delivery_stops),
             "stop_pricing": _build_stop_pricing(session),
+            "quote": quote,
         })
 
     # ------------------------------------------------------------------
@@ -975,6 +995,35 @@ class LogisticsBookingPortal(http.Controller):
                 loc = request.env["logistics.saved.location"].sudo().browse(int(raw))
                 if loc.exists() and loc.commercial_partner_id.id == partner.id and loc.postal_code:
                     region = resolver.canonical_region(loc.postal_code)
+
+        # The calendar binds the stepper to the EXACT departure the
+        # customer selected — never an independently re-searched one.
+        # Server-validated: active, still scheduled, vehicle assigned.
+        requested_departure_id = kwargs.get("departure_id")
+        Departure = request.env["logistics.corridor.departure"].sudo()
+        if requested_departure_id and str(requested_departure_id).lstrip("-").isdigit():
+            departure = Departure.browse(int(requested_departure_id)).exists()
+            if (departure
+                    and departure.active
+                    and departure.status not in ("cancelled", "completed")
+                    and departure.vehicle_id):
+                capacity_result = VehicleCapacityService(request.env).evaluate(
+                    departure.vehicle_id, departure, 0)
+                layout = capacity_result["selected_layout"] or {}
+                data = {
+                    "available": True,
+                    "departure_id": departure.id,
+                    "max_pallets": capacity_result["maximum_capacity"],
+                    "reserved_pallets": capacity_result["reserved_pallets"],
+                    "remaining_pallets": capacity_result["remaining_pallets"],
+                    "reserved_ltl_positions": capacity_result["reserved_ltl_positions"],
+                    "exclusive_vehicle_reserved": capacity_result["exclusive_vehicle_reserved"],
+                    "remaining_sellable_capacity": capacity_result["remaining_sellable_capacity"],
+                    "layout_code": layout.get("code", ""),
+                    "layout_name": layout.get("name", ""),
+                }
+                return request.make_json_response(data)
+
         data = VehicleCapacityService.for_pickup_date(
             request.env, region, kwargs.get("pickup_date"))
         return request.make_json_response(data)

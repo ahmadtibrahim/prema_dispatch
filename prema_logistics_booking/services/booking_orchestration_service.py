@@ -288,11 +288,15 @@ class BookingOrchestrationService:
             largest["amount"] = round(largest["amount"] + residual, 2)
         return allocations
 
-    def prepare_quote(self, normalized_request: NormalizedBookingRequest, session_ttl_minutes: int = 20) -> dict:
+    def prepare_quote(self, normalized_request: NormalizedBookingRequest, session_ttl_minutes: int = 20,
+                      requested_departure_id=None) -> dict:
         """Create a pricing session / quote for the customer to review.
 
         Routes through ShipmentRoutingService (canonical engine) when coordinates
         are available, falling back to legacy pricing.calculate() for FSA-only mode.
+        requested_departure_id (from the calendar-selected date) is server-
+        re-validated inside the routing service so the quote binds to the
+        EXACT departure the customer selected — never a silently different one.
         Returns a dict with quote_token, price, and expiration."""
         from ..services.shipment_routing_service import ShipmentRoutingService
 
@@ -352,6 +356,7 @@ class BookingOrchestrationService:
                     requested_pickup_date=normalized_request.requested_pickup_date,
                     equipment=normalized_request.equipment_type,
                     shipment_type=normalized_request.load_type,
+                    requested_departure_id=requested_departure_id,
                 )
             else:
                 route = routing_svc.plan_route(
@@ -364,6 +369,7 @@ class BookingOrchestrationService:
                     requested_pickup_date=normalized_request.requested_pickup_date,
                     equipment=normalized_request.equipment_type,
                     shipment_type=normalized_request.load_type,
+                    requested_departure_id=requested_departure_id,
                 )
 
             if not route.available:
@@ -401,7 +407,11 @@ class BookingOrchestrationService:
             first_leg = route.legs[0] if route.legs else None
             corridor = self.env["logistics.corridor"].browse(first_leg.corridor_id) if first_leg and first_leg.corridor_id else self.env["logistics.corridor"]
             last_leg = route.legs[-1] if route.legs else None
-            est_delivery = last_leg.departure_date if last_leg else None
+            # The REAL delivery date from the routing engine's timing chain
+            # (corridor stop config, travel-calc fallback) — never the
+            # departure date (a 550 km run is not same-day delivery).
+            est_delivery = route.estimated_delivery or (
+                last_leg.departure_date if last_leg else None)
 
             # Build price lines from legs
             price_lines = []
@@ -592,6 +602,9 @@ class BookingOrchestrationService:
                 "residential": normalized_request.residential,
                 "same_day_requested": normalized_request.same_day_requested,
                 "pickup_date": first_leg.departure_date if first_leg else None,
+                # The calendar-selected departure — the quote binds to this
+                # exact scheduled departure; confirmation re-validates it.
+                "departure_id": first_leg.departure_id if first_leg else None,
                 "delivery_date_estimate": est_delivery,
                 "calculated_price": final_price,
                 "price_snapshot": price_lines + [
@@ -687,10 +700,35 @@ class BookingOrchestrationService:
                         "instructions": ds.get("instructions", ""),
                     })
 
+            # Real service timing for the quote page — same chain as the
+            # calendar (corridor stop config + travel-calc fallback).
+            def _iso_part(value, mode):
+                if not value:
+                    return ""
+                if mode == "date":
+                    return str(value)[:10]
+                try:
+                    return datetime.datetime.fromisoformat(str(value)).strftime("%-I:%M %p")
+                except ValueError:
+                    return ""
+
             return {
                 "quote_token": session.token,
                 "pickup_date": first_leg.departure_date if first_leg else None,
+                "pickup_time": _iso_part(first_leg.pickup_datetime, "time") if first_leg else "",
                 "delivery_date": est_delivery,
+                "delivery_time": _iso_part(last_leg.delivery_datetime, "time") if last_leg else "",
+                "corridor_id": first_leg.corridor_id if first_leg else None,
+                "corridor_name": first_leg.corridor_name if first_leg else "",
+                "transfer_hub_name": (
+                    self.env["logistics.hub"].sudo().browse(
+                        first_leg.transfer_hub_id).public_name
+                    if first_leg and first_leg.transfer_hub_id else ""
+                ),
+                "departure_id": first_leg.departure_id if first_leg else None,
+                "corridor_departure_date": first_leg.departure_date if first_leg else None,
+                "corridor_departure_time": _iso_part(
+                    first_leg.corridor_departure_datetime, "time") if first_leg else "",
                 "calculated_price": final_price,
                 "price_lines": price_lines,
                 "lane_name": corridor.name if corridor else "Hub Transfer",

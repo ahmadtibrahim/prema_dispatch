@@ -277,6 +277,19 @@ class DepartureResolver:
             if eligible:
                 yield departure, vehicle
 
+    def evaluate_departure(self, departure, equipment, pallets, weight_lbs,
+                           allow_pinwheel_override=False):
+        """Public wrapper: is THIS exact departure eligible for the request?
+
+        Returns (eligible: bool, reason: str|None, vehicle: recordset).
+        Used by the calendar path so a date is offered only when the exact
+        scheduled departure on that corridor is real, equipped, and has
+        capacity — the same authority the quote path uses."""
+        if not departure:
+            return False, "no_departure", None
+        return self._eligible_departure(
+            departure, equipment, pallets, weight_lbs, allow_pinwheel_override)
+
     def _eligible_departure(self, departure, equipment, pallets, weight_lbs, allow_pinwheel_override):
         """A departure is eligible ONLY with a real, capable, sufficiently
         free vehicle. No capacity number is ever fabricated."""
