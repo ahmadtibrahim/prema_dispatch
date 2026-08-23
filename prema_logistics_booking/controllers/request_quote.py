@@ -158,7 +158,8 @@ class LogisticsRequestQuote(http.Controller):
                         "price": opt.price,
                         "service_label": opt.service_label,
                         "routing_strategy": opt.routing_strategy,
-                        "available_pallets": opt.available_pallets,
+                        # Exact pallet counts are never exposed — only the
+                        # generic state label.
                         "capacity_label": cap_label,
                         "capacity_ok": opt.capacity_ok,
                     })

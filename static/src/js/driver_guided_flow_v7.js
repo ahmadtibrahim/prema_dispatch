@@ -602,7 +602,6 @@
     function postProcessList() {
         const list = $("#stopList");
         if (!list) return;
-        list.querySelectorAll(".da-route-start-btn").forEach(btn => btn.remove());
         list.querySelectorAll(".da-stop-row").forEach(row => {
             row.draggable = false;
             const idx = Number(row.dataset.idx);
@@ -644,7 +643,6 @@
         const start = $("#startWorkCard");
         if (!start) return;
         start.querySelectorAll(".da-startwork-btn-label").forEach(el => {
-            if ((el.textContent || "").includes("START WORK")) el.textContent = "▶ START ROUTE";
             // Only the pending-state placeholder (exact label). The return
             // card's "END WORK AT BASE" is a real action button — renaming it
             // would fight v6's return-card re-render.
@@ -723,8 +721,6 @@
         postProcessLoadPlan();
         if ($("#sStop")?.style.display !== "none") renderSimplifiedStop();
         if (guide && $("#oGuidedV7")?.style.display !== "none") renderGuide();
-        const navTab = $("#tabNav"); if (navTab && navTab.textContent !== "Map") navTab.textContent = "Map";
-        const navTab2 = $("#tabNavNav"); if (navTab2 && navTab2.textContent !== "Map") navTab2.textContent = "Map";
     }
 
     function queueAudit() {

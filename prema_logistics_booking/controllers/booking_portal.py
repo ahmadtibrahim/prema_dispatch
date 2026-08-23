@@ -7,6 +7,10 @@ from odoo.exceptions import AccessError, UserError
 from odoo.http import request
 from werkzeug.exceptions import NotFound
 
+from odoo.addons.prema_logistics_booking.models.logistics_pricing_session import (
+    _customer_safe_leg_label,
+)
+
 def _allocate_transportation(route_total, cumulative_distances, onboard_counts):
     """Display-only explanatory allocation of an EXISTING route-level
     transportation total across stops.
@@ -173,9 +177,16 @@ def _build_stop_pricing(session):
     weight_rows = []
     base_total = 0.0
     weight_total = 0.0
+    # Customer-safe labels: internal routing language (leg numbers, corridor
+    # names, hub role codes) is mapped for display only — prices untouched.
+    leg_index = 0
+    total_legs = len(leg_lines)
     for line in session.price_snapshot or []:
         if not isinstance(line, dict) or not str(line.get("label", "")).startswith("Leg "):
             continue
+        leg_index += 1
+        display_label = _customer_safe_leg_label(
+            line.get("label", ""), leg_index, total_legs)
         pallets = line.get("pallets") or 0
         rate = line.get("pallet_rate_per_km") or 0.0
         distance = line.get("distance_km") or 0.0
@@ -186,6 +197,7 @@ def _build_stop_pricing(session):
             base_charge / pallets if pallets else 0.0)
         legs.append({
             "label": line.get("label", ""),
+            "display_label": display_label,
             "pallets": pallets,
             "per_pallet_price": round(per_pallet, 2),
             "base_charge": round(base_charge, 2),
@@ -195,6 +207,7 @@ def _build_stop_pricing(session):
         if excess_charge > 0:
             weight_rows.append({
                 "label": line.get("label", ""),
+                "display_label": display_label,
                 "actual_weight_lbs": float(line.get("actual_weight_lbs") or 0.0),
                 "included_weight_lbs": float(line.get("included_weight_lbs") or 0.0),
                 "excess_weight_lbs": float(line.get("excess_weight_lbs") or 0.0),
@@ -202,6 +215,10 @@ def _build_stop_pricing(session):
                 "excess_weight_charge": round(excess_charge, 2),
             })
             weight_total += excess_charge
+    if len(weight_rows) == 1:
+        # Single weight row: plain "Excess Weight" heading with the frozen
+        # detail sub-line (actual / included / excess lb × rate) beneath it.
+        weight_rows[0]["display_label"] = "Excess Weight"
     base_total = round(base_total, 2)
     weight_total = round(weight_total, 2)
     booking_total = round(
@@ -809,11 +826,12 @@ class LogisticsBookingPortal(http.Controller):
                         "delivery_lat": float(kwargs.get("delivery_lat") or 0) if kwargs.get("delivery_lat") else 0,
                         "delivery_lng": float(kwargs.get("delivery_lng") or 0) if kwargs.get("delivery_lng") else 0,
                         "pickup_loc_id": pickup_loc_id, "delivery_loc_id": delivery_loc_id,
+                        # Non-disclosing: never reveal the remaining pallet
+                        # count — exact capacity is internal.
                         "error": _(
-                            "Only %(remaining)s pallet positions remain on the "
-                            "selected departure. Please reduce the pallet "
-                            "quantity or choose another pickup date.",
-                            remaining=capacity["remaining_pallets"],
+                            "This pallet quantity is not available on the "
+                            "selected departure. Reduce the quantity or "
+                            "choose another pickup date.",
                         ),
                     })
             except (ValueError, TypeError):
@@ -1086,7 +1104,21 @@ class LogisticsBookingPortal(http.Controller):
         # The calendar binds the stepper to the EXACT departure the
         # customer selected — never an independently re-searched one.
         # Server-validated: active, still scheduled, vehicle assigned.
+        #
+        # DISCLOSURE POLICY: the response carries ONLY generic state
+        # (available / capacity_state / can_fit_requested_quantity) — never
+        # max_pallets, reserved_pallets, remaining_pallets, layouts, or any
+        # other exact-capacity number. The customer needs a yes/no for the
+        # quantity they entered; the authoritative capacity enforcement
+        # stays server-side (Get Price pre-check + confirmation lock).
         requested_departure_id = kwargs.get("departure_id")
+        requested_pallets = None
+        raw_pallets = kwargs.get("pallets")
+        if raw_pallets not in (None, ""):
+            try:
+                requested_pallets = int(raw_pallets)
+            except (ValueError, TypeError):
+                requested_pallets = None
         Departure = request.env["logistics.corridor.departure"].sudo()
         if requested_departure_id and str(requested_departure_id).lstrip("-").isdigit():
             departure = Departure.browse(int(requested_departure_id)).exists()
@@ -1096,23 +1128,35 @@ class LogisticsBookingPortal(http.Controller):
                     and departure.vehicle_id):
                 capacity_result = VehicleCapacityService(request.env).evaluate(
                     departure.vehicle_id, departure, 0)
-                layout = capacity_result["selected_layout"] or {}
+                remaining = capacity_result["remaining_pallets"]
+                corridor = departure.corridor_id
                 data = {
                     "available": True,
                     "departure_id": departure.id,
-                    "max_pallets": capacity_result["maximum_capacity"],
-                    "reserved_pallets": capacity_result["reserved_pallets"],
-                    "remaining_pallets": capacity_result["remaining_pallets"],
-                    "reserved_ltl_positions": capacity_result["reserved_ltl_positions"],
-                    "exclusive_vehicle_reserved": capacity_result["exclusive_vehicle_reserved"],
-                    "remaining_sellable_capacity": capacity_result["remaining_sellable_capacity"],
-                    "layout_code": layout.get("code", ""),
-                    "layout_name": layout.get("name", ""),
+                    "capacity_state": "available" if remaining > 0 else "full",
+                    "can_fit_requested_quantity": (
+                        requested_pallets is None or remaining >= requested_pallets),
+                    # Per-pallet default weight from the corridor's own
+                    # configuration — the portal weight auto-calc source.
+                    # (Weight guidance, not capacity disclosure.)
+                    "per_pallet_weight": (
+                        corridor.included_weight_per_pallet or 0.0) if corridor else 0.0,
                 }
                 return request.make_json_response(data)
 
-        data = VehicleCapacityService.for_pickup_date(
+        result = VehicleCapacityService.for_pickup_date(
             request.env, region, kwargs.get("pickup_date"))
+        remaining = result.get("remaining_pallets", 0)
+        data = {
+            "available": bool(result.get("available")),
+            "departure_id": result.get("departure_id") or False,
+            "capacity_state": (
+                "full" if not result.get("available") or remaining <= 0 else "available"),
+            "can_fit_requested_quantity": (
+                bool(result.get("available"))
+                and (requested_pallets is None or remaining >= requested_pallets)),
+            "per_pallet_weight": result.get("per_pallet_weight", 0.0),
+        }
         return request.make_json_response(data)
 
     @http.route("/my/booking/confirm", type="http", auth="user", website=True, sitemap=False, methods=["POST"])

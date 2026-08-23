@@ -203,7 +203,7 @@
                                         <div class="d-flex align-items-center gap-2 mb-1">
                                             <h5 class="mb-0" t-esc="opt['delivery_day_name'] + ' DELIVERY' if opt['delivery_day_name'] else 'Scheduled Service'"/>
                                             <span t-att-class="'badge ' + ('bg-success' if opt['capacity_label'] == 'AVAILABLE' else ('bg-warning text-dark' if opt['capacity_label'] == 'LIMITED_SPACE' else 'bg-danger'))"
-                                                  t-esc="opt['capacity_label']"/>
+                                                  t-esc="{'AVAILABLE': 'Available', 'LIMITED_SPACE': 'Limited space', 'SOLD_OUT': 'Sold out'}.get(opt['capacity_label'], opt['capacity_label'])"/>
                                         </div>
                                         <p class="mb-1 text-muted">
                                             Pickup: <strong t-esc="opt['pickup_date_formatted'] or 'TBD'"/>
@@ -213,8 +213,8 @@
                                         <t t-if="opt['capacity_label'] == 'SOLD_OUT'">
                                             <small class="text-danger ms-2">This departure is full</small>
                                         </t>
-                                        <t t-if="opt['available_pallets'] > 0 and opt['capacity_label'] != 'SOLD_OUT'">
-                                            <small class="text-muted ms-2" t-esc="'%s positions available' % opt['available_pallets']"/>
+                                        <t t-if="opt['capacity_label'] != 'SOLD_OUT'">
+                                            <small class="text-muted ms-2" t-esc="'Space available' if opt['capacity_label'] == 'AVAILABLE' else 'Limited space'"/>
                                         </t>
                                     </div>
                                     <div class="col-md-3 text-md-end">
@@ -310,10 +310,12 @@
                     </div>
                 </div></div>
 
-                <!-- Price -->
+                <!-- Price (customer-safe labels: internal routing language is
+                     mapped by the session model; amounts are frozen and
+                     untouched) -->
                 <div class="card mb-4"><div class="card-body">
                     <table class="table table-sm mb-0"><tbody>
-                        <tr t-foreach="session.price_snapshot or []" t-as="line">
+                        <tr t-foreach="session.customer_safe_snapshot_lines()" t-as="line">
                             <td t-esc="line['label']"/>
                             <td class="text-end" t-esc="line['amount']"/>
                         </tr>
@@ -492,12 +494,12 @@
                         <div class="col-6"><small class="text-muted">TO</small><br/><t t-esc="booking.delivery_fsa_id.display_city or booking.delivery_fsa_id.fsa"/></div>
                         <div class="col-6 mt-2"><small class="text-muted">PICKUP DATE</small><br/><t t-esc="booking.pickup_date"/></div>
                         <div class="col-6 mt-2">
-                            <small class="text-muted"><t t-esc="'CONFIRMED PICKUP WINDOW' if booking.pickup_eta_confirmed else 'EST. PICKUP'"/></small><br/>
+                            <small class="text-muted">EST. PICKUP</small><br/>
                             <t t-if="booking.pickup_eta_confirmed"><strong><t t-esc="booking.confirmed_pickup_window or '—'"/></strong></t>
                             <t t-else=""><t t-esc="booking.pickup_date"/></t>
                         </div>
                         <div class="col-6 mt-2">
-                            <small class="text-muted"><t t-esc="'CONFIRMED DELIVERY WINDOW' if booking.pickup_eta_confirmed else 'EST. DELIVERY'"/></small><br/>
+                            <small class="text-muted">EST. DELIVERY</small><br/>
                             <t t-if="booking.pickup_eta_confirmed"><strong><t t-esc="booking.confirmed_delivery_window or '—'"/></strong></t>
                             <t t-else=""><t t-esc="booking.estimated_delivery_date"/></t>
                         </div>

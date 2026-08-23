@@ -14,13 +14,15 @@ itinerary for the next day:
      and compute per-stop arrival / service-start / departure times — never
      before a facility opens; closed days roll to the next open slot.
   5. Freeze the itinerary on the departure (confirmed_itinerary Json),
-     stamp the booking-level CONFIRMED pickup/delivery windows
-     (pickup_eta_confirmed → the portal shows "Confirmed Window" instead of
-     "Estimated"), and write the confirmed service times onto the matching
-     dispatch stops (scheduled_time) for the driver.
+     stamp the booking-level PLANNED pickup/delivery windows
+     (pickup_eta_confirmed / confirmed_*_window — INTERNAL planning data
+     only, never a customer promise), and write the planned service times
+     onto the matching dispatch stops (scheduled_time) for the driver.
   6. At the separate CONFIGURABLE Customer ETA Notification Time the
-     notifier emails every finalized-not-yet-notified booking its confirmed
-     windows + tracking link.
+     notifier emails every finalized-not-yet-notified booking its
+     ESTIMATED windows + tracking link — never "confirmed/final"
+     language. The public tracking page is the service-day ETA authority:
+     it updates as the driver progresses through the route.
 
 Nothing here is hardcoded: both hours are ir.config_parameter values.
 """
@@ -109,9 +111,9 @@ class RouteFinalizationService:
                 "finalized": len(finalized), "results": results}
 
     def cron_notify(self):
-        """Email CONFIRMED pickup/delivery windows to every finalized
-        booking that has not been notified yet (at the configured Customer
-        ETA Notification Time)."""
+        """Email ESTIMATED pickup/delivery windows + tracking link to
+        every finalized booking that has not been notified yet (at the
+        configured Customer ETA Notification Time)."""
         Booking = self.env["logistics.booking"]
         bookings = Booking.search([
             ("pickup_eta_confirmed", "=", True),
@@ -258,8 +260,9 @@ class RouteFinalizationService:
             "finalized_at": fields.Datetime.now(),
         })
 
-        # 5. Booking-level confirmed windows + dispatch stop scheduled
-        #    times. Every booking picks its OWN pickup/last-delivery plans.
+        # 5. Booking-level PLANNED windows (internal) + dispatch stop
+        #    scheduled times. Every booking picks its OWN
+        #    pickup/last-delivery plans.
         by_booking = {}
         for entry in itinerary:
             by_booking.setdefault(entry["booking_id"], []).append(entry)
@@ -300,8 +303,12 @@ class RouteFinalizationService:
     # ── Customer notification ────────────────────────────────────────
 
     def _send_confirmed_window_email(self, booking):
-        """Email the customer their CONFIRMED pickup/delivery windows with
-        the tracking link. Returns True when the mail was created."""
+        """Email the customer their ESTIMATED pickup/delivery windows with
+        the tracking link. The finalization result is internal planning —
+        the customer is never promised a "confirmed" or "final" time. The
+        tracking page is the service-day ETA authority (it updates as the
+        driver progresses through the route). Returns True when the mail
+        was created."""
         partner = booking.partner_id
         email = (booking.partner_id.email or "").strip()
         if not email:
@@ -313,21 +320,24 @@ class RouteFinalizationService:
             f"&tracking_token={booking.tracking_token}"
         )
         body = (
-            "<h3>Your shipment is confirmed</h3>"
+            "<h3>Your shipment is scheduled</h3>"
             f"<p><strong>Booking:</strong> {booking.booking_number}</p>"
             f"<p><strong>Estimated Pickup:</strong> "
             f"{booking.confirmed_pickup_window or 'See tracking'}</p>"
             f"<p><strong>Estimated Delivery:</strong> "
             f"{booking.confirmed_delivery_window or 'See tracking'}</p>"
-            f"<p>These windows are final — your driver will arrive within "
-            f"the stated window. Track your shipment: "
+            f"<p>Estimated times may change as the route is finalized. "
+            f"Your updated ETA will be available on the day of service "
+            f"through your tracking link, and actual arrival times update "
+            f"as the driver progresses through the route. Track your "
+            f"shipment: "
             f"<a href='{tracking_url}'>{tracking_url}</a></p>"
             "<p>Prema Logistics</p>"
         )
         company = self.env.company
         mail = self.env["mail.mail"].create({
             "subject": f"Your Prema shipment {booking.booking_number} — "
-                       f"confirmed pickup/delivery windows",
+                       f"pickup/delivery estimates",
             "body_html": body,
             "email_from": company.email or "no-reply@premafirm.com",
             "email_to": email,

@@ -232,23 +232,29 @@ class LogisticsBooking(models.Model):
         default=lambda self: secrets.token_urlsafe(32),
         help="High-entropy random token for public tracking. Must be provided alongside booking_number to view shipment status."
     )
-    # ── Night-before route finalization (confirmed customer windows) ──
+    # ── Night-before route finalization (INTERNAL planning only) ──
     # Set by RouteFinalizationService at the configurable Route
-    # Finalization Time. When set, the portal shows "Confirmed Pickup /
-    # Delivery Window" instead of "Estimated".
+    # Finalization Time. The frozen windows are INTERNAL PLANNING data for
+    # the dispatcher and the driver (they feed the driver's scheduled
+    # times) — they are never presented to the customer as "confirmed" or
+    # "final". Customer-facing ETAs stay estimates until service day, and
+    # the public tracking page is the service-day ETA authority (driver
+    # progress updates actual arrival times).
     pickup_eta_confirmed = fields.Boolean(
-        string="Pickup ETA Confirmed", readonly=True, copy=False,
-        help="Night-before finalization froze this booking's confirmed "
+        string="Pickup ETA Finalized (Internal)", readonly=True, copy=False,
+        help="Night-before finalization froze this booking's planned "
              "pickup/delivery windows from facility hours, appointments "
-             "and windows.")
+             "and windows. Internal planning only — never a customer "
+             "promise.")
     confirmed_pickup_window = fields.Char(
-        string="Confirmed Pickup Window", readonly=True, copy=False)
+        string="Planned Pickup Window (Internal)", readonly=True, copy=False)
     confirmed_delivery_window = fields.Char(
-        string="Confirmed Delivery Window", readonly=True, copy=False)
+        string="Planned Delivery Window (Internal)", readonly=True, copy=False)
     eta_notification_sent = fields.Boolean(
         string="ETA Notification Sent", readonly=True, copy=False,
-        help="Customer email with the confirmed pickup/delivery windows "
-             "was sent at the configured Customer ETA Notification Time.")
+        help="Customer email with the estimated pickup/delivery windows "
+             "and tracking link was sent at the configured Customer ETA "
+             "Notification Time.")
     required_temperature = fields.Char(string="Required Temperature (display)", help="e.g. '-18°C', '+4°C'. For backward compatibility.")
     required_temperature_c = fields.Float(string="Required Temperature °C", help="Numeric temperature in Celsius. e.g. -18.0, 4.0")
     po_number = fields.Char(string="PO Number")

@@ -173,26 +173,19 @@ body.da-body{margin:0;padding:0;background:#f1f3f5;font-family:-apple-system,Bli
 .da-btn-sm{padding:8px 14px;font-size:13px}
 .da-done-card{background:#d4edda;border-radius:12px;padding:14px;text-align:center;color:#155724;font-size:15px;font-weight:700}
 
-/* ── Navigation Screen ────────────────────────────────────────────── */
-.da-nav-screen{position:relative}
-.da-nav-map{height:55vh;flex-shrink:0;background:#dde2e8;position:relative}
-.da-nav-close-btn{position:absolute;top:max(12px,env(safe-area-inset-top));left:12px;z-index:20;background:rgba(0,0,0,.55);border:none;color:#fff;font-size:15px;font-weight:700;padding:6px 14px;border-radius:20px;cursor:pointer}
-.da-nav-fabs{position:absolute;bottom:14px;left:12px;z-index:20;display:flex;flex-direction:column;gap:6px}
-.da-nav-fabs .da-map-fab{white-space:nowrap}
-.da-nav-body-hidden{display:none!important}
-.da-nav-map-full{height:100vh!important}
-.da-dist-badge{position:absolute;top:max(12px,env(safe-area-inset-top));right:12px;z-index:20;background:rgba(21,101,192,.9);color:#fff;font-size:14px;font-weight:700;padding:7px 14px;border-radius:20px;pointer-events:none;min-width:100px;text-align:center}
-.da-nav-body{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;display:flex;flex-direction:column}
-.da-nav-instruction{background:#1a1a2e;color:#fff;padding:14px 16px;font-size:15px;font-weight:700;line-height:1.4;display:flex;align-items:center;gap:10px}
-.da-nav-instruction::before{content:"➜";font-size:20px;flex-shrink:0}
-.da-nav-info{padding:14px 16px;background:#fff;border-bottom:1px solid #f0f2f5}
-.da-nav-dest{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:#888;font-weight:700;margin-bottom:3px}
-.da-nav-name{font-size:18px;font-weight:800;color:#1a1a2e;margin-bottom:2px}
-.da-nav-addr{font-size:13px;color:#666}
-.da-nav-actions{padding:12px 16px;padding-bottom:max(14px,env(safe-area-inset-bottom));display:flex;flex-direction:column;gap:8px}
-.da-nav-actions-row{flex-direction:row;padding-top:0;gap:8px}
-.da-nav-actions-row .da-btn{flex:1;font-size:12px;padding:8px 6px}
-.da-nav-actions-row-compact .da-btn{font-size:12px}
+/* ── Map tab (spec §6: reference-only — Google Maps does turn-by-turn) ─ */
+/* The Schedule screen's route map expands to fill the viewport; all the
+   list/summary sections hide so the map is the whole tab. */
+.da-app.da-map-tab .da-week-bar,
+.da-app.da-map-tab .da-weather-badge,
+.da-app.da-map-tab .da-today-summary,
+.da-app.da-map-tab .da-startwork-wrap,
+.da-app.da-map-tab .da-workday-wrap,
+.da-app.da-map-tab .da-loadplan-chip,
+.da-app.da-map-tab .da-week-days,
+.da-app.da-map-tab #stopList{display:none!important}
+.da-app.da-map-tab .da-map-wrap{flex:1;height:auto!important;min-height:60vh}
+.da-app.da-map-tab #routeMap{height:100%!important}
 
 /* ── Geofence Banner ──────────────────────────────────────────────── */
 .da-geo-banner{position:absolute;bottom:0;left:0;right:0;z-index:30;background:linear-gradient(135deg,#2e7d32,#1b5e20);color:#fff;padding:14px 16px;display:flex;align-items:center;gap:12px;box-shadow:0 -4px 20px rgba(0,0,0,.3);animation:slidein .3s ease}
@@ -464,9 +457,6 @@ body.da-body{margin:0;padding:0;background:#f1f3f5;font-family:-apple-system,Bli
 .da-top-action{flex:1}
 .da-done-next{font-size:16px;padding:16px}
 
-/* ── Phase 2: Navigation screen tab bar ─────────────────────────────── */
-.da-nav-tabs{background:#f5f7fa;border-bottom:none;border-top:2px solid #e0e4ea}
-.da-nav-tabs .da-view-tab{padding:8px;font-size:12px}
 
 /* ── Phase 3: evidence workflow ───────────────────────────── */
 .da-ev-pending{

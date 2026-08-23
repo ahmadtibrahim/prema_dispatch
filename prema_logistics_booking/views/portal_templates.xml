@@ -559,7 +559,7 @@
                         <input type="number" id="pallets_input" name="physical_pallets" class="form-control text-center" min="1" value="1" required="required"/>
                         <button type="button" class="btn btn-outline-secondary btn-sm" id="pallets_plus">+</button>
                     </div>
-                    <div class="form-text" id="pallets_capacity_hint">Actual pallet/skid units on the truck</div>
+                    <div class="form-text" id="pallets_capacity_hint">Enter the number of physical pallets/skids</div>
                     <div class="form-text text-danger" id="pallets_capacity_error" style="display:none"/>
                 </div>
                 <div class="col-md-3">
@@ -833,8 +833,15 @@
 
             // ════════════════════════════════════════════════════════════
             // Dynamic pallet capacity (canonical VehicleCapacityService)
+            //
+            // DISCLOSURE POLICY: the endpoint returns ONLY generic state —
+            // available / can_fit_requested_quantity — never exact pallet
+            // counts. The stepper therefore caps nothing; the customer
+            // enters the physical pallet quantity and the SERVER (Get Price
+            // pre-check + confirmation lock) stays the authoritative
+            // capacity gate. No number is ever shown.
             // ════════════════════════════════════════════════════════════
-            var palletsMax = 0;        // dynamic remaining capacity for the selected departure
+            var departureAvailable = false;
             var palletsInput = document.getElementById('pallets_input');
             var capacityHint = document.getElementById('pallets_capacity_hint');
             var capacityError = document.getElementById('pallets_capacity_error');
@@ -846,20 +853,17 @@
             }
 
             function applyPalletMax() {
-                if (palletsMax >= 1) {
-                    palletsInput.max = palletsMax;
+                if (departureAvailable) {
                     palletsInput.min = 1;
                     var cur = parseInt(palletsInput.value || '1', 10);
                     if (isNaN(cur) || cur < 1) { palletsInput.value = 1; }
-                    else if (cur > palletsMax) { palletsInput.value = palletsMax; }
-                    capacityHint.textContent = palletsMax + ' pallet position' + (palletsMax === 1 ? '' : 's') + ' available on this departure';
+                    capacityHint.textContent = 'Enter the number of physical pallets/skids.';
                     palletsInput.disabled = false;
                     if (getPriceBtn) { getPriceBtn.disabled = false; }
                     showCapacityError('');
                     syncCalculatedWeight();
                     if (typeof buildPalletAllocations === 'function') { buildPalletAllocations(); }
                 } else {
-                    palletsInput.max = 1;
                     palletsInput.value = '';
                     palletsInput.disabled = true;
                     capacityHint.textContent = 'This departure is fully booked. Please choose another pickup date.';
@@ -875,7 +879,8 @@
                 if (!date) return;
                 capacityHint.textContent = 'Checking capacity…';
                 var params = 'pickup_date=' + encodeURIComponent(date) +
-                    '&pickup_lat=' + puLat + '&pickup_lng=' + puLng;
+                    '&pickup_lat=' + puLat + '&pickup_lng=' + puLng +
+                    '&pallets=' + (parseInt(palletsInput?.value || '1', 10) || 1);
                 var puLocId = (document.querySelector('input[name="pickup_loc_id"]') || {}).value || '';
                 var puFsa = (document.querySelector('input[name="pickup_fsa"]') || {}).value || '';
                 var depInput = document.getElementById('pickup_departure_id');
@@ -886,11 +891,16 @@
                     .then(function(r) { return r.json(); })
                     .then(function(data) {
                         if (data && data.available) {
-                            palletsMax = data.remaining_pallets;
-                        } else if (data && !data.available) {
-                            palletsMax = 0;   // no service on this date
+                            departureAvailable = true;
+                            if (data.can_fit_requested_quantity === false) {
+                                // Same non-disclosing message the server
+                                // pre-check returns at Get Price.
+                                showCapacityError('This pallet quantity is not available on the selected departure. Reduce the quantity or choose another pickup date.');
+                            } else {
+                                showCapacityError('');
+                            }
                         } else {
-                            palletsMax = 0;
+                            departureAvailable = false;   // no service on this date
                         }
                         if (data && data.per_pallet_weight) {
                             WEIGHT_PER_PALLET = data.per_pallet_weight;
@@ -900,7 +910,7 @@
                         syncCalculatedWeight();
                     })
                     .catch(function() {
-                        palletsMax = 0;
+                        departureAvailable = false;
                         capacityHint.textContent = 'Could not check capacity. Please try again.';
                     });
             }
@@ -910,12 +920,7 @@
                 var cur = parseInt(palletsInput.value || '1', 10);
                 if (isNaN(cur)) { cur = 1; }
                 var next = cur + delta;
-                if (delta > 0 && cur >= palletsMax) {
-                    showCapacityError('You have reached the maximum available capacity for this departure.');
-                    return;
-                }
                 if (next < 1) { next = 1; }
-                if (next > palletsMax) { next = palletsMax; }
                 palletsInput.value = next;
                 showCapacityError('');
                 syncCalculatedWeight();
@@ -930,30 +935,17 @@
                     showCapacityError('Please enter a valid pallet quantity (1 or more).');
                     return false;
                 }
-                if (cur > palletsMax) {
-                    showCapacityError('Only ' + palletsMax + ' pallet positions are available on this departure.');
-                    return false;
-                }
                 showCapacityError('');
                 return true;
             }
             if (palletsInput) {
                 palletsInput.addEventListener('blur', validatePalletInput);
                 palletsInput.addEventListener('input', function() {
-                    var cur = parseInt(palletsInput.value, 10);
-                    if (!isNaN(cur) && palletsMax >= 1 && cur > palletsMax) {
-                        showCapacityError('Only ' + palletsMax + ' pallet positions are available on this departure.');
-                    } else {
-                        showCapacityError('');
-                    }
+                    showCapacityError('');
                 });
                 palletsInput.addEventListener('wheel', function(ev) {
-                    // Browser spinner cannot exceed the dynamic max.
-                    if (palletCapacityAtMax()) { ev.preventDefault(); }
+                    ev.preventDefault();
                 });
-            }
-            function palletCapacityAtMax() {
-                return parseInt(palletsInput.value || '0', 10) >= palletsMax;
             }
             if (palletsInput) {
                 var palletForm = palletsInput.closest('form');
@@ -1080,12 +1072,13 @@
                     var dlCd = dlDs ? fmtCardDate(dlDs) : null;
                     var dlLine = dlCd ? dlCd.day + ' ' + dlCd.date : 'Delivery ETA TBD';
                     if (d.delivery_time) { dlLine += ' · ' + d.delivery_time; }
+                    var puLabel = 'Estimated Pickup: ' + (puTime || 'time TBD');
+                    var dlLabel = 'Estimated Delivery: ' + dlLine;
                     var via = (d.transfer && d.transfer_hub_name)
                         ? '<small class="d-block" style="font-size:10px;opacity:.85">Via ' + d.transfer_hub_name + '</small>'
                         : '';
-                    var cap = (d.remaining_capacity > 0)
-                        ? d.remaining_capacity + ' pallet position' + (d.remaining_capacity === 1 ? '' : 's') + ' available'
-                        : 'No capacity';
+                    // Generic only — exact pallet counts are never disclosed.
+                    var cap = (d.capacity_state !== 'full') ? 'Space available' : 'Sold out';
 
                     if (isSel) {
                         html += '<div class="col-6 col-md-3">' +
@@ -1093,8 +1086,8 @@
                             '<small style="font-size:10px;opacity:.9">✓ SELECTED</small>' +
                             '<div style="font-size:14px;font-weight:800;line-height:1.2">' + cd.day + '</div>' +
                             '<div style="font-size:16px;font-weight:700;line-height:1.2">' + cd.date + '</div>' +
-                            '<small class="d-block" style="font-size:10px;opacity:.9">Pickup: ' + (puTime || 'time TBD') + '</small>' +
-                            '<small class="d-block" style="font-size:10px;opacity:.9">Delivery: ' + dlLine + '</small>' +
+                            '<small class="d-block" style="font-size:10px;opacity:.9">' + puLabel + '</small>' +
+                            '<small class="d-block" style="font-size:10px;opacity:.9">' + dlLabel + '</small>' +
                             via +
                             '<small class="d-block" style="font-size:10px;opacity:.85">' + cap + '</small>' +
                             '</button></div>';
@@ -1103,8 +1096,8 @@
                             '<button type="button" class="card w-100 border p-2 date-card" style="cursor:pointer;transition:border-color .15s" data-date="' + d.date + '">' +
                             '<div style="font-size:14px;font-weight:800;color:#555;line-height:1.2">' + cd.day + '</div>' +
                             '<div style="font-size:16px;font-weight:700;line-height:1.2">' + cd.date + '</div>' +
-                            '<small class="d-block" style="font-size:10px;color:#888">Pickup: ' + (puTime || 'time TBD') + '</small>' +
-                            '<small class="d-block" style="font-size:10px;color:#888">Delivery: ' + dlLine + '</small>' +
+                            '<small class="d-block" style="font-size:10px;color:#888">' + puLabel + '</small>' +
+                            '<small class="d-block" style="font-size:10px;color:#888">' + dlLabel + '</small>' +
                             via +
                             '<small class="d-block" style="font-size:10px;color:#888">' + cap + '</small>' +
                             '</button></div>';
@@ -1795,9 +1788,11 @@
                         </div>
                     </div>
                     <small class="text-muted">
-                        Pickup / delivery times are ESTIMATES based on facility
-                        operating hours, appointments and windows. They are
-                        confirmed the night before your pickup.
+                        Estimated times: Pickup and delivery times may change
+                        as the route is finalized. Your updated ETA will be
+                        available on the day of service through your tracking
+                        link. Actual arrival times will update as the driver
+                        progresses through the route.
                     </small>
                     <small class="text-muted">Service</small><br/>
                     <strong>Scheduled LTL</strong>
@@ -2011,7 +2006,7 @@
                         <small class="text-muted d-block mt-2 mb-1"><strong>BASE PALLET TRANSPORTATION</strong></small>
                         <t t-foreach="stop_pricing['legs']" t-as="pl">
                             <div class="d-flex justify-content-between align-items-center py-1">
-                                <span><t t-esc="pl['label']"/></span>
+                                <span><t t-esc="pl.get('display_label') or pl['label']"/></span>
                                 <span><t t-esc="pl['pallets']"/> pallet<t t-if="pl['pallets'] != 1">s</t> × $<t t-esc="'%.2f' % pl['per_pallet_price']"/> = $<t t-esc="'%.2f' % pl['base_charge']"/></span>
                             </div>
                         </t>
@@ -2024,7 +2019,7 @@
                         <small class="text-muted d-block mt-2 mb-1"><strong>WEIGHT</strong></small>
                         <t t-foreach="stop_pricing['weight_rows']" t-as="wr">
                             <div class="d-flex justify-content-between align-items-center py-1">
-                                <span><t t-esc="wr['label']"/>
+                                <span><t t-esc="wr.get('display_label') or wr['label']"/>
                                     <small class="text-muted d-block"><t t-esc="'%.0f' % wr['actual_weight_lbs']"/> lb actual — <t t-esc="'%.0f' % wr['included_weight_lbs']"/> lb included, excess <t t-esc="'%.0f' % wr['excess_weight_lbs']"/> lb × $<t t-esc="'%.2f' % wr['excess_weight_rate_per_lb']"/>/lb</small>
                                 </span>
                                 <span>$<t t-esc="'%.2f' % wr['excess_weight_charge']"/></span>
@@ -2147,9 +2142,9 @@
                                 <small class="text-muted d-block" t-esc="b.pickup_date"/></td>
                             <td>
                                 <small t-esc="b.delivery_address or ''"/>
-                                <small t-if="b.pickup_eta_confirmed" class="text-success d-block fw-bold">
-                                    <t t-esc="b.confirmed_delivery_window or ''"/>
-                                </small>
+                                <t t-if="b.pickup_eta_confirmed and b.confirmed_delivery_window">
+                                    <small class="text-muted d-block">Est. delivery: <t t-esc="b.confirmed_delivery_window"/></small>
+                                </t>
                                 <t t-if="b.stop_ids">
                                     <t t-set="del_count" t-value="len(b.stop_ids.filtered(lambda s: s.stop_type == 'delivery'))"/>
                                     <small t-if="del_count > 1" class="text-muted d-block">+ <t t-esc="del_count - 1"/> more stop<t t-if="del_count > 2">s</t></small>

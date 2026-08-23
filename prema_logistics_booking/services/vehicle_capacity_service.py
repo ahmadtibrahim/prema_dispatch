@@ -156,12 +156,13 @@ class VehicleCapacityService:
                 "This departure's truck is exclusively reserved for a "
                 "Full Truckload / dedicated shipment.")
         elif not valid:
+            # Non-disclosing: never reveal the remaining pallet count —
+            # exact capacity is internal.
             result["capacity_valid"] = False
             result["reason"] = _(
-                "Only %(remaining)s pallet position(s) remain on the selected "
-                "departure. Please reduce the pallet quantity or choose "
-                "another departure.",
-                remaining=remaining_sellable,
+                "This pallet quantity is not available on the selected "
+                "departure. Reduce the quantity or choose another "
+                "pickup date.",
             )
         return result
 
@@ -283,7 +284,7 @@ class VehicleCapacityService:
                 result["capacity_valid"] = False
                 result["reason"] = _(
                     "This shipment exceeds the truck's remaining payload "
-                    "capacity (%(payload)s lb).",
-                    payload=payload,
+                    "capacity. Reduce the weight or choose another pickup "
+                    "date.",
                 )
         return result

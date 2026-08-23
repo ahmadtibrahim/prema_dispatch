@@ -119,15 +119,18 @@ class DriverWorkday(models.Model):
         # use filtered()/sorted() (recordset ops, not list ops).
         return jobs, self.env["prema.dispatch.stop"].browse(stop_ids)
 
-    # ── START WORK ───────────────────────────────────────────────
+    # ── START ROUTE (day-level, spec §8) ─────────────────────────
 
     def action_start_work(self, lat=None, lng=None):
-        """Record the driver starting the workday (timestamp + GPS).
+        """Record the driver starting the day's route (timestamp + GPS).
 
-        Idempotent: starting an already-started day returns the existing
-        state without overwriting the original timestamp. Also syncs every
-        open job of the day (route_started_at, if not already set) so the
-        Booking Board shows the driver has begun.
+        The driver's "Start Route" tap on Home. The day-level workday
+        record (unique per driver+date) is the single authority: it stamps
+        work_started_at + GPS once, idempotently, and syncs EVERY open job
+        of the day (route_started_at + tracking timeline entry, if not
+        already set) so the Booking Board and the customer tracking page
+        show the route as started. There is no separate per-job "Start
+        Route" entry point in the app — starting the route starts the day.
         """
         self.ensure_one()
         if self.state != "completed":
@@ -148,6 +151,12 @@ class DriverWorkday(models.Model):
                     "route_started_at": self.work_started_at,
                     "route_started_by": self.env.user.id,
                 })
+                # Tracking timeline: the tracking page is the service-day
+                # ETA authority — post the same route_started event the
+                # (removed) per-job endpoint used to post.
+                job._post_timeline(
+                    job, "route_started",
+                    notes=f"Route started by {self.env.user.name}.")
         return self._payload()
 
     def action_end_day(self):

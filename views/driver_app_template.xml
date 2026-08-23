@@ -26,8 +26,7 @@
      t-attf-data-dispatch-phone="#{dispatch_phone}"
      t-attf-data-dispatch-voip-uri="#{dispatch_voip_uri}">
 
-  <!-- Geofence banner (shown when within 150m of the active stop, on either
-       the Stop Detail or Navigation screen) -->
+  <!-- Geofence banner (shown when within 150m of the active stop) -->
   <div id="geoBanner" class="da-geo-banner" style="display:none">
     <div class="da-geo-icon">📍</div>
     <div>
@@ -75,20 +74,20 @@
     <!-- Today's summary -->
     <div id="todaySummary" class="da-today-summary"></div>
 
-    <!-- Workday card — START WORK / WORK IN PROGRESS / WORK COMPLETED
-         (Phase 2, spec §8/§29) -->
+    <!-- Workday card — START ROUTE / WORK IN PROGRESS / WORK COMPLETED
+         (Phase 2, spec §8/§29; Start Route lives ONLY here, on Home) -->
     <div id="startWorkCard" class="da-startwork-wrap" style="display:none"></div>
     <div id="workDaySummary" class="da-workday-wrap" style="display:none"></div>
 
     <!-- Load Plan status chip — prominent, not buried, per spec -->
     <div id="loadPlanChip" class="da-loadplan-chip" style="display:none" onclick="openLoadPlan()"></div>
 
-    <!-- Home / Stops / Navigation tabs (spec §6 — exactly 3 primary tabs,
-         Navigation a persistent tab, not a temporary embedded button) -->
+    <!-- Home / Stops / Map tabs (spec §6 — exactly 3 primary tabs; Map is
+         reference-only — Google Maps handles all turn-by-turn) -->
     <div class="da-view-tabs">
       <button id="tabHome"  class="da-view-tab active" onclick="APP.showHomeTab()">Home</button>
       <button id="tabStops" class="da-view-tab" onclick="APP.showStopsTab()">Stops</button>
-      <button id="tabNav"   class="da-view-tab" onclick="APP.showNavTab()">Navigation</button>
+      <button id="tabMap"   class="da-view-tab" onclick="APP.showMapTab()">Map</button>
     </div>
 
     <div id="weekDays" class="da-week-days"></div>
@@ -128,49 +127,6 @@
       <button class="da-icon-btn" onclick="openLoadPlan()">📦</button>
     </div>
     <div id="pickupStopsBody" class="da-detail-body"></div>
-  </div>
-
-  <!-- ── SCREEN: In-App Navigation (Amazon Flex style) ────── -->
-  <div id="sNav" class="da-screen da-nav-screen" style="display:none">
-    <div id="navMapWrap" class="da-nav-map">
-      <div id="navMap" style="width:100%;height:100%"></div>
-      <button class="da-nav-close-btn" onclick="APP.closeNav()">✕ Close</button>
-      <div class="da-nav-fabs">
-        <button class="da-map-fab" onclick="APP.toggleNavHeading()" id="navHeadingBtn" title="North-up / Heading-up">🧭 North</button>
-        <button class="da-map-fab" onclick="APP.toggleNavVoice()" id="navVoiceBtn" title="Voice guidance">🔊 Voice</button>
-        <button class="da-map-fab" onclick="APP.toggleNavTraffic()" id="navTrafficBtn" title="Traffic layer">🚦 Traffic</button>
-        <button class="da-map-fab" onclick="APP.toggleNavFullscreen()" id="navFsBtn" title="Fullscreen — hide other panels">⛶</button>
-      </div>
-      <div id="navDistBadge" class="da-dist-badge">…</div>
-    </div>
-    <!-- The Navigation screen carries its own copy of the 3 primary tabs so
-         Home / Stops stay reachable while navigating (spec §6). -->
-    <div class="da-view-tabs da-nav-tabs">
-      <button id="tabNavHome"  class="da-view-tab" onclick="APP.showHomeTab()">Home</button>
-      <button id="tabNavStops" class="da-view-tab" onclick="APP.showStopsTab()">Stops</button>
-      <button id="tabNavNav"   class="da-view-tab active" onclick="APP.showNavTab()">Navigation</button>
-    </div>
-    <div class="da-nav-body" id="navBody">
-      <div id="navInstruction" class="da-nav-instruction">Calculating route…</div>
-      <div class="da-nav-info">
-        <div id="navDestType" class="da-nav-dest"></div>
-        <div id="navDestName" class="da-nav-name"></div>
-        <div id="navDestAddr" class="da-nav-addr"></div>
-      </div>
-      <div class="da-nav-actions">
-        <button class="da-btn da-btn-secondary" onclick="APP.openExternalNav()">🗺️ Open in Maps app (voice guidance)</button>
-        <button class="da-btn da-btn-green" onclick="APP.navArrived()">✓ I'm Here</button>
-      </div>
-      <div class="da-nav-actions da-nav-actions-row">
-        <button class="da-btn da-btn-secondary" onclick="APP.callDispatch()" title="Call Dispatch">📞 Dispatch</button>
-        <button class="da-btn da-btn-orange" onclick="doDelayed()" title="Report a problem with this stop">⚠ Report Issue</button>
-        <button class="da-btn da-btn-secondary" onclick="APP.recenterNav()" title="Recenter map on my location">🎯 Recenter</button>
-      </div>
-      <div class="da-nav-actions da-nav-actions-row da-nav-actions-row-compact">
-        <button class="da-btn da-btn-ghost" onclick="APP.closeNav()">← Back to Stop</button>
-        <button class="da-btn da-btn-ghost" onclick="doRestoreStop()">↺ Restore Stop</button>
-      </div>
-    </div>
   </div>
 
   <!-- ── SCREEN: Load Plan (Phase 4) ────────────────────────── -->

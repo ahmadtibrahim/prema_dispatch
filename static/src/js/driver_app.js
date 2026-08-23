@@ -17,10 +17,10 @@ const S = {
     mapsReady:false, dataLoaded:false,
     refreshPoll:null,
     dragSrcIdx:null,
-    navVoiceOn:true, navHeadingMode:false, navFullscreen:false, navTrafficOn:true,
+    navTrafficOn:true,
     viewTab:"home",
-    workday:null,       // day-level workday payload from /stops (START WORK / END DAY)
-    navAsTab:false,     // true when the NAVIGATION tab opened sNav (vs. from a stop)
+    workday:null,       // day-level workday payload from /stops (START ROUTE / END DAY)
+    navAsTab:false,
     _suppressHistoryPush:false,
     uploadState:null,   // {stopId, evType, filename, phase, progress, message, _file} — see runEvidenceUpload()
     loadPlan:null, lpSelectedCode:null,
@@ -219,7 +219,7 @@ S.routeOpts=loadRouteOpts();
         } else if (initial.stopId) {
             const stop = findStopById(initial.stopId);
             if (stop) {
-                if (initial.screen === "sNav") openNav(stop); else openStop(stop);
+                openStop(stop);
             } else {
                 toast("This stop is no longer available.");
                 showViewTab(initial.tab);
@@ -275,19 +275,6 @@ function waitForDriverMapsReady(timeoutMs = 10000){
 }
 waitForDriverMapsReady();
 
-document.addEventListener("fullscreenchange", () => {
-    setNavFullscreenUI(!!document.fullscreenElement);
-});
-
-function setNavFullscreenUI(on){
-    S.navFullscreen = !!on;
-    q("#navBody")?.classList.toggle("da-nav-body-hidden", S.navFullscreen);
-    q("#navMapWrap")?.classList.toggle("da-nav-map-full", S.navFullscreen);
-    const btn=q("#navFsBtn");
-    if(btn) btn.textContent=S.navFullscreen ? "🗗 Exit Full" : "⛶";
-    if(S.maps.nav)setTimeout(()=>trigResize("nav"),200);
-}
-
 function showApp() {
     hide("sLoading");
     show("sSchedule");
@@ -313,22 +300,21 @@ function applyDay(day) {
 
 function showViewTab(tab){
     S.viewTab=tab;
-    const isHome=tab==="home", isStops=tab==="stops", isNav=tab==="nav";
+    const isHome=tab==="home", isStops=tab==="stops", isMap=tab==="map";
     q("#tabHome")?.classList.toggle("active",isHome);
     q("#tabStops")?.classList.toggle("active",isStops);
-    q("#tabNav")?.classList.toggle("active",isNav);
-    q("#tabNavHome")?.classList.toggle("active",isHome);
-    q("#tabNavStops")?.classList.toggle("active",isStops);
-    q("#tabNavNav")?.classList.toggle("active",isNav);
-    if(isNav){
-        // NAVIGATION is a proper persistent tab (spec §6/§11): show the
-        // nav screen targeting the next selected stop.
-        navTabShow();
+    q("#tabMap")?.classList.toggle("active",isMap);
+    q("#app")?.classList.toggle("da-map-tab",isMap);
+    if(isMap){
+        // MAP is a reference-only tab (spec §6): the day's route with all
+        // stops — Google Maps handles all turn-by-turn. The route map
+        // lives on the Schedule screen; expand it to fill the viewport.
+        mapTabShow();
         return;
     }
-    // Non-nav tabs live on the Schedule screen — return to it (covers the
-    // NAVIGATION tab's Home/Stops buttons and END DAY's jump home from a
-    // stop detail; renderStopList re-renders the split sections).
+    // Non-map tabs live on the Schedule screen — return to it (covers the
+    // MAP tab's Home/Stops buttons and END DAY's jump home from a stop
+    // detail; renderStopList re-renders the split sections).
     showScreen("sSchedule");
     if(q("#todaySummary"))q("#todaySummary").style.display=isHome?"flex":"none";
     if(q("#startWorkCard"))q("#startWorkCard").style.display=isHome?"":"none";
@@ -339,23 +325,14 @@ function showViewTab(tab){
     syncHistory();
 }
 
-// NAVIGATION tab: fill and show the nav screen for the current target —
-// the stop the driver is viewing (or was navigating to), else the next
-// unfinished stop. No stops → an empty state instead of a blank screen.
-function navTabShow(){
-    if(!S.stops?.length){
-        showScreen("sNav");
-        const nb=q("#navBody");
-        if(nb) nb.innerHTML=`<div class="da-empty">
-            <div class="da-empty-icon">🧭</div>
-            <div class="da-empty-title">No navigation target</div>
-            <div class="da-empty-sub">You have no stops for this date.</div>
-        </div>`;
-        const badge=q("#navDistBadge"); if(badge) badge.textContent="";
-        return;
-    }
-    const target = (S.stop && S.stops.find(s=>s.id===S.stop.id)) || firstOpenStop() || S.stops[0];
-    openNav(target,{asTab:true});
+// MAP tab: the reference route map, full viewport. The da-map-tab class
+// (CSS) hides the schedule sections; here we clear any leftover inline
+// display from a previous Home/Stops visit and re-render the route.
+function mapTabShow(){
+    showScreen("sSchedule");
+    if(q("#routeMapWrap"))q("#routeMapWrap").style.display="";
+    if(S.mapsReady) initRouteMap();
+    setTimeout(()=>trigResize("route"),60);
 }
 
 function renderTodaySummary(){
@@ -379,10 +356,10 @@ function renderTodaySummary(){
 }
 function fmtDur(mins){ const h=Math.floor(mins/60),m=Math.round(mins%60); return h?`${h}h ${m}m`:`${m}m`; }
 
-// ── START WORK (day-level dashboard, spec §8) ─────────────────────
+// ── START ROUTE (day-level dashboard, spec §8) ────────────────────
 function renderStartWork(){
     const card=q("#startWorkCard"); if(!card)return;
-    // START WORK only exists for TODAY — past/future days show nothing.
+    // START ROUTE only exists for TODAY — past/future days show nothing.
     if(!S.dayData?.is_today){ card.style.display="none"; card.innerHTML=""; return; }
     card.style.display="";
     const wd=S.workday||{};
@@ -409,7 +386,7 @@ function renderStartWork(){
         return;
     }
     card.innerHTML=`<button class="da-startwork-btn" onclick="startWork()">
-        <div class="da-startwork-btn-label">▶ START WORK</div>
+        <div class="da-startwork-btn-label">▶ START ROUTE</div>
         <div class="da-startwork-btn-sub">${S.stops.length} stop${S.stops.length===1?"":"s"} · ${S.stops.filter(s=>isPickupLikeStop(s.type)).length} pickup${S.stops.filter(s=>isPickupLikeStop(s.type)).length===1?"":"s"} · ${S.stops.filter(s=>s.type==="dropoff"||s.type==="return").length} deliver${S.stops.filter(s=>s.type==="dropoff"||s.type==="return").length===1?"y":"ies"}</div>
     </button>`;
 }
@@ -485,7 +462,6 @@ async function loadWeather(){
 
 function initAllMaps() {
     initRouteMap();
-    if(visibleScreen()==="sNav") initNavMap();
 }
 
 // ── Real-time polling (15s fallback) + bus push (instant) ──────────
@@ -579,7 +555,7 @@ const APP = window.APP = {
     toggleMap:    () => { S.mapCollapsed=!S.mapCollapsed; q("#routeMapWrap")?.classList.toggle("collapsed",S.mapCollapsed); q("#mapToggleBtn") && (q("#mapToggleBtn").textContent=S.mapCollapsed?"▼":"▲"); if(!S.mapCollapsed&&S.mapsReady)setTimeout(()=>trigResize("route"),280); },
     showHomeTab:  () => showViewTab("home"),
     showStopsTab: () => showViewTab("stops"),
-    showNavTab:   () => showViewTab("nav"),
+    showMapTab:   () => showViewTab("map"),
     callDispatch: () => {
         const target=normalizeCallTarget(DISPATCH_VOIP_URI||DISPATCH_PHONE);
         if(!target){toast("No dispatch number or VoIP URI configured");return;}
@@ -609,14 +585,7 @@ const APP = window.APP = {
     openRouteSettings:  () => openRouteSettings(),
     closeRouteSettings: () => hide("oRouteSettings"),
     saveRouteSettings:  () => saveRouteSettings(),
-    closeNav:        () => closeNav(),
     openExternalNav: () => openNativeMaps(S.stop),
-    navArrived:      () => navConfirmArrived(),
-    toggleNavHeading:() => toggleNavHeading(),
-    toggleNavVoice:  () => toggleNavVoice(),
-    toggleNavTraffic:() => toggleNavTraffic(),
-    toggleNavFullscreen:() => toggleNavFullscreen(),
-    recenterNav:     () => { if(S.maps.nav && S.lat && S.lng) S.maps.nav.panTo({lat:S.lat,lng:S.lng}); },
     closeFinishProof:() => closeFinishProof(),
     closePickupIntake:() => closePickupIntake(),
     closePickupConfirm:() => closePickupConfirm(),
@@ -980,27 +949,6 @@ function renderStopList() {
                     header.innerHTML=`🚚 ${esc(stop.job_name||"Route")} · <span class="da-route-started">▶ Route started${js.route_started_at?` ${fmtStopTime(js.route_started_at,stop.tz_name)}`:""}</span>`;
                 }else{
                     header.innerHTML=`🚚 ${esc(stop.job_name||"Assigned route")} · <span style="opacity:.7">assigned route</span>`;
-                    const btn=mk("button","da-btn da-btn-green da-route-start-btn");
-                    btn.textContent="▶ Start Route";
-                    btn.onclick=async()=>{
-                        try{
-                            const res=await rpc("/dispatch/driver/job/start-route",{job_id:jid});
-                            if(res?.success){
-                                toast("▶ Route started");
-                                S.stops.forEach(s=>{
-                                    if(s.job_id===jid){
-                                        s.job_summary=s.job_summary||{};
-                                        s.job_summary.route_started=true;
-                                        s.job_summary.route_started_at=res.route_started_at;
-                                    }
-                                });
-                                renderStopList();
-                            }else{
-                                toast(res?.error||"Could not start route");
-                            }
-                        }catch(e){ toast("Could not start route — check your connection"); }
-                    };
-                    header.appendChild(btn);
                 }
                 list.insertBefore(header,row);
             }
@@ -1722,7 +1670,7 @@ async function finishNextStop(){
     await callStop(next.id,"en_route",{});
     patchStopState(next.id,{status:"en_route"});
     renderStopList();
-    openNav(next);
+    openNativeMaps(next);
 }
 
 function finishSchedule(){
@@ -2921,7 +2869,7 @@ async function doneNextStop(){
     await callStop(next.id,"en_route",{});
     patchStopState(next.id,{status:"en_route"});
     renderStopList();
-    openNav(next,{asTab:true});
+    openNativeMaps(next);
 }
 window.doneNextStop=doneNextStop;
 
@@ -4033,7 +3981,9 @@ function initStopMap(stop){
 
 // ── Actions ───────────────────────────────────────────────────────
 function doNavigate(){
-    openNav(S.stop);
+    // Spec §6: navigation is Google Maps' job — hand the stop off with its
+    // verified coordinates / Place ID; no embedded nav screen anymore.
+    openNativeMaps(S.stop);
     if(["arrived","completed","cancelled"].includes(S.stop?.status)) return;
     rpc("/dispatch/driver/stop/status",{stop_id:S.stop.id,action:"en_route",data:{}}).then(()=>{
         patchStopState(S.stop.id,{status:"en_route"});
@@ -4041,205 +3991,6 @@ function doNavigate(){
         if(visibleScreen()==="sStop") renderStopDetail();
     });
 }
-
-// ── In-app Navigation (Amazon Flex style) ──────────────────────────
-// Real turn-by-turn voice navigation requires a native mobile SDK (what
-// Amazon Flex uses) — there is no equivalent for a browser web app. This
-// gives the closest practical equivalent: a live map with the driver's
-// blue-arrow GPS position, the truck-friendly route line, a running
-// distance/ETA badge, and the next-turn instruction text from the
-// Directions API, refreshed periodically as the driver moves. "Open in
-// Maps app" remains available for spoken turn-by-turn guidance.
-function openNav(stop, opts){
-    opts=opts||{};
-    S.stop=stop;
-    S.navAsTab=!!opts.asTab;
-    // Restore the nav body when it was replaced by the empty state.
-    const nb=q("#navBody");
-    if(nb && nb.querySelector(".da-empty")) nb.innerHTML=`
-        <div id="navInstruction" class="da-nav-instruction">Calculating route…</div>
-        <div class="da-nav-info">
-          <div id="navDestType" class="da-nav-dest"></div>
-          <div id="navDestName" class="da-nav-name"></div>
-          <div id="navDestAddr" class="da-nav-addr"></div>
-        </div>
-        <div class="da-nav-actions">
-          <button class="da-btn da-btn-secondary" onclick="APP.openExternalNav()">🗺️ Open in Maps app (voice guidance)</button>
-          <button class="da-btn da-btn-green" onclick="APP.navArrived()">✓ I'm Here</button>
-        </div>
-        <div class="da-nav-actions da-nav-actions-row">
-          <button class="da-btn da-btn-secondary" onclick="APP.callDispatch()" title="Call Dispatch">📞 Dispatch</button>
-          <button class="da-btn da-btn-orange" onclick="doDelayed()" title="Report a problem with this stop">⚠ Report Issue</button>
-          <button class="da-btn da-btn-secondary" onclick="APP.recenterNav()" title="Recenter map on my location">🎯 Recenter</button>
-        </div>
-        <div class="da-nav-actions da-nav-actions-row da-nav-actions-row-compact">
-          <button class="da-btn da-btn-ghost" onclick="APP.closeNav()">${opts.asTab?"← Home":"← Back to Stop"}</button>
-          <button class="da-btn da-btn-ghost" onclick="doRestoreStop()">↺ Restore Stop</button>
-        </div>`;
-    showScreen("sNav");
-    const dt=q("#navDestType"), dn=q("#navDestName"), da=q("#navDestAddr");
-    if(dt)dt.textContent=stopTypeTitle(stop.type);
-    if(dn)dn.textContent=stopCompany(stop);
-    if(da)da.textContent=stop.address||"";
-    armGeo(stop);
-    if(S.mapsReady) initNavMap();
-    // "Navigate — Truck Route" should land the driver straight into a
-    // fullscreen map, matching what a real nav app does — not an inline
-    // map the driver has to separately tap ⛶ to expand. When the driver
-    // switches to the NAVIGATION tab itself, skip the auto-fullscreen.
-    if(!opts.asTab && !document.fullscreenElement) toggleNavFullscreen();
-    if(S.navTimer)clearInterval(S.navTimer);
-    S.navTimer=setInterval(()=>{ if(visibleScreen()==="sNav") refreshNavRoute(); }, 20000);
-}
-
-function closeNav(){
-    if(S.navTimer){ clearInterval(S.navTimer); S.navTimer=null; }
-    if(S.navAsTab){ showViewTab("home"); return; }
-    showScreen("sStop");
-    renderStopDetail();
-}
-
-function initNavMap(){
-    const el=q("#navMap"); if(!el||!isMaps())return;
-    if(!S.maps.nav){
-        S.maps.nav=new google.maps.Map(el,{
-            center:{lat:43.65,lng:-79.38},zoom:17,
-            mapTypeId:"roadmap",disableDefaultUI:false,gestureHandling:"greedy",
-            fullscreenControl:true,zoomControl:true,streetViewControl:false,
-            // Map/Satellite toggle moved to the top-right so it stops
-            // sitting under the top-left ✕ Close button.
-            mapTypeControl:true,
-            mapTypeControlOptions:{position:google.maps.ControlPosition.TOP_RIGHT}
-        });
-        S.navDirRenderer=new google.maps.DirectionsRenderer({
-            map:S.maps.nav, suppressMarkers:true,
-            polylineOptions:{strokeColor:"#1565C0",strokeWeight:6,strokeOpacity:.9}
-        });
-        S.trafficNav=new google.maps.TrafficLayer();
-    }
-    S.trafficNav?.setMap(S.navTrafficOn ? S.maps.nav : null);
-    refreshNavRoute();
-}
-
-function refreshNavRoute(){
-    const stop=S.stop;
-    if(!stop?.lat||!stop?.lng||!S.dirSvc||!S.maps.nav)return;
-    const origin=(S.lat&&S.lng)?{lat:S.lat,lng:S.lng}:null;
-    if(!origin){ const ins=q("#navInstruction"); if(ins)ins.textContent="Waiting for GPS…"; return; }
-    S.dirSvc.route({
-        origin, destination:{lat:stop.lat,lng:stop.lng},
-        travelMode:google.maps.TravelMode.DRIVING,
-        avoidTolls:S.routeOpts.tolls, avoidHighways:S.routeOpts.highways, avoidFerries:S.routeOpts.ferries
-    },(result,status)=>{
-        if(status!=="OK")return;
-        S.navDirRenderer.setDirections(result);
-        const leg=result.routes[0]?.legs?.[0];
-        if(!leg)return;
-        const badge=q("#navDistBadge");
-        if(badge)badge.textContent=`${leg.distance?.text||""} · ${leg.duration?.text||""}`;
-        const firstStep=leg.steps?.[0];
-        const ins=q("#navInstruction");
-        const text=firstStep?stripHtml(firstStep.instructions):"";
-        if(ins&&text)ins.textContent=text;
-        speakNavInstruction(text);
-        updateNavDriverMarker();
-    });
-}
-
-// Voice guidance via the browser's built-in Web Speech API — reads the next
-// turn instruction aloud. This is NOT Google's native spoken turn-by-turn
-// (that requires a mobile Navigation SDK, unavailable to a web app); it's
-// the closest practical equivalent achievable in a browser, and free.
-function speakNavInstruction(text){
-    if(!S.navVoiceOn||!text||text===S._lastSpoken||!window.speechSynthesis)return;
-    S._lastSpoken=text;
-    try{
-        window.speechSynthesis.cancel();
-        window.speechSynthesis.speak(new SpeechSynthesisUtterance(text));
-    }catch(e){}
-}
-
-function updateNavDriverMarker(){
-    if(!S.maps.nav||!S.lat||!S.lng)return;
-    const pos={lat:S.lat,lng:S.lng};
-    // Heading mode: rotate the arrow to match the direction of travel
-    // (computed from consecutive GPS fixes). Google Maps JS API only
-    // supports true map-rotation ("heading-up") on vector maps with a
-    // Map ID — without one, rotating the arrow icon is the honest
-    // equivalent available here.
-    let rotation=0;
-    if(S.navHeadingMode&&S._prevNavPos&&window.google?.maps?.geometry){
-        rotation=google.maps.geometry.spherical.computeHeading(
-            new google.maps.LatLng(S._prevNavPos.lat,S._prevNavPos.lng),
-            new google.maps.LatLng(pos.lat,pos.lng)
-        );
-    }
-    S._prevNavPos=pos;
-    if(!S.markers.navDriver){
-        S.markers.navDriver=new google.maps.Marker({
-            position:pos, map:S.maps.nav, zIndex:300,
-            icon:{path:google.maps.SymbolPath.FORWARD_CLOSED_ARROW,scale:8,rotation,
-                  fillColor:"#1565C0",fillOpacity:1,strokeColor:"#fff",strokeWeight:2}
-        });
-        // First real GPS fix — snap straight to a close, nav-style zoom
-        // instead of leaving the map at the wide fallback framing.
-        S.maps.nav.setCenter(pos);
-        S.maps.nav.setZoom(17);
-    } else {
-        S.markers.navDriver.setPosition(pos);
-        if(S.navHeadingMode){
-            const icon=S.markers.navDriver.getIcon();
-            icon.rotation=rotation;
-            S.markers.navDriver.setIcon(icon);
-        }
-    }
-    S.maps.nav.panTo(pos);
-}
-
-function toggleNavHeading(){
-    S.navHeadingMode=!S.navHeadingMode;
-    const btn=q("#navHeadingBtn"); if(btn)btn.innerHTML=S.navHeadingMode?"🧭 Heading":"🧭 North";
-    if(!S.navHeadingMode&&S.markers.navDriver){
-        const icon=S.markers.navDriver.getIcon(); icon.rotation=0; S.markers.navDriver.setIcon(icon);
-    }
-}
-window.toggleNavHeading=toggleNavHeading;
-
-function toggleNavVoice(){
-    S.navVoiceOn=!S.navVoiceOn;
-    const btn=q("#navVoiceBtn"); if(btn)btn.innerHTML=S.navVoiceOn?"🔊 Voice":"🔇 Voice";
-    if(!S.navVoiceOn&&window.speechSynthesis)window.speechSynthesis.cancel();
-}
-window.toggleNavVoice=toggleNavVoice;
-
-function toggleNavTraffic(){
-    S.navTrafficOn=!S.navTrafficOn;
-    const btn=q("#navTrafficBtn"); if(btn)btn.innerHTML=S.navTrafficOn?"🚦 Traffic":"🚦 No Traffic";
-    S.trafficNav?.setMap(S.navTrafficOn && S.maps.nav ? S.maps.nav : null);
-    S.trafficRoute?.setMap(S.navTrafficOn && S.maps.route ? S.maps.route : null);
-}
-window.toggleNavTraffic=toggleNavTraffic;
-
-function toggleNavFullscreen(){
-    const wrap=q("#navMapWrap");
-    if(!wrap) return;
-    if(document.fullscreenElement){
-        if(document.exitFullscreen){
-            document.exitFullscreen().catch(()=>setNavFullscreenUI(false));
-        }else{
-            setNavFullscreenUI(false);
-        }
-        return;
-    }
-    if(wrap.requestFullscreen){
-        wrap.requestFullscreen()
-            .then(()=>setNavFullscreenUI(true))
-            .catch(()=>setNavFullscreenUI(!S.navFullscreen));
-        return;
-    }
-    setNavFullscreenUI(!S.navFullscreen);
-}
-window.toggleNavFullscreen=toggleNavFullscreen;
 
 function stripHtml(html){
     const d=document.createElement("div"); d.innerHTML=html||""; return d.textContent||d.innerText||"";
@@ -4335,17 +4086,15 @@ async function doComplete(){
 async function doRestoreStop(){
     if(!S.stop) return;
     if(!confirm("Restore this stop back to Pending?"))return;
-    const fromNav=visibleScreen()==="sNav";
     const ok=await callStop(S.stop.id,"restore",{});
     if(ok){
         await reloadDay();
         const updated=S.stops.find(s=>s.id===S.stop.id) || S.stop;
         S.stop=updated;
         if(finishProofOpen()) closeFinishProof();
-        if(fromNav) showScreen("sStop");
         renderStopList();
         renderStopDetail();
-        if(fromNav && S.mapsReady) initStopMap(S.stop);
+        if(S.mapsReady) initStopMap(S.stop);
         toast("Stop restored");
     }
 }
@@ -4528,17 +4277,18 @@ async function callStop(id,action,data){
 }
 
 // ── Native Maps Navigation ────────────────────────────────────────
+// Spec §6: turn-by-turn lives in Google Maps, never in the app. Build the
+// universal "navigate" URL from the stop's verified coordinates (with its
+// Place ID when we have one) and hand off. The universal URL opens the
+// installed Google Maps app and falls back to maps.google.com otherwise.
 function openNativeMaps(stop){
-    if(!stop?.lat||!stop?.lng){toast("No GPS pin for this stop");return;}
-    const avoidList=[];
-    if(S.routeOpts.tolls)avoidList.push("tolls");
-    if(S.routeOpts.highways)avoidList.push("highways");
-    if(S.routeOpts.ferries)avoidList.push("ferries");
-    const avoidParam=avoidList.length?`&avoid=${avoidList.join("|")}`:"";
-    const isIOS=/iPhone|iPad|iPod/.test(navigator.userAgent);
-    const url=`https://www.google.com/maps/dir/?api=1&destination=${stop.lat},${stop.lng}&travelmode=driving${avoidParam}`;
-    if(isIOS){ window.location.href=`maps://maps.apple.com/?daddr=${stop.lat},${stop.lng}&dirflg=d`; setTimeout(()=>window.open(url,"_blank"),600); }
-    else window.open(url,"_blank");
+    if(!stop) return;
+    const params=new URLSearchParams({api:"1",travelmode:"driving",dir_action:"navigate"});
+    if(stop.lat&&stop.lng) params.set("destination",`${stop.lat},${stop.lng}`);
+    else if(stop.address) params.set("destination",stop.address);
+    else { toast("No destination available for this stop"); return; }
+    if(stop.google_place_id) params.set("destination_place_id",stop.google_place_id);
+    window.location.href=`https://www.google.com/maps/dir/?${params.toString()}`;
 }
 
 // ── GPS & Geofence ────────────────────────────────────────────────
@@ -4547,7 +4297,6 @@ function startGPS(){
     S.gpsId=navigator.geolocation.watchPosition(pos=>{
         S.lat=pos.coords.latitude; S.lng=pos.coords.longitude;
         checkGeo();
-        if(visibleScreen()==="sNav") updateNavDriverMarker();
     },null,{enableHighAccuracy:true,maximumAge:15000});
 }
 
@@ -4560,11 +4309,11 @@ function checkGeo(){
 }
 function triggerGeo(){
     // Spec §11: entering the stop geofence must NOT auto-mark Arrived.
-    // Switch from the NAVIGATION tab to the Stop Detail screen and surface
-    // ARRIVED / ISSUE at the top — the driver confirms arrival themselves.
+    // Surface the Stop Detail screen (from wherever the driver is — e.g.
+    // the reference Map tab) with ARRIVED / ISSUE at the top; the driver
+    // confirms arrival themselves.
     if(S.geoTimer)return; S.geoArmed=false;
-    if(S.stop && visibleScreen()==="sNav"){
-        S.navAsTab=false;
+    if(S.stop && visibleScreen()!=="sStop"){
         showScreen("sStop");
         renderStopDetail();
     }
@@ -4573,9 +4322,7 @@ function triggerGeo(){
 }
 async function confirmGeoArrive(){
     hide("geoBanner"); await doArrived();
-    if(visibleScreen()==="sNav") closeNav();
 }
-async function navConfirmArrived(){ await doArrived(); closeNav(); }
 function dismissGeo(){ clearGeoTimer(); hide("geoBanner"); S.geoArmed=false; }
 function clearGeoTimer(){ if(S.geoTimer){clearInterval(S.geoTimer);S.geoTimer=null;} }
 
@@ -4643,7 +4390,6 @@ async function pinSave(){
         if(updated) S.stop=updated;
         hide("oPinEdit");
         initStopMap(S.stop);
-        if(visibleScreen()==="sNav") refreshNavRoute();
         toast("Pin saved ✓");
     }
 }
@@ -4696,18 +4442,18 @@ function goBack(){
     else showScreen("sSchedule");
 }
 function showScreen(id){
-    ["sSchedule","sStop","sPickupStops","sNav","sLoadPlan"].forEach(s=>{ const el=q("#"+s); if(el)el.style.display=s===id?"flex":"none"; });
+    ["sSchedule","sStop","sPickupStops","sLoadPlan"].forEach(s=>{ const el=q("#"+s); if(el)el.style.display=s===id?"flex":"none"; });
     if(id==="sSchedule"){renderStopList();if(S.mapsReady)initRouteMap();}
     if(id==="sPickupStops"){renderPickupStopsScreen();}
     syncHistory();
 }
-function visibleScreen(){ for(const id of["sNav","sPickupStops","sStop","sLoadPlan","sSchedule"]){ const el=q("#"+id); if(el&&el.style.display!=="none")return id; } return "sSchedule"; }
+function visibleScreen(){ for(const id of["sPickupStops","sStop","sLoadPlan","sSchedule"]){ const el=q("#"+id); if(el&&el.style.display!=="none")return id; } return "sSchedule"; }
 function trigResize(k){ if(S.maps[k]&&isMaps())google.maps.event.trigger(S.maps[k],"resize"); }
 
 // ── Navigation state (URL/history sync) ─────────────────────────────
 // showScreen()/showViewTab() are the ONLY two places that change what the
-// driver sees — every other screen change (goBack, closeNav, openStop,
-// openNav, finishSchedule, selectDay, etc.) already funnels through one
+// driver sees — every other screen change (goBack, openStop,
+// finishSchedule, selectDay, etc.) already funnels through one
 // of those two, so hooking history sync there covers the whole app
 // without a second router or per-call-site changes.
 //
@@ -4718,9 +4464,8 @@ function currentNavParams(){
     const p=new URLSearchParams();
     p.set("screen",scr);
     p.set("date",S.selDate||today());
-    if(scr==="sSchedule") p.set("tab",S.viewTab==="stops"?"stops":"home");
-    if(scr==="sNav" && S.navAsTab) p.set("tab","nav");
-    if((scr==="sStop"||scr==="sNav"||scr==="sPickupStops")&&S.stop?.id) p.set("stop",String(S.stop.id));
+    if(scr==="sSchedule") p.set("tab",S.viewTab==="stops"?"stops":S.viewTab==="map"?"map":"home");
+    if((scr==="sStop"||scr==="sPickupStops")&&S.stop?.id) p.set("stop",String(S.stop.id));
     if(scr==="sPickupStops" && S.pickupStops?.jobId) p.set("job", String(S.pickupStops.jobId));
     if(scr==="sPickupStops" && S.pickupStops?.returnScreen) p.set("return", S.pickupStops.returnScreen);
     return p;
@@ -4748,7 +4493,7 @@ function parseNavParams(source){
     const tab=usp.get("tab");
     const dateOk=!!dateParam&&/^\d{4}-\d{2}-\d{2}$/.test(dateParam);
     return {
-        screen:["sStop","sPickupStops","sNav","sLoadPlan","sSchedule"].includes(screen)?screen:"sSchedule",
+        screen:["sStop","sPickupStops","sLoadPlan","sSchedule"].includes(screen)?screen:"sSchedule",
         date:dateOk?clampDriverDate(dateParam):today(),
         stopId:stopParam?parseInt(stopParam,10):null,
         jobId:jobParam?parseInt(jobParam,10):null,
@@ -4792,8 +4537,7 @@ async function applyNavState(target){
                 showScreen("sSchedule"); showViewTab("stops");
                 return;
             }
-            if(target.screen==="sNav") openNav(stop);
-            else if(target.screen==="sPickupStops"){
+            if(target.screen==="sPickupStops"){
                 if(!pickupSummary(stop).confirmed){
                     toast("Confirm pickup first.");
                     openStop(stop);

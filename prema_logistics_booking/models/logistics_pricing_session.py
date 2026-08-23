@@ -1,9 +1,41 @@
+import re
 import uuid
 
 from odoo import api, fields, models
 
 SHIPMENT_TYPE_SELECTION = [("ltl", "LTL"), ("ftl", "FTL")]
 TEMPERATURE_MODE_SELECTION = [("dry", "Dry"), ("reefer", "Reefer")]
+
+# Hub role codes used internally by the routing engine (shipment_routing_service)
+# for multi-leg hub-and-spoke itineraries. Never shown to customers verbatim.
+TRANSFER_LEG_TYPES = {
+    "feeder_to_hub", "final_mile", "linehaul", "transfer", "hub_transfer",
+}
+
+_LEG_TYPE_RE = re.compile(r"\(([^()]+)\)\s*$")
+
+
+def _customer_safe_leg_label(label, leg_index, total_legs):
+    """Customer-safe display label for a frozen price_snapshot leg line.
+
+    Internal routing language (leg numbers, corridor names, hub role codes
+    like feeder_to_hub / final_mile) never reaches the portal. The frozen
+    snapshot keeps its raw labels untouched — this function only maps them
+    for display:
+    - A single-leg itinerary → "Scheduled LTL Transportation".
+    - Multi-leg (hub-and-spoke) → the first leg keeps the plain label and
+      every transfer leg reads "Via PremaFirm Hub".
+    Non-"Leg …" lines (adjustments like "Volume discount (10%)") are already
+    customer-safe and pass through unchanged."""
+    if not str(label).startswith("Leg "):
+        return label
+    if total_legs == 1 or leg_index == 1:
+        return "Scheduled LTL Transportation"
+    match = _LEG_TYPE_RE.search(label)
+    leg_type = (match.group(1) if match else "").strip().lower()
+    if leg_type in TRANSFER_LEG_TYPES:
+        return "Via PremaFirm Hub"
+    return "Scheduled LTL Transportation"
 
 
 class LogisticsPricingSession(models.TransientModel):
@@ -108,6 +140,31 @@ class LogisticsPricingSession(models.TransientModel):
         return self.env["logistics.booking"]._extract_pallet_allocs_from_snapshot(
             self.price_snapshot,
         )
+
+    def customer_safe_snapshot_lines(self):
+        """Snapshot lines with internal routing language removed, for
+        customer-facing pricing display. Amounts are untouched — the frozen
+        snapshot remains the authoritative pricing record; only labels are
+        mapped. The sum of the returned amounts equals calculated_price by
+        construction (no line is added, dropped, or re-priced)."""
+        self.ensure_one()
+        snapshot = self.price_snapshot or []
+        total_legs = len([
+            line for line in snapshot
+            if isinstance(line, dict)
+            and str(line.get("label", "")).startswith("Leg ")
+        ])
+        leg_index = 0
+        lines = []
+        for line in snapshot:
+            if not isinstance(line, dict):
+                continue
+            label = line.get("label", "")
+            if str(label).startswith("Leg "):
+                leg_index += 1
+                label = _customer_safe_leg_label(label, leg_index, total_legs)
+            lines.append({"label": label, "amount": line.get("amount", 0.0) or 0.0})
+        return lines
 
     pallet_allocations = fields.Json(compute="_compute_pallet_allocations")
 

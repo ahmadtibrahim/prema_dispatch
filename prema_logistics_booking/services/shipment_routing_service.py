@@ -1128,7 +1128,6 @@ class ShipmentRoutingService:
             max_capacity, layout_code, layout_name
         """
         from datetime import timedelta
-        from ..services.vehicle_capacity_service import VehicleCapacityService
         from ..services.departure_resolver import DepartureResolver
         from ..services.direct_delivery_service import DirectDeliveryService
 
@@ -1253,36 +1252,17 @@ class ShipmentRoutingService:
                 current += timedelta(days=1)
                 continue
 
-            # Capacity display from the PICKUP (first) leg's exact
-            # departure — the same numbers the quote page will freeze.
+            # NOTE: exact pallet capacity is deliberately NOT exposed here.
+            # Every returned date already fits the requested quantity (the
+            # eligibility loop above filters on capacity server-side), so the
+            # payload carries only generic state — never max/reserved/
+            # remaining positions or layout details. Server-side validation
+            # at Get Price / confirm remains the authority.
             first_leg = all_legs[0]
-            pickup_dep = Departure.sudo().browse(first_leg.get("departure_id"))
-            cap = {}
-            if pickup_dep and pickup_dep.vehicle_id:
-                cap_result = VehicleCapacityService(self.env).evaluate(
-                    pickup_dep.vehicle_id, pickup_dep, 0)
-                layout = cap_result["selected_layout"] or {}
-                cap = {
-                    "available": True,
-                    "departure_id": pickup_dep.id,
-                    "departure_date": pickup_dep.departure_date.isoformat()
-                    if pickup_dep.departure_date else date_str,
-                    "max_pallets": cap_result["maximum_capacity"],
-                    "reserved_pallets": cap_result["reserved_pallets"],
-                    "remaining_pallets": cap_result["remaining_pallets"],
-                    "remaining_sellable_capacity": cap_result["remaining_sellable_capacity"],
-                    "layout_code": layout.get("code", ""),
-                    "layout_name": layout.get("name", ""),
-                }
-
             eligible.append({
                 "date": date_str,
                 "day_name": day_name.capitalize(),
-                "feeder_corridor": ", ".join(sorted(set(feeder_names))),
-                "onward_corridor": ", ".join(sorted(set(onward_names))),
                 # The exact service option this date sells:
-                "corridor_id": first_leg.get("corridor_id"),
-                "corridor_name": first_leg.get("corridor_name"),
                 "departure_id": first_leg.get("departure_id"),
                 "departure_date": first_leg.get("departure_date") or date_str,
                 "departure_time": self._time_part(first_leg.get("corridor_departure_datetime")),
@@ -1298,17 +1278,11 @@ class ShipmentRoutingService:
                 "corridor_departure_date": first_leg.get("departure_date") or date_str,
                 "corridor_departure_time": self._time_part(first_leg.get("corridor_departure_datetime")),
                 "corridor_departure_datetime": first_leg.get("corridor_departure_datetime"),
-                "timing_source": first_leg.get("timing_source", ""),
+                # Hub transfer: only the hub's PUBLIC name (customer-safe by
+                # design) — never internal corridor/leg language.
                 "transfer": bool(leg_count == 2),
                 "transfer_hub_name": transfer_hub_name,
-                "leg_count": leg_count,
-                "per_stop": per_stop,
-                "remaining_capacity": cap.get("remaining_pallets", 0),
-                "remaining_sellable_capacity": cap.get("remaining_sellable_capacity",
-                                                        cap.get("remaining_pallets", 0)),
-                "max_capacity": cap.get("max_pallets", 0),
-                "layout_code": cap.get("layout_code", ""),
-                "layout_name": cap.get("layout_name", ""),
+                "capacity_state": "available",
             })
 
             current += timedelta(days=1)
