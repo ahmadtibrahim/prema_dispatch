@@ -1,6 +1,6 @@
 {
     "name": "Prema Dispatch",
-    "version": "18.0.3.7.0",
+    "version": "18.0.3.7.1",
     "summary": "Booking, planning, live GPS tracking, driver mobile app, interactive truck Load Plans, warehouse loading mode, AI document extraction, VoIP calling and reporting for PremaFirm dispatch operations",
     "category": "Logistics",
     "description": """
@@ -149,6 +149,7 @@ A full in-app user manual is available from the Prema Dispatch app menu.
         "views/dispatch_location_views.xml",
         "views/dispatch_reports_views.xml",
         "views/driver_app_template.xml",
+        "views/driver_app_optimizer_v8_assets.xml",
         "views/fleet_vehicle_views.xml",
         "views/warehouse_app_template.xml",
         "views/dispatch_manual_template.xml",
