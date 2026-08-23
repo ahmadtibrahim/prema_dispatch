@@ -78,3 +78,19 @@ class LoadPlanDriverController(http.Controller):
     def remove_stop(self, load_plan_id, item_id, stop_id, version=None, **kw):
         plan = request.env["prema.dispatch.load.plan"].browse(load_plan_id)
         return _safe(lambda: plan.remove_stop_from_pallet(item_id, stop_id, version))
+
+    @http.route("/dispatch/driver/loadplan/recommend", type="json", auth="user", methods=["POST"])
+    def recommend(self, load_plan_id, version=None, **kw):
+        plan = request.env["prema.dispatch.load.plan"].browse(load_plan_id)
+
+        def _recommend():
+            plan._check_access()
+            plan._check_version(version)
+            return {"success": True, "recommendation": plan.recommend_updated_layout()}
+
+        return _safe(_recommend)
+
+    @http.route("/dispatch/driver/loadplan/accept_recommendation", type="json", auth="user", methods=["POST"])
+    def accept_recommendation(self, load_plan_id, recommendation=None, version=None, **kw):
+        plan = request.env["prema.dispatch.load.plan"].browse(load_plan_id)
+        return _safe(lambda: plan.accept_recommendation(recommendation or {}, version))

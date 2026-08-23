@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<odoo>
+    <!--
+        /dispatch/driver renders driver_app_page with a custom web.layout head.
+        That page intentionally direct-loads the Driver App assets instead of
+        relying on web.assets_frontend.  Keep the v8 optimizer in that same
+        direct-load chain so it is actually present on the Driver App.
+    -->
+    <template id="driver_app_optimizer_v8_assets" inherit_id="prema_dispatch.driver_app_page" name="Driver App Optimizer v8 Assets">
+        <xpath expr="//t[@t-set='head']/link[contains(@t-attf-href, 'driver_guided_flow_v7.css')]" position="after">
+            <link t-attf-href="/prema_dispatch/static/src/css/driver_load_plan_optimizer_v8.css?v=#{cache_ver}" rel="stylesheet"/>
+        </xpath>
+        <xpath expr="//script[contains(@t-attf-src, 'driver_guided_flow_v7_hotfix.js')]" position="after">
+            <script t-attf-src="/prema_dispatch/static/src/js/driver_load_plan_optimizer_v8.js?v=#{cache_ver}"/>
+        </xpath>
+    </template>
+</odoo>

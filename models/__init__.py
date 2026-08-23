@@ -22,6 +22,7 @@ from . import dispatch_pallet_allocation
 from . import dispatch_load_plan_event
 from . import dispatch_document
 from . import dispatch_load_plan
+from . import dispatch_load_plan_optimizer
 from . import dispatch_book_load_wizard
 from . import dispatch_location_photo
 from . import dispatch_location_extraction
