@@ -826,6 +826,14 @@ class PremaDispatchStop(models.Model):
 
     def action_mark_completed(self):
         self.ensure_one()
+        # Idempotent completion: a retried identical request (double tap,
+        # network replay) must not re-post the picked_up/delivered timeline
+        # event, re-run actuals backfill, or duplicate chatter / state
+        # transitions. The persisted business state IS the guard — an
+        # already-completed stop is already completed, so return the
+        # current result without any side effect.
+        if self.status == "completed":
+            return
         self._check_completion_requirements()
         vals = {
             "status": "completed",

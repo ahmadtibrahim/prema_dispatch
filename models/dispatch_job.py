@@ -3685,6 +3685,28 @@ class PremaDispatchJob(models.Model):
         if actual_count == current_count:
             return floor_items
         if actual_count > current_count:
+            # CASE C — the count GREW: existing pallets keep their identity
+            # and destination untouched; each ADDED pallet inherits the
+            # single obvious downstream delivery stop when exactly one
+            # legitimate one exists (Driver Step 2 then shows it
+            # pre-assigned, and the pickup gate's "assign every pallet"
+            # check is satisfiable without manual entry). With several
+            # delivery stops the destination is genuinely unknown — the new
+            # pallet stays unassigned for the driver to pick in Step 2.
+            sole_delivery = self.stop_ids.filtered(
+                lambda s: s.stop_type == "dropoff" and not s.planning_only
+                and s.status not in ("cancelled", "skipped")
+            )
+            sole_delivery = sole_delivery[0] if len(sole_delivery) == 1 else False
+
+            # Inherit temperature/weight only when every existing pickup
+            # pallet agrees — mixed freight stays on defaults, never guessed.
+            def _uniform(field):
+                vals = {getattr(i, field) for i in floor_items}
+                return next(iter(vals)) if len(vals) == 1 else False
+
+            common_temp = _uniform("temperature_zone") or False
+            common_weight = _uniform("weight_lbs") or 0.0
             vals_list = []
             for idx in range(current_count + 1, actual_count + 1):
                 vals_list.append({
@@ -3692,13 +3714,25 @@ class PremaDispatchJob(models.Model):
                     "name": f"{prefix}-{idx:02d}",
                     "sequence": idx * 10,
                     "pickup_stop_id": pickup_stop.id if pickup_stop else False,
+                    "delivery_stop_id": sole_delivery.id if sole_delivery else False,
                     "available_after_stop_id": False,
                     "load_plan_id": False,
                     "load_unit_type": "pallet",
+                    "temperature_zone": common_temp,
+                    "weight_lbs": common_weight,
                     "current_custody_type": "pending",
                     "status": "pending",
                 })
             created = self.env["prema.dispatch.item"].create(vals_list)
+            if sole_delivery:
+                # Canonical stop allocation: the pickup gate and Driver
+                # Step 2 read ACTIVE allocations, so delivery_stop_id alone
+                # is not enough — mirror the booking-import convention.
+                self.env["prema.dispatch.pallet.stop.allocation"].create([{
+                    "dispatch_item_id": item.id,
+                    "stop_id": sole_delivery.id,
+                    "unload_sequence": item.sequence,
+                } for item in created])
             return floor_items | created
         removable = floor_items[actual_count:]
         blocked = removable.filtered(lambda item: item.position_id or item.status in ("loaded", "in_transit", "partially_unloaded", "delivered"))
@@ -3740,15 +3774,37 @@ class PremaDispatchJob(models.Model):
             plan._check_version(values.get("version"))
         before_count = len(job.item_ids.filtered(lambda item: item.status != "cancelled" and item.consumes_floor_position and not item.pending_future_pickup))
         pickup_expected = len(stop._items_picked_here())
+        # Idempotent re-confirm: an identical retry (double tap / network
+        # replay) must not re-stamp the confirmation times, duplicate the
+        # chatter, or post a second pickup_confirmed timeline event. The
+        # stop's persisted actuals are the guard — same stop, same count
+        # already recorded is the same business action replayed.
+        prior_confirmed = bool(stop.pickup_actuals_confirmed_at)
+        prior_actual = int(stop.actual_pallets_in or 0) if prior_confirmed else None
+        identical_retry = prior_confirmed and prior_actual == actual_count
         floor_items = job._sync_actual_pallet_items(actual_count, pickup_stop=stop)
-        job.write({
+        job_vals = {
             "actual_received_pallet_count": actual_count,
-            "pickup_actuals_confirmed_at": fields.Datetime.now(),
-            "pickup_actuals_confirmed_by": self.env.user.id,
-            "pickup_variance_notes": values.get("variance_notes") or False,
-            "route_sheet_received_at": fields.Datetime.now() if values.get("route_sheet_received") else job.route_sheet_received_at,
-            "route_sheet_received_by": self.env.user.id if values.get("route_sheet_received") else job.route_sheet_received_by.id if job.route_sheet_received_by else False,
-        })
+        }
+        if "variance_notes" in values:
+            job_vals["pickup_variance_notes"] = values.get("variance_notes") or False
+        if not identical_retry:
+            job_vals.update({
+                "pickup_actuals_confirmed_at": fields.Datetime.now(),
+                "pickup_actuals_confirmed_by": self.env.user.id,
+            })
+        if values.get("route_sheet_received"):
+            if not identical_retry:
+                job_vals.update({
+                    "route_sheet_received_at": fields.Datetime.now(),
+                    "route_sheet_received_by": self.env.user.id,
+                })
+        else:
+            job_vals.update({
+                "route_sheet_received_at": job.route_sheet_received_at,
+                "route_sheet_received_by": job.route_sheet_received_by.id if job.route_sheet_received_by else False,
+            })
+        job.write(job_vals)
         # The booking state machine reads PER-STOP actuals
         # (logistics_booking.sync_state_from_dispatch): mirror the driver's
         # confirmation onto the pickup stop itself, and recompute the
@@ -3757,11 +3813,13 @@ class PremaDispatchJob(models.Model):
         # a job completed from the driver app can never reach booking state
         # "completed" (actuals_ok stays False on the stops).
         if stop.stop_type == "pickup":
-            stop.write({
-                "actual_pallets_in": actual_count,
-                "pickup_actuals_confirmed_at": fields.Datetime.now(),
-                "pickup_actuals_confirmed_by": self.env.user.id,
-            })
+            stop_vals = {"actual_pallets_in": actual_count}
+            if not identical_retry:
+                stop_vals.update({
+                    "pickup_actuals_confirmed_at": fields.Datetime.now(),
+                    "pickup_actuals_confirmed_by": self.env.user.id,
+                })
+            stop.write(stop_vals)
             if actual_count != pickup_expected:
                 # NOTE: called on `job` (the browsed recordset), not `self` —
                 # this method is invoked on an EMPTY recordset through
@@ -3769,7 +3827,7 @@ class PremaDispatchJob(models.Model):
                 # and self._recompute_downstream_stop_expectations() would
                 # raise "Expected singleton" on the variance path.
                 job._recompute_downstream_stop_expectations()
-        if job.vehicle_id:
+        if not identical_retry and job.vehicle_id:
             job.vehicle_id.sudo().message_post(body=(
                 f"Pickup actual pallets updated for {job.name}: expected {job.expected_pallet_count}, "
                 f"actual {actual_count}."
@@ -3791,9 +3849,10 @@ class PremaDispatchJob(models.Model):
             )
             recommendation = plan.evaluate_layout_for_capacity()
             plan.invalidate_recordset()
-        job.sudo().message_post(body=(
-            f"Pickup actual pallets confirmed by {self.env.user.name}: expected {job.expected_pallet_count}, actual {actual_count}."
-        ))
+        if not identical_retry:
+            job.sudo().message_post(body=(
+                f"Pickup actual pallets confirmed by {self.env.user.name}: expected {job.expected_pallet_count}, actual {actual_count}."
+            ))
         after_count = len(job.item_ids.filtered(lambda item: item.status != "cancelled" and item.consumes_floor_position and not item.pending_future_pickup))
         # Spec §23: record confirmation GPS with the actuals.
         if values.get("lat") is not None or values.get("lng") is not None:
@@ -3817,12 +3876,21 @@ class PremaDispatchJob(models.Model):
             }
         # Spec §34: the confirmed pickup propagates to the tracking timeline
         # immediately (distinct from the stop-completion "picked_up" event —
-        # this fires the moment the gate is satisfied).
-        self._post_timeline(
-            job, "pickup_confirmed",
-            notes=f"Actual pallets {actual_count} confirmed by {self.env.user.name}.",
-            stop=stop,
-        )
+        # this fires the moment the gate is satisfied). Idempotency: an
+        # identical retry that already announced it posts nothing (a retry
+        # after a gate-blocked first call DOES announce it — the first time
+        # the gate is actually ready).
+        already_announced = self.env["prema.dispatch.timeline.event"].sudo().search_count([
+            ("job_id", "=", job.id),
+            ("event_type", "=", "pickup_confirmed"),
+            ("stop_id", "=", stop.id),
+        ])
+        if not (identical_retry and already_announced):
+            self._post_timeline(
+                job, "pickup_confirmed",
+                notes=f"Actual pallets {actual_count} confirmed by {self.env.user.name}.",
+                stop=stop,
+            )
         return {
             "success": True,
             "job": job._driver_job_summary(),
