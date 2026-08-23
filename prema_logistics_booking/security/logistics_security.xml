@@ -161,5 +161,31 @@
             <field name="perm_create">1</field>
             <field name="perm_unlink">0</field>
         </record>
+
+        <!-- Customer-access relations — PRIVACY: a portal customer may only
+             see ITS OWN access rows (own alias, contact, instructions).
+             One customer's private facility data must never be readable by
+             another, even though the shared facility master is common. -->
+        <record id="ir_rule_customer_access_portal_own" model="ir.rule">
+            <field name="name">Portal: Own Facility Access Relations</field>
+            <field name="model_id" ref="model_logistics_location_customer_access"/>
+            <field name="domain_force">[('commercial_partner_id', '=', user.partner_id.commercial_partner_id.id)]</field>
+            <field name="groups" eval="[(4, ref('base.group_portal'))]"/>
+            <field name="perm_read">1</field>
+            <field name="perm_write">1</field>
+            <field name="perm_create">1</field>
+            <field name="perm_unlink">0</field>
+        </record>
+
+        <record id="ir_rule_customer_access_internal" model="ir.rule">
+            <field name="name">Internal: All Facility Access Relations</field>
+            <field name="model_id" ref="model_logistics_location_customer_access"/>
+            <field name="domain_force">[(1, '=', 1)]</field>
+            <field name="groups" eval="[(4, ref('base.group_user'))]"/>
+            <field name="perm_read">1</field>
+            <field name="perm_write">1</field>
+            <field name="perm_create">1</field>
+            <field name="perm_unlink">0</field>
+        </record>
     </data>
 </odoo>

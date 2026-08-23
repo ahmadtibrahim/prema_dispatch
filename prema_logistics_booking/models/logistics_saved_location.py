@@ -131,6 +131,17 @@ class LogisticsSavedLocation(models.Model):
     hours_status = fields.Selection([
         ("configured", "Configured"), ("not_configured", "Hours Not Configured"),
     ], default="not_configured", string="Hours Status")
+    hours_ids = fields.One2many(
+        "logistics.saved.location.hours", "saved_location_id",
+        string="Operating Hours",
+        help="Structured weekly operating hours — the scheduling authority "
+             "for ETA calculation (general/pickup/receiving scopes).",
+    )
+    hours_summary = fields.Char(
+        string="Hours Summary", compute="_compute_hours_summary", store=False,
+        help="Compact weekly schedule for list columns: 'Open 24h', "
+             "'Mon–Fri 08:00–17:00', 'Closed' or 'See hours'.",
+    )
     dock_info = fields.Char(string="Dock Info")
     opening_hours = fields.Char(string="Opening Hours")
     receiving_hours = fields.Char(string="Receiving Hours")
@@ -542,6 +553,158 @@ class LogisticsSavedLocation(models.Model):
             return existing
         return "both"
 
+    # ── Operating hours sync ──────────────────────────────────────────
+
+    @staticmethod
+    def _parse_time_float(value):
+        """'08:30' → 8.5; '17:00' → 17.0. ''/None → None."""
+        if value in (None, ""):
+            return None
+        try:
+            parts = str(value).strip().split(":")
+            return int(parts[0]) + int(parts[1]) / 60.0
+        except (ValueError, IndexError):
+            return None
+
+    def sync_portal_hours(self, hour_rows, scope="general"):
+        """Persist a complete weekly schedule from the portal form.
+
+        hour_rows: list of dicts, one per day (0=Monday … 6=Sunday):
+            {"day": int, "status": "open_24h"|"custom"|"closed",
+             "open": "HH:MM" or float, "close": "HH:MM" or float}
+        Replaces the existing rows for that scope with the submitted
+        state — the portal form submits the WHOLE week, so stale rows are
+        archived, never left behind. Structured weekly records are the
+        scheduling authority (ItineraryPlanner reads them, not the
+        free-text opening_hours Char).
+        """
+        self.ensure_one()
+        Hours = self.env["logistics.saved.location.hours"]
+        old = Hours.search([
+            ("saved_location_id", "=", self.id),
+            ("service_scope", "=", scope),
+            ("active", "=", True),
+        ])
+        if old:
+            old.write({"active": False})
+        for row in hour_rows or []:
+            status = (row.get("status") or "open_24h").strip()
+            if status not in ("closed", "open_24h", "custom"):
+                status = "open_24h"
+            open_t = self._parse_time_float(row.get("open")) if status == "custom" else 0.0
+            close_t = (
+                self._parse_time_float(row.get("close")) if status == "custom" else 24.0
+            )
+            if status == "closed":
+                open_t, close_t = 0.0, 0.0
+            Hours.create({
+                "saved_location_id": self.id,
+                "day_of_week": str(row.get("day", 0) % 7),
+                "service_scope": scope,
+                "status": status,
+                "open_time": open_t or 0.0,
+                "close_time": close_t or 24.0,
+                "sequence": 10,
+                "active": True,
+            })
+        configured = bool(Hours.search_count([
+            ("saved_location_id", "=", self.id), ("active", "=", True),
+        ]))
+        if self.hours_status != ("configured" if configured else "not_configured"):
+            self.write({
+                "hours_status": "configured" if configured else "not_configured",
+            })
+        return True
+
+    @api.depends("hours_ids", "hours_status")
+    def _compute_hours_summary(self):
+        """Compact weekly-hours label from the structured general-scope
+        rows: 'Open 24h' / 'Mon–Fri 08:00–17:00' / 'Closed' / 'See hours'."""
+        Hours = self.env["logistics.saved.location.hours"]
+        for rec in self:
+            rows = Hours.search([
+                ("saved_location_id", "=", rec.id),
+                ("service_scope", "=", "general"),
+                ("active", "=", True),
+            ])
+            if not rows:
+                rec.hours_summary = "Hours not set"
+                continue
+            by_day = {}
+            for row in rows:
+                by_day.setdefault(row.day_of_week, row)
+            if len(by_day) == 7:
+                statuses = {r.status for r in by_day.values()}
+                if statuses == {"open_24h"}:
+                    rec.hours_summary = "Open 24h"
+                    continue
+                if statuses == {"closed"}:
+                    rec.hours_summary = "Closed"
+                    continue
+
+            def _label(row):
+                if row.status == "open_24h":
+                    return "24h"
+                if row.status == "closed":
+                    return "Closed"
+                return "%s–%s" % (
+                    self._float_to_hhmm(row.open_time or 0.0),
+                    self._float_to_hhmm(row.close_time or 24.0),
+                )
+
+            # Weekday block vs weekend block, when each block is uniform.
+            weekday_rows = [by_day.get(str(d)) for d in range(5) if str(d) in by_day]
+            weekend_rows = [by_day.get(str(d)) for d in (5, 6) if str(d) in by_day]
+            parts = []
+            if len(weekday_rows) == 5 and len({_label(r) for r in weekday_rows}) == 1:
+                parts.append("Mon–Fri %s" % _label(weekday_rows[0]))
+            if len(weekend_rows) == 2 and len({_label(r) for r in weekend_rows}) == 1:
+                parts.append("Sat–Sun %s" % _label(weekend_rows[0]))
+            if len(parts) == 2:
+                rec.hours_summary = " · ".join(parts)
+            elif len(parts) == 1:
+                rec.hours_summary = parts[0]
+            else:
+                rec.hours_summary = "See hours"
+
+    def hours_context_dict(self):
+        """Template context for the portal hours form: per-day status and
+        HH:MM open/close strings, plus the stored timezone. Loads existing
+        values back so Add/Edit always show the persisted schedule."""
+        Hours = self.env["logistics.saved.location.hours"]
+        days = {}
+        for day in range(7):
+            rows = Hours.search([
+                ("saved_location_id", "=", self.id),
+                ("day_of_week", "=", str(day)),
+                ("service_scope", "=", "general"),
+                ("active", "=", True),
+            ], order="sequence", limit=1)
+            if rows:
+                row = rows[0]
+                if row.status == "open_24h":
+                    days[day] = {"status": "open_24h", "open": "00:00", "close": "23:59"}
+                elif row.status == "closed":
+                    days[day] = {"status": "closed", "open": "08:00", "close": "17:00"}
+                else:
+                    days[day] = {
+                        "status": "custom",
+                        "open": self._float_to_hhmm(row.open_time or 0.0),
+                        "close": self._float_to_hhmm(row.close_time or 24.0),
+                    }
+            else:
+                # Portal form default: weekdays open_24h, weekends closed.
+                days[day] = {
+                    "status": "open_24h" if day < 5 else "closed",
+                    "open": "08:00", "close": "17:00",
+                }
+        return {"hours_by_day": days, "timezone": self.timezone or "America/Toronto"}
+
+    @staticmethod
+    def _float_to_hhmm(value):
+        value = float(value or 0.0) % 24.0
+        return "%02d:%02d" % (int(value), int(round((value % 1) * 60)) % 60)
+
     # ── Dispatch location sync ────────────────────────────────────────
 
     def _sync_dispatch_location(self):
@@ -552,25 +715,35 @@ class LogisticsSavedLocation(models.Model):
         dispatch location is the execution mirror.
 
         When dispatch_location_id is already set (shared master facility),
-        only update non-identity operational fields — do not overwrite
-        the shared facility's core data.
+        never touch the master's partner_id or identity data — one
+        customer's saved location must not overwrite a facility shared by
+        many customers. The customer↔facility relationship (portal
+        visibility, pickup/delivery capability, defaults, alias, private
+        contact and instructions) lives on
+        logistics.location.customer.access instead.
         """
         DispatchLocation = self.env["prema.dispatch.location"].sudo()
+        Access = self.env["logistics.location.customer.access"].sudo()
         for rec in self:
-            # If already linked to a shared master facility, only update
-            # operational fields — don't overwrite master identity data.
-            # Do NOT overwrite the global master stop_type based on one
-            # customer's preference.
+            # Shared master facility: keep the customer's per-facility data
+            # on the ACCESS relation — never on the master itself.
             if rec.dispatch_location_id:
-                # Only update partner link on the master — never overwrite
-                # master physical facility data with customer-specific values.
-                # Customer contact/instructions stay on logistics.saved.location.
-                rec.dispatch_location_id.write({
-                    "partner_id": rec.commercial_partner_id.id,
-                })
+                Access.ensure_access(
+                    rec.dispatch_location_id, rec.commercial_partner_id,
+                    portal_enabled=True,
+                    can_pickup=rec._is_pickup_capable(),
+                    can_delivery=rec._is_delivery_capable(),
+                    is_default_pickup=rec.is_default_pickup,
+                    is_default_delivery=rec.is_default_delivery,
+                    customer_alias=rec.name,
+                    contact_name=rec.contact_name,
+                    contact_phone=rec.contact_phone,
+                    contact_email=rec.contact_email,
+                    pickup_instructions=rec.pickup_instructions,
+                    delivery_instructions=rec.delivery_instructions,
+                )
                 continue
 
-            # Build address string for dispatch location (required field)
             # Build address string for dispatch location (required field)
             address_parts = [rec.street or "", rec.street2 or "", rec.city or ""]
             address = ", ".join(p for p in address_parts if p) or rec.name
@@ -579,7 +752,62 @@ class LogisticsSavedLocation(models.Model):
             # pickup → pickup, delivery → delivery, both → both
             mapped_stop_type = rec.location_type if rec.location_type in ("pickup", "delivery", "both") else "delivery"
 
-            vals = {
+            # Dedupe priority (canonical facility authority): link to an
+            # existing master instead of cloning it —
+            #   1. Google Place ID + Unit
+            #   2. Normalized address + Unit
+            #   3. else create a new master (candidate for manual review)
+            norm_unit = DispatchLocation._normalize_unit(rec.unit or "")
+            dispatch_loc = DispatchLocation.search([
+                ("google_place_id", "=", (rec.google_place_id or "").strip()),
+                ("normalized_unit", "=", norm_unit),
+                ("active", "=", True),
+            ], limit=1)
+            if not dispatch_loc and (rec.google_place_id or (rec.street and rec.city)):
+                # Same normalization as prema.dispatch.location's stored
+                # normalized_address_hash (address WITHOUT unit).
+                import hashlib
+                country = rec.country_id.code if rec.country_id else ""
+                raw_addr = " ".join(p for p in [
+                    rec.street, rec.street2, rec.city,
+                    rec.state_id.code if rec.state_id else "",
+                    DispatchLocation._normalize_postal(rec.postal_code or ""),
+                    country,
+                ] if p)
+                normalized = DispatchLocation._normalize_address_street(
+                    raw_addr or rec.name)
+                if normalized:
+                    dispatch_loc = DispatchLocation.search([
+                        ("normalized_address_hash", "=",
+                         hashlib.sha256(normalized.encode()).hexdigest()),
+                        ("normalized_unit", "=", norm_unit),
+                        ("active", "=", True),
+                    ], limit=1)
+
+            if dispatch_loc:
+                # Linked to an existing master: register the customer's
+                # access relation (never write onto the shared master).
+                rec.dispatch_location_id = dispatch_loc.id
+                Access.ensure_access(
+                    dispatch_loc, rec.commercial_partner_id,
+                    portal_enabled=True,
+                    can_pickup=rec._is_pickup_capable(),
+                    can_delivery=rec._is_delivery_capable(),
+                    is_default_pickup=rec.is_default_pickup,
+                    is_default_delivery=rec.is_default_delivery,
+                    customer_alias=rec.name,
+                    contact_name=rec.contact_name,
+                    contact_phone=rec.contact_phone,
+                    contact_email=rec.contact_email,
+                    pickup_instructions=rec.pickup_instructions,
+                    delivery_instructions=rec.delivery_instructions,
+                )
+                continue
+
+            # New master facility (first claimant): partner_id is set only
+            # here at creation — later customers link to the existing master
+            # through the branches above and never overwrite it.
+            dispatch_loc = DispatchLocation.create({
                 "name": rec.name,
                 "address": address,
                 "street": rec.street or "",
@@ -598,12 +826,24 @@ class LogisticsSavedLocation(models.Model):
                 "location_number": rec.store_number or "",
                 "postal_code": rec.postal_code or "",
                 "stop_type": mapped_stop_type,
-            }
-            if rec.dispatch_location_id:
-                rec.dispatch_location_id.write(vals)
-            else:
-                dispatch_loc = DispatchLocation.create(vals)
-                rec.dispatch_location_id = dispatch_loc.id
+            })
+            rec.dispatch_location_id = dispatch_loc.id
+            # First customer's access relation (same fields as the shared
+            # master branch above).
+            Access.ensure_access(
+                dispatch_loc, rec.commercial_partner_id,
+                portal_enabled=True,
+                can_pickup=rec._is_pickup_capable(),
+                can_delivery=rec._is_delivery_capable(),
+                is_default_pickup=rec.is_default_pickup,
+                is_default_delivery=rec.is_default_delivery,
+                customer_alias=rec.name,
+                contact_name=rec.contact_name,
+                contact_phone=rec.contact_phone,
+                contact_email=rec.contact_email,
+                pickup_instructions=rec.pickup_instructions,
+                delivery_instructions=rec.delivery_instructions,
+            )
 
     # ── Mark used ─────────────────────────────────────────────────────
 

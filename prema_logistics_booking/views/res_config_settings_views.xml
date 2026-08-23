@@ -134,6 +134,34 @@
                             </div>
                         </div>
                     </div>
+                    <h2>Night-Before Finalization</h2>
+                    <div class="row mt16 o_settings_container">
+                        <div class="col-12 col-lg-6 o_setting_box">
+                            <div class="o_setting_left_pane">
+                                <field name="logistics_route_finalization_hour"/>
+                            </div>
+                            <div class="o_setting_right_pane">
+                                <label for="logistics_route_finalization_hour"/>
+                                <div class="text-muted">
+                                    Hour at which tomorrow's departures get their
+                                    itinerary finalized (stop order vs facility
+                                    hours, appointments and windows). Not hardcoded.
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-12 col-lg-6 o_setting_box">
+                            <div class="o_setting_left_pane">
+                                <field name="logistics_customer_eta_notification_hour"/>
+                            </div>
+                            <div class="o_setting_right_pane">
+                                <label for="logistics_customer_eta_notification_hour"/>
+                                <div class="text-muted">
+                                    Hour at which customers receive their email with
+                                    CONFIRMED pickup / delivery windows. Not hardcoded.
+                                </div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </xpath>
         </field>

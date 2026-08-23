@@ -1,0 +1,138 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- ═════════════════════════════════════════════════════════════════
+         CUSTOMER-ACCESS RELATION (backend)
+         One row per (canonical facility, customer). Customer-specific
+         data — alias, contact, instructions — lives here, never on the
+         shared facility master.
+         ═════════════════════════════════════════════════════════════════ -->
+    <record id="logistics_location_customer_access_list" model="ir.ui.view">
+        <field name="name">logistics.location.customer.access.list</field>
+        <field name="model">logistics.location.customer.access</field>
+        <field name="arch" type="xml">
+            <list string="Customer Facility Access" editable="bottom">
+                <field name="facility_id"/>
+                <field name="commercial_partner_id"/>
+                <field name="customer_alias"/>
+                <field name="portal_enabled"/>
+                <field name="can_pickup"/>
+                <field name="can_delivery"/>
+                <field name="is_default_pickup"/>
+                <field name="is_default_delivery"/>
+                <field name="customer_reference"/>
+                <field name="contact_name"/>
+                <field name="contact_phone"/>
+                <field name="active"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="logistics_location_customer_access_form" model="ir.ui.view">
+        <field name="name">logistics.location.customer.access.form</field>
+        <field name="model">logistics.location.customer.access</field>
+        <field name="arch" type="xml">
+            <form string="Customer Facility Access">
+                <sheet>
+                    <group>
+                        <group>
+                            <field name="facility_id"/>
+                            <field name="commercial_partner_id"/>
+                            <field name="customer_alias"/>
+                            <field name="customer_reference"/>
+                        </group>
+                        <group>
+                            <field name="portal_enabled" widget="boolean_toggle"/>
+                            <field name="can_pickup" widget="boolean_toggle"/>
+                            <field name="can_delivery" widget="boolean_toggle"/>
+                            <field name="is_default_pickup" widget="boolean_toggle"/>
+                            <field name="is_default_delivery" widget="boolean_toggle"/>
+                            <field name="active" widget="boolean_toggle"/>
+                        </group>
+                    </group>
+                    <group string="Private Contact — visible ONLY to this customer">
+                        <field name="contact_name"/>
+                        <field name="contact_phone"/>
+                        <field name="contact_email"/>
+                    </group>
+                    <group string="Private Instructions — visible ONLY to this customer">
+                        <field name="pickup_instructions" nolabel="1"/>
+                        <field name="delivery_instructions" nolabel="1"/>
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <record id="action_logistics_location_customer_access" model="ir.actions.act_window">
+        <field name="name">Customer Facility Access</field>
+        <field name="res_model">logistics.location.customer.access</field>
+        <field name="view_mode">list,form</field>
+    </record>
+
+    <!-- ═════════════════════════════════════════════════════════════════
+         FACILITY FORM — add "Customers Using Location" + "Operating
+         Hours" tabs to the canonical facility (prema.dispatch.location).
+         ═════════════════════════════════════════════════════════════════ -->
+    <record id="dispatch_location_form_customer_access_tabs" model="ir.ui.view">
+        <field name="name">prema.dispatch.location.form.customer.access.tabs</field>
+        <field name="model">prema.dispatch.location</field>
+        <field name="inherit_id" ref="prema_dispatch.dispatch_location_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//sheet" position="inside">
+                <notebook>
+                    <page string="Customers Using Location"
+                          groups="prema_dispatch.group_dispatch_manager">
+                        <field name="customer_access_ids" nolabel="1"
+                               context="{'default_facility_id': id}">
+                            <list string="Customers Using This Facility" editable="bottom">
+                                <field name="commercial_partner_id"/>
+                                <field name="customer_alias"/>
+                                <field name="portal_enabled"/>
+                                <field name="can_pickup"/>
+                                <field name="can_delivery"/>
+                                <field name="is_default_pickup"/>
+                                <field name="is_default_delivery"/>
+                                <field name="contact_name"/>
+                                <field name="contact_phone"/>
+                            </list>
+                        </field>
+                    </page>
+                    <page string="Operating Hours"
+                          groups="prema_dispatch.group_dispatch_manager">
+                        <p class="text-muted mb-2">
+                            Facility hours are drawn from the linked saved
+                            locations' structured weekly schedules (the
+                            facility master holds no hours of its own).
+                            Customer-specific hours live on each customer's
+                            saved location.
+                        </p>
+                        <field name="facility_hours_summary" readonly="1"/>
+                        <field name="customer_access_ids" invisible="1"/>
+                    </page>
+                </notebook>
+            </xpath>
+        </field>
+    </record>
+
+    <!-- ═════════════════════════════════════════════════════════════════
+         LOCATIONS MENU LIST — one menu with the canonical columns:
+         Facility, Address, City, Region, Google Verified, Facility Hours,
+         Customers Using, Visits, Last Visit, Active.
+         ═════════════════════════════════════════════════════════════════ -->
+    <record id="dispatch_location_list_canonical_columns" model="ir.ui.view">
+        <field name="name">prema.dispatch.location.list.canonical.columns</field>
+        <field name="model">prema.dispatch.location</field>
+        <field name="inherit_id" ref="prema_dispatch.dispatch_location_list"/>
+        <field name="arch" type="xml">
+            <field name="chain_name" position="after">
+                <field name="city" string="City"/>
+            </field>
+            <field name="google_verified" position="after">
+                <field name="region_label" string="Region" optional="show"/>
+                <field name="facility_hours_summary" string="Facility Hours" optional="show"/>
+                <field name="customer_access_count" string="Customers Using" optional="show"/>
+                <field name="active" string="Active" optional="hide"/>
+            </field>
+        </field>
+    </record>
+</odoo>

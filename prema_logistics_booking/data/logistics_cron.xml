@@ -48,4 +48,18 @@
         <field name="active" eval="True"/>
         <field name="priority">10</field>
     </record>
+
+    <!-- Night-before route finalization: honors the CONFIGURABLE Route
+         Finalization Time and Customer ETA Notification Time (Dispatch
+         Settings) — the cron only acts at those configured hours. -->
+    <record id="ir_cron_logistics_night_before_finalization" model="ir.cron">
+        <field name="name">Logistics: Night-Before Route Finalization</field>
+        <field name="model_id" ref="model_logistics_corridor_departure"/>
+        <field name="state">code</field>
+        <field name="code">model._cron_night_before_finalization()</field>
+        <field name="interval_number">1</field>
+        <field name="interval_type">hours</field>
+        <field name="active" eval="True"/>
+        <field name="priority">8</field>
+    </record>
 </odoo>

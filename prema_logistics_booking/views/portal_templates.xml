@@ -1780,20 +1780,25 @@
                 <div class="card-body">
                     <div class="row mb-3">
                         <div class="col-6">
-                            <small class="text-muted">Pickup</small><br/>
+                            <small class="text-muted">Estimated Pickup Time</small><br/>
                             <strong><t t-esc="session.pickup_date"/></strong>
                             <t t-if="quote and quote.get('pickup_time')">
                                 <span class="text-muted"> · <t t-esc="quote['pickup_time']"/></span>
                             </t>
                         </div>
                         <div class="col-6">
-                            <small class="text-muted">Estimated Delivery</small><br/>
+                            <small class="text-muted">Estimated Delivery Time</small><br/>
                             <strong><t t-esc="session.delivery_date_estimate"/></strong>
                             <t t-if="quote and quote.get('delivery_time')">
                                 <span class="text-muted"> · <t t-esc="quote['delivery_time']"/></span>
                             </t>
                         </div>
                     </div>
+                    <small class="text-muted">
+                        Pickup / delivery times are ESTIMATES based on facility
+                        operating hours, appointments and windows. They are
+                        confirmed the night before your pickup.
+                    </small>
                     <small class="text-muted">Service</small><br/>
                     <strong>Scheduled LTL</strong>
                     <t t-if="quote and quote.get('transfer_hub_name')">
@@ -1907,10 +1912,12 @@
                     <!-- Delivery Stops -->
                     <div>
                         <t t-if="delivery_stops">
-                            <t t-if="session.shared_pallet_mode">
+                            <!-- "Shared" is only meaningful with 2+ stops —
+                                 a single stop is never shown as shared. -->
+                            <t t-if="session.shared_pallet_mode and len(delivery_stops) > 1">
                                 <small class="text-muted">📍 DELIVERIES · <t t-esc="len(delivery_stops)"/> STOPS · <span style="color:#7b1fa2">SHARED PALLET</span></small>
                             </t>
-                            <t t-if="not session.shared_pallet_mode">
+                            <t t-if="not session.shared_pallet_mode or len(delivery_stops) &lt;= 1">
                                 <small class="text-muted">📍 DELIVERIES · <t t-esc="len(delivery_stops)"/> STOPS</small>
                             </t>
                         </t>
@@ -1921,7 +1928,7 @@
                                         <div>
                                             <strong><t t-esc="stop.sequence"/>.</strong>
                                             <strong><t t-esc="stop.location_name or stop.city or 'Stop ' + str(stop.sequence)"/></strong>
-                                            <t t-if="stop.shared_pallet"><span class="badge ms-1" style="background:#7b1fa2;color:#fff;font-size:0.7rem">SHARED</span></t>
+                                            <t t-if="stop.shared_pallet and session.shared_pallet_mode and len(delivery_stops) > 1"><span class="badge ms-1" style="background:#7b1fa2;color:#fff;font-size:0.7rem">SHARED</span></t>
                                             <br/>
                                             <small class="text-muted">
                                                 <t t-if="stop.street"><t t-esc="stop.street"/> · </t>
@@ -1930,10 +1937,10 @@
                                             </small>
                                         </div>
                                         <div class="text-end">
-                                            <t t-if="not session.shared_pallet_mode">
+                                            <t t-if="not session.shared_pallet_mode or len(delivery_stops) &lt;= 1">
                                                 <strong><t t-esc="stop.pallets"/> pallet<t t-if="stop.pallets != 1">s</t></strong><br/>
                                             </t>
-                                            <t t-if="session.shared_pallet_mode">
+                                            <t t-if="session.shared_pallet_mode and len(delivery_stops) > 1">
                                                 <small class="text-muted">Shared pallet</small><br/>
                                             </t>
                                             <small class="text-muted"><t t-esc="'%g' % stop.weight_lbs"/> lb</small>
@@ -1987,53 +1994,56 @@
             <div class="card mb-4">
                 <div class="card-header bg-light"><strong>PRICING SUMMARY</strong></div>
                 <div class="card-body">
-                    <!-- Per-stop breakdown built from the session's own
-                         priced components; reconciles to calculated_price. -->
-                    <t t-if="stop_pricing and len(stop_pricing['stops']) > 1">
-                        <t t-if="stop_pricing['route_transportation'] > 0">
-                            <small class="text-muted">Allocated Transportation</small>
+                    <!-- Frozen per-component breakdown. Every line below is
+                         rendered from session.price_snapshot (built by the
+                         canonical LTL calculator at quote time) — nothing is
+                         recalculated here, so the lines sum exactly to
+                         session.calculated_price by construction. -->
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+                        <t t-if="session.shared_pallet_mode and delivery_stops and len(delivery_stops) > 1">
+                            <span><t t-esc="session.physical_pallets or session.pallets"/> Physical Pallet<t t-if="(session.physical_pallets or session.pallets) != 1">s</t> · Shared Across <t t-esc="len(delivery_stops)"/> Stops × LTL Scheduled Service</span>
                         </t>
-                        <t t-foreach="stop_pricing['stops']" t-as="sp">
+                        <t t-if="not session.shared_pallet_mode or not delivery_stops or len(delivery_stops) &lt;= 1">
+                            <span><t t-esc="session.physical_pallets or session.pallets"/> Physical Pallet<t t-if="(session.physical_pallets or session.pallets) != 1">s</t> × LTL Scheduled Service</span>
+                        </t>
+                    </div>
+                    <t t-if="stop_pricing and stop_pricing['legs']">
+                        <small class="text-muted d-block mt-2 mb-1"><strong>BASE PALLET TRANSPORTATION</strong></small>
+                        <t t-foreach="stop_pricing['legs']" t-as="pl">
                             <div class="d-flex justify-content-between align-items-center py-1">
-                                <span><strong t-esc="sp['index']"/>.
-                                    <t t-esc="sp['name']"/>
-                                    <t t-if="sp['city']"><small class="text-muted"> — <t t-esc="sp['city']"/></small></t>
-                                </span>
-                                <t t-if="sp['amount'] > 0">
-                                    <span>$<t t-esc="'%.2f' % sp['amount']"/></span>
-                                </t>
-                                <t t-if="sp['amount'] &lt;= 0">
-                                    <small class="text-muted">Included in Route</small>
-                                </t>
+                                <span><t t-esc="pl['label']"/></span>
+                                <span><t t-esc="pl['pallets']"/> pallet<t t-if="pl['pallets'] != 1">s</t> × $<t t-esc="'%.2f' % pl['per_pallet_price']"/> = $<t t-esc="'%.2f' % pl['base_charge']"/></span>
                             </div>
                         </t>
-                        <t t-if="stop_pricing['route_transportation'] > 0">
-                            <div class="d-flex justify-content-between align-items-center py-1 border-top">
-                                <span><strong>Transportation Subtotal</strong>
-                                    <t t-if="stop_pricing['route_label']">
-                                        <small class="text-muted"> — <t t-esc="stop_pricing['route_label']"/></small>
-                                    </t>
+                        <div class="d-flex justify-content-between align-items-center py-1 border-top">
+                            <span class="text-muted">Transportation subtotal</span>
+                            <span>$<t t-esc="'%.2f' % stop_pricing['base_total']"/></span>
+                        </div>
+                    </t>
+                    <t t-if="stop_pricing and stop_pricing['weight_rows']">
+                        <small class="text-muted d-block mt-2 mb-1"><strong>WEIGHT</strong></small>
+                        <t t-foreach="stop_pricing['weight_rows']" t-as="wr">
+                            <div class="d-flex justify-content-between align-items-center py-1">
+                                <span><t t-esc="wr['label']"/>
+                                    <small class="text-muted d-block"><t t-esc="'%.0f' % wr['actual_weight_lbs']"/> lb actual — <t t-esc="'%.0f' % wr['included_weight_lbs']"/> lb included, excess <t t-esc="'%.0f' % wr['excess_weight_lbs']"/> lb × $<t t-esc="'%.2f' % wr['excess_weight_rate_per_lb']"/>/lb</small>
                                 </span>
-                                <span>$<t t-esc="'%.2f' % stop_pricing['route_transportation']"/></span>
+                                <span>$<t t-esc="'%.2f' % wr['excess_weight_charge']"/></span>
                             </div>
                         </t>
+                        <div class="d-flex justify-content-between align-items-center py-1 border-top">
+                            <span class="text-muted">Weight subtotal</span>
+                            <span>$<t t-esc="'%.2f' % stop_pricing['weight_total']"/></span>
+                        </div>
+                    </t>
+                    <t t-if="stop_pricing and stop_pricing['booking_level']">
+                        <small class="text-muted d-block mt-2 mb-1"><strong>ADJUSTMENTS</strong></small>
                         <t t-foreach="stop_pricing['booking_level']" t-as="bl">
-                            <div class="d-flex justify-content-between align-items-center py-1 border-top">
-                                <small class="text-muted"><t t-esc="bl['label']"/></small>
+                            <div class="d-flex justify-content-between align-items-center py-1">
+                                <span><t t-esc="bl['label']"/></span>
                                 <span>$<t t-esc="'%.2f' % bl['amount']"/></span>
                             </div>
                         </t>
-                        <hr/>
                     </t>
-                    <div class="d-flex justify-content-between align-items-center mb-2">
-                        <t t-if="session.shared_pallet_mode and delivery_stops">
-                            <span><t t-esc="session.physical_pallets or session.pallets"/> Physical Pallet<t t-if="(session.physical_pallets or session.pallets) != 1">s</t> · Shared Across <t t-esc="len(delivery_stops)"/> Stops × LTL Scheduled Service</span>
-                        </t>
-                        <t t-if="not session.shared_pallet_mode or not delivery_stops">
-                            <span><t t-esc="session.physical_pallets or session.pallets"/> Physical Pallet<t t-if="(session.physical_pallets or session.pallets) != 1">s</t> × LTL Scheduled Service</span>
-                        </t>
-                        <strong>$<t t-esc="'%.2f' % session.calculated_price"/></strong>
-                    </div>
                     <t t-if="session.liftgate_pickup or session.liftgate_delivery or session.appointment or session.residential">
                         <hr/>
                         <small class="text-muted">Accessorials included in price above</small><br/>
@@ -2137,6 +2147,9 @@
                                 <small class="text-muted d-block" t-esc="b.pickup_date"/></td>
                             <td>
                                 <small t-esc="b.delivery_address or ''"/>
+                                <small t-if="b.pickup_eta_confirmed" class="text-success d-block fw-bold">
+                                    <t t-esc="b.confirmed_delivery_window or ''"/>
+                                </small>
                                 <t t-if="b.stop_ids">
                                     <t t-set="del_count" t-value="len(b.stop_ids.filtered(lambda s: s.stop_type == 'delivery'))"/>
                                     <small t-if="del_count > 1" class="text-muted d-block">+ <t t-esc="del_count - 1"/> more stop<t t-if="del_count > 2">s</t></small>

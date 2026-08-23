@@ -244,9 +244,23 @@ class PricingService:
                 leg_snapshots.append(snapshot)
                 all_lines.extend(lines)
                 continue
+            # The corridor's configured excess-weight $/lb is the live
+            # authority (corridor override → global Dispatch Settings
+            # default). Never a hardcoded rate, never the legacy
+            # distance-scaled estimate.
+            excess_rate = 0.0
+            corridor_rec = leg.get("corridor")
+            if corridor_rec:
+                excess_rate = corridor_rec.excess_weight_rate_per_lb or 0.0
+            if not excess_rate:
+                excess_rate = float(
+                    self.env["ir.config_parameter"].sudo().get_param(
+                        "logistics.default_excess_weight_rate", "0.0") or 0.0
+                )
             breakdown = self.calculate_leg_per_km(
                 leg["distance_km"], leg["rate_per_km"], leg["planned_pallets"],
-                pallets, leg["included_weight_per_pallet"], weight_lbs, currency=currency,
+                pallets, leg["included_weight_per_pallet"], weight_lbs,
+                currency=currency, excess_weight_rate_per_lb=excess_rate or None,
             )
             lines = [{
                 "label": (
@@ -256,7 +270,15 @@ class PricingService:
                 "amount": breakdown["base_leg_charge"],
             }]
             if breakdown["extra_weight_charge"]:
-                lines.append({"label": "Excess weight", "amount": breakdown["extra_weight_charge"]})
+                lines.append({
+                    "label": (
+                        f"Excess weight "
+                        f"({breakdown['extra_weight_lbs']:.0f} lb over "
+                        f"{breakdown['shipment_included_weight']:.0f} lb included × "
+                        f"${breakdown['excess_weight_rate_per_lb']:.2f}/lb)"
+                    ),
+                    "amount": breakdown["extra_weight_charge"],
+                })
             snapshot = dict(leg)
             for non_json_key in ("corridor", "hub", "lane", "rate_plan"):
                 snapshot.pop(non_json_key, None)
@@ -397,8 +419,12 @@ class PricingService:
     @staticmethod
     def calculate_leg_per_km(distance_km, rate_per_km, target_pallets,
                              booked_pallets, included_weight_per_pallet,
-                             actual_weight_lbs, currency=None):
-        """Canonical per-km pricing formula for one booking leg.
+                             actual_weight_lbs, currency=None,
+                             excess_weight_rate_per_lb=None):
+        """Canonical per-km pricing formula for one booking leg — the ONE
+        LTL pricing calculator for calendar preview, portal Get Price,
+        phone booking, internal booking, custom quote, recurring booking,
+        pricing session and final booking.
 
         D = chargeable road distance in km
         R = configured truck target rate in $/km
@@ -409,12 +435,24 @@ class PricingService:
 
         Pallet rate per km = R / T
         Base leg charge = D × P × R / T
-        Weight rate per lb/km = R / (T × I)
         Shipment included weight = P × I
         Extra weight = MAX(0, W − P × I)
-        Extra weight charge = Extra weight × D × Weight rate per lb/km
-        Leg subtotal = Base leg charge + Extra weight charge
 
+        Excess-weight charge authority (corridor configuration):
+        - When excess_weight_rate_per_lb is provided and > 0 (the
+          corridor's configured "$ / lb" rate — corridor override
+          falling back to the global Dispatch Settings default), the
+          charge is FLAT per excess pound:
+              Extra weight charge = Extra weight × excess_weight_rate_per_lb
+        - When it is absent/zero, no weight charge applies at all —
+          the shipment's weight up to P × I is fully included and any
+          excess is carried at no extra cost:
+              Extra weight charge = 0
+              weight_pricing_method = "included_no_charge"
+          (The old distance-scaled "per lb/km" formula was retired:
+          it priced 2 pallets at 5000 lb identically to 1000 lb.)
+
+        Leg subtotal = Base leg charge + Extra weight charge.
         Uses Odoo currency rounding if currency is provided, otherwise
         falls back to 2-decimal Python rounding.
 
@@ -439,10 +477,22 @@ class PricingService:
         pallet_rate_per_km = rate_per_km / T
         base_leg_charge = D * P * pallet_rate_per_km
 
-        weight_rate_per_lb_km = rate_per_km / (T * I)
         shipment_included_weight = P * I
         extra_weight = max(0.0, W - shipment_included_weight)
-        extra_weight_charge = extra_weight * D * weight_rate_per_lb_km
+
+        # ONE canonical excess-weight formula: flat configured $/lb rate.
+        # The distance-scaled legacy estimate was retired — every call site
+        # resolves the rate from corridor → global Dispatch Settings default,
+        # so a zero rate means "no excess-weight charge", never a silent
+        # distance-scaled fee.
+        if excess_weight_rate_per_lb:
+            excess_rate = float(excess_weight_rate_per_lb)
+            extra_weight_charge = extra_weight * excess_rate
+            weight_pricing_method = "per_lb_excess_rate"
+        else:
+            excess_rate = 0.0
+            extra_weight_charge = 0.0
+            weight_pricing_method = "included_no_charge"
 
         subtotal = base_leg_charge + extra_weight_charge
 
@@ -465,7 +515,9 @@ class PricingService:
             "actual_weight_lbs": W,
             "pallet_rate_per_km": round(pallet_rate_per_km, 6),
             "base_leg_charge": base_leg_charge,
-            "weight_rate_per_lb_km": round(weight_rate_per_lb_km, 8),
+            "weight_rate_per_lb_km": round(rate_per_km / (T * I), 8),
+            "excess_weight_rate_per_lb": excess_rate,
+            "weight_pricing_method": weight_pricing_method,
             "shipment_included_weight": shipment_included_weight,
             "extra_weight_lbs": round(extra_weight, 2),
             "extra_weight_charge": extra_weight_charge,

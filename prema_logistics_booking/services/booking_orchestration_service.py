@@ -370,6 +370,15 @@ class BookingOrchestrationService:
                     equipment=normalized_request.equipment_type,
                     shipment_type=normalized_request.load_type,
                     requested_departure_id=requested_departure_id,
+                    # Customer facilities: the leg ETAs become
+                    # facility-hours-aware (never before facility opens) —
+                    # the same authority the calendar probes use.
+                    pickup_stop=(
+                        normalized_request.pickup_stops[0]
+                        if normalized_request.pickup_stops else None),
+                    delivery_stop=(
+                        normalized_request.delivery_stops[-1]
+                        if normalized_request.delivery_stops else None),
                 )
 
             if not route.available:
@@ -413,9 +422,13 @@ class BookingOrchestrationService:
             est_delivery = route.estimated_delivery or (
                 last_leg.departure_date if last_leg else None)
 
-            # Build price lines from legs
+            # Build price lines from legs. Each leg carries the canonical
+            # weight-aware pricing breakdown (frozen at quote time) so the
+            # Step-3 customer breakdown renders EXACTLY what was priced —
+            # no independent recalculation in the template.
             price_lines = []
             for leg in route.legs:
+                formula = dict(leg.pricing_formula or {})
                 price_lines.append({
                     "label": f"Leg {leg.sequence} — {leg.corridor_name} ({leg.leg_type})",
                     "distance_km": leg.estimated_distance_km,
@@ -424,6 +437,16 @@ class BookingOrchestrationService:
                     "pallet_rate_per_km": leg.pallet_rate_per_km,
                     "amount": leg.leg_price,
                     "departure_date": leg.departure_date,
+                    # Weight-pricing components from the canonical
+                    # calculator (corridor config authority).
+                    "base_leg_charge": formula.get("base_leg_charge"),
+                    "included_weight_lbs": formula.get("shipment_included_weight"),
+                    "excess_weight_lbs": formula.get("extra_weight_lbs"),
+                    "excess_weight_rate_per_lb": formula.get("excess_weight_rate_per_lb"),
+                    "excess_weight_charge": formula.get("extra_weight_charge"),
+                    "included_weight_per_pallet": formula.get("included_weight_per_pallet"),
+                    "actual_weight_lbs": formula.get("actual_weight_lbs"),
+                    "weight_pricing_method": formula.get("weight_pricing_method"),
                 })
             route_total = sum(leg.leg_price for leg in route.legs)
             is_ftl = route.routing_snapshot.get("pricing_mode") == "ftl"

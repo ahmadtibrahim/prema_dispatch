@@ -86,6 +86,13 @@ def _build_stop_pricing(session):
     existing price_snapshot lines. No pricing is computed here; the
     components reconcile to calculated_price by construction.
 
+    Sections (frozen at quote time by the canonical LTL calculator):
+    - Base Pallet Transportation (per leg: pallets × per-pallet price)
+    - Weight (per leg: actual / included / excess lb × excess rate)
+    - Additional Stops / Pickups, Volume Discount, Minimum Adjustment
+      (booking-level lines from the same snapshot)
+    The sum of every shown line equals session.calculated_price exactly.
+
     Attribution rule:
     - One leg per stop → leg amounts map to stops directly.
     - ONE route-level leg for MULTIPLE stops → show a single "Route
@@ -159,12 +166,63 @@ def _build_stop_pricing(session):
                        if session.pickup_saved_location_id else "")
         cities = [s["city"] for s in stops if s["city"]]
         route_label = " → ".join([c for c in [pickup_city] + cities if c])
+    # ── Frozen per-leg breakdown (spec sections: "Base Pallet
+    #    Transportation" + "Weight"), built strictly from the snapshot
+    #    lines produced by the canonical calculator at quote time. ──
+    legs = []
+    weight_rows = []
+    base_total = 0.0
+    weight_total = 0.0
+    for line in session.price_snapshot or []:
+        if not isinstance(line, dict) or not str(line.get("label", "")).startswith("Leg "):
+            continue
+        pallets = line.get("pallets") or 0
+        rate = line.get("pallet_rate_per_km") or 0.0
+        distance = line.get("distance_km") or 0.0
+        base_charge = float(
+            line.get("base_leg_charge") if line.get("base_leg_charge") is not None
+            else line.get("amount") or 0.0)
+        per_pallet = round(rate * distance, 2) if (rate and distance) else (
+            base_charge / pallets if pallets else 0.0)
+        legs.append({
+            "label": line.get("label", ""),
+            "pallets": pallets,
+            "per_pallet_price": round(per_pallet, 2),
+            "base_charge": round(base_charge, 2),
+        })
+        base_total += base_charge
+        excess_charge = float(line.get("excess_weight_charge") or 0.0)
+        if excess_charge > 0:
+            weight_rows.append({
+                "label": line.get("label", ""),
+                "actual_weight_lbs": float(line.get("actual_weight_lbs") or 0.0),
+                "included_weight_lbs": float(line.get("included_weight_lbs") or 0.0),
+                "excess_weight_lbs": float(line.get("excess_weight_lbs") or 0.0),
+                "excess_weight_rate_per_lb": float(line.get("excess_weight_rate_per_lb") or 0.0),
+                "excess_weight_charge": round(excess_charge, 2),
+            })
+            weight_total += excess_charge
+    base_total = round(base_total, 2)
+    weight_total = round(weight_total, 2)
+    booking_total = round(
+        sum(float(b.get("amount") or 0.0) for b in booking_level), 2)
+    breakdown_total = round(base_total + weight_total + booking_total, 2)
+    calculated = float(session.calculated_price or 0.0)
+    if calculated and abs(breakdown_total - calculated) > 0.01:
+        logging.getLogger(__name__).warning(
+            "Step-3 breakdown mismatch: breakdown=%s calculated_price=%s "
+            "snapshot=%s", breakdown_total, calculated, session.price_snapshot)
     return {
         "stops": stops,
         "booking_level": booking_level,
         "route_transportation": route_transportation,
         "route_label": route_label,
-        "total": session.calculated_price or 0.0,
+        "legs": legs,
+        "weight_rows": weight_rows,
+        "base_total": base_total,
+        "weight_total": weight_total,
+        "breakdown_total": breakdown_total,
+        "total": calculated,
     }
 
 
@@ -245,6 +303,18 @@ def _parse_time_float(val):
         return int(parts[0]) + int(parts[1]) / 60.0
     except (ValueError, IndexError):
         return None
+
+def _parse_bool(val):
+    """Strict portal checkbox parsing — the single helper for every
+    checkbox flag in this controller. Only 1/true/yes/on are True:
+    bool("0") is a classic Python pitfall (bool("0") == True), so raw
+    `bool(...)` on portal POST values is never used. Real booleans
+    (e.g. parsed JSON) pass through untouched."""
+    if val is None:
+        return False
+    if isinstance(val, bool):
+        return val
+    return str(val).strip().lower() in ("1", "true", "yes", "on")
 
 def _portal_enabled():
     val = request.env["ir.config_parameter"].sudo().get_param("logistics_booking.portal_enabled")
@@ -666,7 +736,7 @@ class LogisticsBookingPortal(http.Controller):
             # Physical pallets: the actual handling units on the truck.
             # Defaults to `pallets` (global input) for backward compatibility.
             physical_pallets = int(kwargs.get("physical_pallets") or pallets or 1)
-            shared_pallet_mode = bool(kwargs.get("shared_pallet_mode"))
+            shared_pallet_mode = _parse_bool(kwargs.get("shared_pallet_mode"))
             # Parse per-pallet allocations from the new portal UI
             pallet_allocations = []
             allocs_json = kwargs.get("pallet_allocations_json", "").strip()
@@ -755,11 +825,11 @@ class LogisticsBookingPortal(http.Controller):
         required_temperature_c = parse_required_temperature_c(
             kwargs.get("required_temperature_c")
         )
-        liftgate_pickup = bool(kwargs.get("liftgate_pickup"))
-        liftgate_delivery = bool(kwargs.get("liftgate_delivery"))
-        appointment = bool(kwargs.get("appointment"))
-        residential = bool(kwargs.get("residential"))
-        same_day_requested = bool(kwargs.get("same_day_requested"))
+        liftgate_pickup = _parse_bool(kwargs.get("liftgate_pickup"))
+        liftgate_delivery = _parse_bool(kwargs.get("liftgate_delivery"))
+        appointment = _parse_bool(kwargs.get("appointment"))
+        residential = _parse_bool(kwargs.get("residential"))
+        same_day_requested = _parse_bool(kwargs.get("same_day_requested"))
 
         from ..services.booking_orchestration_service import BookingOrchestrationService
 
@@ -804,10 +874,17 @@ class LogisticsBookingPortal(http.Controller):
             dl = SavedLocation.browse(dl_id)
             if not dl.exists() or dl.commercial_partner_id.id != partner.id:
                 continue
-            # Per-stop pallets/weight from form
-            stop_pallets = int(kwargs.get(f"delivery_pallets_{i+1}") or 1)
-            stop_weight = float(kwargs.get(f"delivery_weight_{i+1}") or stop_pallets * 500)
-            stop_shared = bool(kwargs.get(f"delivery_shared_pallet_{i+1}"))
+            # Single-stop: the global physical pallet count and total
+            # shipment weight are authoritative SERVER-SIDE — stale hidden
+            # per-stop fields (which can lag behind a Step-1 change) are
+            # never trusted. Multi-stop keeps the per-stop form values.
+            if len(delivery_loc_ids) > 1:
+                stop_pallets = int(kwargs.get(f"delivery_pallets_{i+1}") or 1)
+                stop_weight = float(kwargs.get(f"delivery_weight_{i+1}") or stop_pallets * 500)
+            else:
+                stop_pallets = physical_pallets
+                stop_weight = weight_lbs
+            stop_shared = _parse_bool(kwargs.get(f"delivery_shared_pallet_{i+1}"))
             timing_type = kwargs.get(f"delivery_timing_type_{i+1}") or "flexible"
             wstart = kwargs.get(f"delivery_window_start_{i+1}", "").strip()
             wend = kwargs.get(f"delivery_window_end_{i+1}", "").strip()
@@ -820,13 +897,15 @@ class LogisticsBookingPortal(http.Controller):
                 "saved_location_id": dl.id,
                 "pallets": stop_pallets,
                 "weight_lbs": stop_weight,
-                "shared_pallet": stop_shared or shared_pallet_mode,
+                # Sharing a pallet across stops requires 2+ stops — a
+                # single stop is never "shared".
+                "shared_pallet": (stop_shared or shared_pallet_mode) if len(delivery_loc_ids) > 1 else False,
                 "timing_type": timing_type,
                 "window_start": _parse_time_float(wstart) if wstart else None,
                 "window_end": _parse_time_float(wend) if wend else None,
                 "timezone": dl.timezone or "America/Toronto",
-                "liftgate_delivery": bool(kwargs.get(f"delivery_liftgate_{i+1}")),
-                "appointment": bool(kwargs.get(f"delivery_appointment_{i+1}")),
+                "liftgate_delivery": _parse_bool(kwargs.get(f"delivery_liftgate_{i+1}")),
+                "appointment": _parse_bool(kwargs.get(f"delivery_appointment_{i+1}")),
                 "instructions": kwargs.get(f"delivery_instructions_{i+1}", "").strip() or "",
             }
             delivery_stops.append(stop)
@@ -883,6 +962,12 @@ class LogisticsBookingPortal(http.Controller):
                     gen_delivery_stops.append(entry)
             pickup_stops = gen_pickup_stops
             delivery_stops = gen_delivery_stops
+
+        # A shared-pallet shipment requires at least two delivery stops —
+        # "Shared Across 1 Stop" is never priced or displayed. Re-derived
+        # from the FINAL stop list (which the milk-run payload may rebuild).
+        if len(delivery_stops) <= 1:
+            shared_pallet_mode = False
 
         # Requested pickup date from form
         requested_pickup_date = kwargs.get("requested_pickup_date", "").strip() or None

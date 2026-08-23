@@ -232,6 +232,23 @@ class LogisticsBooking(models.Model):
         default=lambda self: secrets.token_urlsafe(32),
         help="High-entropy random token for public tracking. Must be provided alongside booking_number to view shipment status."
     )
+    # ── Night-before route finalization (confirmed customer windows) ──
+    # Set by RouteFinalizationService at the configurable Route
+    # Finalization Time. When set, the portal shows "Confirmed Pickup /
+    # Delivery Window" instead of "Estimated".
+    pickup_eta_confirmed = fields.Boolean(
+        string="Pickup ETA Confirmed", readonly=True, copy=False,
+        help="Night-before finalization froze this booking's confirmed "
+             "pickup/delivery windows from facility hours, appointments "
+             "and windows.")
+    confirmed_pickup_window = fields.Char(
+        string="Confirmed Pickup Window", readonly=True, copy=False)
+    confirmed_delivery_window = fields.Char(
+        string="Confirmed Delivery Window", readonly=True, copy=False)
+    eta_notification_sent = fields.Boolean(
+        string="ETA Notification Sent", readonly=True, copy=False,
+        help="Customer email with the confirmed pickup/delivery windows "
+             "was sent at the configured Customer ETA Notification Time.")
     required_temperature = fields.Char(string="Required Temperature (display)", help="e.g. '-18°C', '+4°C'. For backward compatibility.")
     required_temperature_c = fields.Float(string="Required Temperature °C", help="Numeric temperature in Celsius. e.g. -18.0, 4.0")
     po_number = fields.Char(string="PO Number")

@@ -768,6 +768,31 @@ class LogisticsCorridorDeparture(models.Model):
     _order = "departure_date, departure_time"
 
     @api.model
+    def _cron_night_before_finalization(self):
+        """Hourly cron honoring the TWO CONFIGURABLE Dispatch Settings
+        hours (never hardcoded):
+
+        - Route Finalization Time  → freeze tomorrow's departures
+        - Customer ETA Notification Time → email confirmed windows
+
+        Each step only acts when the current operational hour matches its
+        configured hour (whole-hour granularity)."""
+        try:
+            from ..services.route_finalization_service import (
+                RouteFinalizationService)
+            svc = RouteFinalizationService(self.env)
+            result = {}
+            if svc.hour_matches(svc.finalization_hour()):
+                result["finalization"] = svc.cron_finalize()
+            if svc.hour_matches(svc.notification_hour()):
+                result["notifications"] = svc.cron_notify()
+            return result
+        except Exception:
+            _logger = _logging.getLogger(__name__)
+            _logger.exception("Night-before route finalization cron failed")
+            raise
+
+    @api.model
     def _maintain_departure_horizon(self):
         """Daily cron: maintain an eight-week rolling departure horizon.
         Idempotent — uses (corridor_id, departure_date) as business key.
@@ -802,6 +827,22 @@ class LogisticsCorridorDeparture(models.Model):
         ("manual_override", "Manual Override"),
     ], default="corridor_default", required=True, copy=False)
     driver_id = fields.Many2one("res.partner", string="Driver")
+
+    # ── Night-before route finalization ─────────────────────────────
+    # Frozen by RouteFinalizationService at the configurable Route
+    # Finalization Time (Dispatch Settings): ordered stops with confirmed
+    # pickup/delivery ETAs derived from facility hours, appointments,
+    # windows and service time. Never a hardcoded clock time.
+    confirmed_itinerary = fields.Json(
+        string="Confirmed Itinerary", copy=False,
+        help="Frozen night-before itinerary: ordered stop keys, confirmed "
+             "pickup/delivery ETAs and per-stop service windows. Written by "
+             "the route finalization service at the configured finalization "
+             "hour; read by dispatch and the customer tracking page.")
+    finalized_at = fields.Datetime(
+        string="Finalized At", copy=False,
+        help="When the night-before finalization froze this departure's "
+             "itinerary. Re-runs only when a booking changes after the fact.")
     special_operation = fields.Boolean(
         string="Special Operation", default=False,
         help="Manual/overflow/special-operation departure. Not auto-generated.",

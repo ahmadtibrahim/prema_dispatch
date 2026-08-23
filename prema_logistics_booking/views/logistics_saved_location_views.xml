@@ -107,6 +107,29 @@
                                 <field name="forklift_available"/>
                             </group>
                         </page>
+                        <page string="Operating Hours">
+                            <group>
+                                <group string="Schedule Configuration">
+                                    <field name="timezone"/>
+                                    <field name="hours_status"/>
+                                </group>
+                                <group string="Free-Text Reference">
+                                    <field name="opening_hours"/>
+                                    <field name="receiving_hours"/>
+                                    <field name="shipping_hours"/>
+                                </group>
+                            </group>
+                            <field name="hours_ids">
+                                <list editable="bottom" string="Structured Weekly Hours (scheduling authority)">
+                                    <field name="day_of_week"/>
+                                    <field name="service_scope"/>
+                                    <field name="status"/>
+                                    <field name="open_time"/>
+                                    <field name="close_time"/>
+                                    <field name="sequence"/>
+                                </list>
+                            </field>
+                        </page>
                         <page string="Instructions">
                             <group>
                                 <field name="pickup_instructions"/>

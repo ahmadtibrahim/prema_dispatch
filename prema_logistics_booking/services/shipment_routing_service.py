@@ -11,6 +11,8 @@ from collections import namedtuple
 from datetime import datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 
+from pytz import timezone as tz
+
 _logger = logging.getLogger(__name__)
 
 
@@ -53,7 +55,9 @@ ProposedLeg = namedtuple("ProposedLeg", [
     "delivery_datetime",        # str — ISO datetime or None
     "corridor_departure_datetime",  # str — ISO datetime or None
     "timing_source",            # str — 'configured' | 'corridor_departure_time' | 'travel_calc_fallback'
-], defaults=[None, None, None, ""])
+    # Weight-aware pricing breakdown (canonical calculator output):
+    "pricing_formula",          # dict — calculate_leg_per_km breakdown
+], defaults=[None, None, None, "", None])
 
 
 class ShipmentRoutingService:
@@ -236,20 +240,98 @@ class ShipmentRoutingService:
     # figure _build_leg uses for estimated_drive_hrs.
     _AVG_TRUCK_SPEED_KPH = 80.0
 
+    def _facility_eta(self, stop, arrival_dt, stop_type):
+        """Customer-facing ESTIMATED service time at a facility.
+
+        Authority: ItineraryPlanner (facility operating hours snapshot +
+        timing_type windows/appointments + service time), evaluated in the
+        facility's own timezone. The estimate is NEVER before the facility
+        opens: an early arrival waits at the door; a closed day (or an
+        arrival after close) rolls to the next day the facility is open.
+
+        Returns (eta_dt, source, rolled) — source is "facility_hours" when
+        facility data was applied, None when the stop has no facility
+        (e.g. the network hub) and the caller's fallback stands.
+        """
+        if not stop or not stop.get("saved_location_id"):
+            return arrival_dt, None, False
+        try:
+            from ..services.itinerary_planner import (
+                ItineraryPlanner,
+                snapshot_saved_location_hours,
+            )
+            loc = self.env["logistics.saved.location"].sudo().browse(
+                int(stop["saved_location_id"]))
+            if not loc.exists():
+                return arrival_dt, None, False
+            hours = snapshot_saved_location_hours(self.env, loc, stop_type)
+            planner = ItineraryPlanner(self.env)
+            plan_stop = {
+                "latitude": stop.get("latitude") or loc.latitude or 0.0,
+                "longitude": stop.get("longitude") or loc.longitude or 0.0,
+                "timezone": stop.get("timezone") or loc.timezone or "America/Toronto",
+                "operating_hours_snapshot": hours,
+                "timing_type": stop.get("timing_type") or "flexible",
+                "window_start": stop.get("window_start"),
+                "window_end": stop.get("window_end"),
+                "appointment_time": stop.get("appointment_time"),
+                "service_time_minutes": stop.get("service_time_minutes") or 15,
+            }
+            feasible, _waiting, service_start, _departure = planner.arrival_plan(
+                plan_stop, arrival_dt)
+            if feasible:
+                return service_start, "facility_hours", False
+            # Closed day or arrival after close: roll to the next open
+            # slot (bounded — never an endless scan). The estimate still
+            # respects facility hours: never before an opening time.
+            probe = arrival_dt
+            for _ in range(7):
+                probe = probe + timedelta(days=1)
+                window = planner.effective_window(plan_stop, probe)
+                if window is None:
+                    continue
+                tz_obj = tz(plan_stop["timezone"])
+                open_dt = probe.astimezone(tz_obj).replace(
+                    hour=int(window[0]), minute=int((window[0] % 1) * 60), second=0)
+                open_dt = open_dt.astimezone(arrival_dt.tzinfo) if arrival_dt.tzinfo else open_dt
+                # Only accept if the truck can actually be served that day
+                # (arrival-by-open is guaranteed by construction: we start
+                # the day AT opening).
+                return open_dt, "facility_hours", True
+            return arrival_dt, None, False
+        except Exception:
+            # Facility data must never break a quote/calendar — fall back
+            # to the caller's raw timing on any lookup failure.
+            return arrival_dt, None, False
+
     def _leg_timings(self, corridor, departure, origin_region, dest_region,
-                     distance_km, pickup_date):
+                     distance_km, pickup_date, pickup_stop=None,
+                     delivery_stop=None):
         """Real pickup / delivery datetimes for one scheduled corridor leg.
 
         Authority order:
           1. corridor.stop planned times via resolve_region_segment
              (origin_departure_time / destination_arrival_time, plus the
              configured day offsets)
-          2. the departure's own departure_time (= corridor.start_time)
-             for the pickup when the origin stop has no planned departure
-             time — never a hardcoded clock time
-          3. the canonical travel-time calculation (distance / 80 km/h)
-             for the delivery when the destination stop has no planned
-             arrival time — a clearly identified fallback.
+          2. CUSTOMER FACILITY HOURS — when the corridor stop has NO
+             planned time, the ESTIMATED PICKUP / DELIVERY TIME comes from
+             ItineraryPlanner (facility operating hours, timing-type
+             windows, appointments, service time), evaluated in the
+             facility's timezone. It is NEVER before the facility opens,
+             and a closed day rolls to the next open day. This is the SAME
+             authority for the calendar (_probe_legs) and Get Price
+             (_build_leg) — one timing chain, two consumers.
+          3. the departure's own departure_time (= corridor.start_time)
+             for the pickup when no facility is known — never a hardcoded
+             clock time
+          4. the canonical travel-time calculation (distance / 80 km/h)
+             for the delivery when neither a planned arrival time nor a
+             facility is known — a clearly identified fallback.
+
+        pickup_stop / delivery_stop: optional dicts with saved_location_id,
+        latitude, longitude, timezone, timing_type / window_start /
+        window_end / appointment_time / service_time_minutes (the portal
+        stop shape).
 
         Returns dict with datetime objects + per-side timing_source.
         """
@@ -274,6 +356,19 @@ class ShipmentRoutingService:
         else:
             pickup_dt = corridor_departure_dt + timedelta(days=origin_day)
             pickup_source = "corridor_departure_time"
+            # Facility-aware ETA: the customer pickup time is NEVER the
+            # corridor's 5:00 AM start — it is the facility's own earliest
+            # serviceable time (opening hours + windows + appointments).
+            if pickup_stop:
+                arrival = pickup_dt
+                hub_km = (segment.get("distance_from_origin_km") or 0.0) if segment else 0.0
+                if hub_km > 0:
+                    arrival = arrival + timedelta(hours=hub_km / self._AVG_TRUCK_SPEED_KPH)
+                eta, source, _rolled = self._facility_eta(
+                    pickup_stop, arrival, "pickup")
+                if source:
+                    pickup_dt = eta
+                    pickup_source = source
 
         if dest_hour:
             delivery_dt = base + timedelta(days=dest_day, hours=dest_hour)
@@ -282,8 +377,18 @@ class ShipmentRoutingService:
             km = distance_km or ((segment.get("distance_km") or 0.0) if segment else 0.0) or 0.0
             delivery_dt = pickup_dt + timedelta(hours=km / self._AVG_TRUCK_SPEED_KPH)
             delivery_source = "travel_calc_fallback"
+            # Facility-aware ETA on the delivery side too — the delivery
+            # window/appointment and receiving hours govern the estimate.
+            if delivery_stop:
+                eta, source, _rolled = self._facility_eta(
+                    delivery_stop, delivery_dt, "delivery")
+                if source:
+                    delivery_dt = eta
+                    delivery_source = source
 
-        if delivery_source == "travel_calc_fallback":
+        if delivery_source == "facility_hours" or pickup_source == "facility_hours":
+            timing_source = "facility_hours"
+        elif delivery_source == "travel_calc_fallback":
             timing_source = "travel_calc_fallback"
         elif pickup_source == "corridor_departure_time":
             timing_source = "corridor_departure_time"
@@ -341,7 +446,8 @@ class ShipmentRoutingService:
                    pallets=1, weight_lbs=0, requested_pickup_date=None,
                    equipment="dry", pickup_country=None, pickup_state=None,
                    delivery_country=None, delivery_state=None, shipment_type="ltl",
-                   requested_departure_id=None):
+                   requested_departure_id=None, pickup_stop=None,
+                   delivery_stop=None):
         """Plan a complete shipment route from pickup to delivery coordinates.
 
         requested_departure_id: the calendar-selected pickup departure.
@@ -349,6 +455,10 @@ class ShipmentRoutingService:
         corridor serving this route on the requested date, be active and
         still scheduled; otherwise the route is refused (never silently
         substituted with a different departure).
+
+        pickup_stop / delivery_stop: optional customer-facility dicts
+        (saved_location_id, timezone, timing fields) — when supplied, the
+        leg ETAs are facility-hours-aware (never before facility opens).
 
         Returns ShipmentRoute with proposed legs, pricing, and audit trail.
         Does NOT reserve capacity or create database records.
@@ -488,6 +598,7 @@ class ShipmentRoutingService:
                 pickup_lat=pickup_lat, pickup_lng=pickup_lng,
                 delivery_lat=delivery_lat, delivery_lng=delivery_lng,
                 requested_departure_id=requested_departure_id,
+                pickup_stop=pickup_stop, delivery_stop=delivery_stop,
             )
             if leg:
                 legs.append(leg)
@@ -495,7 +606,8 @@ class ShipmentRoutingService:
         elif routing.decision == "HUB_TRANSFER_REQUIRED":
             # Check if delivery IS the Hub
             if dest_region.id == (hub.canonical_region_id.id if hub.canonical_region_id else None):
-                # One leg: pickup → Hub
+                # One leg: pickup → Hub (hub is a network facility — no
+                # customer operating-hours ETA on this side).
                 leg = self._build_leg(
                     sequence=1, leg_type="feeder_to_hub",
                     origin_region=origin_region, dest_region=dest_region,
@@ -505,6 +617,7 @@ class ShipmentRoutingService:
                     pickup_lat=pickup_lat, pickup_lng=pickup_lng,
                     delivery_lat=delivery_lat, delivery_lng=delivery_lng,
                     requested_departure_id=requested_departure_id,
+                    pickup_stop=pickup_stop, delivery_stop=None,
                 )
                 if leg:
                     legs.append(leg)
@@ -520,11 +633,13 @@ class ShipmentRoutingService:
                     pickup_lat=pickup_lat, pickup_lng=pickup_lng,
                     delivery_lat=delivery_lat, delivery_lng=delivery_lng,
                     requested_departure_id=requested_departure_id,
+                    pickup_stop=None, delivery_stop=delivery_stop,
                 )
                 if leg:
                     legs.append(leg)
             else:
-                # Leg 1: pickup → Hub
+                # Leg 1: pickup → Hub (hub side = network facility, no
+                # customer-hours ETA).
                 leg1 = self._build_leg(
                     sequence=1, leg_type="feeder_to_hub",
                     origin_region=origin_region, dest_region=hub.canonical_region_id,
@@ -535,6 +650,7 @@ class ShipmentRoutingService:
                     delivery_lat=hub.latitude or 43.589,
                     delivery_lng=hub.longitude or -79.644,
                     requested_departure_id=requested_departure_id,
+                    pickup_stop=pickup_stop, delivery_stop=None,
                 )
                 if leg1:
                     legs.append(leg1)
@@ -556,6 +672,8 @@ class ShipmentRoutingService:
                             pickup_lat=hub.latitude or 43.589,
                             pickup_lng=hub.longitude or -79.644,
                             delivery_lat=delivery_lat, delivery_lng=delivery_lng,
+                            requested_departure_id=requested_departure_id,
+                            pickup_stop=None, delivery_stop=delivery_stop,
                         )
                         if leg2:
                             # Max custody hold from REAL configured times —
@@ -805,6 +923,7 @@ class ShipmentRoutingService:
                 requested_pickup_date=requested_pickup_date,
                 equipment=equipment, shipment_type=shipment_type,
                 requested_departure_id=requested_departure_id,
+                pickup_stop=origin, delivery_stop=stop,
             )
             billable_km = 0.0
             if route.available:
@@ -837,6 +956,7 @@ class ShipmentRoutingService:
                     requested_pickup_date=requested_pickup_date,
                     equipment=equipment, shipment_type=shipment_type,
                     requested_departure_id=requested_departure_id,
+                    pickup_stop=origin, delivery_stop=stop,
                 )
                 first_failure.routing_snapshot["milk_run"] = {
                     "basis": basis, "per_stop": per_stop,
@@ -1066,6 +1186,7 @@ class ShipmentRoutingService:
                     float(origin["latitude"]), float(origin["longitude"]),
                     float(plan["stop"]["latitude"]), float(plan["stop"]["longitude"]),
                     physical_pallets, weight_lbs, equipment,
+                    pickup_stop=origin, delivery_stop=plan["stop"],
                 )
                 if not legs_info or not legs_info.get("feasible"):
                     route_feasible = False
@@ -1196,14 +1317,19 @@ class ShipmentRoutingService:
 
     def _probe_legs(self, origin, dest, hub, routing, pickup_date, pickup_day,
                     pickup_lat, pickup_lng, delivery_lat, delivery_lng,
-                    pallets, weight_lbs, equipment):
+                    pallets, weight_lbs, equipment, pickup_stop=None,
+                    delivery_stop=None):
         """Quick-probe leg feasibility for a candidate pickup date. Returns
         dict with corridor/departure info if feasible, or empty dict.
 
         A leg is feasible ONLY with an actual scheduled departure — the
         corridor's operating-day checkbox alone is never sufficient.
         Every returned leg carries its exact departure_id; the caller
-        evaluates capacity against those exact departures."""
+        evaluates capacity against those exact departures.
+
+        pickup_stop / delivery_stop: customer-facility dicts threaded to
+        _build_leg so calendar ETAs use the SAME facility-hours authority
+        as Get Price."""
         origin = self._canonical_region(origin)
         dest = self._canonical_region(dest)
         if not origin or not dest:
@@ -1219,6 +1345,7 @@ class ShipmentRoutingService:
                 equipment=equipment, transfer_hub=None,
                 pickup_lat=pickup_lat, pickup_lng=pickup_lng,
                 delivery_lat=delivery_lat, delivery_lng=delivery_lng,
+                pickup_stop=pickup_stop, delivery_stop=delivery_stop,
             )
             if leg and leg.departure_id:
                 result.update({
@@ -1250,6 +1377,7 @@ class ShipmentRoutingService:
                     equipment=equipment, transfer_hub=None,
                     pickup_lat=pickup_lat, pickup_lng=pickup_lng,
                     delivery_lat=delivery_lat, delivery_lng=delivery_lng,
+                    pickup_stop=pickup_stop, delivery_stop=None,
                 )
                 if leg1 and leg1.departure_id:
                     result.update({
@@ -1281,6 +1409,7 @@ class ShipmentRoutingService:
                     equipment=equipment, transfer_hub=hub,
                     pickup_lat=pickup_lat, pickup_lng=pickup_lng,
                     delivery_lat=delivery_lat, delivery_lng=delivery_lng,
+                    pickup_stop=None, delivery_stop=delivery_stop,
                 )
                 if leg1 and leg1.departure_id:
                     result.update({
@@ -1311,6 +1440,7 @@ class ShipmentRoutingService:
                     pickup_lat=pickup_lat, pickup_lng=pickup_lng,
                     delivery_lat=hub.latitude or 43.589,
                     delivery_lng=hub.longitude or -79.644,
+                    pickup_stop=pickup_stop, delivery_stop=None,
                 )
                 if not leg1 or not leg1.departure_id:
                     return {}
@@ -1333,6 +1463,7 @@ class ShipmentRoutingService:
                     pickup_lat=hub.latitude or 43.589,
                     pickup_lng=hub.longitude or -79.644,
                     delivery_lat=delivery_lat, delivery_lng=delivery_lng,
+                    pickup_stop=None, delivery_stop=delivery_stop,
                 )
                 if not leg2 or not leg2.departure_id:
                     return {}
@@ -1492,7 +1623,8 @@ class ShipmentRoutingService:
     def _build_leg(self, sequence, leg_type, origin_region, dest_region,
                    pallets, weight_lbs, pickup_date, pickup_day, equipment,
                    transfer_hub, pickup_lat, pickup_lng, delivery_lat, delivery_lng,
-                   requested_departure_id=None):
+                   requested_departure_id=None, pickup_stop=None,
+                   delivery_stop=None):
         """Build a ProposedLeg with corridor, departure, distance, and price.
 
         A leg is feasible ONLY with an actual scheduled departure row
@@ -1596,17 +1728,43 @@ class ShipmentRoutingService:
         else:
             est_km = 0.0
 
-        # Pricing
+        # Pricing — the canonical weight-aware calculator (PricingService.
+        # calculate_leg_per_km) is the ONE LTL pricing authority shared by
+        # calendar preview, portal Get Price, phone/internal booking,
+        # custom quote, recurring booking, pricing session and final
+        # booking. Config comes from the corridor record: rate_per_km,
+        # planned_pallets, included_weight_per_pallet and the configured
+        # excess-weight $/lb (corridor override → global Dispatch Settings
+        # default). Never a hardcoded rate; never a second pricing engine.
+        from ..services.pricing_service import PricingService
+
         rate_per_km = corridor.rate_per_km if corridor else 4.0
         planned_pallets = corridor.planned_pallets if corridor else 8
-        pallet_rate = rate_per_km / max(planned_pallets, 1)
-        leg_price = est_km * pallet_rate * pallets
+        included_weight = corridor.included_weight_per_pallet if corridor else 500.0
+        excess_rate = corridor.excess_weight_rate_per_lb if corridor else 0.0
+        if not excess_rate:
+            excess_rate = float(
+                self.env["ir.config_parameter"].sudo().get_param(
+                    "logistics.default_excess_weight_rate", "0.0") or 0.0
+            )
+        pricing = PricingService.calculate_leg_per_km(
+            est_km, rate_per_km, max(planned_pallets, 1), pallets,
+            max(included_weight, 1.0), weight_lbs,
+            currency=corridor.currency_id if corridor else None,
+            excess_weight_rate_per_lb=excess_rate or None,
+        )
+        pallet_rate = pricing["pallet_rate_per_km"]
+        leg_price = pricing["subtotal"]
 
         # Real pickup / delivery times from the configured corridor stop
         # times (never a hardcoded 8 AM), with the corridor's departure time
         # and the canonical travel calculation as identified fallbacks.
+        # When the corridor stop has no planned time, the customer-facing
+        # ETA comes from the facility's own hours (ItineraryPlanner) — the
+        # SAME authority the calendar probes through this same method.
         timings = self._leg_timings(
-            corridor, departure, origin_region, dest_region, est_km, date_str)
+            corridor, departure, origin_region, dest_region, est_km, date_str,
+            pickup_stop=pickup_stop, delivery_stop=delivery_stop)
 
         return ProposedLeg(
             sequence=sequence,
@@ -1629,6 +1787,7 @@ class ShipmentRoutingService:
             delivery_datetime=self._iso_dt(timings["delivery_datetime"]),
             corridor_departure_datetime=self._iso_dt(timings["corridor_departure_datetime"]),
             timing_source=timings["timing_source"],
+            pricing_formula=pricing,
         )
 
     def confirm_route(self, booking):

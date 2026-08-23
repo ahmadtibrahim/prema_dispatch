@@ -1,6 +1,6 @@
 {
     "name": "Prema Logistics Booking",
-    "version": "18.0.12.0.8",
+    "version": "18.0.13.0.0",
     "summary": "Private customer LTL/FTL pricing, scheduling, and booking engine "
                "for PremaFirm Logistics — integrates with Prema Dispatch.",
     "category": "Logistics",
@@ -17,7 +17,7 @@ phase is internal-staff configuration only. See CLAUDE.md in the module
 root for architecture notes, decisions, and phase status.
 """,
     "author": "PremaFirm Logistics",
-    "depends": ["base", "base_setup", "mail", "portal", "website", "fleet", "account", "sale_management", "prema_dispatch"],
+    "depends": ["base", "base_setup", "mail", "portal", "website", "fleet", "account", "sale_management", "prema_dispatch", "agent_wa"],
     "data": [
         "security/logistics_security.xml",
         "security/ir.model.access.csv",
@@ -42,17 +42,20 @@ root for architecture notes, decisions, and phase status.
         "views/logistics_service_offering_views.xml",
         "views/logistics_holiday_calendar_views.xml",
         "views/logistics_saved_location_views.xml",
+        "views/logistics_location_customer_access_views.xml",
         "views/dispatch_stop_integrity_views.xml",
-        "views/logistics_direct_delivery_views.xml",
         "views/logistics_booking_views.xml",
         "views/logistics_custom_quote_views.xml",
         "views/logistics_recurring_agreement_views.xml",
-        "views/logistics_weekly_plan_views.xml",
         "views/logistics_phone_booking_views.xml",
+        # menus.xml must load before any file that references its menu xmlids
+        # (logistics_direct_delivery_views.xml, logistics_weekly_plan_views.xml)
+        "views/menus.xml",
+        "views/logistics_direct_delivery_views.xml",
+        "views/logistics_weekly_plan_views.xml",
         "views/res_partner_logistics_views.xml",
         "views/res_config_settings_views.xml",
         "views/res_country_views.xml",
-        "views/menus.xml",
         "views/portal_templates.xml",
         "views/portal_saved_locations_templates.xml",
         "views/portal_booking_templates.xml",

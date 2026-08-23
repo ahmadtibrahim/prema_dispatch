@@ -408,19 +408,28 @@
                                 <tr>
                                     <td class="align-middle"><strong t-esc="['Mon','Tue','Wed','Thu','Fri','Sat','Sun'][d]"/></td>
                                     <td>
-                                        <select class="form-select form-select-sm hours-status" t-att-data-day="str(d)" onchange="hoursStatusChange(this)">
-                                            <option value="open_24h">24 Hours</option>
-                                            <option value="custom">Custom</option>
-                                            <option value="closed" t-att-selected="'selected' if d >= 5 else None">Closed</option>
+                                        <select class="form-select form-select-sm hours-status"
+                                                t-att-name="'hours_status_' + str(d)"
+                                                t-att-data-day="str(d)" onchange="hoursStatusChange(this)">
+                                            <option value="open_24h"
+                                                    t-att-selected="'selected' if hours_by_day[d]['status'] == 'open_24h' else None">24 Hours</option>
+                                            <option value="custom"
+                                                    t-att-selected="'selected' if hours_by_day[d]['status'] == 'custom' else None">Custom</option>
+                                            <option value="closed"
+                                                    t-att-selected="'selected' if hours_by_day[d]['status'] == 'closed' else None">Closed</option>
                                         </select>
                                     </td>
-                                    <td class="hours-custom-cell" style="display:none">
+                                    <td class="hours-custom-cell"
+                                        t-att-style="'display:none' if hours_by_day[d]['status'] != 'custom' else ''">
                                         <input type="time" class="form-control form-control-sm hours-from" style="width:120px"
-                                               t-att-name="'hours_open_' + str(d)" step="1800" value="08:00"/>
+                                               t-att-name="'hours_open_' + str(d)" step="1800"
+                                               t-att-value="hours_by_day[d]['open']"/>
                                     </td>
-                                    <td class="hours-custom-cell" style="display:none">
+                                    <td class="hours-custom-cell"
+                                        t-att-style="'display:none' if hours_by_day[d]['status'] != 'custom' else ''">
                                         <input type="time" class="form-control form-control-sm hours-to" style="width:120px"
-                                               t-att-name="'hours_close_' + str(d)" step="1800" value="17:00"/>
+                                               t-att-name="'hours_close_' + str(d)" step="1800"
+                                               t-att-value="hours_by_day[d]['close']"/>
                                     </td>
                                 </tr>
                                 </t>

@@ -491,7 +491,16 @@
                         <div class="col-6"><small class="text-muted">FROM</small><br/><t t-esc="booking.pickup_fsa_id.display_city or booking.pickup_fsa_id.fsa"/></div>
                         <div class="col-6"><small class="text-muted">TO</small><br/><t t-esc="booking.delivery_fsa_id.display_city or booking.delivery_fsa_id.fsa"/></div>
                         <div class="col-6 mt-2"><small class="text-muted">PICKUP DATE</small><br/><t t-esc="booking.pickup_date"/></div>
-                        <div class="col-6 mt-2"><small class="text-muted">EST. DELIVERY</small><br/><t t-esc="booking.estimated_delivery_date"/></div>
+                        <div class="col-6 mt-2">
+                            <small class="text-muted"><t t-esc="'CONFIRMED PICKUP WINDOW' if booking.pickup_eta_confirmed else 'EST. PICKUP'"/></small><br/>
+                            <t t-if="booking.pickup_eta_confirmed"><strong><t t-esc="booking.confirmed_pickup_window or '—'"/></strong></t>
+                            <t t-else=""><t t-esc="booking.pickup_date"/></t>
+                        </div>
+                        <div class="col-6 mt-2">
+                            <small class="text-muted"><t t-esc="'CONFIRMED DELIVERY WINDOW' if booking.pickup_eta_confirmed else 'EST. DELIVERY'"/></small><br/>
+                            <t t-if="booking.pickup_eta_confirmed"><strong><t t-esc="booking.confirmed_delivery_window or '—'"/></strong></t>
+                            <t t-else=""><t t-esc="booking.estimated_delivery_date"/></t>
+                        </div>
                     </div>
                 </div></div>
                 <!-- PRIVACY: only THIS booking's own stops — never other

@@ -16,6 +16,8 @@ from werkzeug.exceptions import NotFound as HttpNotFound
 
 from ..services.pricing_service import PricingService
 from ..services.availability_service import ScheduledAvailabilityService
+# Single canonical portal boolean parser (strict: only 1/true/yes/on).
+from .booking_portal import _parse_bool
 
 PRICING_SESSION_TTL_MINUTES = 20
 
@@ -119,10 +121,10 @@ class LogisticsRequestQuote(http.Controller):
         from ..services.temperature_compat import to_canonical_temperature_mode, parse_required_temperature_c
         temperature_mode = to_canonical_temperature_mode(kwargs.get("temperature_mode") or "dry")
         required_temperature_c = parse_required_temperature_c(kwargs.get("required_temperature_c"))
-        liftgate_pickup = bool(kwargs.get("liftgate_pickup"))
-        liftgate_delivery = bool(kwargs.get("liftgate_delivery"))
-        appointment = bool(kwargs.get("appointment"))
-        residential = bool(kwargs.get("residential"))
+        liftgate_pickup = _parse_bool(kwargs.get("liftgate_pickup"))
+        liftgate_delivery = _parse_bool(kwargs.get("liftgate_delivery"))
+        appointment = _parse_bool(kwargs.get("appointment"))
+        residential = _parse_bool(kwargs.get("residential"))
         # Search the complete customer-visible eight-week corridor horizon.
         avail_svc = ScheduledAvailabilityService(request.env)
         all_options = []
@@ -209,10 +211,10 @@ class LogisticsRequestQuote(http.Controller):
         from ..services.temperature_compat import to_canonical_temperature_mode, parse_required_temperature_c
         temperature_mode = to_canonical_temperature_mode(kwargs.get("temperature_mode") or "dry")
         required_temperature_c = parse_required_temperature_c(kwargs.get("required_temperature_c"))
-        liftgate_pickup = bool(kwargs.get("liftgate_pickup"))
-        liftgate_delivery = bool(kwargs.get("liftgate_delivery"))
-        appointment = bool(kwargs.get("appointment"))
-        residential = bool(kwargs.get("residential"))
+        liftgate_pickup = _parse_bool(kwargs.get("liftgate_pickup"))
+        liftgate_delivery = _parse_bool(kwargs.get("liftgate_delivery"))
+        appointment = _parse_bool(kwargs.get("appointment"))
+        residential = _parse_bool(kwargs.get("residential"))
         requested_pickup_date = None
         try:
             if kwargs.get("requested_pickup_date"):

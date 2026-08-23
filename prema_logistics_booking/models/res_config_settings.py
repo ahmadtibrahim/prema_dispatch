@@ -87,6 +87,28 @@ class ResConfigSettings(models.TransientModel):
              "corridors can override this on their Customer Pricing tab.",
     )
 
+    # ── Phase 3: Night-before route finalization (configurable hours) ──
+
+    logistics_route_finalization_hour = fields.Float(
+        string="Route Finalization Time",
+        config_parameter="logistics.route_finalization_hour",
+        default=17.0,
+        help="Hour (0-24) at which tomorrow's departures get their "
+             "night-before itinerary finalized: stop order optimized "
+             "against facility hours, appointments, windows and service "
+             "time, then frozen on the departure. NOT hardcoded — the "
+             "finalizer cron only acts at this configured hour.",
+    )
+    logistics_customer_eta_notification_hour = fields.Float(
+        string="Customer ETA Notification Time",
+        config_parameter="logistics.customer_eta_notification_hour",
+        default=18.0,
+        help="Hour (0-24) at which customers receive the email with their "
+             "CONFIRMED pickup / delivery windows (after finalization). "
+             "NOT hardcoded — the notifier cron only acts at this "
+             "configured hour.",
+    )
+
     # ── Validation ──────────────────────────────────────────────────────
 
     @api.model

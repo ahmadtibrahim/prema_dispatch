@@ -18,6 +18,25 @@ def _get_partner():
     return request.env.user.partner_id.commercial_partner_id
 
 
+def _collect_hour_rows(kwargs):
+    """Collect the per-day operating-hours selects/time inputs from the
+    portal form into hour_rows [{day, status, open, close}] for days
+    0..6. The selects carry name="hours_status_<day>", the custom
+    open/close inputs name="hours_open_<day>" / "hours_close_<day>"."""
+    rows = []
+    for day in range(7):
+        status = str(kwargs.get(f"hours_status_{day}", "") or "open_24h").strip()
+        if status not in ("closed", "open_24h", "custom"):
+            status = "open_24h"
+        rows.append({
+            "day": day,
+            "status": status,
+            "open": kwargs.get(f"hours_open_{day}", "").strip(),
+            "close": kwargs.get(f"hours_close_{day}", "").strip(),
+        })
+    return rows
+
+
 class LogisticsSavedLocationsPortal(http.Controller):
 
     # ── Autocomplete ──────────────────────────────────────────────────
@@ -259,6 +278,8 @@ class LogisticsSavedLocationsPortal(http.Controller):
                 "google_verified": bool(google_place_id),
                 "branch_name_manual": kwargs.get("branch_name_manual") == "1",
                 "dispatch_location_id": int(kwargs.get("dispatch_location_id", 0)) or None,
+                # Structured operating hours: timezone + weekly schedule.
+                "timezone": kwargs.get("timezone", "").strip() or "America/Toronto",
             }
 
             if not vals["name"]:
@@ -269,6 +290,10 @@ class LogisticsSavedLocationsPortal(http.Controller):
             if not error:
                 try:
                     loc = Saved.create(vals)
+                    # Persist the submitted weekly operating schedule — the
+                    # portal form submits the WHOLE week, so this replaces
+                    # the general-scope rows wholesale.
+                    loc.sync_portal_hours(_collect_hour_rows(kwargs))
                     # Run region detection
                     if loc.latitude and loc.longitude:
                         loc.action_resolve_region()
@@ -297,6 +322,12 @@ class LogisticsSavedLocationsPortal(http.Controller):
             "states": states,
             "editing": False,
             "google_api_key": api_key,
+            # Fresh form: portal defaults (weekdays open_24h, weekends closed).
+            "hours_by_day": {
+                day: {"status": "open_24h" if day < 5 else "closed",
+                      "open": "08:00", "close": "17:00"}
+                for day in range(7)
+            },
         })
 
     # ── Edit ──────────────────────────────────────────────────────────
@@ -356,12 +387,16 @@ class LogisticsSavedLocationsPortal(http.Controller):
                 "longitude": float(kwargs.get("longitude", loc.longitude or 0) or 0),
                 "google_place_id": google_place_id,
                 "formatted_address": kwargs.get("formatted_address", "").strip(),
+                "timezone": kwargs.get("timezone", "").strip() or loc.timezone or "America/Toronto",
             }
             if not vals["name"]:
                 error = _("Please enter a location name.")
             else:
                 try:
                     loc.write(vals)
+                    # Persist the submitted weekly operating schedule
+                    # (whole-week replace, general scope).
+                    loc.sync_portal_hours(_collect_hour_rows(kwargs))
                     if loc.latitude and loc.longitude:
                         loc.action_resolve_region()
                     return request.redirect("/my/saved-locations")
@@ -374,6 +409,9 @@ class LogisticsSavedLocationsPortal(http.Controller):
 
         api_key = request.env["ir.config_parameter"].sudo().get_param("google_maps_api_key", "")
 
+        # Load the persisted weekly schedule back so the edit form shows
+        # the stored authority (not the form defaults).
+        hours_ctx = loc.hours_context_dict()
         return request.render("prema_logistics_booking.portal_saved_location_form_enhanced", {
             "error": error,
             "location": loc,
@@ -382,6 +420,7 @@ class LogisticsSavedLocationsPortal(http.Controller):
             "states": states,
             "editing": True,
             "google_api_key": api_key,
+            "hours_by_day": hours_ctx["hours_by_day"],
         })
 
     # ── Archive ───────────────────────────────────────────────────────
