@@ -1,0 +1,117 @@
+/* Driver Load Plan v8 — compact visual pallet planner */
+
+/* The guided sheet is a flex column: only its body scrolls.  This keeps Back /
+   Continue reachable on 320–430px phones even when a pickup step contains a
+   long pallet list. */
+.da-v7-sheet{
+    display:flex;
+    flex-direction:column;
+    max-height:min(94dvh,900px);
+    overflow:hidden;
+    padding-bottom:0;
+}
+.da-v7-sheet-head,.da-v7-progress,.da-v7-footer{flex:0 0 auto}
+.da-v7-sheet-head{position:relative;top:auto}
+.da-v7-body{
+    flex:1 1 auto;
+    min-height:0;
+    overflow-y:auto;
+    overscroll-behavior:contain;
+    -webkit-overflow-scrolling:touch;
+}
+.da-v7-footer{
+    position:relative;
+    bottom:auto;
+    z-index:4;
+    padding:10px 0 calc(10px + env(safe-area-inset-bottom));
+}
+
+.da-v8-planner{display:grid;gap:12px;min-width:0}
+.da-v8-toolbar{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:center;font-size:13px;color:#52647a}
+.da-v8-toolbar .da-v7-btn{min-height:44px;padding:9px 12px}
+
+.da-v8-truck{
+    width:min(100%,380px);
+    margin:0 auto;
+    padding:10px;
+    border:2px solid #b8c7d9;
+    border-radius:20px 20px 14px 14px;
+    background:#f6f8fb;
+    display:grid;
+    gap:7px;
+}
+.da-v8-truck-front,.da-v8-truck-rear{text-align:center;font-size:10px;font-weight:900;letter-spacing:.08em;color:#718196}
+.da-v8-truck-front{padding:2px 0 5px;border-bottom:2px solid #cfd9e5}
+.da-v8-truck-rear{padding:6px 0 2px;border-top:2px dashed #8fa2b8}
+.da-v8-layout-row{display:grid;grid-template-columns:1fr 1fr;gap:7px}
+.da-v8-extra-row{display:grid;grid-template-columns:minmax(110px,48%);justify-content:start}
+.da-v8-slot{
+    min-height:58px;
+    border:1px solid #b8c8da;
+    border-radius:10px;
+    background:#fff;
+    color:#24384f;
+    display:grid;
+    grid-template-columns:auto minmax(0,1fr);
+    column-gap:7px;
+    align-items:center;
+    padding:7px;
+    text-align:left;
+    min-width:0;
+}
+.da-v8-slot.vacant{background:#eef7f2;border-color:#a9d0b7}
+.da-v8-slot.occupied{background:#edf3fb;border-color:#9fb8d4}
+.da-v8-slot.selected{outline:3px solid #226dc7;outline-offset:1px}
+.da-v8-slot.blocked{opacity:.45}
+.da-v8-slot-code{grid-row:1 / span 2;font-size:12px;font-weight:900;color:#1769c2;white-space:nowrap}
+.da-v8-slot strong,.da-v8-slot small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.da-v8-slot strong{font-size:12px}.da-v8-slot small{font-size:10px;color:#68798e}
+
+.da-v8-section-title{font-size:14px;margin:2px 0 -3px;color:#253a55}
+.da-v8-pallet-list{display:grid;gap:7px}
+.da-v8-pallet-choice{
+    min-height:56px;
+    display:grid;
+    grid-template-columns:minmax(0,1fr) auto;
+    gap:3px 10px;
+    align-items:center;
+    border:1px solid #cbd6e3;
+    border-radius:11px;
+    background:#fff;
+    padding:9px 11px;
+    text-align:left;
+    color:#253a55;
+}
+.da-v8-pallet-choice.selected{border-color:#226dc7;box-shadow:0 0 0 2px rgba(34,109,199,.14)}
+.da-v8-pallet-choice>span:first-child{display:flex;gap:7px;align-items:center;min-width:0}
+.da-v8-pallet-choice strong{font-size:14px}.da-v8-pallet-choice em{font-size:9px;font-style:normal;background:#e7f1fd;color:#155a9d;border-radius:999px;padding:2px 6px;white-space:nowrap}
+.da-v8-pallet-choice b{grid-row:1 / span 2;grid-column:2;font-size:12px;color:#1769c2;white-space:nowrap}
+.da-v8-pallet-dest{font-size:11px;color:#627287;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.da-v8-help{font-size:11px;line-height:1.4;color:#6a7a8d;padding-bottom:4px}
+
+.da-v8-recommendation{border:1px solid #9fc2e6;background:#f2f7fd;border-radius:13px;padding:12px;display:grid;gap:8px}
+.da-v8-reco-head{display:flex;justify-content:space-between;gap:8px;align-items:center}.da-v8-reco-head strong{font-size:15px}.da-v8-reco-head span{font-size:10px;font-weight:800;color:#5b7290;text-transform:uppercase}
+.da-v8-recommendation p{margin:0;font-size:12px;line-height:1.4;color:#455a73}
+.da-v8-reco-line{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 8px;padding:7px 0;border-top:1px solid #d8e5f2}.da-v8-reco-line b{font-size:12px}.da-v8-reco-line span{font-size:12px;font-weight:900;color:#1769c2}.da-v8-reco-line small{grid-column:1 / -1;font-size:10px;color:#65758a}
+.da-v8-future{font-size:11px;padding:8px;border-radius:9px;background:#fff7e8;color:#70501b}
+.da-v8-reco-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+
+@media(max-width:600px){
+    .da-v7-sheet{max-height:calc(100dvh - 6px);height:min(100%,calc(100dvh - 6px));}
+    .da-v7-sheet-head{padding-top:12px}
+    .da-v7-title{font-size:19px}
+    .da-v7-progress{padding-top:9px}
+    .da-v7-body{padding-top:9px}
+    .da-v8-toolbar{grid-template-columns:1fr}
+    .da-v8-toolbar .da-v7-btn{width:100%}
+}
+
+@media(max-width:360px){
+    .da-v8-truck{padding:7px;gap:5px}
+    .da-v8-layout-row{gap:5px}
+    .da-v8-slot{min-height:54px;padding:6px;column-gap:5px}
+    .da-v8-slot-code{font-size:11px}
+    .da-v8-pallet-choice{grid-template-columns:minmax(0,1fr);}
+    .da-v8-pallet-choice b{grid-row:auto;grid-column:auto}
+    .da-v8-reco-actions{grid-template-columns:1fr}
+}
