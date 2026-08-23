@@ -841,7 +841,9 @@ class LogisticsBookingPortal(http.Controller):
         service = BookingOrchestrationService(request.env)
 
         # Build pickup stops with coordinates when saved location is available
-        pickup_stops = [{"postal_code": pickup_fsa.fsa}]
+        # (postal may be empty for a coordinates-only request — the routing
+        # service geocodes from latitude/longitude in that case)
+        pickup_stops = [{"postal_code": pickup_fsa.fsa if pickup_fsa else ""}]
         if pickup_loc_id:
             pu_loc = SavedLocation.browse(int(pickup_loc_id))
             if pu_loc.exists() and pu_loc.commercial_partner_id.id == partner.id:
@@ -912,7 +914,7 @@ class LogisticsBookingPortal(http.Controller):
 
         # Fallback: single FSA-only mode
         if not delivery_stops:
-            delivery_stops = [{"postal_code": delivery_fsa.fsa}]
+            delivery_stops = [{"postal_code": delivery_fsa.fsa if delivery_fsa else ""}]
 
         # Also try coordinates from hidden form fields (mirror of the
         # pickup fallback above — keeps the delivery stop geocoded when
