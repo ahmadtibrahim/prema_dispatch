@@ -1904,8 +1904,8 @@
                         </t>
                         <t t-if="not pickup_loc">
                             <div class="border rounded p-3 bg-light text-muted">
-                                <t t-esc="pickup_fsa.display_city or pickup_fsa.fsa"/><br/>
-                                <small>Postal code: <t t-esc="pickup_fsa.fsa"/></small>
+                                <t t-esc="pickup_fsa and (pickup_fsa.display_city or pickup_fsa.fsa) or 'Pickup'"/><br/>
+                                <small>Postal code: <t t-esc="pickup_fsa and pickup_fsa.fsa or '—'"/></small>
                             </div>
                         </t>
                     </div>
@@ -1982,8 +1982,8 @@
                         </t>
                         <t t-if="not delivery_stops">
                             <div class="border rounded p-3 bg-light text-muted">
-                                <t t-esc="delivery_fsa.display_city or delivery_fsa.fsa"/><br/>
-                                <small>Postal code: <t t-esc="delivery_fsa.fsa"/></small>
+                                <t t-esc="delivery_fsa and (delivery_fsa.display_city or delivery_fsa.fsa) or 'Delivery'"/><br/>
+                                <small>Postal code: <t t-esc="delivery_fsa and delivery_fsa.fsa or '—'"/></small>
                             </div>
                         </t>
                     </div>
