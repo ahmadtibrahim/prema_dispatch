@@ -1464,8 +1464,10 @@
          MILK-RUN ROUTE BUILDER JS
          Stop identity uses stable stop_key strings — never array
          indices. A booking becomes a generalized movement_v1 milk run
-         when it has >1 pickup OR any pallet is shared across multiple
-         delivery stops; otherwise the legacy payload is untouched.
+         when it has >1 pickup, OR more than one delivery stop (a simple
+         1 pickup → A → B route still prices every stop), OR any pallet
+         is shared across multiple delivery stops; otherwise the legacy
+         payload is untouched.
          ══════════════════════════════════════════════════════════════ -->
     <script><![CDATA[
         document.addEventListener('DOMContentLoaded', function() {
@@ -1684,8 +1686,21 @@
 
             function builderActive() {
                 if (extraPickupCount > 0) return true;
-                // Shared pallet (multi-delivery) also generalizes the booking.
+                // A route with MULTIPLE delivery stops is a multi-stop milk
+                // run even when no pallet is shared (1 pickup → A → B) —
+                // the FTL/LTL engine must see EVERY ordered stop, so the
+                // generalized route payload is always built for it.
+                if (deliveryStops().length > 1) return true;
+                // Shared pallet (multi-delivery) also generalizes the
+                // booking. The per-pallet ALLOCATION engine is the live
+                // UI; the legacy movement grid (whose rebuild wipes its
+                // own checkboxes) is checked too for older pages.
                 var shared = false;
+                document.querySelectorAll('.pallet-stop-check:checked').forEach(function(cb) {
+                    var key = cb.dataset.pallet;
+                    var count = document.querySelectorAll('.pallet-stop-check:checked[data-pallet="' + key + '"]').length;
+                    if (count > 1) shared = true;
+                });
                 document.querySelectorAll('.movement-delivery-check:checked').forEach(function(cb) {
                     var key = cb.dataset.palletKey;
                     var count = document.querySelectorAll('.movement-delivery-check:checked[data-pallet-key="' + key + '"]').length;
@@ -1781,20 +1796,49 @@
                         document.getElementById('pallet_movements_json').value = '';
                         return;
                     }
-                    var stops = pickupStops().concat(deliveryStops());
-                    var routeStops = stops.map(stopPayload);
-                    var movements = [];
                     var physical = parseInt((document.getElementById('pallets_input') || {}).value) || 1;
+                    // Per-pallet delivery selection. The per-pallet
+                    // ALLOCATION engine (.pallet-stop-check) is the
+                    // authoritative live UI; the legacy movement grid
+                    // (.movement-delivery-check — its rebuild wipes its
+                    // own checkboxes) supplements when it carries a
+                    // selection. Whatever the source, the same state
+                    // feeds route stops, movements AND allocations, so
+                    // Step 3 can never see a different pallet layout.
+                    var selByPallet = {};
+                    for (var p = 1; p <= physical; p++) {
+                        selByPallet[p] = [];
+                        document.querySelectorAll('.movement-delivery-check:checked[data-pallet-key="pal-' + p + '"]').forEach(function(cb) {
+                            selByPallet[p].push({stopKey: cb.dataset.stopKey, idx: parseInt(cb.dataset.deliveryIndex)});
+                        });
+                        if (!selByPallet[p].length) {
+                            var delStops = deliveryStops();
+                            document.querySelectorAll('.pallet-stop-check:checked[data-pallet="' + p + '"]').forEach(function(cb) {
+                                var idx = parseInt(cb.dataset.stop);
+                                var ds = delStops[idx - 1];
+                                if (ds) selByPallet[p].push({stopKey: ds.key, idx: idx});
+                            });
+                        }
+                    }
+                    var stops = pickupStops().concat(deliveryStops());
+                    var routeStops = stops.map(function(s) {
+                        var payload = stopPayload(s);
+                        if (s.type === 'delivery' && s.index) {
+                            var count = 0;
+                            for (var p = 1; p <= physical; p++) {
+                                if (selByPallet[p].some(function(m) { return m.idx === s.index; })) count++;
+                            }
+                            payload.pallets = count || 1;
+                        }
+                        return payload;
+                    });
+                    var movements = [];
                     var legacyAllocs = [];
                     for (var p = 1; p <= physical; p++) {
                         var puSelect = document.querySelector('.movement-pickup[data-pallet="' + p + '"]');
                         var pickupKey = puSelect ? puSelect.value : 'stp-pu-1';
-                        var deliveryKeys = [];
-                        var deliveryIdx = [];
-                        document.querySelectorAll('.movement-delivery-check:checked[data-pallet-key="pal-' + p + '"]').forEach(function(cb) {
-                            deliveryKeys.push(cb.dataset.stopKey);
-                            deliveryIdx.push(parseInt(cb.dataset.deliveryIndex));
-                        });
+                        var deliveryKeys = selByPallet[p].map(function(m) { return m.stopKey; });
+                        var deliveryIdx = selByPallet[p].map(function(m) { return m.idx; });
                         movements.push({
                             key: 'pal-' + p, label: 'Pallet-' + p,
                             weight_lbs: 500, shared: deliveryKeys.length > 1,
@@ -1850,7 +1894,7 @@
                         progresses through the route.
                     </small>
                     <small class="text-muted">Service</small><br/>
-                    <strong>Scheduled LTL</strong>
+                    <strong><t t-if="session.shipment_type == 'ftl'">Dedicated Full Truckload</t><t t-else="">Scheduled LTL</t></strong>
                     <t t-if="quote and quote.get('transfer_hub_name')">
                         <br/><span class="text-muted">Via <t t-esc="quote['transfer_hub_name']"/></span>
                     </t>
@@ -2057,7 +2101,7 @@
                             <span><t t-esc="session.physical_pallets or session.pallets"/> Physical Pallet<t t-if="(session.physical_pallets or session.pallets) != 1">s</t> × <t t-if="session.shipment_type == 'ftl'">Dedicated Full Truckload</t><t t-else="">LTL Scheduled Service</t></span>
                         </t>
                     </div>
-                    <t t-if="stop_pricing and stop_pricing['legs']">
+                    <t t-if="stop_pricing and stop_pricing['legs'] and not stop_pricing.get('ftl_rows')">
                         <small class="text-muted d-block mt-2 mb-1"><strong>BASE PALLET TRANSPORTATION</strong></small>
                         <t t-foreach="stop_pricing['legs']" t-as="pl">
                             <div class="d-flex justify-content-between align-items-center py-1">
@@ -2070,7 +2114,7 @@
                             <span>$<t t-esc="'%.2f' % stop_pricing['base_total']"/></span>
                         </div>
                     </t>
-                    <t t-if="stop_pricing and stop_pricing['weight_rows']">
+                    <t t-if="stop_pricing and stop_pricing['weight_rows'] and not stop_pricing.get('ftl_rows')">
                         <small class="text-muted d-block mt-2 mb-1"><strong>WEIGHT</strong></small>
                         <t t-foreach="stop_pricing['weight_rows']" t-as="wr">
                             <div class="d-flex justify-content-between align-items-center py-1">
