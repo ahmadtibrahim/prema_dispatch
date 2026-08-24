@@ -465,7 +465,7 @@ class LogisticsSavedLocation(models.Model):
             "type": "ir.actions.act_window",
             "name": "Google Verification Report",
             "res_model": "logistics.saved.location",
-            "view_mode": "tree,form",
+            "view_mode": "list,form",
             "domain": [("id", "in", batch.ids)],
             "context": {"create": False},
         }
