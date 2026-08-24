@@ -134,8 +134,32 @@ class DirectDeliveryService:
             matched = rule
             break
 
-        # ── No rule → Hub transfer ────────────────────────────────
+        # ── No rule → corridor-topology direct check ─────────────
+        # The corridor's Ordered Regions are the authoritative proof of
+        # direct scheduled service: when both endpoints are on the SAME
+        # active corridor (origin stop before destination stop, origin
+        # pickup_allowed, destination delivery_allowed) the lane is served
+        # directly by that corridor — no separate
+        # logistics.direct.delivery.rule record is required. Day
+        # availability and actual scheduled departures are enforced
+        # downstream by leg building (calendar probe and Get Price share
+        # this decision, so they can never disagree).
         if not matched:
+            topology_corridor = self.env["logistics.corridor"].find_direct_service(
+                origin, dest)
+            if topology_corridor:
+                return RoutingDecision(
+                    decision="DIRECT_ALLOWED", matched_rule=None,
+                    direct_allowed=True, hub_transfer_required=False,
+                    applicable_corridor_id=topology_corridor,
+                    reason_code="CORRIDOR_TOPOLOGY",
+                    reason_text=f"{origin.code} → {dest.code} is directly served by "
+                               f"corridor {topology_corridor.name} (ordered-region "
+                               f"topology — no hub transfer).",
+                    evaluated_day=pickup_day or "unknown",
+                    restrictions=[],
+                    decision_timestamp=timestamp,
+                )
             return RoutingDecision(
                 decision="HUB_TRANSFER_REQUIRED", matched_rule=None,
                 direct_allowed=False, hub_transfer_required=True,

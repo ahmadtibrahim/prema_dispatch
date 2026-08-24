@@ -520,6 +520,58 @@ class LogisticsCorridor(models.Model):
             segment["destination_sequence"],
         ))
 
+    def find_direct_service(self, origin_region, dest_region):
+        """Return the active corridor whose Ordered Regions directly serve
+        origin_region → dest_region, or an empty recordset.
+
+        Corridor-topology authority: the corridor's Ordered Regions are
+        themselves proof of direct scheduled service — both endpoints on
+        the SAME active corridor, origin stop BEFORE destination stop,
+        origin pickup_allowed and destination delivery_allowed. No separate
+        logistics.direct.delivery.rule record is required.
+
+        Regions are canonicalized through the RegionResolver bridge
+        (corridor stops are keyed by official-LTL regions). Direction
+        semantics match ShipmentRoutingService._directionally_compatible
+        exactly (bidirectional / round-trip / local corridors stay
+        permissive), so the calendar and Get Price can never disagree on
+        what is direct.
+
+        Day availability and actual scheduled departures are NOT evaluated
+        here — leg building enforces those. Same-region pairs are already
+        handled as INTRA_REGION by the decision authority and never reach
+        this check.
+        """
+        from odoo.addons.prema_logistics_booking.services.region_resolver import RegionResolver
+        bridge = RegionResolver(self.env)
+        origin = bridge.canonical_region(origin_region)
+        dest = bridge.canonical_region(dest_region)
+        if not origin or not dest:
+            return self.browse()
+        for corridor in self.search([("active", "=", True)], order="id"):
+            ordered = corridor.stop_ids.filtered(
+                lambda stop: stop.active and stop.region_id
+            ).sorted("sequence")
+            origin_index = next(
+                (index for index, stop in enumerate(ordered)
+                 if stop.region_id == origin), None)
+            dest_index = next(
+                (index for index, stop in enumerate(ordered)
+                 if stop.region_id == dest), None)
+            if origin_index is None or dest_index is None:
+                continue
+            if origin == dest:
+                return corridor
+            if corridor.direction not in (
+                    "bidirectional", "round_trip", "local", "local_loop") \
+                    and origin_index >= dest_index:
+                continue
+            if not ordered[origin_index].pickup_allowed \
+                    or not ordered[dest_index].delivery_allowed:
+                continue
+            return corridor
+        return self.browse()
+
     def action_refresh_departures(self):
         summary = {"created": 0, "updated": 0, "removed": 0, "preserved_booked": 0, "retired_referenced": 0}
         for corridor in self:

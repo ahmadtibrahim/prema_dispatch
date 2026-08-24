@@ -673,8 +673,6 @@ class ShipmentRoutingService:
                     pickup_stop=pickup_stop, delivery_stop=None,
                 )
                 if leg1:
-                    legs.append(leg1)
-
                     # Leg 2: Hub → delivery. The onward leg departs on the
                     # next ACTUAL scheduled departure after the feeder's
                     # real arrival at the hub (never a same-day assumption).
@@ -701,11 +699,17 @@ class ShipmentRoutingService:
                             # datetime and the onward corridor departure.
                             leg1_pickup_dt = self._parse_iso_dt(leg1.pickup_datetime)
                             leg2_dep_dt = self._parse_iso_dt(leg2.corridor_departure_datetime)
+                            hold_ok = True
                             if leg1_pickup_dt and leg2_dep_dt:
                                 hold_hours = (leg2_dep_dt - leg1_pickup_dt).total_seconds() / 3600.0
-                                if hold_hours <= 24:
-                                    legs.append(leg2)
-                            else:
+                                hold_ok = hold_hours <= 24
+                            if hold_ok:
+                                # A route is available ONLY if the final leg
+                                # reaches the requested destination — never a
+                                # feeder-only pickup → Hub route. Mirrors
+                                # _probe_legs exactly, so calendar and Get
+                                # Price always agree.
+                                legs.append(leg1)
                                 legs.append(leg2)
 
         if not legs:
