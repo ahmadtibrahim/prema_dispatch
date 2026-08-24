@@ -58,6 +58,11 @@ class LogisticsCorridor(models.Model):
         string="Customer Booking Horizon (weeks)", default=8,
         help="Exactly this many weekly occurrences are maintained. The maximum is eight weeks.",
     )
+    departure_refresh_label = fields.Char(
+        string="Refresh Label", compute="_compute_departure_refresh_label",
+        help="Dynamic label for the departure refresh action — follows the "
+             "configured Customer Booking Horizon.",
+    )
     holiday_calendar_ids = fields.Many2many(
         "logistics.holiday.calendar", "logistics_corridor_holiday_rel",
         "corridor_id", "calendar_id", string="Holiday / Blackout Calendars",
@@ -236,6 +241,13 @@ class LogisticsCorridor(models.Model):
             rec.operating_days_display = ", ".join(
                 label for label, field_name in zip(labels, fields_by_day) if rec[field_name]
             ) or "Not scheduled"
+
+    @api.depends("departure_horizon_weeks")
+    def _compute_departure_refresh_label(self):
+        for rec in self:
+            horizon = max(rec.departure_horizon_weeks or 8, 1)
+            rec.departure_refresh_label = "Refresh Next %d Week%s" % (
+                horizon, "" if horizon == 1 else "s")
 
     @api.depends(
         "rate_per_km", "planned_pallets", "same_day_return",

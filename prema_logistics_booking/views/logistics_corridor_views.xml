@@ -27,7 +27,10 @@
             <form>
                 <header>
                     <button name="action_recalculate_route_distance" string="Calculate Route Distance" type="object" class="btn-secondary"/>
-                    <button name="action_refresh_departures" string="Refresh Next 8 Weeks" type="object" class="btn-primary"/>
+                    <div class="o_row">
+                        <button name="action_refresh_departures" type="object" icon="fa-refresh" class="btn-primary"/>
+                        <field name="departure_refresh_label" readonly="1" nolabel="1"/>
+                    </div>
                 </header>
                 <sheet>
                     <div class="oe_title"><h1><field name="name"/></h1></div>
@@ -44,7 +47,7 @@
                             <field name="destination_hub_arrival_time" widget="float_time"
                                    invisible="not same_day_return and not destination_hub_id"/>
                             <field name="overnight"/>
-                            <field name="departure_horizon_weeks" readonly="1"/>
+                            <field name="departure_horizon_weeks"/>
                         </group>
                     </group>
                     <notebook>
