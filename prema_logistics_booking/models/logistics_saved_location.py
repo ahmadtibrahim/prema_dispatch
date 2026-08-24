@@ -821,8 +821,30 @@ class LogisticsSavedLocation(models.Model):
             # Shared master facility: keep the customer's per-facility data
             # on the ACCESS relation — never on the master itself.
             if rec.dispatch_location_id:
+                master = rec.dispatch_location_id
+                # Master Facility is the physical authority: keep the
+                # customer copy's coordinates in sync automatically. A
+                # master holding placeholder pins (0.0/0.0 — e.g. created
+                # before Google verification) is healed from this copy's
+                # Google-verified pair; manual pins are never clobbered.
+                if not _valid_coordinate_pair(master.pin_lat, master.pin_lng):
+                    if _valid_coordinate_pair(rec.latitude, rec.longitude):
+                        try:
+                            master.write({
+                                "pin_lat": rec.latitude,
+                                "pin_lng": rec.longitude,
+                                "google_place_id": rec.google_place_id
+                                or master.google_place_id or "",
+                                "google_verified": bool(rec.google_place_id)
+                                or master.google_verified,
+                            })
+                        except Exception:
+                            _logger.warning(
+                                "Could not heal master %s pins from saved "
+                                "location %s", master.id, rec.id, exc_info=True,
+                            )
                 Access.ensure_access(
-                    rec.dispatch_location_id, rec.commercial_partner_id,
+                    master, rec.commercial_partner_id,
                     portal_enabled=True,
                     can_pickup=rec._is_pickup_capable(),
                     can_delivery=rec._is_delivery_capable(),
@@ -850,16 +872,20 @@ class LogisticsSavedLocation(models.Model):
 
             # Dedupe priority (canonical facility authority): link to an
             # existing master instead of cloning it —
-            #   1. Google Place ID + Unit
-            #   2. Normalized address + Unit
+            #   1. same Google Place ID (the physical identity; the Google
+            #      Place ID is unique per facility even when units differ)
+            #   2. normalized exact address + Unit
             #   3. else create a new master (candidate for manual review)
             norm_unit = DispatchLocation._normalize_unit(rec.unit or "")
-            dispatch_loc = DispatchLocation.search([
-                ("google_place_id", "=", (rec.google_place_id or "").strip()),
-                ("normalized_unit", "=", norm_unit),
-                ("active", "=", True),
-            ], limit=1)
-            if not dispatch_loc and (rec.google_place_id or (rec.street and rec.city)):
+            place_id = (rec.google_place_id or "").strip()
+            if place_id:
+                dispatch_loc = DispatchLocation.search([
+                    ("google_place_id", "=", place_id),
+                    ("active", "=", True),
+                ], limit=1)
+            else:
+                dispatch_loc = self.env["prema.dispatch.location"]
+            if not dispatch_loc and (place_id or (rec.street and rec.city)):
                 # Same normalization as prema.dispatch.location's stored
                 # normalized_address_hash (address WITHOUT unit).
                 import hashlib
@@ -884,6 +910,29 @@ class LogisticsSavedLocation(models.Model):
                 # Linked to an existing master: register the customer's
                 # access relation (never write onto the shared master).
                 rec.dispatch_location_id = dispatch_loc.id
+                # Master Facility is the physical authority, but a master
+                # created before verification can hold placeholder pins
+                # (0.0/0.0). When the master lacks a valid pin pair and
+                # this copy carries Google-verified coordinates, push the
+                # physical data to the master (manual pins are never
+                # clobbered). The master's write hook then syncs copies.
+                if not _valid_coordinate_pair(dispatch_loc.pin_lat, dispatch_loc.pin_lng):
+                    if _valid_coordinate_pair(rec.latitude, rec.longitude):
+                        try:
+                            dispatch_loc.write({
+                                "pin_lat": rec.latitude,
+                                "pin_lng": rec.longitude,
+                                "google_place_id": place_id
+                                or dispatch_loc.google_place_id or "",
+                                "google_verified": bool(place_id)
+                                or dispatch_loc.google_verified,
+                            })
+                        except Exception:
+                            _logger.warning(
+                                "Could not update master %s pins from "
+                                "saved location %s",
+                                dispatch_loc.id, rec.id, exc_info=True,
+                            )
                 Access.ensure_access(
                     dispatch_loc, rec.commercial_partner_id,
                     portal_enabled=True,
@@ -915,6 +964,9 @@ class LogisticsSavedLocation(models.Model):
                 "pin_lat": rec.latitude or 0.0,
                 "pin_lng": rec.longitude or 0.0,
                 "google_place_id": rec.google_place_id or "",
+                "google_verified": bool(rec.google_verified
+                                        and _valid_coordinate_pair(rec.latitude,
+                                                                   rec.longitude)),
                 "partner_id": rec.commercial_partner_id.id,
                 "business_name": rec.business_name or rec.company_name or "",
                 "chain_name": rec.chain_name or "",

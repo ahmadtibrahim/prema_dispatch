@@ -651,6 +651,8 @@
                 document.getElementsByName('opening_hours')[0].value = item.opening_hours || '';
                 document.getElementById('loc_place_id').value = item.place_id || '';
                 document.getElementById('loc_lat').value = item.latitude || 0;
+                // Hidden Google fields are bound to the prefilled street.
+                lastGoogleStreet = document.getElementById('street_address').value;
 
                 // UAT-004: Override Location Type from master facility's stop_type
                 // Master data precedence > URL ?type= query parameter
@@ -744,6 +746,25 @@
             }
 
             // ── Google Places Address Autocomplete (UAT-003 req 10) ──────────────
+            // The hidden google_place_id / latitude / longitude /
+            // formatted_address fields are only valid for the street text
+            // they came from. Manually editing the street (typing, not a
+            // Google suggestion) clears them so a stale Place ID can never
+            // be submitted — the server-side verification is authoritative
+            // and will ask for a Google selection instead.
+            var lastGoogleStreet = '';
+            var trackStreetInput = document.getElementById('street_address');
+            if (trackStreetInput) {
+                trackStreetInput.addEventListener('input', function() {
+                    if (trackStreetInput.value !== lastGoogleStreet) {
+                        document.getElementById('loc_place_id').value = '';
+                        document.getElementById('loc_lat').value = 0;
+                        document.getElementById('loc_lng').value = 0;
+                        document.getElementById('loc_formatted_address').value = '';
+                    }
+                });
+            }
+
             function initGooglePlacesAutocomplete() {
                 var streetInput = document.getElementById('street_address');
                 if (!streetInput || typeof google === 'undefined' || !google.maps || !google.maps.places) {
@@ -793,6 +814,8 @@
                     document.getElementById('loc_lat').value = place.geometry ? place.geometry.location.lat() : 0;
                     document.getElementById('loc_lng').value = place.geometry ? place.geometry.location.lng() : 0;
                     document.getElementById('loc_formatted_address').value = place.formatted_address || '';
+                    // The hidden fields are now bound to THIS street text.
+                    lastGoogleStreet = streetInput.value;
 
                     // Auto-default branch name from chain + city
                     autoDefaultBranchName();

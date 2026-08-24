@@ -2,9 +2,56 @@
 
 import json
 
-from odoo import _, http
+from odoo import _, fields, http
 from odoo.http import request
 from werkzeug.exceptions import NotFound
+
+from odoo.addons.prema_logistics_booking.services.google_places_service import (
+    GooglePlacesService, valid_coordinate_pair,
+)
+
+_GOOGLE_INSTRUCTION = _(
+    "Please select the address from the Google address suggestions so we can "
+    "verify the location.")
+
+
+class _FormLocation:
+    """Minimal stand-in for logistics.saved.location so the add/edit form
+    re-renders with the customer's submitted values when Google
+    verification fails — nothing is typed twice. Only physical/contact
+    fields; refs expose .id for the template's selects."""
+
+    _ATTRS = (
+        "name", "street", "street2", "unit", "city", "postal_code",
+        "chain_name", "business_name", "branch_name", "branch_name_manual",
+        "store_number", "contact_name", "contact_phone", "contact_email",
+        "dock_info", "opening_hours", "pickup_instructions",
+        "delivery_instructions", "location_type", "timezone",
+        "formatted_address", "google_place_id",
+    )
+
+    class _Ref:
+        def __init__(self, rid):
+            self.id = rid
+
+        def __bool__(self):
+            return self.id is not None
+
+    def __init__(self, kwargs):
+        for attr in self._ATTRS:
+            setattr(self, attr, str(kwargs.get(attr, "") or ""))
+        try:
+            self.latitude = float(kwargs.get("latitude", 0) or 0)
+            self.longitude = float(kwargs.get("longitude", 0) or 0)
+        except (TypeError, ValueError):
+            self.latitude, self.longitude = 0.0, 0.0
+        self.appointment_required = kwargs.get("appointment_required") == "1"
+        self.liftgate_required = kwargs.get("liftgate_required") == "1"
+        self.forklift_available = kwargs.get("forklift_available") == "1"
+        self.state_id = self._Ref(int(kwargs.get("state_id", 0) or 0) or None)
+        self.country_id = self._Ref(int(kwargs.get("country_id", 0) or 0) or None)
+        self.dispatch_location_id = self._Ref(
+            int(kwargs.get("dispatch_location_id", 0) or 0) or None)
 
 
 def _require_auth():
@@ -16,6 +63,22 @@ def _require_auth():
 def _get_partner():
     """Return the authenticated user's commercial partner."""
     return request.env.user.partner_id.commercial_partner_id
+
+
+def _submitted_hours_by_day(kwargs):
+    """Rebuild the hours_by_day context from a submitted week so the form
+    keeps the customer's operating hours on a verification error."""
+    out = {}
+    for row in _collect_hour_rows(kwargs):
+        d = row["day"]
+        if row["status"] == "open_24h":
+            out[d] = {"status": "open_24h", "open": "00:00", "close": "23:59"}
+        elif row["status"] == "closed":
+            out[d] = {"status": "closed", "open": "08:00", "close": "17:00"}
+        else:
+            out[d] = {"status": "custom",
+                      "open": row["open"] or "08:00", "close": row["close"] or "17:00"}
+    return out
 
 
 def _collect_hour_rows(kwargs):
@@ -190,6 +253,53 @@ class LogisticsSavedLocationsPortal(http.Controller):
             "location_type": master_stop_type,
         }
 
+    # ── Server-side Google verification ───────────────────────────────
+    def _google_verify(self, kwargs):
+        """Authoritative server-side verification for add/edit POSTs.
+
+        A Google Place ID submitted by the browser is NEVER accepted on
+        its own — it must resolve through the canonical Places service to
+        a valid coordinate pair (0.0/0.0 is not valid; a single zero
+        component is). Returns:
+
+          {"source": "google", <resolved physical data>}   — verified
+          {"source": "master", "master": <facility>}       — shared master
+                                                             with valid pins
+          None                                              — unverifiable
+
+        The master branch lets customers reuse an existing Master
+        Facility (its pins were validated when the facility was created);
+        the master keeps its authority, nothing is re-derived.
+        """
+        place_id = str(kwargs.get("google_place_id", "") or "").strip()
+        if place_id:
+            resolved = GooglePlacesService(request.env).resolve_place(place_id)
+            if resolved:
+                return {"source": "google", **resolved}
+            return None
+
+        master_id = int(kwargs.get("dispatch_location_id", 0) or 0) or None
+        if master_id:
+            master = request.env["prema.dispatch.location"].sudo().browse(master_id)
+            if master.exists() and valid_coordinate_pair(master.pin_lat, master.pin_lng):
+                return {"source": "master", "master": master}
+        return None
+
+    def _google_state_country(self, province_code, country_code):
+        """Resolve province/state + country codes to their res records
+        (for the canonical Google result). Returns (state_id, country_id)."""
+        state = False
+        if province_code:
+            state = request.env["res.country.state"].sudo().search([
+                ("code", "=ilike", province_code),
+            ], limit=1)
+        country = False
+        if country_code:
+            country = request.env["res.country"].sudo().search([
+                ("code", "=ilike", country_code),
+            ], limit=1)
+        return (state.id if state else False), (country.id if country else False)
+
     # ── List ──────────────────────────────────────────────────────────
     @http.route("/my/saved-locations", type="http", auth="user", website=True, sitemap=False)
     def list_locations(self, **kwargs):
@@ -246,6 +356,28 @@ class LogisticsSavedLocationsPortal(http.Controller):
                         )
                     return request.redirect("/my/saved-locations")
 
+            # Server-side Google verification — authoritative, even when
+            # the browser already supplied coordinates. A submitted Place
+            # ID means nothing until Google resolves a valid coordinate
+            # pair; a shared Master Facility with valid pins passes
+            # through (its physical data was validated when created).
+            gv = self._google_verify(kwargs)
+            if not gv:
+                return request.render(
+                    "prema_logistics_booking.portal_saved_location_form_enhanced", {
+                        "error": _GOOGLE_INSTRUCTION,
+                        "location": _FormLocation(kwargs),
+                        "default_type": kwargs.get("location_type", default_type),
+                        "return_to": return_to,
+                        "states": request.env["res.country.state"].sudo().search([
+                            ("country_id.code", "=", "CA"),
+                        ], order="name"),
+                        "editing": False,
+                        "google_api_key": request.env["ir.config_parameter"].sudo()
+                        .get_param("google_maps_api_key", ""),
+                        "hours_by_day": _submitted_hours_by_day(kwargs),
+                    })
+
             vals = {
                 "commercial_partner_id": partner.id,
                 "name": kwargs.get("name", "").strip(),
@@ -271,16 +403,43 @@ class LogisticsSavedLocationsPortal(http.Controller):
                 "appointment_required": kwargs.get("appointment_required") == "1",
                 "liftgate_required": kwargs.get("liftgate_required") == "1",
                 "forklift_available": kwargs.get("forklift_available") == "1",
-                "latitude": float(kwargs.get("latitude", 0) or 0),
-                "longitude": float(kwargs.get("longitude", 0) or 0),
-                "google_place_id": google_place_id,
-                "formatted_address": kwargs.get("formatted_address", "").strip(),
-                "google_verified": bool(google_place_id),
                 "branch_name_manual": kwargs.get("branch_name_manual") == "1",
-                "dispatch_location_id": int(kwargs.get("dispatch_location_id", 0)) or None,
                 # Structured operating hours: timezone + weekly schedule.
                 "timezone": kwargs.get("timezone", "").strip() or "America/Toronto",
             }
+
+            if gv["source"] == "google":
+                # Canonical Google result is the physical authority: the
+                # browser may have sent its own coordinates, but the
+                # resolved Place data wins — never trust browser
+                # coordinates when a Place ID is present.
+                state_id, country_id = self._google_state_country(
+                    gv.get("province_code"), gv.get("country_code"))
+                vals.update({
+                    "google_place_id": gv["place_id"],
+                    "latitude": gv["latitude"],
+                    "longitude": gv["longitude"],
+                    "formatted_address": gv.get("formatted_address") or "",
+                    "street": gv.get("street") or vals["street"],
+                    "city": gv.get("city") or vals["city"],
+                    "postal_code": gv.get("postal_code") or vals["postal_code"],
+                    "state_id": state_id or vals["state_id"],
+                    "country_id": country_id or vals["country_id"],
+                    "google_verified": True,
+                    "google_verified_at": fields.Datetime.now(),
+                })
+            else:
+                # Shared Master Facility: link it; its pins are the
+                # physical authority (the sync hook copies them onto this
+                # record) — never re-derive or overwrite the master.
+                master = gv["master"]
+                vals["dispatch_location_id"] = master.id
+                vals["latitude"] = master.pin_lat
+                vals["longitude"] = master.pin_lng
+                if master.google_place_id and not vals.get("google_place_id"):
+                    vals["google_place_id"] = master.google_place_id
+                if master.google_verified:
+                    vals["google_verified"] = True
 
             if not vals["name"]:
                 error = _("Please enter a location name.")
@@ -360,6 +519,33 @@ class LogisticsSavedLocationsPortal(http.Controller):
                     dup.mark_used()
                     return request.redirect("/my/saved-locations")
 
+            # Same server-side Google verification as add. An edit that
+            # keeps an ALREADY verified location intact (its hidden google
+            # fields are prefilled from the record, so its Place ID
+            # resolves again) passes normally; an unverified location must
+            # be re-verified from Google before it can be saved.
+            gv = self._google_verify(kwargs)
+            if not gv:
+                master = loc.dispatch_location_id
+                still_valid = loc.google_verified and (
+                    (master and valid_coordinate_pair(master.pin_lat, master.pin_lng))
+                    or valid_coordinate_pair(loc.latitude, loc.longitude))
+                if not still_valid:
+                    return request.render(
+                        "prema_logistics_booking.portal_saved_location_form_enhanced", {
+                            "error": _GOOGLE_INSTRUCTION,
+                            "location": _FormLocation(kwargs),
+                            "default_type": kwargs.get("location_type", loc.location_type),
+                            "return_to": "",
+                            "states": request.env["res.country.state"].sudo().search([
+                                ("country_id.code", "=", "CA"),
+                            ], order="name"),
+                            "editing": True,
+                            "google_api_key": request.env["ir.config_parameter"].sudo()
+                            .get_param("google_maps_api_key", ""),
+                            "hours_by_day": _submitted_hours_by_day(kwargs),
+                        })
+
             vals = {
                 "name": kwargs.get("name", "").strip(),
                 "location_type": kwargs.get("location_type", loc.location_type),
@@ -389,6 +575,35 @@ class LogisticsSavedLocationsPortal(http.Controller):
                 "formatted_address": kwargs.get("formatted_address", "").strip(),
                 "timezone": kwargs.get("timezone", "").strip() or loc.timezone or "America/Toronto",
             }
+
+            if gv and gv["source"] == "google":
+                # Canonical Google result wins over any browser-supplied
+                # coordinates/address fields.
+                state_id, country_id = self._google_state_country(
+                    gv.get("province_code"), gv.get("country_code"))
+                vals.update({
+                    "google_place_id": gv["place_id"],
+                    "latitude": gv["latitude"],
+                    "longitude": gv["longitude"],
+                    "formatted_address": gv.get("formatted_address") or "",
+                    "street": gv.get("street") or vals["street"],
+                    "city": gv.get("city") or vals["city"],
+                    "postal_code": gv.get("postal_code") or vals["postal_code"],
+                    "state_id": state_id or loc.state_id.id,
+                    "country_id": country_id or loc.country_id.id,
+                    "google_verified": True,
+                    "google_verified_at": fields.Datetime.now(),
+                })
+            elif gv and gv["source"] == "master":
+                master = gv["master"]
+                vals["dispatch_location_id"] = master.id
+                vals["latitude"] = master.pin_lat
+                vals["longitude"] = master.pin_lng
+                if master.google_place_id and not vals.get("google_place_id"):
+                    vals["google_place_id"] = master.google_place_id
+                if master.google_verified:
+                    vals["google_verified"] = True
+
             if not vals["name"]:
                 error = _("Please enter a location name.")
             else:
