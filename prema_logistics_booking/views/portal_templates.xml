@@ -146,7 +146,7 @@
                                     <option value="">— Choose pickup location —</option>
                                     <t t-foreach="pickup_locations" t-as="loc">
                                         <option t-att-value="str(loc.id)"
-                                                t-att-selected="'selected' if loc.is_default_pickup else None">
+                                                t-att-selected="'selected' if (selected_pickup_id and loc.id == selected_pickup_id) or (not selected_pickup_id and loc.is_default_pickup) else None">
                                             <t t-esc="loc.name"/>
                                             <t t-if="loc.is_default_pickup"> ★ (Default)</t>
                                             — <t t-esc="loc.city or ''"/>, <t t-esc="loc.state_id.code or ''"/>
@@ -185,7 +185,7 @@
                                                 t-att-data-street="loc.street or ''"
                                                 t-att-data-city="loc.city or ''"
                                                 t-att-data-state="loc.state_id.code or ''"
-                                                t-att-selected="'selected' if loc.is_default_delivery else None">
+                                                t-att-selected="'selected' if (selected_delivery_rows and loc.id == selected_delivery_rows[0]['loc_id']) or (not selected_delivery_rows and loc.is_default_delivery) else None">
                                             <t t-esc="loc.name"/>
                                             <t t-if="loc.is_default_delivery"> ★ (Default)</t>
                                             — <t t-esc="loc.city or ''"/>, <t t-esc="loc.state_id.code or ''"/>
@@ -200,6 +200,43 @@
                                     <button type="button" class="btn btn-sm btn-outline-danger remove-stop-btn" style="display:none">✕</button>
                                 </div>
                             </div>
+                            <!-- Extra delivery stops preserved from a failed POST
+                                 (server-rendered so multi-stop selections survive
+                                 a validation error; refreshAllStops() rebinds them) -->
+                            <t t-foreach="selected_delivery_rows" t-as="row_data">
+                                <t t-if="row_data['idx'] > 1">
+                                    <div class="delivery-stop-row border rounded p-3 mb-2"
+                                         t-att-data-stop-index="row_data['idx'] - 1">
+                                        <div class="d-flex justify-content-between align-items-center mb-2">
+                                            <strong class="stop-label">Delivery Stop <t t-esc="row_data['idx']"/></strong>
+                                            <span/>
+                                        </div>
+                                        <select t-att-name="'delivery_saved_location_id_' + str(row_data['idx'])"
+                                                class="form-select form-select-lg delivery-select">
+                                            <option value="">— Choose delivery location —</option>
+                                            <t t-foreach="delivery_locations" t-as="loc">
+                                                <option t-att-value="str(loc.id)"
+                                                        t-att-data-street="loc.street or ''"
+                                                        t-att-data-city="loc.city or ''"
+                                                        t-att-data-state="loc.state_id.code or ''"
+                                                        t-att-selected="'selected' if loc.id == row_data['loc_id'] else None">
+                                                    <t t-esc="loc.name"/>
+                                                    <t t-if="loc.is_default_delivery"> ★ (Default)</t>
+                                                    — <t t-esc="loc.city or ''"/>, <t t-esc="loc.state_id.code or ''"/>
+                                                </option>
+                                            </t>
+                                        </select>
+                                        <div class="stop-detail-text text-muted small mt-1"/>
+                                        <div class="mt-2 d-flex gap-2">
+                                            <button type="button" class="btn btn-sm btn-outline-secondary move-up-btn" style="display:none">↑</button>
+                                            <button type="button" class="btn btn-sm btn-outline-secondary move-down-btn" style="display:none">↓</button>
+                                            <a t-att-href="'/my/saved-locations/add?type=delivery&amp;return=booking&amp;stop_index=' + str(row_data['idx'])"
+                                               class="btn btn-sm btn-outline-secondary add-loc-link">+ New Location</a>
+                                            <button type="button" class="btn btn-sm btn-outline-danger remove-stop-btn" style="display:none">✕</button>
+                                        </div>
+                                    </div>
+                                </t>
+                            </t>
                             <div id="max_stops_msg" class="text-muted small text-center" style="display:none">
                                 Maximum 20 delivery stops per booking.
                             </div>

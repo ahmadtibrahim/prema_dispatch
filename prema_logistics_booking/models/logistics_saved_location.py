@@ -13,6 +13,23 @@ from odoo.exceptions import AccessError, ValidationError
 _logger = logging.getLogger(__name__)
 
 
+def _valid_coordinate_pair(latitude, longitude):
+    """True only for a usable physical coordinate pair.
+
+    A pair is usable when both values are within valid ranges AND it is
+    not the 0.0/0.0 placeholder. A legitimate coordinate with one exact
+    zero component (e.g. the Equator) is accepted.
+    """
+    if latitude is None or longitude is None:
+        return False
+    lat, lng = float(latitude), float(longitude)
+    if not (-90.0 <= lat <= 90.0 and -180.0 <= lng <= 180.0):
+        return False
+    if lat == 0.0 and lng == 0.0:
+        return False
+    return True
+
+
 class LogisticsSavedLocation(models.Model):
     _name = "logistics.saved.location"
     _description = "Customer Saved Location"
@@ -301,6 +318,62 @@ class LogisticsSavedLocation(models.Model):
         self.ensure_one()
         return self.location_type in ("delivery", "both")
 
+    # ── Canonical physical coordinates ──────────────────────────────
+
+    def _get_effective_coordinates(self):
+        """Canonical physical coordinates for this saved location.
+
+        Priority:
+          1. linked Master Facility's valid pin pair (physical authority)
+          2. this record's own latitude/longitude
+          3. no coordinates
+
+        Booking/portal code MUST use this helper — never raw fields — so a
+        stale 0,0 customer copy can never break a booking when its master
+        has the real coordinates.
+        """
+        self.ensure_one()
+        master = self.dispatch_location_id
+        if master and _valid_coordinate_pair(master.pin_lat, master.pin_lng):
+            return {
+                "latitude": master.pin_lat,
+                "longitude": master.pin_lng,
+                "source": "master_pin",
+            }
+        if _valid_coordinate_pair(self.latitude, self.longitude):
+            return {
+                "latitude": self.latitude,
+                "longitude": self.longitude,
+                "source": "saved_location",
+            }
+        return {"latitude": None, "longitude": None, "source": "none"}
+
+    def _sync_physical_from_master(self):
+        """Pull shared PHYSICAL data from the linked master into the copy.
+
+        Synchronizes latitude/longitude (and Google identity when the
+        master has it) from prema.dispatch.location onto this record.
+        NEVER touches customer-private fields: contact_name/phone/email,
+        pickup/delivery instructions, notes, customer alias, hours.
+        Only writes when the master has a valid coordinate pair.
+        """
+        for rec in self:
+            master = rec.dispatch_location_id
+            if not master or not _valid_coordinate_pair(master.pin_lat, master.pin_lng):
+                continue
+            vals = {}
+            if rec.latitude != master.pin_lat or rec.longitude != master.pin_lng:
+                vals.update({
+                    "latitude": master.pin_lat,
+                    "longitude": master.pin_lng,
+                })
+            if master.google_place_id and rec.google_place_id != master.google_place_id:
+                vals["google_place_id"] = master.google_place_id
+            if master.google_verified and not rec.google_verified:
+                vals["google_verified"] = True
+            if vals:
+                rec.write(vals)
+
     # ── Google Places batch verification ────────────────────────────
 
     def action_google_verify_locations(self):
@@ -437,6 +510,26 @@ class LogisticsSavedLocation(models.Model):
                     if dup:
                         duplicates += 1
                         report_lines.append(f"  ⚠ Duplicate: {dup.name} (ID={dup.id})")
+
+                    # The Master Facility is the physical authority: push
+                    # verified coordinates to it FIRST when it lacks a valid
+                    # pin pair (manual/dispatcher pins are never clobbered).
+                    # The master write hook then syncs this copy automatically.
+                    master = loc.dispatch_location_id
+                    if master and lat and lng and not _valid_coordinate_pair(
+                            master.pin_lat, master.pin_lng):
+                        master_vals = {"pin_lat": lat, "pin_lng": lng}
+                        if pid and master.google_place_id != pid:
+                            master_vals["google_place_id"] = pid
+                        if not master.google_verified:
+                            master_vals["google_verified"] = True
+                        try:
+                            master.write(master_vals)
+                        except Exception:
+                            _logger.warning(
+                                "Google verify: could not update master %s for location %s",
+                                master.id, loc.id, exc_info=True,
+                            )
 
                     loc.write(vals)
                     verified += 1
@@ -742,6 +835,9 @@ class LogisticsSavedLocation(models.Model):
                     pickup_instructions=rec.pickup_instructions,
                     delivery_instructions=rec.delivery_instructions,
                 )
+                # Master Facility is the physical authority: keep the
+                # customer copy's coordinates in sync automatically.
+                rec._sync_physical_from_master()
                 continue
 
             # Build address string for dispatch location (required field)
@@ -850,3 +946,43 @@ class LogisticsSavedLocation(models.Model):
     def mark_used(self):
         """Update last_used_date when location is selected in a booking."""
         self.write({"last_used_date": fields.Datetime.now()})
+
+
+class PremaDispatchLocationPhysicalSync(models.Model):
+    """Keep linked customer Saved Location copies in sync with the
+    canonical Master Facility's physical data.
+
+    Lives in this module (which depends on prema_dispatch) so the sync
+    can reach logistics.saved.location. Only shared PHYSICAL data is
+    propagated — customer-private fields (contacts, instructions, hours,
+    aliases) live on logistics.location.customer.access and are never
+    touched here.
+    """
+
+    _inherit = "prema.dispatch.location"
+
+    _PHYSICAL_SYNC_FIELDS = (
+        "pin_lat", "pin_lng", "google_place_id", "google_verified",
+    )
+
+    @api.model_create_multi
+    def create(self, vals_list):
+        records = super().create(vals_list)
+        records._sync_linked_saved_locations()
+        return records
+
+    def write(self, vals):
+        result = super().write(vals)
+        if set(self._PHYSICAL_SYNC_FIELDS).intersection(vals):
+            self._sync_linked_saved_locations()
+        return result
+
+    def _sync_linked_saved_locations(self):
+        for master in self:
+            if not _valid_coordinate_pair(master.pin_lat, master.pin_lng):
+                continue
+            copies = self.env["logistics.saved.location"].sudo().search([
+                ("dispatch_location_id", "=", master.id),
+                ("active", "=", True),
+            ])
+            copies._sync_physical_from_master()

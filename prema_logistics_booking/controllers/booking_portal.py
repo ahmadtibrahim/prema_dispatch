@@ -256,6 +256,7 @@ def _saved_locations_builder_payload(partner):
     ], order="name")
     payload = []
     for loc in locations:
+        eff = _portal_coord_pair(loc)
         hours = {}
         for day in range(7):
             rows = Hours.search([
@@ -280,8 +281,8 @@ def _saved_locations_builder_payload(partner):
             "business_name": loc.business_name or "",
             "city": loc.city or "",
             "postal_code": loc.postal_code or "",
-            "latitude": loc.latitude or 0.0,
-            "longitude": loc.longitude or 0.0,
+            "latitude": eff[0] or 0.0,
+            "longitude": eff[1] or 0.0,
             "timezone": loc.timezone or "America/Toronto",
             "location_type": loc.location_type or "both",
             "liftgate_required": bool(loc.liftgate_required),
@@ -332,6 +333,20 @@ def _parse_bool(val):
     if isinstance(val, bool):
         return val
     return str(val).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _portal_coord_pair(loc):
+    """Effective (latitude, longitude) for a saved location, or (None, None).
+
+    Delegates to the model's canonical helper so every portal consumer
+    (validation, redirect URL, stops, JSON markers) resolves the SAME
+    coordinates: linked Master Facility pin pair first, own lat/lng
+    second. A copy whose duplicated fields are stale or 0/0 placeholders
+    still routes via its master."""
+    if not loc:
+        return (None, None)
+    eff = loc._get_effective_coordinates()
+    return (eff["latitude"], eff["longitude"])
 
 def _portal_enabled():
     val = request.env["ir.config_parameter"].sudo().get_param("logistics_booking.portal_enabled")
@@ -402,21 +417,27 @@ class LogisticsBookingPortal(http.Controller):
             if pickup_loc_id and delivery_loc_ids:
                 pickup_loc = SavedLocation.browse(int(pickup_loc_id))
                 delivery_locs = SavedLocation.browse(delivery_loc_ids)
+                # Effective coordinates: linked Master Facility pin pair
+                # preferred, own lat/lng second — a copy with stale or 0/0
+                # placeholder coordinates still validates via its master.
+                pu_eff = _portal_coord_pair(pickup_loc)
+                de_effs = {dl.id: _portal_coord_pair(dl) for dl in delivery_locs if dl.exists()}
                 # Security: ensure all locations belong to this customer
                 if pickup_loc.commercial_partner_id.id != partner.id:
                     error = _("Invalid pickup location selection.")
                 elif any(dl.commercial_partner_id.id != partner.id for dl in delivery_locs if dl.exists()):
                     error = _("Invalid delivery location selection.")
-                elif not pickup_loc.latitude:
+                elif pu_eff[0] is None:
                     error = _("Pickup location must have valid coordinates.")
-                elif any(not dl.latitude for dl in delivery_locs if dl.exists()):
+                elif any(eff[0] is None for eff in de_effs.values()):
                     error = _("All delivery locations must have valid coordinates.")
                 else:
                     # Build URL with first delivery + all delivery loc IDs
                     first_del = delivery_locs[0]
+                    de_eff = de_effs[first_del.id]
                     params = (
-                        f"pickup_lat={pickup_loc.latitude}&pickup_lng={pickup_loc.longitude}"
-                        f"&delivery_lat={first_del.latitude}&delivery_lng={first_del.longitude}"
+                        f"pickup_lat={pu_eff[0]}&pickup_lng={pu_eff[1]}"
+                        f"&delivery_lat={de_eff[0]}&delivery_lng={de_eff[1]}"
                         f"&pickup_loc_id={pickup_loc_id}"
                         f"&delivery_loc_id={first_del.id}"
                     )
@@ -462,6 +483,30 @@ class LogisticsBookingPortal(http.Controller):
             ("commercial_partner_id", "=", partner.id),
         ], order="id desc", limit=10)
 
+        # Preserve the customer's selections when a POST validation error
+        # re-renders the page — never silently reset to defaults.
+        selected_pickup_id = None
+        selected_delivery_ids = []
+        raw_pickup = kwargs.get("pickup_saved_location_id")
+        if raw_pickup:
+            try:
+                selected_pickup_id = int(raw_pickup)
+            except (ValueError, TypeError):
+                selected_pickup_id = None
+        for key, val in kwargs.items():
+            if key.startswith("delivery_saved_location_id_") and val:
+                try:
+                    selected_delivery_ids.append(int(val))
+                except (ValueError, TypeError):
+                    pass
+        if not selected_delivery_ids:
+            raw_single = kwargs.get("delivery_saved_location_id")
+            if raw_single:
+                try:
+                    selected_delivery_ids.append(int(raw_single))
+                except (ValueError, TypeError):
+                    pass
+
         return request.render("prema_logistics_booking.portal_step1_locations", {
             "error": error,
             "pickup_locations": pickup_locations,
@@ -470,6 +515,12 @@ class LogisticsBookingPortal(http.Controller):
             "new_loc_id": new_loc_id,
             "new_loc_type": new_loc_type,
             "customer_bookings": customer_bookings,
+            "selected_pickup_id": selected_pickup_id,
+            "selected_delivery_ids": selected_delivery_ids,
+            "selected_delivery_rows": [
+                {"loc_id": loc_id, "idx": i + 1}
+                for i, loc_id in enumerate(selected_delivery_ids)
+            ],
         })
 
     # ------------------------------------------------------------------
@@ -501,24 +552,28 @@ class LogisticsBookingPortal(http.Controller):
         if pickup_loc_id and delivery_loc_ids:
             pickup_loc = SavedLocation.browse(int(pickup_loc_id))
             delivery_locs = SavedLocation.browse(delivery_loc_ids)
+            pu_eff = _portal_coord_pair(pickup_loc)
             if (pickup_loc.exists() and pickup_loc.commercial_partner_id.id == partner.id
-                    and pickup_loc.latitude
+                    and pu_eff[0] is not None
                     and all(
-                        dl.exists() and dl.commercial_partner_id.id == partner.id and dl.latitude
+                        dl.exists()
+                        and dl.commercial_partner_id.id == partner.id
+                        and _portal_coord_pair(dl)[0] is not None
                         for dl in delivery_locs
                     )):
                 stops.append({
                     "stop_type": "pickup",
-                    "latitude": pickup_loc.latitude,
-                    "longitude": pickup_loc.longitude,
+                    "latitude": pu_eff[0],
+                    "longitude": pu_eff[1],
                     "saved_location_id": pickup_loc.id,
                     "postal_code": pickup_loc.postal_code or "",
                 })
                 for dl in delivery_locs:
+                    de_eff = _portal_coord_pair(dl)
                     stops.append({
                         "stop_type": "delivery",
-                        "latitude": dl.latitude,
-                        "longitude": dl.longitude,
+                        "latitude": de_eff[0],
+                        "longitude": de_eff[1],
                         "saved_location_id": dl.id,
                         "city": dl.city or "",
                         "postal_code": dl.postal_code or "",
@@ -647,7 +702,8 @@ class LogisticsBookingPortal(http.Controller):
                 if pu_result.matched_region_code:
                     pickup_fsa = Fsa.search([("region_id.code", "=", pu_result.matched_region_code)], limit=1)
             if not delivery_fsa and first_delivery:
-                de_result = resolver.resolve(first_delivery.latitude, first_delivery.longitude)
+                de_eff = _portal_coord_pair(first_delivery)
+                de_result = resolver.resolve(de_eff[0] or 0, de_eff[1] or 0)
                 if de_result.matched_region_code:
                     delivery_fsa = Fsa.search([("region_id.code", "=", de_result.matched_region_code)], limit=1)
 
@@ -658,24 +714,29 @@ class LogisticsBookingPortal(http.Controller):
             if not delivery_loc_id and delivery_loc_ids:
                 delivery_loc_id = delivery_loc_ids[0]
 
-            # Build template context
-            delivery_locs_payload = [{
-                "id": dl.id,
-                "name": dl.name or "",
-                "business_name": dl.business_name or "",
-                "city": dl.city or "",
-                "latitude": dl.latitude,
-                "longitude": dl.longitude,
-            } for dl in delivery_locs]
+            # Build template context (effective coordinates — master pin
+            # pair preferred, so stale/0/0 copies still place correctly)
+            delivery_locs_payload = []
+            for dl in delivery_locs:
+                de_eff = _portal_coord_pair(dl)
+                delivery_locs_payload.append({
+                    "id": dl.id,
+                    "name": dl.name or "",
+                    "business_name": dl.business_name or "",
+                    "city": dl.city or "",
+                    "latitude": de_eff[0],
+                    "longitude": de_eff[1],
+                })
             pickup_loc_payload = None
             if pickup_loc and pickup_loc.exists():
+                pu_eff = _portal_coord_pair(pickup_loc)
                 pickup_loc_payload = {
                     "id": pickup_loc.id,
                     "name": pickup_loc.name or "",
                     "business_name": pickup_loc.business_name or "",
                     "city": pickup_loc.city or "",
-                    "latitude": pickup_loc.latitude,
-                    "longitude": pickup_loc.longitude,
+                    "latitude": pu_eff[0],
+                    "longitude": pu_eff[1],
                 }
             return request.render("prema_logistics_booking.portal_step2_shipment", {
                 "pickup_fsa": pickup_fsa, "delivery_fsa": delivery_fsa,
@@ -865,8 +926,10 @@ class LogisticsBookingPortal(http.Controller):
         if pickup_loc_id:
             pu_loc = SavedLocation.browse(int(pickup_loc_id))
             if pu_loc.exists() and pu_loc.commercial_partner_id.id == partner.id:
-                pickup_stops[0]["latitude"] = pu_loc.latitude
-                pickup_stops[0]["longitude"] = pu_loc.longitude
+                pu_eff = _portal_coord_pair(pu_loc)
+                if pu_eff[0] is not None:
+                    pickup_stops[0]["latitude"] = pu_eff[0]
+                    pickup_stops[0]["longitude"] = pu_eff[1]
                 pickup_stops[0]["address"] = pu_loc.street or ""
                 pickup_stops[0]["city"] = pu_loc.city or ""
                 pickup_stops[0]["saved_location_id"] = pu_loc.id
@@ -908,10 +971,11 @@ class LogisticsBookingPortal(http.Controller):
             timing_type = kwargs.get(f"delivery_timing_type_{i+1}") or "flexible"
             wstart = kwargs.get(f"delivery_window_start_{i+1}", "").strip()
             wend = kwargs.get(f"delivery_window_end_{i+1}", "").strip()
+            de_eff = _portal_coord_pair(dl)
             stop = {
                 "postal_code": dl.postal_code or "",
-                "latitude": dl.latitude,
-                "longitude": dl.longitude,
+                "latitude": de_eff[0],
+                "longitude": de_eff[1],
                 "address": dl.street or "",
                 "city": dl.city or "",
                 "saved_location_id": dl.id,
@@ -955,13 +1019,14 @@ class LogisticsBookingPortal(http.Controller):
                     loc = SavedLocation.browse(int(loc_id))
                     if not loc.exists() or loc.commercial_partner_id.id != partner.id:
                         return request.redirect("/my/booking/new")
+                loc_eff = _portal_coord_pair(loc) if loc else (None, None)
                 entry = {
                     "stop_key": rs.get("stop_key") or "",
                     "location_name": rs.get("location_name")
                         or (loc.business_name or loc.name if loc else ""),
                     "postal_code": (loc.postal_code if loc else rs.get("postal_code")) or "",
-                    "latitude": (loc.latitude if loc else rs.get("latitude")) or 0.0,
-                    "longitude": (loc.longitude if loc else rs.get("longitude")) or 0.0,
+                    "latitude": (loc_eff[0] if loc else rs.get("latitude")) or 0.0,
+                    "longitude": (loc_eff[1] if loc else rs.get("longitude")) or 0.0,
                     "address": (loc.street if loc else rs.get("address")) or "",
                     "city": (loc.city if loc else rs.get("city")) or "",
                     "saved_location_id": loc.id if loc else None,
