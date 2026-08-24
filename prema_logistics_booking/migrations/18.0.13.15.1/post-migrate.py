@@ -1,4 +1,4 @@
-"""18.0.13.15.0 post-migration — official QC-MONTREAL region + corridor wiring (Task N).
+"""18.0.13.15.1 post-migration — official QC-MONTREAL region + corridor wiring (Task N).
 
 Creates the official Greater-Montreal (island) LTL region from the SAME
 legitimate boundary source as every other official QC region — Statistics
@@ -28,6 +28,8 @@ each logistics.fsa row keeps exactly one region_id.
 import json
 import logging
 import os
+
+from odoo import SUPERUSER_ID, api
 
 _logger = logging.getLogger(__name__)
 
@@ -204,13 +206,15 @@ def _recalc_distances(env):
 
 
 def migrate(cr, version):
-    _logger.info("18.0.13.15.0 post-migration: QC-MONTREAL region + corridors")
-    env = cr.env if hasattr(cr, "env") else None
-    if env is not None:
-        region = _create_montreal_region(env)
-        moved = _remap_island_fsas(env, region)
-        _insert_corridor_stops(env, region)
-        recalc = _recalc_distances(env)
-        _logger.info("18.0.13.15.0 post-migration complete: region=%s fsas_moved=%s recalc=%s",
-                     region.id, moved, recalc)
-    _logger.info("18.0.13.15.0 post-migration done")
+    # NOTE: `cr.env` does NOT exist on this Odoo build's migration cursor
+    # (silently no-ops — 18.0.13.15.0 shipped that bug and was re-run as
+    # 18.0.13.15.1). The canonical pattern is an explicit environment.
+    _logger.info("18.0.13.15.1 post-migration: QC-MONTREAL region + corridors")
+    env = api.Environment(cr, SUPERUSER_ID, {})
+    region = _create_montreal_region(env)
+    moved = _remap_island_fsas(env, region)
+    _insert_corridor_stops(env, region)
+    recalc = _recalc_distances(env)
+    _logger.info("18.0.13.15.1 post-migration complete: region=%s fsas_moved=%s recalc=%s",
+                 region.id, moved, recalc)
+    _logger.info("18.0.13.15.1 post-migration done")
