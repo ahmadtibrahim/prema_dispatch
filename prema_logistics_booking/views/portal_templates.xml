@@ -569,6 +569,12 @@
                         if (note) {
                             note.style.display = select && select.value === 'ftl' ? '' : 'none';
                         }
+                        // Re-evaluate the calendar under the new shipment
+                        // type: FTL only ever shows dedicated direct dates,
+                        // never feeder/transit cards.
+                        if (typeof fetchEligibleDates === 'function') {
+                            fetchEligibleDates();
+                        }
                     }
                 ]]></script>
                 <!-- REQUESTED PICKUP DATE -->
@@ -1047,11 +1053,16 @@
 
                 var tempMode = document.getElementById('portal_temperature_mode');
                 var equip = (tempMode && tempMode.value === 'reefer') ? 'reefer' : 'dry';
+                // The customer's explicit Shipment Type selection is the
+                // calendar authority — never inferred from pallet count.
+                var stSel = document.getElementById('portal_shipment_type');
+                var st = (stSel && stSel.value === 'ftl') ? 'ftl' : 'ltl';
                 var params = 'pickup_lat=' + puLat + '&pickup_lng=' + puLng +
                     '&delivery_lat=' + deLat + '&delivery_lng=' + deLng +
                     '&pallets=' + (parseInt(palletsEl?.value) || 1) +
                     '&weight_lbs=' + (parseFloat(weightEl?.value) || 500) +
-                    '&equipment=' + equip;
+                    '&equipment=' + equip +
+                    '&shipment_type=' + st;
                 if (puLocId && deliveryLocIds.length) {
                     params += '&pickup_loc_id=' + encodeURIComponent(puLocId) +
                         '&delivery_loc_ids=' + encodeURIComponent(deliveryLocIds.join(','));
@@ -1073,13 +1084,27 @@
                             viewMore.style.display = 'none';
                             legendDiv.style.display = 'none';
                             calExpanded.style.display = 'none';
-                            if (banner) { banner.classList.remove('d-none'); }
+                            if (banner) {
+                                // FTL gets its lane-level reason in the
+                                // banner itself — never the generic
+                                // network wording.
+                                if (data.reason && data.reason.indexOf('Dedicated Full Truckload') !== -1) {
+                                    banner.innerHTML = '<strong>Manual Quote Required</strong> — ' + data.reason;
+                                }
+                                banner.classList.remove('d-none');
+                            }
                             cardsDiv.innerHTML = '<div class="col-12 text-muted py-2">' +
                                 (data.reason || 'Manual Quote Required') + '</div>';
                             return;
                         }
                         if (banner) { banner.classList.add('d-none'); }
                         allDates = data.dates || [];
+                        if (st === 'ftl') {
+                            // FTL is a dedicated direct movement: never
+                            // render a feeder/transit card (defense in
+                            // depth — the server already filters).
+                            allDates = allDates.filter(function(d) { return !d.transfer; });
+                        }
                         dateMap = {};
                         allDates.forEach(function(d) { dateMap[d.date] = d; });
                         // Auto-select earliest if nothing selected or selected date no longer valid

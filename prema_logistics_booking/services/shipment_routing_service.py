@@ -214,7 +214,8 @@ class ShipmentRoutingService:
         )
 
     def calendar_availability(self, stops, physical_pallets=1, weight_lbs=500,
-                              equipment="dry", horizon_weeks=8):
+                              equipment="dry", horizon_weeks=8,
+                              shipment_type="ltl"):
         """Canonical calendar verdict for the portal.
 
         ONE authority: the same strict stop resolution the Get Price path
@@ -222,6 +223,14 @@ class ShipmentRoutingService:
         the response carries manual_quote=True and NO dates — the portal
         renders the Manual Quote Required banner instead of fake
         selectable dates.
+
+        FTL is a dedicated direct movement: with shipment_type="ftl" the
+        calendar only returns ONE-LEG direct dates — the same
+        direct-vs-transfer authority Get Price enforces via
+        FTL_REQUIRES_DIRECT (never feeder_to_hub / hub transfer / linehaul
+        / final-mile). When no direct FTL service exists the response is
+        manual_quote=True with a clear lane-level reason — never a
+        feeder/transit date Get Price would reject.
 
         Returns {"manual_quote": bool, "reason": str, "dates": [...]}.
         """
@@ -231,7 +240,18 @@ class ShipmentRoutingService:
         dates = self.get_eligible_pickup_dates_for_route(
             stops, physical_pallets=physical_pallets, weight_lbs=weight_lbs,
             equipment=equipment, horizon_weeks=horizon_weeks,
+            shipment_type=shipment_type,
         )
+        if shipment_type == "ftl" and not dates:
+            # Direct-only FTL found no scheduled direct movement on this
+            # lane — the same verdict Get Price gives. Never advertise a
+            # transfer date for a dedicated truck.
+            return {
+                "manual_quote": True,
+                "reason": ("Dedicated Full Truckload service is not available "
+                           "as a direct scheduled route for this lane."),
+                "dates": [],
+            }
         return {"manual_quote": False, "reason": "", "dates": dates}
 
     # ── Real service timing (corridor stop config + travel-calc fallback) ──
@@ -1299,7 +1319,7 @@ class ShipmentRoutingService:
                                    delivery_lat, delivery_lng,
                                    pallets=1, weight_lbs=500,
                                    equipment="dry",
-                                   horizon_weeks=8):
+                                   horizon_weeks=8, shipment_type="ltl"):
         """Eligible pickup dates for a single-pickup / single-delivery
         movement (legacy signature). Delegates to the full-route engine —
         one code path for every booking shape."""
@@ -1309,11 +1329,12 @@ class ShipmentRoutingService:
         ]
         return self.get_eligible_pickup_dates_for_route(
             stops, physical_pallets=pallets, weight_lbs=weight_lbs,
-            equipment=equipment, horizon_weeks=horizon_weeks)
+            equipment=equipment, horizon_weeks=horizon_weeks,
+            shipment_type=shipment_type)
 
     def get_eligible_pickup_dates_for_route(self, stops, physical_pallets=1,
                                             weight_lbs=500, equipment="dry",
-                                            horizon_weeks=8):
+                                            horizon_weeks=8, shipment_type="ltl"):
         """Return eligible pickup dates for a COMPLETE multi-stop route.
 
         The date is eligible ONLY when the entire shipment can move:
@@ -1325,6 +1346,15 @@ class ShipmentRoutingService:
         confirmation paths enforce, and the peak physical pallet count
         (shared pallets count ONCE) must fit the truck together with
         existing reservations.
+
+        shipment_type="ftl": dedicated direct movement only — every
+        delivery stop must probe as EXACTLY ONE leg (leg_count == 1, the
+        same single-leg rule Get Price enforces via FTL_REQUIRES_DIRECT);
+        a two-leg feeder + onward transfer is never offered, while a
+        single-corridor movement whose origin is the hub region stays
+        eligible (Get Price prices it FTL). The serving corridor must also
+        carry a priceable FTL rate (Get Price's FTL_RATE_NOT_CONFIGURED).
+        Never inferred from pallet count.
 
         Stop resolution is STRICT (resolve_route_stops): a pickup or
         delivery outside every service polygon is MANUAL_QUOTE — the
@@ -1391,6 +1421,9 @@ class ShipmentRoutingService:
             transfer_hub_name = ""
             all_legs = []  # every leg dict across every delivery stop
             direct_svc = DirectDeliveryService(self.env)
+            # FTL rate-gate cache keyed by (corridor, origin, dest) — the
+            # corridor's FTL pricing configuration is static per segment.
+            ftl_rate_ok = {}
             for plan in delivery_plans:
                 # Re-decide per pickup DAY — the direct/hub decision can
                 # differ by day (rule allowed_service_days), and the quote
@@ -1413,6 +1446,54 @@ class ShipmentRoutingService:
                         "feasible": False,
                     })
                     continue
+                if shipment_type == "ftl" and legs_info.get("leg_count", 1) != 1:
+                    # FTL is a dedicated direct movement — EXACTLY the
+                    # single-leg rule Get Price enforces via
+                    # FTL_REQUIRES_DIRECT (len(legs) != 1). leg_count == 2
+                    # means feeder + onward transfer; leg_count == 1
+                    # includes the origin-is-the-hub single-corridor case
+                    # (e.g. GTA -> Niagara on one corridor), which Get
+                    # Price prices as FTL. No calendar date may advertise
+                    # a transfer for FTL.
+                    route_feasible = False
+                    per_stop.append({
+                        "stop_key": plan["stop"].get("stop_key", ""),
+                        "city": plan["stop"].get("city", ""),
+                        "feasible": False,
+                    })
+                    continue
+                if shipment_type == "ftl" and legs_info.get("corridor_id"):
+                    # FTL rate gate: mirror plan_route's
+                    # FTL_RATE_NOT_CONFIGURED verdict — a direct FTL date
+                    # must be PRICEABLE at Get Price, otherwise calendar
+                    # and quote disagree. Read-only configuration check;
+                    # never a price calculation.
+                    key = (legs_info["corridor_id"], origin_region.id,
+                           plan["dest"].id)
+                    if key not in ftl_rate_ok:
+                        corridor = self.env["logistics.corridor"].browse(
+                            legs_info["corridor_id"])
+                        if corridor.enable_ftl:
+                            ftl = corridor.compute_ftl_price(
+                                origin_region, plan["dest"], 0.0)
+                            if ftl["pricing_type"] == "flat_rate":
+                                ftl_rate_ok[key] = bool(ftl["regional_rule"]) and (
+                                    ftl["regional_rule"].flat_rate or 0.0) > 0
+                            else:
+                                ftl_rate_ok[key] = (ftl.get("rate_per_km") or 0.0) > 0
+                        else:
+                            # Corridor does not enable FTL — Get Price
+                            # prices the shipment as LTL (existing
+                            # behavior) and succeeds.
+                            ftl_rate_ok[key] = True
+                    if not ftl_rate_ok[key]:
+                        route_feasible = False
+                        per_stop.append({
+                            "stop_key": plan["stop"].get("stop_key", ""),
+                            "city": plan["stop"].get("city", ""),
+                            "feasible": False,
+                        })
+                        continue
                 per_stop.append({
                     "stop_key": plan["stop"].get("stop_key", ""),
                     "city": plan["stop"].get("city", ""),

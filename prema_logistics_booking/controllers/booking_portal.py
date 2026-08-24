@@ -612,6 +612,12 @@ class LogisticsBookingPortal(http.Controller):
 
         from ..services.shipment_routing_service import ShipmentRoutingService
         svc = ShipmentRoutingService(request.env)
+        # The customer's explicit Shipment Type selection is authoritative
+        # for the calendar — never inferred from pallet count. FTL only
+        # receives dedicated direct dates (same verdict as Get Price).
+        shipment_type = kwargs.get("shipment_type", "ltl")
+        if shipment_type not in ("ltl", "ftl"):
+            shipment_type = "ltl"
         # ONE eligibility authority: the same strict stop resolution the
         # Get Price path runs. When the pickup (or any delivery) is outside
         # the scheduled network the response carries manual_quote=True and
@@ -622,6 +628,7 @@ class LogisticsBookingPortal(http.Controller):
             physical_pallets=int(kwargs.get("pallets", 1)),
             weight_lbs=float(kwargs.get("weight_lbs", 500) or 500),
             equipment=kwargs.get("equipment", "dry"),
+            shipment_type=shipment_type,
         )
 
         return request.make_response(
