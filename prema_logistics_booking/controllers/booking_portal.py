@@ -901,9 +901,14 @@ class LogisticsBookingPortal(http.Controller):
         shipment_type = kwargs.get("shipment_type") or "ltl"
         temperature_mode = kwargs.get("temperature_mode") or "dry"
         from ..services.temperature_compat import parse_required_temperature_c
-        required_temperature_c = parse_required_temperature_c(
-            kwargs.get("required_temperature_c")
-        )
+        if temperature_mode != "reefer":
+            # A Dry booking never carries a temperature requirement — drop any
+            # stale value (the UI clears it too, this is the server authority).
+            required_temperature_c = None
+        else:
+            required_temperature_c = parse_required_temperature_c(
+                kwargs.get("required_temperature_c")
+            )
         liftgate_pickup = _parse_bool(kwargs.get("liftgate_pickup"))
         liftgate_delivery = _parse_bool(kwargs.get("liftgate_delivery"))
         appointment = _parse_bool(kwargs.get("appointment"))

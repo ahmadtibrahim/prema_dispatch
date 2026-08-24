@@ -521,23 +521,27 @@
                 </t>
                 <div class="col-md-6">
                     <label class="form-label">Shipment Type</label>
-                    <select name="shipment_type" class="form-select">
-                        <option value="ltl">LTL</option>
+                    <select name="shipment_type" id="portal_shipment_type" class="form-select"
+                            onchange="onPortalShipmentTypeChange()">
+                        <option value="ltl" selected="selected">LTL</option>
                         <option value="ftl">FTL</option>
                     </select>
+                    <div class="form-text" id="portal_ftl_note" style="display:none">
+                        Full Truckload pricing applies. The entire truck is reserved for this shipment.
+                    </div>
                 </div>
                 <div class="col-md-6">
                     <label class="form-label">Temperature</label>
                     <select name="temperature_mode" id="portal_temperature_mode" class="form-select"
                             onchange="togglePortalTemperature()">
                         <option value="dry">Dry</option>
-                        <option value="reefer">Reefer</option>
+                        <option value="reefer" selected="selected">Reefer</option>
                     </select>
                 </div>
-                <div class="col-md-6" id="portal_required_temperature" style="display:none">
+                <div class="col-md-6" id="portal_required_temperature">
                     <label class="form-label">Required Temperature (°C)</label>
                     <input type="number" step="0.5" name="required_temperature_c"
-                           id="portal_required_temperature_input" class="form-control"/>
+                           id="portal_required_temperature_input" class="form-control" value="15"/>
                     <div class="form-text">Required for Reefer. 0°C is valid.</div>
                 </div>
                 <script><![CDATA[
@@ -549,8 +553,21 @@
                         if (row) { row.style.display = reefer ? '' : 'none'; }
                         if (input) {
                             input.required = reefer;
-                            // Set default 15°C when Reefer is selected and value is empty
-                            if (reefer && !input.value) { input.value = '15'; }
+                            if (reefer) {
+                                // Default 15°C when Reefer is selected and value is empty
+                                // (0°C is a valid explicit entry and is preserved).
+                                if (!input.value) { input.value = '15'; }
+                            } else {
+                                // Never submit a stale temperature with a Dry booking
+                                input.value = '';
+                            }
+                        }
+                    }
+                    function onPortalShipmentTypeChange() {
+                        var select = document.getElementById('portal_shipment_type');
+                        var note = document.getElementById('portal_ftl_note');
+                        if (note) {
+                            note.style.display = select && select.value === 'ftl' ? '' : 'none';
                         }
                     }
                 ]]></script>
@@ -1352,8 +1369,9 @@
             }
             if (deliveryStopCount > 1) buildPalletAllocations();
 
-            // Initialize Reefer UI on page load (not just on change)
+            // Initialize Reefer UI + FTL note on page load (not just on change)
             togglePortalTemperature();
+            onPortalShipmentTypeChange();
             // Fetch on load
             fetchEligibleDates();
             var tempSelect = document.getElementById('portal_temperature_mode');
