@@ -184,7 +184,7 @@ class RegionResolver:
 
     # ── Public API ───────────────────────────────────────────────────
 
-    def resolve(self, latitude, longitude, country=None, state=None):
+    def resolve(self, latitude, longitude, country=None, state=None, postal=None):
         """Resolve a coordinate to a service region.
 
         Args:
@@ -192,6 +192,12 @@ class RegionResolver:
             longitude: float, WGS84 longitude
             country:   optional res.country record or ID to restrict search
             state:     optional res.country.state record or ID to restrict search
+            postal:    optional Canadian postal/FSA string. CONSERVATIVE FSA
+                       fallback — consulted ONLY when the coordinate matches no
+                       approved polygon. The FSA must be explicitly assigned to
+                       an active, official, approved region; otherwise the
+                       fallback is ignored (no fuzzy city-name matching, and
+                       never an inactive/draft region such as historical R13).
 
         Returns:
             RegionMatch namedtuple
@@ -287,6 +293,9 @@ class RegionResolver:
                 disabled_result = self._check_disabled_state(point, timestamp)
                 if disabled_result:
                     return disabled_result
+            fallback = self._fsa_fallback(postal, country, state, timestamp)
+            if fallback:
+                return fallback
             return RegionMatch(
                 matched_region=None,
                 matched_region_code=None,
@@ -323,6 +332,9 @@ class RegionResolver:
                 disabled_result = self._check_disabled_state(point, timestamp)
                 if disabled_result:
                     return disabled_result
+            fallback = self._fsa_fallback(postal, country, state, timestamp)
+            if fallback:
+                return fallback
             return RegionMatch(
                 matched_region=None,
                 matched_region_code=None,
@@ -396,6 +408,44 @@ class RegionResolver:
         )
 
     # ── Disabled-state detection ────────────────────────────────────
+
+    def _fsa_fallback(self, postal, country, state, timestamp):
+        """Conservative postal/FSA → region fallback (Task N).
+
+        Used ONLY when the coordinate matched no approved polygon. The FSA
+        must be explicitly assigned (logistics.fsa.region_id) to a region that
+        is active, official, approved, and consistent with the country/state
+        constraints. Returns a RegionMatch with match_method='fsa_fallback'
+        or None — never raises, never invents a region, never uses an
+        inactive/draft historical region.
+        """
+        if not postal:
+            return None
+        Fsa = self.env["logistics.fsa"]
+        fsa = Fsa.resolve_from_postal(postal)
+        if not fsa or not fsa.region_id:
+            return None
+        region = fsa.region_id
+        if not region.active or not region.is_official_ltl_region:
+            return None
+        if region.boundary_status != "approved":
+            return None
+        if country and region.country_id and region.country_id.id != int(country):
+            return None
+        if state and region.state_id and region.state_id.id != int(state):
+            return None
+        return RegionMatch(
+            matched_region=region,
+            matched_region_code=region.code,
+            outcome="SCHEDULED_MATCH",
+            match_method="fsa_fallback",
+            candidate_regions=[],
+            ambiguity=False,
+            ambiguity_detail="",
+            reason="Coordinate outside approved polygons; FSA %s is assigned to %s (%s)."
+                   % (fsa.fsa, region.code, region.name or ""),
+            match_timestamp=timestamp,
+        )
 
     def _check_disabled_state(self, point, timestamp):
         """After a polygon miss, check if the point falls in a region whose

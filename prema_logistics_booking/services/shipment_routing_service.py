@@ -501,11 +501,13 @@ class ShipmentRoutingService:
         pickup_result = region_resolver.resolve(
             pickup_lat, pickup_lng,
             country=pickup_country, state=pickup_state,
+            postal=(pickup_stop or {}).get("postal_code", ""),
         )
         snapshot["steps"].append({
             "step": "resolve_pickup",
             "outcome": pickup_result.outcome,
             "region": pickup_result.matched_region_code,
+            "method": pickup_result.match_method,
         })
 
         if pickup_result.outcome == "NETWORK_DISABLED":
@@ -529,11 +531,13 @@ class ShipmentRoutingService:
         delivery_result = region_resolver.resolve(
             delivery_lat, delivery_lng,
             country=delivery_country, state=delivery_state,
+            postal=(delivery_stop or {}).get("postal_code", ""),
         )
         snapshot["steps"].append({
             "step": "resolve_delivery",
             "outcome": delivery_result.outcome,
             "region": delivery_result.matched_region_code,
+            "method": delivery_result.match_method,
         })
 
         if delivery_result.outcome == "NETWORK_DISABLED":
