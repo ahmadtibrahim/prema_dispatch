@@ -3,7 +3,7 @@ import math
 import re
 import secrets
 
-from odoo import api, exceptions, fields, models
+from odoo import _, api, exceptions, fields, models
 
 _logger = logging.getLogger(__name__)
 
@@ -5540,3 +5540,87 @@ class PremaDispatchJob(models.Model):
         except Exception:
             _logger.exception("driver_upload_entrance_photo failed for stop %s", stop_id)
             return {"success": False, "code": "upload_failed", "error": "Could not save this photo. Please try again."}
+
+    def action_delete_unused_job(self):
+        """Manager-only physical delete of an ARCHIVED job with no operational
+        history, no accounting retention, no live booking, no started stops,
+        no POD and no pallet evidence. Anything else stays archived forever —
+        its history (timeline, POD, driver activity) is the audit record.
+
+        Never touches a corridor departure: jobs referencing one leave it
+        intact (the departure row is retired, not removed, by reconciliation).
+        """
+        self.ensure_one()
+        if not self.env.user.has_group("prema_dispatch.group_dispatch_manager"):
+            raise exceptions.UserError(_("Only a Dispatch Manager can delete unused jobs."))
+        job = self
+        if job.active:
+            raise exceptions.UserError(
+                _("Unarchive this job first — only archived jobs can be deleted.")
+            )
+
+        # ── 1. Accounting retention ──
+        invoice = job.invoice_id
+        if invoice and (invoice.state != "draft" or invoice.payment_state not in (False, "not_paid")):
+            raise exceptions.UserError(
+                _("This job has an accounting document (%s) that must be retained.") % invoice.name
+            )
+
+        # ── 2. Live booking ──
+        booking = job.sudo().logistics_booking_id
+        if booking and booking.state not in ("cancelled", "completed", "delivered"):
+            raise exceptions.UserError(
+                _("This job is linked to booking %s which is still live. Cancel the booking first.")
+                % booking.booking_number
+            )
+
+        # ── 3. Started stops / POD ──
+        stops = job.stop_ids.filtered(lambda s: s.status != "cancelled")
+        if stops.filtered(lambda s: s.status in ("completed", "arrived", "en_route")):
+            raise exceptions.UserError(_("This job contains operational history and must remain archived."))
+        if stops.filtered(lambda s: s.pod_attachment_ids):
+            raise exceptions.UserError(_("This job contains operational history and must remain archived."))
+
+        # ── 4. Pallet evidence (POPP photos on items) ──
+        if job.item_ids.filtered(lambda i: i.popp_attachment_ids):
+            raise exceptions.UserError(_("This job contains operational history and must remain archived."))
+
+        # ── 5. Operational history: timeline events or driver assignment ──
+        if job.timeline_event_ids or job.driver_id:
+            raise exceptions.UserError(_("This job contains operational history and must remain archived."))
+
+        # ── 6. Cleanup: draft unpaid invoice + cancelled booking, then unlink ──
+        job_name = job.display_name
+        try:
+            with self.env.cr.savepoint():
+                if invoice:
+                    invoice.sudo().unlink()
+                if booking and booking.state not in ("cancelled", "completed", "delivered"):
+                    booking.sudo().action_cancel(
+                        reason="Job deleted as unused",
+                        source="company",
+                    )
+                job.unlink()
+        except Exception as exc:
+            self.env["prema.dispatch.error.log"].sudo().log_error(
+                source="delete_unused_job",
+                action="unlink",
+                error_message=str(exc),
+                severity="error",
+                error_type=type(exc).__name__,
+                dispatch_job_id=job.id if job.exists() else False,
+                record_name=job_name,
+            )
+            raise exceptions.UserError(
+                _("Deletion failed: %(error)s. The job was left untouched.") % {"error": str(exc)}
+            ) from exc
+        return {
+            "type": "ir.actions.client",
+            "tag": "display_notification",
+            "params": {
+                "title": _("Job deleted"),
+                "message": _("Dispatch job %(name)s was deleted permanently.") % {"name": job_name},
+                "type": "success",
+                "sticky": False,
+            },
+        }

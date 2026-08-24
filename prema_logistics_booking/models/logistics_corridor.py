@@ -521,7 +521,7 @@ class LogisticsCorridor(models.Model):
         ))
 
     def action_refresh_departures(self):
-        summary = {"created": 0, "updated": 0, "removed": 0, "preserved_booked": 0}
+        summary = {"created": 0, "updated": 0, "removed": 0, "preserved_booked": 0, "retired_referenced": 0}
         for corridor in self:
             result = corridor._reconcile_departure_horizon()
             for key in summary:
@@ -533,7 +533,8 @@ class LogisticsCorridor(models.Model):
                 "title": _("Departure schedule refreshed"),
                 "message": _(
                     "Created %(created)s, updated %(updated)s, removed %(removed)s; "
-                    "preserved %(preserved_booked)s booked departure(s).",
+                    "preserved %(preserved_booked)s booked and retired "
+                    "%(retired_referenced)s referenced departure(s).",
                     **summary,
                 ),
                 "type": "success",
@@ -668,7 +669,8 @@ class LogisticsCorridor(models.Model):
             ("status", "=", "scheduled"),
             ("active", "=", True),
         ])
-        summary = {"created": 0, "updated": 0, "removed": 0, "preserved_booked": 0}
+        summary = {"created": 0, "updated": 0, "removed": 0, "preserved_booked": 0, "retired_referenced": 0}
+        DispatchJob = self.env["prema.dispatch.job"].sudo().with_context(active_test=False)
         for departure in future:
             booked = bool(Leg.search_count([
                 ("departure_id", "=", departure.id),
@@ -678,6 +680,13 @@ class LogisticsCorridor(models.Model):
             if departure.departure_date not in target_dates:
                 if booked:
                     summary["preserved_booked"] += 1
+                elif DispatchJob.search_count([
+                        ("corridor_departure_id", "=", departure.id)]) > 0:
+                    # Dispatch jobs (incl. archived) reference this departure
+                    # with ondelete="restrict" — never unlink. Retire the row so
+                    # history stays intact and the FK keeps holding.
+                    departure.write({"status": "cancelled", "active": False})
+                    summary["retired_referenced"] += 1
                 else:
                     departure.unlink()
                     summary["removed"] += 1

@@ -150,6 +150,14 @@
                             groups="prema_dispatch.group_dispatch_manager"
                             confirm="Restart this job? It will go back to an in-progress stage so the driver/dispatcher can work it again."
                             invisible="not stage_id.is_completed"/>
+                    <button name="action_delete_unused_job"
+                            string="Delete Unused Job"
+                            type="object"
+                            class="btn-danger"
+                            icon="fa-trash"
+                            groups="prema_dispatch.group_dispatch_manager"
+                            confirm="Permanently delete this archived job? Only allowed when it has no operational history, no POD, no pallet evidence and no accounting records."
+                            invisible="active"/>
                     <button name="action_attach_documents_to_invoice"
                             string="Attach Docs to Invoice"
                             type="object"
@@ -659,6 +667,10 @@
                         domain="[('stage_id.is_completed','=',False),('stage_id.is_cancelled','=',False)]"/>
                 <filter name="completed" string="Completed"
                         domain="[('stage_id.is_completed','=',True)]"/>
+                <filter name="archived" string="Archived"
+                        domain="[('active','=',False)]"/>
+                <filter name="active_and_archived" string="Active &amp; Archived"
+                        domain="[]" context="{'active_test': False}"/>
                 <separator/>
                 <group expand="0" string="Group By">
                     <filter name="group_stage" string="Stage" context="{'group_by':'stage_id'}"/>
