@@ -111,6 +111,7 @@ def _build_stop_pricing(session):
             "amount": 0.0,
         })
     booking_level = []
+    ftl_rows = []
     route_transportation = 0.0
     leg_lines = []
     for line in session.price_snapshot or []:
@@ -120,6 +121,12 @@ def _build_stop_pricing(session):
         amount = line.get("amount", 0.0) or 0.0
         if label.startswith("Leg "):
             leg_lines.append(amount)
+        elif label.startswith(("Dedicated FTL Transportation",
+                               "Additional Regional Delivery — ",
+                               "Additional Same-Region Delivery — ")):
+            # Frozen FTL multi-stop breakdown (built server-side at quote
+            # time) — rendered under "DEDICATED FTL SERVICE".
+            ftl_rows.append({"label": label, "amount": amount})
         elif any(key in label for key in ("Volume discount", "Additional Stop", "Minimum booking")):
             booking_level.append({"label": label, "amount": amount})
     if leg_lines and len(stops) > 1 and len(leg_lines) == 1:
@@ -223,7 +230,9 @@ def _build_stop_pricing(session):
     weight_total = round(weight_total, 2)
     booking_total = round(
         sum(float(b.get("amount") or 0.0) for b in booking_level), 2)
-    breakdown_total = round(base_total + weight_total + booking_total, 2)
+    ftl_total = round(
+        sum(float(f.get("amount") or 0.0) for f in ftl_rows), 2)
+    breakdown_total = round(base_total + weight_total + booking_total + ftl_total, 2)
     calculated = float(session.calculated_price or 0.0)
     if calculated and abs(breakdown_total - calculated) > 0.01:
         logging.getLogger(__name__).warning(
@@ -232,12 +241,14 @@ def _build_stop_pricing(session):
     return {
         "stops": stops,
         "booking_level": booking_level,
+        "ftl_rows": ftl_rows,
         "route_transportation": route_transportation,
         "route_label": route_label,
         "legs": legs,
         "weight_rows": weight_rows,
         "base_total": base_total,
         "weight_total": weight_total,
+        "ftl_total": ftl_total,
         "breakdown_total": breakdown_total,
         "total": calculated,
     }

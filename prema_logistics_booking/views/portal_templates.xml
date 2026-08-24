@@ -2051,10 +2051,10 @@
                          session.calculated_price by construction. -->
                     <div class="d-flex justify-content-between align-items-center mb-2">
                         <t t-if="session.shared_pallet_mode and delivery_stops and len(delivery_stops) > 1">
-                            <span><t t-esc="session.physical_pallets or session.pallets"/> Physical Pallet<t t-if="(session.physical_pallets or session.pallets) != 1">s</t> · Shared Across <t t-esc="len(delivery_stops)"/> Stops × LTL Scheduled Service</span>
+                            <span><t t-esc="session.physical_pallets or session.pallets"/> Physical Pallet<t t-if="(session.physical_pallets or session.pallets) != 1">s</t> · Shared Across <t t-esc="len(delivery_stops)"/> Stops × <t t-if="session.shipment_type == 'ftl'">Dedicated Full Truckload</t><t t-else="">LTL Scheduled Service</t></span>
                         </t>
                         <t t-if="not session.shared_pallet_mode or not delivery_stops or len(delivery_stops) &lt;= 1">
-                            <span><t t-esc="session.physical_pallets or session.pallets"/> Physical Pallet<t t-if="(session.physical_pallets or session.pallets) != 1">s</t> × LTL Scheduled Service</span>
+                            <span><t t-esc="session.physical_pallets or session.pallets"/> Physical Pallet<t t-if="(session.physical_pallets or session.pallets) != 1">s</t> × <t t-if="session.shipment_type == 'ftl'">Dedicated Full Truckload</t><t t-else="">LTL Scheduled Service</t></span>
                         </t>
                     </div>
                     <t t-if="stop_pricing and stop_pricing['legs']">
@@ -2084,6 +2084,18 @@
                             <span class="text-muted">Weight subtotal</span>
                             <span>$<t t-esc="'%.2f' % stop_pricing['weight_total']"/></span>
                         </div>
+                    </t>
+                    <!-- Frozen FTL multi-stop breakdown (server-side at
+                         quote time) — customer-friendly labels only, never
+                         corridor IDs / region IDs / internal leg types. -->
+                    <t t-if="stop_pricing and stop_pricing['ftl_rows']">
+                        <small class="text-muted d-block mt-2 mb-1"><strong>DEDICATED FTL SERVICE</strong></small>
+                        <t t-foreach="stop_pricing['ftl_rows']" t-as="fr">
+                            <div class="d-flex justify-content-between align-items-center py-1">
+                                <span><t t-esc="fr['label']"/></span>
+                                <span>$<t t-esc="'%.2f' % fr['amount']"/></span>
+                            </div>
+                        </t>
                     </t>
                     <t t-if="stop_pricing and stop_pricing['booking_level']">
                         <small class="text-muted d-block mt-2 mb-1"><strong>ADJUSTMENTS</strong></small>

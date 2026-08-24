@@ -181,6 +181,8 @@
                                              Backend validation enforces per-type values. -->
                                         <field name="flat_rate" widget="monetary"/>
                                         <field name="ftl_rate_per_km_override"/>
+                                        <field name="same_region_additional_stop_charge" widget="monetary"/>
+                                        <field name="regional_additional_stop_charge" widget="monetary"/>
                                         <field name="active"/>
                                     </list>
                                 </field>

@@ -461,6 +461,41 @@ class BookingOrchestrationService:
             final_price = pricing.get("final_transportation")
             if final_price is None:
                 final_price = route_total if is_ftl else max(route_total, booking_min)
+            # FTL multi-stop: replace the internal per-leg lines with the
+            # frozen customer breakdown — "Dedicated FTL Transportation"
+            # (base, furthest-served-destination rule) + one line per
+            # surcharged stop. Built ONLY from the server-side
+            # ftl_multistop snapshot (never recalculated here); the lines
+            # sum to final_price by construction.
+            ftl_multistop = route.routing_snapshot.get("ftl_multistop") or {}
+            if is_ftl and ftl_multistop.get("final_transportation") is not None:
+                price_lines = [{
+                    "label": "Dedicated FTL Transportation",
+                    "distance_km": ftl_multistop.get("base_distance_km") or 0.0,
+                    "pallets": normalized_request.physical_pallets or normalized_request.pallets,
+                    "rate_per_km": ftl_multistop.get("base_rate_per_km") or 0.0,
+                    "pallet_rate_per_km": 0.0,
+                    "amount": round(ftl_multistop["base_price"], 2),
+                    "departure_date": first_leg.departure_date if first_leg else None,
+                    "base_leg_charge": round(ftl_multistop["base_price"], 2),
+                }]
+                for fee in ftl_multistop.get("per_stop") or []:
+                    fee_type = fee.get("fee_type")
+                    if fee_type not in ("regional", "same_region"):
+                        continue
+                    city = fee.get("city") or fee.get("stop_key") or "Delivery"
+                    prefix = (
+                        "Additional Regional Delivery — "
+                        if fee_type == "regional"
+                        else "Additional Same-Region Delivery — ")
+                    price_lines.append({
+                        "label": prefix + city,
+                        "distance_km": 0, "pallets": 0,
+                        "rate_per_km": 0.0, "pallet_rate_per_km": 0.0,
+                        "amount": round(fee.get("amount") or 0.0, 2),
+                        "departure_date": None,
+                    })
+                route_total = round(ftl_multistop["final_transportation"], 2)
             # Authoritative ROUTE subtotal BEFORE the corridor-configured
             # additional stop/pickup charges below — the number the
             # milk-run per-stop cost allocations must sum to EXACTLY.

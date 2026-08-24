@@ -77,6 +77,21 @@ class LogisticsFtlRegionalMinimum(models.Model):
         help="Regional FTL rate per km for this pair. Used only when "
              "Pricing Type = Per KM and must then be greater than zero.",
     )
+    # FTL multi-stop surcharges (per-rule config). Applied ONLY to FTL
+    # movements priced through this rule's origin → destination pair;
+    # never read by any LTL calculation.
+    same_region_additional_stop_charge = fields.Monetary(
+        string="Same-Region Stop $",
+        default=50.0,
+        help="Charge for each additional delivery facility within a region "
+             "already being served by this FTL movement.",
+    )
+    regional_additional_stop_charge = fields.Monetary(
+        string="Regional Stop $",
+        default=75.0,
+        help="Charge for the first delivery stop in an additional en-route "
+             "region before the final destination.",
+    )
     # LEGACY — retired from pricing and UI. Kept as a database column for
     # migration compatibility with any rule created before FTL Regional
     # Pricing; never read by any pricing calculation.
@@ -90,13 +105,19 @@ class LogisticsFtlRegionalMinimum(models.Model):
         super()._auto_init()
         self.env.cr.execute(_ACTIVE_PAIR_UNIQUE_INDEX_SQL)
 
-    @api.constrains("flat_rate", "ftl_rate_per_km_override")
+    @api.constrains("flat_rate", "ftl_rate_per_km_override",
+                    "same_region_additional_stop_charge",
+                    "regional_additional_stop_charge")
     def _check_non_negative_values(self):
         for rule in self:
             if rule.flat_rate < 0:
                 raise ValidationError(_("Flat Rate cannot be negative."))
             if rule.ftl_rate_per_km_override < 0:
                 raise ValidationError(_("FTL $ / km cannot be negative."))
+            if rule.same_region_additional_stop_charge < 0:
+                raise ValidationError(_("Same-Region Stop $ cannot be negative."))
+            if rule.regional_additional_stop_charge < 0:
+                raise ValidationError(_("Regional Stop $ cannot be negative."))
 
     @api.constrains("pricing_type", "flat_rate", "ftl_rate_per_km_override")
     def _check_pricing_type_values(self):

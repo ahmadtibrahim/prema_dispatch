@@ -813,6 +813,14 @@ class ShipmentRoutingService:
     _PRICING_BASIS_PARAM = "prema_logistics_booking.pricing_basis"
     _BACKTRACK_TOLERANCE_KM = 25.0
 
+    # FTL multi-stop surcharge fallbacks for lanes with NO exact FTL
+    # Regional Pricing rule (the base price falls back to the corridor
+    # FTL $/km — the surcharges fall back to the same standard defaults
+    # the rule rows carry). Used ONLY for FTL movements; LTL never reads
+    # these.
+    FTL_DEFAULT_SAME_REGION_STOP_CHARGE = 50.0
+    FTL_DEFAULT_REGIONAL_STOP_CHARGE = 75.0
+
     def _pricing_basis(self):
         """Pricing basis for multi-stop (movement_v1) bookings.
 
@@ -1020,8 +1028,52 @@ class ShipmentRoutingService:
                 "manual review required." % (
                     entry["stop_key"], entry["city"], entry["outcome"]))
 
+        # ── FTL multi-stop pricing ─────────────────────────────────────
+        # ONE server-side calculation (never re-derived in the portal,
+        # invoice or confirmation). Base = the existing FTL regional rule
+        # ORIGIN REGION → FURTHEST DELIVERY REGION — already computed by
+        # the furthest per-stop plan_route above (snapshot ftl_pricing) —
+        # never a sum of independent per-destination FTL prices. The first
+        # delivery event in the base region is INCLUDED in the base price;
+        # the first delivery event in any other region carries the rule's
+        # Regional Stop fee; every later delivery in an already-served
+        # region carries the Same-Region Stop fee. Backtracking / detour /
+        # unreachable itineraries (already flagged above) REFUSE the FTL
+        # quote for manual review instead of auto-adding fees — the
+        # existing routing/manual-review authority is preserved.
+        ftl_multistop = None
+        if shipment_type == "ftl":
+            ftl_multistop = self._compute_ftl_multistop(
+                origin, deliveries, furthest_entry, furthest_route,
+                manual_review_reasons,
+            )
+            if ftl_multistop.get("manual_review"):
+                snapshot = dict(furthest_route.routing_snapshot)
+                snapshot["ftl_multistop"] = ftl_multistop
+                snapshot["milk_run"] = {
+                    "basis": basis, "per_stop": per_stop,
+                    "manual_review_required": True,
+                    "manual_review_reasons": manual_review_reasons,
+                }
+                return ShipmentRoute(
+                    False,
+                    "Full Truckload multi-stop route requires manual review: %s"
+                    % "; ".join(manual_review_reasons),
+                    "MANUAL_REVIEW", [], pallets, weight_lbs, None, snapshot,
+                )
+
         # ── Merge the canonical route with milk-run metadata ───────────
         snapshot = dict(furthest_route.routing_snapshot)
+        if ftl_multistop:
+            # Freeze the FTL multi-stop calculation into the route
+            # snapshot: the base price, stop counts/rates/totals and the
+            # final transportation (base + surcharges) — the pricing
+            # session and the confirmation read THIS, never live config.
+            snapshot["ftl_multistop"] = ftl_multistop
+            pricing = dict(snapshot.get("pricing") or {})
+            pricing["final_transportation"] = round(
+                ftl_multistop["final_transportation"], 2)
+            snapshot["pricing"] = pricing
         snapshot["milk_run"] = {
             "basis": basis,
             "origin": {
@@ -1054,6 +1106,172 @@ class ShipmentRoutingService:
             estimated_delivery=furthest_route.estimated_delivery,
             routing_snapshot=snapshot,
         )
+
+    def _compute_ftl_multistop(self, origin, deliveries, furthest_entry,
+                               furthest_route, manual_review_reasons):
+        """One authoritative FTL multi-stop fee calculation (server-side).
+
+        Base price = the existing FTL regional rule ORIGIN REGION →
+        FURTHEST DELIVERY REGION, already computed by the furthest
+        per-stop plan_route (snapshot ftl_pricing) — never re-derived
+        here and never a sum of per-destination FTL prices. The base
+        price includes 1 pickup + 1 delivery (the first delivery event
+        in the base region — never surcharged).
+
+        Every delivery is classified by its CANONICAL region (Region
+        Resolver — never raw city strings), in itinerary order:
+
+            first delivery in the base region      → INCLUDED (no fee)
+            first delivery in any other region     → Regional Stop fee
+            later delivery in an already-served
+            region                                 → Same-Region Stop fee
+
+        Rates come from the exact ORIGIN → FURTHEST rule row; lanes
+        without an exact rule fall back to the standard defaults.
+
+        Returns the frozen ftl_multistop snapshot dict, or
+        {"manual_review": True, "manual_review_reasons": [...]} when the
+        itinerary is already flagged (backtracking / unreachable /
+        unimplemented basis) — the caller then REFUSES the FTL quote
+        instead of auto-adding fees.
+        """
+        if manual_review_reasons:
+            return {
+                "manual_review": True,
+                "manual_review_reasons": list(manual_review_reasons),
+            }
+
+        from ..services.region_resolver import RegionResolver
+        resolver = RegionResolver(self.env)
+
+        def _canonical_region(latitude, longitude):
+            if not latitude or not longitude:
+                return None
+            match = resolver.resolve(float(latitude), float(longitude))
+            region = match.matched_region
+            return resolver.canonical_region(region) if region else None
+
+        origin_region = _canonical_region(
+            origin.get("latitude"), origin.get("longitude"))
+        if not origin_region:
+            return {
+                "manual_review": True,
+                "manual_review_reasons": [
+                    "pickup region could not be resolved for FTL multi-stop "
+                    "pricing",
+                ],
+            }
+
+        by_key = {}
+        for stop in deliveries:
+            region = _canonical_region(
+                stop.get("latitude"), stop.get("longitude"))
+            if not region:
+                return {
+                    "manual_review": True,
+                    "manual_review_reasons": [
+                        "delivery '%s' region could not be resolved for FTL "
+                        "multi-stop pricing" % (stop.get("stop_key") or ""),
+                    ],
+                }
+            by_key[stop.get("stop_key", "")] = region
+
+        base_region = by_key.get(furthest_entry["stop_key"])
+        if not base_region:
+            return {
+                "manual_review": True,
+                "manual_review_reasons": [
+                    "furthest delivery region could not be resolved for FTL "
+                    "multi-stop pricing",
+                ],
+            }
+
+        # Surcharge rates from the exact ORIGIN → FURTHEST rule; lanes
+        # without one use the standard defaults (the base price itself
+        # falls back to the corridor FTL $/km exactly as before).
+        corridor = (
+            self.env["logistics.corridor"].browse(
+                furthest_route.legs[0].corridor_id)
+            if furthest_route.legs and furthest_route.legs[0].corridor_id
+            else False
+        )
+        base_rule = (
+            corridor.get_ftl_regional_rule(origin_region, base_region)
+            if corridor else False
+        )
+        same_rate = float(
+            base_rule.same_region_additional_stop_charge
+            if base_rule and base_rule.same_region_additional_stop_charge
+            else self.FTL_DEFAULT_SAME_REGION_STOP_CHARGE)
+        regional_rate = float(
+            base_rule.regional_additional_stop_charge
+            if base_rule and base_rule.regional_additional_stop_charge
+            else self.FTL_DEFAULT_REGIONAL_STOP_CHARGE)
+
+        # Base price: the furthest per-stop route's FTL price (furthest
+        # destination rule → corridor FTL $/km fallback) — already
+        # authoritative in its snapshot (pricing.final_transportation —
+        # for FTL that IS the leg price: no volume discount, no booking
+        # minimum), never recomputed.
+        ftl_pricing = furthest_route.routing_snapshot.get("ftl_pricing") or {}
+        route_pricing = furthest_route.routing_snapshot.get("pricing") or {}
+        base_price = float(route_pricing.get("final_transportation") or 0.0)
+
+        served = set()
+        per_stop_fees = []
+        regional_count = 0
+        same_count = 0
+        regional_total = 0.0
+        same_total = 0.0
+        for stop in deliveries:
+            key = stop.get("stop_key", "")
+            region = by_key[key]
+            city = stop.get("city") or stop.get("location_name") or key or "Delivery"
+            if region.id == base_region.id and region.id not in served:
+                # The included delivery — the ONE delivery in the base
+                # region covered by the base FTL price. Never surcharged.
+                served.add(region.id)
+                fee_type = "included"
+                amount = 0.0
+            elif region.id in served:
+                # Region already served by a previous delivery event.
+                fee_type = "same_region"
+                same_count += 1
+                amount = same_rate
+                same_total += same_rate
+            else:
+                # First delivery event in an additional en-route region.
+                fee_type = "regional"
+                regional_count += 1
+                amount = regional_rate
+                regional_total += regional_rate
+                served.add(region.id)
+            per_stop_fees.append({
+                "stop_key": key,
+                "city": city,
+                "region_code": region.code or "",
+                "region_name": region.name or "",
+                "fee_type": fee_type,
+                "amount": round(amount, 2),
+            })
+
+        return {
+            "base_rule_id": (
+                ftl_pricing.get("regional_rule_id")
+                or (base_rule.id if base_rule else False)),
+            "base_destination_region_id": base_region.id,
+            "base_price": round(base_price, 2),
+            "base_rate_per_km": float(ftl_pricing.get("rate_per_km") or 0.0),
+            "base_distance_km": float(ftl_pricing.get("distance_km") or 0.0),
+            "regional_stop_count": regional_count,
+            "regional_stop_rate": round(regional_rate, 2),
+            "regional_stop_total": round(regional_total, 2),
+            "same_region_stop_count": same_count,
+            "same_region_stop_rate": round(same_rate, 2),
+            "same_region_stop_total": round(same_total, 2),
+            "per_stop": per_stop_fees,
+            "final_transportation": round(base_price + regional_total + same_total, 2),
+        }
 
     # ── Operational timezone (section 3: never UTC calendar dates) ─────
 
