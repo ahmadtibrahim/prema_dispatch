@@ -892,16 +892,23 @@
             }
 
             // ════════════════════════════════════════════════════════════
-            // Dynamic pallet capacity (canonical VehicleCapacityService)
+            // Dynamic pallet capacity (canonical VehicleCapacityService,
+            // segment-aware — Task M)
             //
-            // DISCLOSURE POLICY: the endpoint returns ONLY generic state —
-            // available / can_fit_requested_quantity — never exact pallet
-            // counts. The stepper therefore caps nothing; the customer
-            // enters the physical pallet quantity and the SERVER (Get Price
-            // pre-check + confirmation lock) stays the authoritative
-            // capacity gate. No number is ever shown.
+            // The endpoint returns generic state (available /
+            // can_fit_requested_quantity) plus ONE number:
+            // max_selectable_pallets — the maximum this route + departure
+            // can fit (truck max minus committed occupancy on the EXACT
+            // segments the route overlaps; FTL needs the whole truck).
+            // That number exists ONLY to clamp the stepper: the + button
+            // stops at it and manual entry above it is clamped with a
+            // generic message. It is NEVER rendered as text — no "9
+            // pallets remaining", no "13 total", no "4 booked". The
+            // SERVER (Get Price pre-check + confirmation lock) stays the
+            // authoritative capacity gate.
             // ════════════════════════════════════════════════════════════
             var departureAvailable = false;
+            var palletMax = 0;   // server-computed segment-aware max (internal)
             var palletsInput = document.getElementById('pallets_input');
             var capacityHint = document.getElementById('pallets_capacity_hint');
             var capacityError = document.getElementById('pallets_capacity_error');
@@ -912,23 +919,50 @@
                 capacityError.style.display = msg ? '' : 'none';
             }
 
+            function setPlusDisabled() {
+                var plus = document.getElementById('pallets_plus');
+                if (plus) {
+                    plus.disabled = !departureAvailable ||
+                        (palletMax > 0 && (parseInt(palletsInput.value || '1', 10) || 1) >= palletMax);
+                }
+            }
+
             function applyPalletMax() {
-                if (departureAvailable) {
+                // Returns true when the entered quantity was clamped (the
+                // caller then re-checks date eligibility at the clamped
+                // quantity).
+                if (departureAvailable && palletMax > 0) {
                     palletsInput.min = 1;
+                    palletsInput.max = palletMax;
                     var cur = parseInt(palletsInput.value || '1', 10);
-                    if (isNaN(cur) || cur < 1) { palletsInput.value = 1; }
+                    if (isNaN(cur) || cur < 1) { cur = 1; palletsInput.value = 1; }
+                    var clamped = false;
+                    if (cur > palletMax) {
+                        // Above the allowed quantity: clamp + generic
+                        // message — the exact number is internal.
+                        palletsInput.value = palletMax;
+                        clamped = true;
+                    }
                     capacityHint.textContent = 'Enter the number of physical pallets/skids.';
                     palletsInput.disabled = false;
                     if (getPriceBtn) { getPriceBtn.disabled = false; }
-                    showCapacityError('');
+                    showCapacityError(clamped
+                        ? 'Selected quantity is not available on this departure.'
+                        : '');
+                    setPlusDisabled();
                     syncCalculatedWeight();
                     if (typeof buildPalletAllocations === 'function') { buildPalletAllocations(); }
+                    return clamped;
                 } else {
                     palletsInput.value = '';
+                    palletsInput.max = '';
                     palletsInput.disabled = true;
-                    capacityHint.textContent = 'This departure is fully booked. Please choose another pickup date.';
                     if (getPriceBtn) { getPriceBtn.disabled = true; }
+                    var plus = document.getElementById('pallets_plus');
+                    if (plus) { plus.disabled = true; }
+                    capacityHint.textContent = 'This departure is fully booked. Please choose another pickup date.';
                     showCapacityError('');
+                    return false;
                 }
             }
 
@@ -947,30 +981,52 @@
                 if (depInput && depInput.value) { params += '&departure_id=' + encodeURIComponent(depInput.value); }
                 if (puLocId) { params += '&pickup_loc_id=' + encodeURIComponent(puLocId); }
                 if (puFsa) { params += '&pickup_fsa=' + encodeURIComponent(puFsa); }
+                // Segment-aware occupancy needs BOTH route ends + the
+                // shipment type (same values fetchEligibleDates uses).
+                var deLat = parseFloat(document.querySelector('input[name="delivery_lat"]')?.value || 0);
+                var deLng = parseFloat(document.querySelector('input[name="delivery_lng"]')?.value || 0);
+                var stSel = document.getElementById('portal_shipment_type');
+                var st = (stSel && stSel.value === 'ftl') ? 'ftl' : 'ltl';
+                params += '&delivery_lat=' + deLat + '&delivery_lng=' + deLng + '&shipment_type=' + st;
+                var deliveryLocIds = [];
+                document.querySelectorAll('.delivery-stop-breakdown-row input[name^="delivery_loc_id_"]').forEach(function(inp) {
+                    if (inp.value && deliveryLocIds.indexOf(inp.value) === -1) { deliveryLocIds.push(inp.value); }
+                });
+                var singleDel = document.querySelector('input[name="delivery_loc_id_1"]');
+                if (!deliveryLocIds.length && singleDel && singleDel.value) { deliveryLocIds.push(singleDel.value); }
+                if (deliveryLocIds.length) { params += '&delivery_loc_ids=' + encodeURIComponent(deliveryLocIds.join(',')); }
                 fetch('/my/booking/capacity?' + params, {credentials: 'same-origin'})
                     .then(function(r) { return r.json(); })
                     .then(function(data) {
                         if (data && data.available) {
                             departureAvailable = true;
+                            palletMax = parseInt(data.max_selectable_pallets || '0', 10) || 0;
                             if (data.can_fit_requested_quantity === false) {
-                                // Same non-disclosing message the server
-                                // pre-check returns at Get Price.
-                                showCapacityError('This pallet quantity is not available on the selected departure. Reduce the quantity or choose another pickup date.');
+                                showCapacityError('Selected quantity is not available on this departure.');
                             } else {
                                 showCapacityError('');
                             }
                         } else {
                             departureAvailable = false;   // no service on this date
+                            palletMax = 0;
                         }
                         if (data && data.per_pallet_weight) {
                             WEIGHT_PER_PALLET = data.per_pallet_weight;
                             if (resetLink) { resetLink.textContent = 'Reset to ' + WEIGHT_PER_PALLET + ' lb/pallet'; }
                         }
-                        applyPalletMax();
+                        var clamped = applyPalletMax();
                         syncCalculatedWeight();
+                        if (clamped) {
+                            // Quantity was pushed above this departure's
+                            // capacity: re-check date eligibility at the
+                            // clamped quantity (§6) — never silently
+                            // accept the over-capacity entry.
+                            fetchEligibleDates();
+                        }
                     })
                     .catch(function() {
                         departureAvailable = false;
+                        palletMax = 0;
                         capacityHint.textContent = 'Could not check capacity. Please try again.';
                     });
             }
@@ -981,8 +1037,15 @@
                 if (isNaN(cur)) { cur = 1; }
                 var next = cur + delta;
                 if (next < 1) { next = 1; }
+                if (palletMax > 0 && next > palletMax) {
+                    // The + button simply stops at the allowed quantity —
+                    // the number is never disclosed.
+                    showCapacityError('Selected quantity is not available on this departure.');
+                    return;
+                }
                 palletsInput.value = next;
                 showCapacityError('');
+                setPlusDisabled();
                 syncCalculatedWeight();
                 if (typeof buildPalletAllocations === 'function') { buildPalletAllocations(); }
             }
@@ -995,7 +1058,18 @@
                     showCapacityError('Please enter a valid pallet quantity (1 or more).');
                     return false;
                 }
+                if (palletMax > 0 && cur > palletMax) {
+                    // Manual typing above the allowed quantity: clamp and
+                    // give the generic message — never the number.
+                    palletsInput.value = palletMax;
+                    showCapacityError('Selected quantity is not available on this departure.');
+                    syncCalculatedWeight();
+                    if (typeof buildPalletAllocations === 'function') { buildPalletAllocations(); }
+                    fetchEligibleDates();
+                    return false;
+                }
                 showCapacityError('');
+                setPlusDisabled();
                 return true;
             }
             if (palletsInput) {

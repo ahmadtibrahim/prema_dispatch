@@ -240,6 +240,104 @@ class VehicleCapacityService:
             "capacity_state": result.get("capacity_state", "available"),
         }
 
+    def route_capacity(self, departure, origin_region=None, dest_region=None,
+                       service_type="ltl", requested_pallets=None):
+        """Segment-aware maximum physical pallets a NEW shipment may select
+        on this departure for the route origin_region → dest_region.
+
+        Authority: CapacityEngine.compute_departure_peak (segment occupancy
+        per corridor segment — the same numbers the confirmation lock and
+        the departure resolver use). Only committed positions on the exact
+        segments the new route overlaps reduce what the new shipment may
+        select: freight that is picked up and fully unloaded BEFORE this
+        route's pickup (or after its delivery) does NOT count against it.
+
+        FTL owns the ENTIRE truck (Task L rule, same as check_and_reserve):
+        a departure with any committed booking — overlapping or not — has
+        no FTL availability; a completely free departure allows FTL up to
+        the physical truck maximum.
+
+        DISCLOSURE POLICY: returns the MAXIMUM the customer may select
+        (the portal clamps the stepper on it — the number is never
+        rendered as text) plus generic state. Never returns reserved
+        counts, occupancy breakdowns, or "remaining" figures.
+
+        origin_region/dest_region: logistics.region records (or False).
+        When either is missing, the whole departure is treated as the
+        route span — a conservative whole-truck answer.
+
+        Returns plain dict:
+            available, capacity_state, max_selectable_pallets,
+            can_fit_requested_quantity (None when requested_pallets is
+            None), per_pallet_weight, reason.
+        """
+        from .capacity_engine import CapacityEngine
+        empty = {
+            "available": False,
+            "capacity_state": "unavailable",
+            "max_selectable_pallets": 0,
+            "can_fit_requested_quantity": False,
+            "per_pallet_weight": 0.0,
+            "reason": "no_departure",
+        }
+        if not departure or not departure.corridor_id or not departure.vehicle_id:
+            return dict(empty)
+        engine = CapacityEngine(self.env)
+        peak = engine.compute_departure_peak(departure)
+        if peak.get("capacity_state") == "integrity_conflict":
+            return dict(empty, capacity_state="integrity_conflict",
+                        reason="capacity_integrity_conflict")
+        maximum = self.maximum_capacity(departure.vehicle_id)
+        corridor = departure.corridor_id
+        per_pallet_weight = corridor.included_weight_per_pallet or 0.0
+
+        if service_type == "ftl":
+            # FTL reserves the whole truck: any committed booking makes the
+            # departure unavailable for FTL; a free departure may take up
+            # to the physical truck maximum regardless of pallet count.
+            if peak["peak_pallets"] or peak["exclusive_vehicle_reserved"]:
+                return dict(empty, capacity_state="full",
+                            per_pallet_weight=per_pallet_weight,
+                            reason="ftl_departure_not_empty")
+            max_selectable = maximum
+        else:
+            if peak["exclusive_vehicle_reserved"]:
+                return dict(empty, capacity_state="full",
+                            per_pallet_weight=per_pallet_weight,
+                            reason="ftl_departure_reserved")
+            # The new route's span over the corridor stop sequence — the
+            # SAME canonical authority the leg builder and the departure
+            # resolver use. Without both regions, fall back to the whole
+            # departure (conservative).
+            span_origin_idx = 0
+            span_dest_idx = len(peak.get("segment_details") or [])
+            if origin_region and dest_region:
+                from .departure_span_validator import DepartureSpanValidator
+                span = DepartureSpanValidator(self.env).validate(
+                    departure, origin_region, dest_region)
+                if not span["valid"]:
+                    return dict(empty, per_pallet_weight=per_pallet_weight,
+                                reason=span["reason"])
+                span_origin_idx = span["origin_index"]
+                span_dest_idx = span["destination_index"]
+            segs = peak.get("segment_details") or []
+            span_ltl = max(
+                (seg.get("ltl_positions") or 0)
+                for seg in segs[span_origin_idx:span_dest_idx]
+            ) if segs else 0
+            max_selectable = max(maximum - span_ltl, 0)
+        capacity_state = "available" if max_selectable > 0 else "full"
+        return {
+            "available": capacity_state == "available",
+            "capacity_state": capacity_state,
+            "max_selectable_pallets": max_selectable,
+            "can_fit_requested_quantity": (
+                None if requested_pallets is None
+                else bool(max_selectable > 0 and requested_pallets <= max_selectable)),
+            "per_pallet_weight": per_pallet_weight,
+            "reason": None,
+        }
+
     def check_and_reserve(self, departure, proposed_pallets, proposed_weight_lbs=0.0,
                           service_type="ltl"):
         """Authoritative, concurrency-safe capacity validation.

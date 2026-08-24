@@ -1159,9 +1159,15 @@ class LogisticsBookingPortal(http.Controller):
     # ------------------------------------------------------------------
     @http.route("/my/booking/capacity", type="http", auth="user", website=True, sitemap=False, methods=["GET"])
     def booking_capacity(self, **kwargs):
-        """Dynamic remaining pallet capacity for the departure serving the
-        pickup region on the requested date. Consumed by the Total Physical
-        Pallets stepper (max, helper text, disabled state)."""
+        """Segment-aware maximum selectable pallets for the route +
+        selected departure (VehicleCapacityService.route_capacity).
+
+        Consumed by the Total Physical Pallets stepper: the + button stops
+        at max_selectable_pallets and manual entry above it is clamped
+        with a generic message — the number itself is never displayed.
+        FTL availability (whole-truck exclusivity) is reflected the same
+        way. Route endpoints + shipment type must be sent so occupancy is
+        evaluated on the exact segments the shipment overlaps."""
         require_visible()
         from ..services.region_resolver import RegionResolver
         from ..services.vehicle_capacity_service import VehicleCapacityService
@@ -1194,11 +1200,15 @@ class LogisticsBookingPortal(http.Controller):
         # Server-validated: active, still scheduled, vehicle assigned.
         #
         # DISCLOSURE POLICY: the response carries ONLY generic state
-        # (available / capacity_state / can_fit_requested_quantity) — never
-        # max_pallets, reserved_pallets, remaining_pallets, layouts, or any
-        # other exact-capacity number. The customer needs a yes/no for the
-        # quantity they entered; the authoritative capacity enforcement
-        # stays server-side (Get Price pre-check + confirmation lock).
+        # (available / capacity_state / can_fit_requested_quantity /
+        # max_selectable_pallets) — never reserved_pallets, remaining
+        # pallets, layouts, or any occupancy breakdown. max_selectable
+        # exists ONLY to clamp the stepper (the + button stops at it and
+        # manual entry above it is rejected with a generic message) — it
+        # is never rendered as text anywhere in the portal. Exact fleet
+        # utilization stays private; the authoritative capacity
+        # enforcement stays server-side (Get Price pre-check +
+        # confirmation lock).
         requested_departure_id = kwargs.get("departure_id")
         requested_pallets = None
         raw_pallets = kwargs.get("pallets")
@@ -1207,45 +1217,73 @@ class LogisticsBookingPortal(http.Controller):
                 requested_pallets = int(raw_pallets)
             except (ValueError, TypeError):
                 requested_pallets = None
+        shipment_type = kwargs.get("shipment_type") or "ltl"
+        if shipment_type not in ("ltl", "ftl"):
+            shipment_type = "ltl"
+
+        # Delivery region — segment-aware occupancy needs BOTH route ends.
+        # Same canonical resolution chain as the pickup side.
+        delivery_region = False
+        if kwargs.get("delivery_lat") and kwargs.get("delivery_lng"):
+            try:
+                delivery_region = resolver.resolve(
+                    float(kwargs["delivery_lat"]),
+                    float(kwargs["delivery_lng"]),
+                ).matched_region
+            except (ValueError, TypeError):
+                delivery_region = False
+        if not delivery_region and kwargs.get("delivery_fsa"):
+            delivery_region = resolver.canonical_region(
+                str(kwargs["delivery_fsa"]).strip().upper())
+        if not delivery_region:
+            raw_dl = str(kwargs.get("delivery_loc_id") or "").strip()
+            if not raw_dl and kwargs.get("delivery_loc_ids"):
+                raw_dl = str(kwargs["delivery_loc_ids"]).split(",")[0].strip()
+            if raw_dl.lstrip("-").isdigit():
+                partner = request.env.user.partner_id.commercial_partner_id
+                dl_loc = request.env["logistics.saved.location"].sudo().browse(int(raw_dl))
+                if dl_loc.exists() and dl_loc.commercial_partner_id.id == partner.id and dl_loc.postal_code:
+                    delivery_region = resolver.canonical_region(dl_loc.postal_code)
+
         Departure = request.env["logistics.corridor.departure"].sudo()
+        departure = False
         if requested_departure_id and str(requested_departure_id).lstrip("-").isdigit():
             departure = Departure.browse(int(requested_departure_id)).exists()
-            if (departure
-                    and departure.active
-                    and departure.status not in ("cancelled", "completed")
-                    and departure.vehicle_id):
-                capacity_result = VehicleCapacityService(request.env).evaluate(
-                    departure.vehicle_id, departure, 0)
-                remaining = capacity_result["remaining_pallets"]
-                corridor = departure.corridor_id
-                data = {
-                    "available": True,
-                    "departure_id": departure.id,
-                    "capacity_state": "available" if remaining > 0 else "full",
-                    "can_fit_requested_quantity": (
-                        requested_pallets is None or remaining >= requested_pallets),
-                    # Per-pallet default weight from the corridor's own
-                    # configuration — the portal weight auto-calc source.
-                    # (Weight guidance, not capacity disclosure.)
-                    "per_pallet_weight": (
-                        corridor.included_weight_per_pallet or 0.0) if corridor else 0.0,
-                }
-                return request.make_json_response(data)
+        if not (departure and departure.active
+                and departure.status not in ("cancelled", "completed")
+                and departure.vehicle_id):
+            # No (valid) calendar-selected departure: fall back to the
+            # scheduled departure serving the pickup region on the
+            # requested date — the pre-date-selection probe.
+            departure = False
+            found = VehicleCapacityService.for_pickup_date(
+                request.env, region, kwargs.get("pickup_date"))
+            if found.get("available"):
+                departure = Departure.browse(found["departure_id"]).exists()
 
-        result = VehicleCapacityService.for_pickup_date(
-            request.env, region, kwargs.get("pickup_date"))
-        remaining = result.get("remaining_pallets", 0)
-        data = {
-            "available": bool(result.get("available")),
-            "departure_id": result.get("departure_id") or False,
-            "capacity_state": (
-                "full" if not result.get("available") or remaining <= 0 else "available"),
-            "can_fit_requested_quantity": (
-                bool(result.get("available"))
-                and (requested_pallets is None or remaining >= requested_pallets)),
-            "per_pallet_weight": result.get("per_pallet_weight", 0.0),
-        }
-        return request.make_json_response(data)
+        if departure and departure.vehicle_id:
+            result = VehicleCapacityService(request.env).route_capacity(
+                departure, region or False, delivery_region or False,
+                service_type=shipment_type, requested_pallets=requested_pallets,
+            )
+            return request.make_json_response({
+                "available": result["available"],
+                "departure_id": departure.id,
+                "capacity_state": result["capacity_state"],
+                "max_selectable_pallets": result["max_selectable_pallets"],
+                "can_fit_requested_quantity": result["can_fit_requested_quantity"],
+                "per_pallet_weight": result["per_pallet_weight"],
+            })
+
+        # No service on this date: generic unavailable state.
+        return request.make_json_response({
+            "available": False,
+            "departure_id": False,
+            "capacity_state": "unavailable",
+            "max_selectable_pallets": 0,
+            "can_fit_requested_quantity": False,
+            "per_pallet_weight": 0.0,
+        })
 
     @http.route("/my/booking/confirm", type="http", auth="user", website=True, sitemap=False, methods=["POST"])
     def booking_confirm(self, **kwargs):
