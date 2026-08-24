@@ -496,6 +496,25 @@ class BookingOrchestrationService:
                         "departure_date": None,
                     })
                 route_total = round(ftl_multistop["final_transportation"], 2)
+            elif is_ftl:
+                # Single-stop FTL (or FTL with no multi-stop breakdown):
+                # freeze ONE customer-facing line at the authoritative
+                # server-computed FTL price — the same value that becomes
+                # calculated_price — so Step 3 renders a Dedicated FTL row
+                # that reconciles EXACTLY (650.00 = 650.00). The FTL flat
+                # rate is never recalculated here; the internal LTL-flavored
+                # leg formula must not leak into a customer FTL quote.
+                price_lines = [{
+                    "label": "Dedicated FTL Transportation",
+                    "distance_km": first_leg.estimated_distance_km if first_leg else 0.0,
+                    "pallets": normalized_request.physical_pallets or normalized_request.pallets,
+                    "rate_per_km": 0.0,
+                    "pallet_rate_per_km": 0.0,
+                    "amount": round(final_price, 2),
+                    "departure_date": first_leg.departure_date if first_leg else None,
+                    "base_leg_charge": round(final_price, 2),
+                }]
+                route_total = round(final_price, 2)
             # Authoritative ROUTE subtotal BEFORE the corridor-configured
             # additional stop/pickup charges below — the number the
             # milk-run per-stop cost allocations must sum to EXACTLY.
