@@ -120,6 +120,26 @@ class VehicleCapacityService:
         if departure:
             from .capacity_engine import CapacityEngine
             peak = CapacityEngine(self.env).compute_departure_peak(departure)
+        if peak.get("capacity_state") == "integrity_conflict":
+            return {
+                "vehicle": vehicle,
+                "layouts": self.get_layouts(vehicle),
+                "default_capacity": self.default_capacity(vehicle),
+                "maximum_capacity": self.maximum_capacity(vehicle),
+                "reserved_pallets": 0,
+                "reserved_ltl_positions": 0,
+                "exclusive_vehicle_reserved": False,
+                "exclusive_booking_ids": [],
+                "exclusive_reservation_ids": [],
+                "remaining_sellable_capacity": 0,
+                "proposed_pallets": proposed_pallets,
+                "proposed_total": 0,
+                "selected_layout": None,
+                "remaining_pallets": 0,
+                "capacity_valid": False,
+                "reason": _("This departure is temporarily unavailable."),
+                "capacity_state": "integrity_conflict",
+            }
         exclusive = bool(peak.get("exclusive_vehicle_reserved"))
         reserved = peak.get("peak_pallets", 0)
         reserved_ltl = peak.get("reserved_ltl_positions", 0)
@@ -217,6 +237,7 @@ class VehicleCapacityService:
             # Per-pallet default weight from the selected corridor's own
             # configuration — the portal weight auto-calc source.
             "per_pallet_weight": corridor.included_weight_per_pallet or 0.0 if corridor else 0.0,
+            "capacity_state": result.get("capacity_state", "available"),
         }
 
     def check_and_reserve(self, departure, proposed_pallets, proposed_weight_lbs=0.0,
@@ -256,6 +277,12 @@ class VehicleCapacityService:
         # exclusively-held truck.
         from .capacity_engine import CapacityEngine
         peak = CapacityEngine(self.env).compute_departure_peak(departure)
+        if peak.get("capacity_state") == "integrity_conflict":
+            return {
+                "capacity_valid": False,
+                "reason": _("This departure is temporarily unavailable."),
+                "capacity_state": "integrity_conflict",
+            }
         if service_type == "ftl":
             if peak["peak_pallets"] or peak["exclusive_vehicle_reserved"]:
                 result["capacity_valid"] = False

@@ -571,7 +571,22 @@ class ShipmentRoutingService:
                 return ShipmentRoute(False, f"Invalid pickup date: {requested_pickup_date}",
                                      "INVALID_DATE", [], pallets, weight_lbs, None, snapshot)
         else:
-            pickup_date = self._op_today() + timedelta(days=1)
+            # Direction-aware default pickup day (no explicit date was
+            # supplied): roll forward to the next ACTUAL scheduled
+            # departure that can carry origin_region → destination_region
+            # on the direct corridor in the correct corridor direction.
+            # The old blind "tomorrow" default let the direction-blind
+            # pickup-day check pass for a lane whose westbound corridor
+            # runs a different day — QC-LANAUDIERE → ON-GTA passes Tuesday
+            # (corridor 9 eastbound serves Lanaudière as a destination)
+            # while corridor 11 westbound departs Wednesday → NO_LEGS even
+            # though direct service exists. Explicitly requested dates are
+            # NEVER moved (strict branch above).
+            pickup_date = self._default_pickup_date(origin_region, dest_region)
+            if pickup_date is None:
+                return ShipmentRoute(
+                    False, "No scheduled departure serves this lane in the coming weeks.",
+                    "NO_LEGS", [], pallets, weight_lbs, None, snapshot)
 
         pickup_day = pickup_date.strftime("%A").lower()
 
@@ -1546,8 +1561,24 @@ class ShipmentRoutingService:
             all_departures_eligible = True
             for dep_id in unique_dep_ids:
                 dep = Departure.sudo().browse(dep_id)
+                matching_legs = [
+                    leg for leg in all_legs if leg.get("departure_id") == dep_id
+                ]
+                leg = matching_legs[0] if matching_legs else {}
+                # Leg-scoped names — must NOT shadow the outer pickup-stop
+                # dict `origin` used by the probe loop above (shadowing
+                # crashed the next iteration with KeyError 'latitude').
+                leg_origin_region = self._canonical_region(
+                    leg.get("origin_region_id") or leg.get("origin_region"))
+                leg_destination_region = self._canonical_region(
+                    leg.get("dest_region_id") or leg.get("dest_region")
+                )
                 ok, _reason, _vehicle = departure_svc.evaluate_departure(
-                    dep, equipment, physical_pallets, weight_lbs)
+                    dep, equipment, physical_pallets, weight_lbs,
+                    service_type=shipment_type,
+                    origin_region=leg_origin_region,
+                    dest_region=leg_destination_region,
+                )
                 if not ok:
                     all_departures_eligible = False
                     break
@@ -1842,6 +1873,47 @@ class ShipmentRoutingService:
             dt += timedelta(days=1)
         return from_date + timedelta(days=7)  # fallback
 
+    def _default_pickup_date(self, origin_region, dest_region, horizon_days=56):
+        """Direction-aware default pickup day for a lane.
+
+        When the customer did NOT pick an explicit pickup date, plan_route
+        must roll forward to the next ACTUAL scheduled departure that can
+        carry origin_region → destination_region in the correct corridor
+        direction — never a blind "tomorrow" that only proves the origin
+        region is served somewhere on the network that day.
+
+        Uses the SAME canonical direct-service authority as the calendar
+        (logistics.corridor.find_direct_service) and requires an actual
+        departure row (active, not cancelled/completed, vehicle assigned)
+        — exactly the departure-level proof _build_leg enforces, so the
+        rolled-forward date always builds.
+
+        Lanes without a direct corridor (hub-transfer / rule-based lanes)
+        keep the legacy tomorrow default — the leg builder evaluates them
+        exactly as before (no behavior change).
+
+        Returns a datetime date, or None when the lane is direct but has
+        no scheduled departure within the horizon (the caller converts
+        that to NO_LEGS).
+        """
+        direct = self.env["logistics.corridor"].find_direct_service(
+            origin_region, dest_region)
+        if not direct:
+            return self._op_today() + timedelta(days=1)
+        start = self._op_today() + timedelta(days=1)
+        end = start + timedelta(days=horizon_days)
+        dep = self.env["logistics.corridor.departure"].search([
+            ("corridor_id", "=", direct.id),
+            ("departure_date", ">=", start.strftime("%Y-%m-%d")),
+            ("departure_date", "<=", end.strftime("%Y-%m-%d")),
+            ("active", "=", True),
+            ("status", "not in", ("cancelled", "completed")),
+            ("vehicle_id", "!=", False),
+        ], order="departure_date", limit=1)
+        if not dep:
+            return None
+        return datetime.strptime(str(dep.departure_date)[:10], "%Y-%m-%d")
+
     def _next_departure_after(self, after_date, dest_region, origin_region=None):
         """Find the next departure carrying origin_region → dest_region.
 
@@ -1986,6 +2058,13 @@ class ShipmentRoutingService:
             # No actual scheduled departure on this date — the leg is not
             # feasible even if the corridor operates today. The calendar
             # must never show a date the truck is not scheduled.
+            return None
+
+        from .departure_span_validator import DepartureSpanValidator
+        span = DepartureSpanValidator(self.env).validate(
+            departure, origin_region, dest_region,
+        )
+        if not span["valid"]:
             return None
 
         # Distance priority: the corridor's canonical ordered segment

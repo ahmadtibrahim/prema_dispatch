@@ -101,6 +101,7 @@ class PricingService:
             resolution = dep_resolver.resolve(
                 origin_region, destination_region, equipment, pallets, weight_lbs,
                 earliest_pickup_date=earliest,
+                service_type=shipment_type,
             )
             if not resolution.available:
                 return PricingResult(False, reason=resolution.reason)

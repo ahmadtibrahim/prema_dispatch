@@ -205,6 +205,8 @@ class CapacityEngine:
             "reserved_ltl_positions": 0,
             "exclusive_vehicle_reserved": False,
             "exclusive_booking_ids": [],
+            "capacity_state": "available",
+            "integrity_conflicts": [],
         }
         if not departure or not departure.corridor_id:
             return dict(empty)
@@ -219,6 +221,36 @@ class CapacityEngine:
             ("departure_id", "=", departure.id),
             ("state", "=", "confirmed"),
         ])
+        from .departure_span_validator import DepartureSpanValidator
+        span_validator = DepartureSpanValidator(self.env)
+        integrity_conflicts = []
+        for booking in bookings:
+            booking_legs = booking.leg_ids.filtered(
+                lambda leg: leg.departure_id.id == departure.id
+            )
+            for leg in booking_legs:
+                origin_region, destination_region = self._leg_regions(leg)
+                validation = span_validator.validate(
+                    departure, origin_region, destination_region,
+                )
+                if not validation["valid"]:
+                    conflict = {
+                        "departure_id": departure.id,
+                        "booking_id": booking.id,
+                        "leg_id": leg.id,
+                        "origin_region": origin_region.code if origin_region else None,
+                        "destination_region": destination_region.code if destination_region else None,
+                        "reason": validation["reason"],
+                    }
+                    integrity_conflicts.append(conflict)
+                    _logger.error("Departure capacity integrity conflict: %s", conflict)
+
+        if integrity_conflicts:
+            return {
+                **empty,
+                "capacity_state": "integrity_conflict",
+                "integrity_conflicts": integrity_conflicts,
+            }
         exclusive = [b for b in bookings if self._is_exclusive_service(b)]
         exclusive_ids = [b.id for b in exclusive]
 
@@ -306,7 +338,36 @@ class CapacityEngine:
                 exclusive_ids or exclusive_reservation_ids),
             "exclusive_booking_ids": exclusive_ids,
             "exclusive_reservation_ids": exclusive_reservation_ids,
+            "capacity_state": "available",
+            "integrity_conflicts": [],
         }
+
+    def _leg_regions(self, leg):
+        origin = leg.origin_region_id
+        destination = leg.destination_region_id
+        if origin and destination:
+            return origin, destination
+        for snapshot in (leg.booking_id.route_snapshot or {}).get("legs") or []:
+            if snapshot.get("departure_id") != leg.departure_id.id:
+                continue
+            origin = self._canonical_region(
+                snapshot.get("origin_region_id") or snapshot.get("origin_region_code")
+                or snapshot.get("origin_region")
+            )
+            destination = self._canonical_region(
+                snapshot.get("dest_region_id") or snapshot.get("dest_region_code")
+                or snapshot.get("dest_region")
+            )
+            break
+        return origin, destination
+
+    def _canonical_region(self, value):
+        if not value:
+            return False
+        if hasattr(value, "_name"):
+            return value
+        from .region_resolver import RegionResolver
+        return RegionResolver(self.env).canonical_region(value)
 
     def _booking_segments(self, corridor_stops, booking):
         """Segment occupancy of one confirmed booking on the corridor.
@@ -432,6 +493,16 @@ class CapacityEngine:
 
         max_capacity = departure.max_capacity or 12
         current = self.compute_departure_peak(departure)
+        if current.get("capacity_state") == "integrity_conflict":
+            return {
+                "accepted": False,
+                "reason": "capacity_integrity_conflict",
+                "requires_override": False,
+                "capacity_state": "integrity_conflict",
+                "current_peak": 0,
+                "new_peak": 0,
+                "max_capacity": max_capacity,
+            }
         current_peak = current["peak_pallets"]
 
         # For a quick check: add new pallets to current peak (conservative)

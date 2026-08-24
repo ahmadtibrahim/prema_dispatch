@@ -60,7 +60,8 @@ class DepartureResolver:
     # ── Public API ────────────────────────────────────────────────────
 
     def resolve(self, origin_region, dest_region, equipment, pallets, weight_lbs,
-                earliest_pickup_date=None, allow_pinwheel_override=False):
+                earliest_pickup_date=None, allow_pinwheel_override=False,
+                service_type="ltl"):
         """Resolve exact departure(s) for one commercial shipment leg-pair.
         Mirrors RouteResolver's own direct-then-hub-transfer priority so the
         two never disagree about topology."""
@@ -69,14 +70,14 @@ class DepartureResolver:
 
         direct = self._resolve_direct(
             origin_region, dest_region, equipment, pallets, weight_lbs,
-            earliest_pickup_date, allow_pinwheel_override,
+            earliest_pickup_date, allow_pinwheel_override, service_type,
         )
         if direct.available:
             return direct
 
         transfer = self._resolve_transfer(
             origin_region, dest_region, equipment, pallets, weight_lbs,
-            earliest_pickup_date, allow_pinwheel_override,
+            earliest_pickup_date, allow_pinwheel_override, service_type,
         )
         if transfer.available:
             return transfer
@@ -86,7 +87,8 @@ class DepartureResolver:
     # ── Single leg (boundary already known, e.g. from RouteResolver) ───
 
     def resolve_single_leg(self, origin_region, dest_region, equipment, pallets, weight_lbs,
-                            earliest_pickup_date=None, allow_pinwheel_override=False):
+                            earliest_pickup_date=None, allow_pinwheel_override=False,
+                            service_type="ltl"):
         """Resolve exactly one physical leg between two already-determined
         regions. Used when the caller (e.g. PricingService, which already
         knows the commercial leg boundaries from RouteResolver — direct or
@@ -96,19 +98,20 @@ class DepartureResolver:
         equipment = to_canonical_temperature_mode(equipment)
         return self._resolve_direct(
             origin_region, dest_region, equipment, pallets, weight_lbs,
-            earliest_pickup_date, allow_pinwheel_override,
+            earliest_pickup_date, allow_pinwheel_override, service_type,
         )
 
     # ── Direct ────────────────────────────────────────────────────────
 
     def _resolve_direct(self, origin_region, dest_region, equipment, pallets, weight_lbs,
-                         earliest_pickup_date, allow_pinwheel_override):
+                         earliest_pickup_date, allow_pinwheel_override, service_type):
         corridors = self._candidate_corridors(origin_region, dest_region)
         if not corridors:
             return DepartureResolution(False, reason="no_corridor_for_regions")
 
         dep, vehicle, reason = self._find_eligible_departure(
-            corridors, earliest_pickup_date, equipment, pallets, weight_lbs, allow_pinwheel_override,
+            corridors, earliest_pickup_date, equipment, pallets, weight_lbs,
+            allow_pinwheel_override, service_type, origin_region, dest_region,
         )
         if not dep:
             return DepartureResolution(False, reason=reason)
@@ -120,7 +123,7 @@ class DepartureResolver:
     # ── Hub transfer ──────────────────────────────────────────────────
 
     def _resolve_transfer(self, origin_region, dest_region, equipment, pallets, weight_lbs,
-                           earliest_pickup_date, allow_pinwheel_override):
+                           earliest_pickup_date, allow_pinwheel_override, service_type):
         hubs = self.env["logistics.hub"].search([
             ("active", "=", True), ("canonical_region_id", "!=", False),
         ], order="is_default desc, id asc")
@@ -140,7 +143,8 @@ class DepartureResolver:
 
             for dep1, vehicle1 in self._eligible_departures(
                 leg1_corridors, earliest_pickup_date, equipment, pallets,
-                weight_lbs, allow_pinwheel_override,
+                weight_lbs, allow_pinwheel_override, service_type,
+                origin_region, hub_region,
             ):
                 # The connection date is based on this corridor segment's
                 # configured arrival day/time at the hub, not merely the
@@ -150,7 +154,8 @@ class DepartureResolver:
                 )
                 dep2, vehicle2, reason2 = self._find_eligible_departure(
                     leg2_corridors, leg2_earliest, equipment, pallets,
-                    weight_lbs, allow_pinwheel_override,
+                    weight_lbs, allow_pinwheel_override, service_type,
+                    hub_region, dest_region,
                 )
                 if not dep2:
                     last_reason = reason2 or last_reason
@@ -227,14 +232,15 @@ class DepartureResolver:
         ]
 
     def _find_eligible_departure(self, corridors, earliest_date, equipment, pallets, weight_lbs,
-                                  allow_pinwheel_override):
+                                  allow_pinwheel_override, service_type, origin_region,
+                                  dest_region):
         """Deterministic search: earliest eligible departure_date, then
         lowest id, across all candidate corridors. Never limit(1) without
         this explicit ordering + eligibility filter."""
         last_reason = "no_scheduled_departure_in_window"
         for dep, vehicle in self._eligible_departures(
             corridors, earliest_date, equipment, pallets, weight_lbs,
-            allow_pinwheel_override,
+            allow_pinwheel_override, service_type, origin_region, dest_region,
         ):
             return dep, vehicle, None
 
@@ -252,13 +258,15 @@ class DepartureResolver:
         for dep in deps:
             eligible, reason, _vehicle = self._eligible_departure(
                 dep, equipment, pallets, weight_lbs, allow_pinwheel_override,
+                service_type, origin_region, dest_region,
             )
             if not eligible:
                 last_reason = reason
         return None, None, last_reason
 
     def _eligible_departures(self, corridors, earliest_date, equipment, pallets,
-                             weight_lbs, allow_pinwheel_override):
+                             weight_lbs, allow_pinwheel_override, service_type,
+                             origin_region, dest_region):
         """Yield all eligible departures in deterministic chronological order."""
         if not corridors:
             return
@@ -273,12 +281,14 @@ class DepartureResolver:
         for departure in departures:
             eligible, _reason, vehicle = self._eligible_departure(
                 departure, equipment, pallets, weight_lbs, allow_pinwheel_override,
+                service_type, origin_region, dest_region,
             )
             if eligible:
                 yield departure, vehicle
 
     def evaluate_departure(self, departure, equipment, pallets, weight_lbs,
-                           allow_pinwheel_override=False):
+                           allow_pinwheel_override=False, service_type="ltl",
+                           origin_region=None, dest_region=None):
         """Public wrapper: is THIS exact departure eligible for the request?
 
         Returns (eligible: bool, reason: str|None, vehicle: recordset).
@@ -288,9 +298,13 @@ class DepartureResolver:
         if not departure:
             return False, "no_departure", None
         return self._eligible_departure(
-            departure, equipment, pallets, weight_lbs, allow_pinwheel_override)
+            departure, equipment, pallets, weight_lbs, allow_pinwheel_override,
+            service_type, origin_region, dest_region,
+        )
 
-    def _eligible_departure(self, departure, equipment, pallets, weight_lbs, allow_pinwheel_override):
+    def _eligible_departure(self, departure, equipment, pallets, weight_lbs,
+                            allow_pinwheel_override, service_type="ltl",
+                            origin_region=None, dest_region=None):
         """A departure is eligible ONLY with a real, capable, sufficiently
         free vehicle. No capacity number is ever fabricated."""
         vehicle = departure.vehicle_id
@@ -315,6 +329,20 @@ class DepartureResolver:
         from .capacity_engine import CapacityEngine
         engine = CapacityEngine(self.env)
         peak = engine.compute_departure_peak(departure)
+        if peak.get("capacity_state") == "integrity_conflict":
+            return False, "capacity_integrity_conflict", None
+        if origin_region and dest_region:
+            from .departure_span_validator import DepartureSpanValidator
+            span = DepartureSpanValidator(self.env).validate(
+                departure, origin_region, dest_region,
+            )
+            if not span["valid"]:
+                return False, span["reason"], None
+        if service_type == "ftl":
+            if peak["peak_pallets"] or peak["exclusive_vehicle_reserved"]:
+                return False, "ftl_departure_not_empty", None
+        elif peak["exclusive_vehicle_reserved"]:
+            return False, "ftl_departure_reserved", None
         projected_pallets = peak["peak_pallets"] + pallets
         projected_weight = peak["peak_weight"] + weight_lbs
 

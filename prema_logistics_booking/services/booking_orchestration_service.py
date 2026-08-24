@@ -1640,7 +1640,8 @@ class BookingOrchestrationService:
         ) % (booking.booking_number or booking.id))
 
     def _lock_and_validate_departures(self, departure_ids, equipment, pallets, weight_lbs,
-                                       allow_pinwheel_override=False, service_type="ltl"):
+                                       allow_pinwheel_override=False, service_type="ltl",
+                                       departure_spans=None, booking_id=None):
         """Sort + SELECT...FOR UPDATE every departure, then revalidate vehicle
         assignment, temperature compatibility, and pallet/weight capacity
         INSIDE the lock. Returns {departure_id: fleet.vehicle} on success;
@@ -1669,6 +1670,25 @@ class BookingOrchestrationService:
             dep = Departure.browse(did)
             if not dep.exists() or dep.status != "scheduled" or not dep.active:
                 raise UserError(_("Departure %s is no longer available. Please get a new price.") % did)
+
+            if departure_spans and did in departure_spans:
+                from .departure_span_validator import DepartureSpanValidator
+                origin_region, dest_region = departure_spans[did]
+                span = DepartureSpanValidator(self.env).validate(
+                    dep, origin_region, dest_region,
+                )
+                if not span["valid"]:
+                    _logger.error(
+                        "ROUTE_DEPARTURE_MISMATCH: booking_id=%s departure_id=%s "
+                        "origin_region=%s destination_region=%s",
+                        booking_id, did,
+                        origin_region.code if origin_region else None,
+                        dest_region.code if dest_region else None,
+                    )
+                    raise UserError(_(
+                        "This shipment is no longer available on the selected departure. "
+                        "Please get a new price."
+                    ))
 
             vehicle = dep.vehicle_id
             if not vehicle:
@@ -1753,10 +1773,23 @@ class BookingOrchestrationService:
             "ftl" if (booking.load_type == "ftl" or booking.shipment_type == "ftl")
             else "ltl"
         )
+        departure_spans = {}
+        for ls in leg_snaps:
+            origin_region = RegionResolver(self.env).canonical_region(
+                ls.get("origin_region_id") or ls.get("origin_region_code")
+                or ls.get("origin_region")
+            )
+            dest_region = RegionResolver(self.env).canonical_region(
+                ls.get("dest_region_id") or ls.get("dest_region_code")
+                or ls.get("dest_region")
+            )
+            departure_spans[ls["departure_id"]] = (origin_region, dest_region)
         vehicles_by_departure = self._lock_and_validate_departures(
             departure_ids, equipment, pallets, weight_lbs,
             allow_pinwheel_override=bool(booking.capacity_override),
             service_type=service_type,
+            departure_spans=departure_spans,
+            booking_id=booking.id,
         )
 
         # Frozen vehicle must still match what was quoted — a vehicle swap
@@ -1907,6 +1940,8 @@ class BookingOrchestrationService:
         """Manual/contract/negotiated pricing path: staff picked one exact
         departure directly (no RouteResolver route exists for it). Still
         fully capacity-validated — never a 'pending' unreserved leg."""
+        from ..services.region_resolver import RegionResolver
+
         pickups = booking.stop_ids.filtered(lambda s: s.stop_type == "pickup").sorted("sequence")
         deliveries = booking.stop_ids.filtered(lambda s: s.stop_type == "delivery").sorted("sequence")
         if not pickups or not deliveries:
@@ -1922,6 +1957,13 @@ class BookingOrchestrationService:
                 "ftl" if (booking.load_type == "ftl" or booking.shipment_type == "ftl")
                 else "ltl"
             ),
+            departure_spans={departure.id: (
+                RegionResolver(self.env).canonical_region(booking.pickup_fsa_id.region_id)
+                if booking.pickup_fsa_id else False,
+                RegionResolver(self.env).canonical_region(booking.delivery_fsa_id.region_id)
+                if booking.delivery_fsa_id else False,
+            )},
+            booking_id=booking.id,
         )
 
         leg = self.env["logistics.booking.leg"].sudo().create({
