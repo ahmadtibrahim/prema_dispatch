@@ -158,24 +158,32 @@
                                         <field name="ftl_reserve_entire_truck"/>
                                         <field name="ftl_behavior" string="When threshold reached"/>
                                     </group>
-                                    <group string="FTL Regional Pricing" colspan="4">
-                                        <field name="ftl_regional_minimum_ids" nolabel="1">
-                                            <list editable="bottom" string="FTL Regional Pricing">
-                                                <field name="sequence" widget="handle"/>
-                                                <field name="origin_region_id" options="{'no_create': True}"/>
-                                                <field name="destination_region_id" options="{'no_create': True}"/>
-                                                <field name="pricing_type"/>
-                                                <!-- Both columns stay visible: Odoo 18 evaluates
-                                                     column_invisible without a row context inside
-                                                     embedded one2many lists and crashes the form.
-                                                     Backend validation enforces per-type values. -->
-                                                <field name="flat_rate" widget="monetary"/>
-                                                <field name="ftl_rate_per_km_override"/>
-                                                <field name="active"/>
-                                            </list>
-                                        </field>
-                                    </group>
                                 </group>
+                            </group>
+
+                            <!-- FTL Regional Pricing — page-level group, same
+                                 full-width pattern as Pallet Volume Discounts
+                                 (a single-child inner group spans both grid
+                                 tracks; the list never sits in a nested cell) -->
+                            <div class="text-muted" invisible="enable_ftl == False">
+                                Optional FTL lane overrides. Leave blank to use the corridor's default FTL $/km.
+                            </div>
+                            <group string="FTL Regional Pricing" invisible="enable_ftl == False">
+                                <field name="ftl_regional_minimum_ids" nolabel="1">
+                                    <list editable="bottom" string="FTL Regional Pricing">
+                                        <field name="sequence" widget="handle"/>
+                                        <field name="origin_region_id" options="{'no_create': True}"/>
+                                        <field name="destination_region_id" options="{'no_create': True}"/>
+                                        <field name="pricing_type"/>
+                                        <!-- Both columns stay visible: Odoo 18 evaluates
+                                             column_invisible without a row context inside
+                                             embedded one2many lists and crashes the form.
+                                             Backend validation enforces per-type values. -->
+                                        <field name="flat_rate" widget="monetary"/>
+                                        <field name="ftl_rate_per_km_override"/>
+                                        <field name="active"/>
+                                    </list>
+                                </field>
                             </group>
 
                             <!-- Transit / Feeder Pricing -->
