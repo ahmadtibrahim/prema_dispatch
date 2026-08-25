@@ -242,16 +242,20 @@ class ShipmentRoutingService:
             equipment=equipment, horizon_weeks=horizon_weeks,
             shipment_type=shipment_type,
         )
-        if shipment_type == "ftl" and not dates:
-            # Direct-only FTL found no scheduled direct movement on this
-            # lane — the same verdict Get Price gives. Never advertise a
-            # transfer date for a dedicated truck.
-            return {
-                "manual_quote": True,
-                "reason": ("Dedicated Full Truckload service is not available "
-                           "as a direct scheduled route for this lane."),
-                "dates": [],
-            }
+        if not dates:
+            # The route resolves onto the network but NO scheduled pickup
+            # date exists in the horizon (no corridor serves the lane, or
+            # the only connection exceeds the custody hold). The portal
+            # must render the Manual Quote Required banner — never a blank
+            # calendar the Get Price path refuses. Same verdict for LTL
+            # and FTL.
+            if shipment_type == "ftl":
+                reason = ("Dedicated Full Truckload service is not available "
+                          "as a direct scheduled route for this lane.")
+            else:
+                reason = ("No scheduled service is available for this route "
+                          "in the coming weeks.")
+            return {"manual_quote": True, "reason": reason, "dates": []}
         return {"manual_quote": False, "reason": "", "dates": dates}
 
     # ── Real service timing (corridor stop config + travel-calc fallback) ──
@@ -714,13 +718,16 @@ class ShipmentRoutingService:
                         )
                         if leg2:
                             # Max custody hold from REAL configured times —
-                            # the actual gap between this leg's pickup
-                            # datetime and the onward corridor departure.
-                            leg1_pickup_dt = self._parse_iso_dt(leg1.pickup_datetime)
+                            # the gap between the feeder's ARRIVAL at the
+                            # hub (custody handoff) and the onward corridor
+                            # departure. Mirrors _probe_legs exactly, so
+                            # calendar and Get Price always agree.
+                            leg1_arrival_dt = (self._parse_iso_dt(leg1.delivery_datetime)
+                                               or self._parse_iso_dt(leg1.pickup_datetime))
                             leg2_dep_dt = self._parse_iso_dt(leg2.corridor_departure_datetime)
                             hold_ok = True
-                            if leg1_pickup_dt and leg2_dep_dt:
-                                hold_hours = (leg2_dep_dt - leg1_pickup_dt).total_seconds() / 3600.0
+                            if leg1_arrival_dt and leg2_dep_dt:
+                                hold_hours = (leg2_dep_dt - leg1_arrival_dt).total_seconds() / 3600.0
                                 hold_ok = hold_hours <= 24
                             if hold_ok:
                                 # A route is available ONLY if the final leg
@@ -728,6 +735,7 @@ class ShipmentRoutingService:
                                 # feeder-only pickup → Hub route. Mirrors
                                 # _probe_legs exactly, so calendar and Get
                                 # Price always agree.
+                                leg1 = leg1._replace(hub_ready_at=leg1.delivery_datetime)
                                 legs.append(leg1)
                                 legs.append(leg2)
 
@@ -1782,12 +1790,16 @@ class ShipmentRoutingService:
 
                 # Max custody hold from REAL configured times — never a
                 # hardcoded 8 AM pickup assumption. The hold is the actual
-                # gap between this leg's pickup datetime and the onward
-                # leg's corridor departure datetime.
-                leg1_pickup_dt = self._parse_iso_dt(leg1.pickup_datetime)
+                # gap between the feeder's ARRIVAL at the hub (the custody
+                # handoff) and the onward leg's corridor departure
+                # datetime. Measuring from the origin pickup overstates
+                # the hold: a midnight feeder departure would turn a real
+                # Wed→Thu connection (~20h at the hub) into a fake 30h.
+                leg1_arrival_dt = (self._parse_iso_dt(leg1.delivery_datetime)
+                                   or self._parse_iso_dt(leg1.pickup_datetime))
                 leg2_dep_dt = self._parse_iso_dt(leg2.corridor_departure_datetime)
-                if leg1_pickup_dt and leg2_dep_dt:
-                    hold_hours = (leg2_dep_dt - leg1_pickup_dt).total_seconds() / 3600.0
+                if leg1_arrival_dt and leg2_dep_dt:
+                    hold_hours = (leg2_dep_dt - leg1_arrival_dt).total_seconds() / 3600.0
                     if hold_hours > 24:
                         return {}  # reject — max 24h custody hold
 
@@ -1893,8 +1905,11 @@ class ShipmentRoutingService:
         rolled-forward date always builds.
 
         Lanes without a direct corridor (hub-transfer / rule-based lanes)
-        keep the legacy tomorrow default — the leg builder evaluates them
-        exactly as before (no behavior change).
+        roll forward to the next ACTUAL scheduled departure the canonical
+        DepartureResolver picks — the SAME authority the calendar and the
+        phone-quote path use. The legacy blind "tomorrow" default could
+        return a day the origin region is not served on, making a bare
+        Get Price call refuse a lane the calendar shows as bookable.
 
         Returns a datetime date, or None when the lane is direct but has
         no scheduled departure within the horizon (the caller converts
@@ -1903,7 +1918,15 @@ class ShipmentRoutingService:
         direct = self.env["logistics.corridor"].find_direct_service(
             origin_region, dest_region)
         if not direct:
-            return self._op_today() + timedelta(days=1)
+            from ..services.departure_resolver import DepartureResolver
+            resolution = DepartureResolver(self.env).resolve(
+                origin_region, dest_region, "dry", 1, 500,
+                earliest_pickup_date=self._op_today() + timedelta(days=1),
+                service_type="ltl",
+            )
+            if not resolution.available:
+                return None
+            return resolution.legs[0].departure.departure_date
         start = self._op_today() + timedelta(days=1)
         end = start + timedelta(days=horizon_days)
         dep = self.env["logistics.corridor.departure"].search([

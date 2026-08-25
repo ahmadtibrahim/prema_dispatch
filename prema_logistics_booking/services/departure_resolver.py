@@ -75,6 +75,13 @@ class DepartureResolver:
         if direct.available:
             return direct
 
+        if service_type == "ftl":
+            # FTL is a dedicated direct-truck product: a hub-transfer
+            # itinerary is never resolved for FTL — the same direct-only
+            # rule calendar_availability (leg_count == 1) and Get Price
+            # (FTL_REQUIRES_DIRECT) enforce.
+            return DepartureResolution(False, reason="ftl_requires_dedicated_direct_service")
+
         transfer = self._resolve_transfer(
             origin_region, dest_region, equipment, pallets, weight_lbs,
             earliest_pickup_date, allow_pinwheel_override, service_type,
@@ -160,6 +167,23 @@ class DepartureResolver:
                 if not dep2:
                     last_reason = reason2 or last_reason
                     continue
+                # Max custody hold at the hub (24h — the same rule the
+                # calendar's _probe_legs enforces): freight must ride the
+                # next onward departure within a day of arriving, or the
+                # connection is not offered. Without this cap the resolver
+                # would schedule a Thursday pickup for a Tuesday-only
+                # onward corridor (a 5-day hub hold) the calendar never
+                # shows. A later dep2 can only be later, so rejecting the
+                # first valid one rejects this entire connection.
+                arrival_dt = self._hub_arrival_datetime(
+                    dep1, hub, origin_region=origin_region, dest_region=hub_region)
+                dep2_dt = (
+                    datetime.datetime.combine(dep2.departure_date, datetime.time())
+                    + datetime.timedelta(hours=dep2.departure_time or 0.0)
+                )
+                if (dep2_dt - arrival_dt).total_seconds() > 24 * 3600:
+                    last_reason = "connection_hold_exceeds_24h"
+                    continue
                 candidates.append((
                     dep2.departure_date,
                     dep1.departure_date,
@@ -187,6 +211,38 @@ class DepartureResolver:
             ResolvedLeg(dep1, vehicle1, origin_region, hub_region, hub=hub),
             ResolvedLeg(dep2, vehicle2, hub_region, dest_region, hub=hub),
         ])
+
+    def _hub_arrival_datetime(self, dep1, hub, origin_region=None, dest_region=None):
+        """Actual datetime dep1 arrives at the hub — the moment custody of
+        transferred freight begins. Mirrors the calendar's own timing
+        authority (_leg_timings / _build_leg): the segment's configured
+        arrival time when set, otherwise the canonical travel-time
+        fallback at the same 80 kph planning speed over the segment's
+        real distance. A 0.0 arrival time means 'not configured' (not
+        midnight) and falls back to the travel estimate, so the resolver
+        and the calendar compute the same custody hold."""
+        arrival_date = dep1.departure_date
+        arrival_hour = None
+        if origin_region and dest_region:
+            segment = dep1.corridor_id.resolve_region_segment(
+                origin_region, dest_region)
+            if segment:
+                arrival_date += datetime.timedelta(days=segment["delivery_day_offset"] or 0)
+                configured_hour = segment.get("destination_arrival_time")
+                if configured_hour is not False and configured_hour is not None \
+                        and configured_hour:
+                    arrival_hour = float(configured_hour)
+                else:
+                    if not segment.get("destination_stop"):
+                        arrival_date += datetime.timedelta(days=1)
+                    distance_km = segment.get("distance_km") or 0.0
+                    arrival_hour = (dep1.departure_time or 0.0) + distance_km / 80.0
+        if arrival_hour is None:
+            arrival_hour = dep1.departure_time or 0.0
+        return (
+            datetime.datetime.combine(arrival_date, datetime.time())
+            + datetime.timedelta(hours=arrival_hour)
+        )
 
     def earliest_connecting_date(self, dep1, hub=None, origin_region=None, dest_region=None):
         """Public wrapper: earliest date a second leg may depart, given the

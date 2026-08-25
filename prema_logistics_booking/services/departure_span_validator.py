@@ -33,7 +33,22 @@ class DepartureSpanValidator:
 
         origin_stop = origin_stops[0]
         destination_stop = destination_stops[0]
-        if origin_stop.sequence >= destination_stop.sequence:
+
+        # Same-day-return corridors serve the reverse direction on their
+        # return loop: a pickup made later on the outbound route (e.g.
+        # Niagara, the last outbound stop) is delivered to an earlier stop
+        # on the way back (e.g. the GTA hub). resolve_region_segment
+        # already guarantees the delivery visit follows the pickup visit
+        # (position/day ordering), so the ordered-sequence check applies
+        # only to plain outbound movements — where stop sequence order
+        # equals visit order. The one impossible pairing, a return-loop
+        # pickup delivered on an outbound visit, is refused explicitly.
+        origin_direction = segment.get("origin_direction")
+        destination_direction = segment.get("destination_direction")
+        if origin_direction == "return" and destination_direction == "outbound":
+            return self._result(False, "ROUTE_DEPARTURE_MISMATCH")
+        if (origin_direction == "outbound" and destination_direction == "outbound"
+                and origin_stop.sequence >= destination_stop.sequence):
             return self._result(False, "ROUTE_DEPARTURE_MISMATCH")
 
         return self._result(
