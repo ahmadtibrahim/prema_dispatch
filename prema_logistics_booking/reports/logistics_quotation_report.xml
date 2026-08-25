@@ -6,7 +6,7 @@
     <record id="paperformat_logistics_quotation" model="report.paperformat">
         <field name="name">Prema Logistics Quotation</field>
         <field name="default" eval="True"/>
-        <field name="format">US Letter</field>
+        <field name="format">Letter</field>
         <field name="orientation">Portrait</field>
         <field name="margin_top" eval="14"/>
         <field name="margin_bottom" eval="14"/>
