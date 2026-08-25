@@ -27,6 +27,7 @@
             <form>
                 <header>
                     <button name="action_recalculate_route_distance" string="Calculate Route Distance" type="object" class="btn-secondary"/>
+                    <button name="action_calculate_route_times" string="Calculate Route Times" type="object" class="btn-secondary"/>
                     <div class="o_row">
                         <button name="action_refresh_departures" type="object" icon="fa-refresh" class="btn-primary"/>
                         <field name="departure_refresh_label" readonly="1" nolabel="1"/>
@@ -44,8 +45,10 @@
                         <group string="Weekly Departure">
                             <field name="operating_days_display" readonly="1"/>
                             <field name="start_time" widget="float_time"/>
-                            <field name="destination_hub_arrival_time" widget="float_time"
-                                   invisible="not same_day_return and not destination_hub_id"/>
+                            <div class="o_row" invisible="not same_day_return and not destination_hub_id">
+                                <field name="destination_hub_arrival_time" widget="float_time"/>
+                                <field name="hub_arrival_time_source" readonly="1" nolabel="1"/>
+                            </div>
                             <field name="overnight"/>
                             <field name="departure_horizon_weeks"/>
                         </group>
@@ -92,6 +95,7 @@
                                     <field name="day_offset"/>
                                     <field name="planned_arrival_time" widget="float_time" optional="show"/>
                                     <field name="planned_departure_time" widget="float_time" optional="show"/>
+                                    <field name="timing_source" optional="show"/>
                                 </list>
                             </field>
                         </page>

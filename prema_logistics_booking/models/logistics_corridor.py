@@ -14,6 +14,11 @@ import datetime
 from odoo import _, api, fields, models
 from odoo.exceptions import ValidationError
 
+# Per-stop service allowance used by the suggested-timing calculator. No
+# configurable dwell setting exists on corridors today; 15 minutes matches the
+# itinerary planner's existing default service time (itinerary_planner.py).
+DWELL_MINUTES = 15
+
 
 class LogisticsCorridor(models.Model):
     _name = "logistics.corridor"
@@ -43,6 +48,13 @@ class LogisticsCorridor(models.Model):
         string="Hub Arrival Time",
         help="Expected arrival back at the Hub or at the Destination Hub. Used to validate same-day transfers.",
     )
+    hub_arrival_time_source = fields.Selection([
+        ("suggested", "Suggested"),
+        ("manual", "Manual Override"),
+    ], string="Hub Arrival Source", default="suggested", copy=False,
+        help="Suggested = recalculated by Calculate Route Times / Calculate Route "
+             "Distance from Google durations. Manual Override = entered by hand "
+             "and preserved by recalculation.")
     operate_monday = fields.Boolean(string="Monday")
     operate_tuesday = fields.Boolean(string="Tuesday")
     operate_wednesday = fields.Boolean(string="Wednesday")
@@ -606,75 +618,168 @@ class LogisticsCorridor(models.Model):
             },
         }
 
+    def _route_geometry(self):
+        """Build the ordered stop/hub walk shared by both route actions.
+
+        Returns (ordered_stops, locations, targets): locations is the list of
+        Google-resolvable waypoints (origin hub, then ordered regions, then the
+        destination hub when it lies beyond the final region) and targets is the
+        parallel list of ("stop"|"destination_hub", record) matching the Google
+        leg list one-for-one. Raises ValidationError on missing geometry.
+        """
+        self.ensure_one()
+        ordered = self.stop_ids.filtered("active").sorted("sequence")
+        if not ordered:
+            raise ValidationError(_("Add ordered regions before calculating distance."))
+
+        def stop_location(record):
+            saved = record.saved_location_id
+            if saved:
+                if saved.pin_lat and saved.pin_lng:
+                    return (saved.pin_lat, saved.pin_lng)
+                return saved.normalized_address or saved.address
+            region = record.region_id
+            if region and region.marker_latitude and region.marker_longitude:
+                return (region.marker_latitude, region.marker_longitude)
+            return region.main_city if region else ""
+
+        def hub_location(hub):
+            if not hub:
+                return False
+            if hub.saved_location_id and hub.saved_location_id.pin_lat and hub.saved_location_id.pin_lng:
+                return (hub.saved_location_id.pin_lat, hub.saved_location_id.pin_lng)
+            if hub.latitude and hub.longitude:
+                return (hub.latitude, hub.longitude)
+            return hub.formatted_address or (
+                hub.saved_location_id.address if hub.saved_location_id else ""
+            )
+
+        origin_hub = self.origin_hub_id
+        origin_location = hub_location(origin_hub)
+        if origin_hub and not origin_location:
+            raise ValidationError(_(
+                "The Origin Hub needs a verified Saved Location, coordinates, or address."
+            ))
+        remaining_stops = ordered
+        locations = []
+        targets = []
+        if origin_location:
+            locations.append(origin_location)
+            # A first stop representing the hub itself starts at 0 km.
+            if ordered[0].region_id == origin_hub.canonical_region_id:
+                ordered[0].distance_from_origin_km = 0.0
+                remaining_stops = ordered[1:]
+        else:
+            # No origin hub: the first ordered region IS the route origin —
+            # it anchors the walk at 0 km but has no incoming leg of its own.
+            ordered[0].distance_from_origin_km = 0.0
+            locations.append(stop_location(ordered[0]))
+            remaining_stops = ordered[1:]
+
+        for stop in remaining_stops:
+            locations.append(stop_location(stop))
+            targets.append(("stop", stop))
+
+        destination_hub = self.destination_hub_id
+        destination_is_last_region = bool(
+            destination_hub
+            and destination_hub.canonical_region_id
+            and ordered[-1].region_id == destination_hub.canonical_region_id
+        )
+        if destination_hub and not destination_is_last_region:
+            locations.append(hub_location(destination_hub))
+            targets.append(("destination_hub", destination_hub))
+
+        if any(not value for value in locations):
+            raise ValidationError(_(
+                "Every ordered region needs a map marker or Saved Location, and each configured Hub needs coordinates."
+            ))
+        return ordered, locations, targets
+
+    def _apply_suggested_timing(self, ordered, targets, legs):
+        """Write the suggested timing for one corridor from Google durations.
+
+        The calculation authority: planned arrival/departure clock times and
+        day offsets roll forward from the corridor start time across Google
+        drive minutes, with a fixed per-stop dwell. Google durations are used
+        whenever the route service returns them (it falls back to the
+        straight-line estimate only when the API is unavailable — never a
+        hard-coded km/h approximation). Stops flagged Manual Override, and a
+        Hub Arrival flagged Manual Override, are never overwritten; day
+        offsets are structural rollover (divmod on cumulative minutes) and are
+        always refreshed so routing date math stays consistent. For
+        same-day-return corridors the suggested Hub Arrival is the operational
+        return to the origin hub (2x outbound drive plus dwells), not the raw
+        outbound distance.
+        """
+        self.ensure_one()
+        start_min = int(round((self.start_time or 0.0) * 60.0))
+        cum = start_min
+        total_drive = 0
+        planned = []  # (stop, arrival_clock, departure_clock, arrival_day)
+        final_arrival_min = start_min
+        for (target_type, target), leg in zip(targets, legs):
+            cum += leg.get("drive_minutes") or 0
+            total_drive += leg.get("drive_minutes") or 0
+            if target_type == "stop":
+                final_arrival_min = cum
+                arrival_day, arrival_clock = divmod(cum, 1440)
+                cum += DWELL_MINUTES
+                departure_day, departure_clock = divmod(cum, 1440)
+                planned.append((target, arrival_clock / 60.0,
+                                departure_clock / 60.0, arrival_day))
+            else:
+                # Destination hub reached as the final leg: the clock at cum
+                # IS the hub arrival (consumers bind the day themselves).
+                final_arrival_min = cum
+
+        if ordered and targets and targets[0][0] == "stop" \
+                and targets[0][1] != ordered[0]:
+            # The first ordered region IS the origin hub: its planned times
+            # are simply the corridor start (it was skipped from the walk).
+            first = ordered[0]
+            if first.timing_source != "manual":
+                first.with_context(apply_suggested_timing=True).write({
+                    "planned_arrival_time": round(self.start_time or 0.0, 2),
+                    "planned_departure_time": round(self.start_time or 0.0, 2),
+                    "day_offset": 0,
+                })
+
+        for stop, arrival, departure, a_day in planned:
+            if stop.timing_source == "manual":
+                continue
+            stop.with_context(apply_suggested_timing=True).write({
+                "planned_arrival_time": round(arrival, 2),
+                "planned_departure_time": round(departure, 2),
+                "day_offset": a_day,
+            })
+
+        if self.hub_arrival_time_source == "manual" or not self.same_day_return \
+                and not self.destination_hub_id:
+            return
+        if self.same_day_return:
+            # Operational return to the origin hub: outbound drive twice, plus
+            # a dwell at every stop and at the hub itself.
+            n_stops = len([t for t, _ in targets if t == "stop"])
+            return_min = start_min + 2 * total_drive + (n_stops + 1) * DWELL_MINUTES
+            _, hub_clock = divmod(return_min, 1440)
+        elif targets and targets[-1][0] == "destination_hub":
+            _, hub_clock = divmod(final_arrival_min, 1440)
+        else:
+            # The hub sits inside the final ordered region: arrival at the last
+            # stop plus the hub dwell.
+            _, hub_clock = divmod(final_arrival_min + DWELL_MINUTES, 1440)
+        self.with_context(apply_suggested_timing=True).write({
+            "destination_hub_arrival_time": round(hub_clock / 60.0, 2),
+        })
+
     def action_recalculate_route_distance(self):
-        """Fill cumulative road distance for ordered regions using Google Routes."""
+        """Fill cumulative road distance AND suggested stop/hub timing for
+        ordered regions using Google Routes (one API call serves both)."""
         from odoo.addons.prema_dispatch.services.route_service import DispatchRouteService
 
         for corridor in self:
-            ordered = corridor.stop_ids.filtered("active").sorted("sequence")
-            if not ordered:
-                raise ValidationError(_("Add ordered regions before calculating distance."))
-
-            def stop_location(record):
-                saved = record.saved_location_id
-                if saved:
-                    if saved.pin_lat and saved.pin_lng:
-                        return (saved.pin_lat, saved.pin_lng)
-                    return saved.normalized_address or saved.address
-                region = record.region_id
-                if region and region.marker_latitude and region.marker_longitude:
-                    return (region.marker_latitude, region.marker_longitude)
-                return region.main_city if region else ""
-
-            def hub_location(hub):
-                if not hub:
-                    return False
-                if hub.saved_location_id and hub.saved_location_id.pin_lat and hub.saved_location_id.pin_lng:
-                    return (hub.saved_location_id.pin_lat, hub.saved_location_id.pin_lng)
-                if hub.latitude and hub.longitude:
-                    return (hub.latitude, hub.longitude)
-                return hub.formatted_address or (
-                    hub.saved_location_id.address if hub.saved_location_id else ""
-                )
-
-            origin_hub = corridor.origin_hub_id
-            origin_location = hub_location(origin_hub)
-            if origin_hub and not origin_location:
-                raise ValidationError(_(
-                    "The Origin Hub needs a verified Saved Location, coordinates, or address."
-                ))
-            remaining_stops = ordered
-            locations = []
-            targets = []
-            if origin_location:
-                locations.append(origin_location)
-                # A first stop representing the hub itself starts at 0 km.
-                if ordered[0].region_id == origin_hub.canonical_region_id:
-                    ordered[0].distance_from_origin_km = 0.0
-                    remaining_stops = ordered[1:]
-            else:
-                ordered[0].distance_from_origin_km = 0.0
-                locations.append(stop_location(ordered[0]))
-                remaining_stops = ordered[1:]
-
-            for stop in remaining_stops:
-                locations.append(stop_location(stop))
-                targets.append(("stop", stop))
-
-            destination_hub = corridor.destination_hub_id
-            destination_is_last_region = bool(
-                destination_hub
-                and destination_hub.canonical_region_id
-                and ordered[-1].region_id == destination_hub.canonical_region_id
-            )
-            if destination_hub and not destination_is_last_region:
-                locations.append(hub_location(destination_hub))
-                targets.append(("destination_hub", destination_hub))
-
-            if any(not value for value in locations):
-                raise ValidationError(_(
-                    "Every ordered region needs a map marker or Saved Location, and each configured Hub needs coordinates."
-                ))
+            ordered, locations, targets = corridor._route_geometry()
             legs = DispatchRouteService(self.env).get_sequential_travel(locations)
             if len(legs) != len(targets):
                 raise ValidationError(_("Google Routes did not return every corridor leg."))
@@ -686,14 +791,41 @@ class LogisticsCorridor(models.Model):
                     target.distance_from_origin_km = round(cumulative, 1)
                 else:
                     destination_hub_distance = round(cumulative, 1)
+            destination_hub = corridor.destination_hub_id
+            destination_is_last_region = bool(
+                destination_hub
+                and destination_hub.canonical_region_id
+                and ordered[-1].region_id == destination_hub.canonical_region_id
+            )
             if destination_is_last_region:
                 destination_hub_distance = ordered[-1].distance_from_origin_km
             corridor.destination_hub_distance_km = destination_hub_distance
+            corridor._apply_suggested_timing(ordered, targets, legs)
         return {
             "type": "ir.actions.client", "tag": "display_notification",
             "params": {
-                "title": _("Corridor distance updated"),
-                "message": _("Ordered road distances and the revenue target were recalculated."),
+                "title": _("Corridor distance and times updated"),
+                "message": _("Ordered road distances and suggested route times were recalculated."),
+                "type": "success", "sticky": False,
+            },
+        }
+
+    def action_calculate_route_times(self):
+        """Manager action: refresh suggested stop/hub timing from Google
+        durations without touching distances. Manual overrides survive."""
+        from odoo.addons.prema_dispatch.services.route_service import DispatchRouteService
+
+        for corridor in self:
+            ordered, locations, targets = corridor._route_geometry()
+            legs = DispatchRouteService(self.env).get_sequential_travel(locations)
+            if len(legs) != len(targets):
+                raise ValidationError(_("Google Routes did not return every corridor leg."))
+            corridor._apply_suggested_timing(ordered, targets, legs)
+        return {
+            "type": "ir.actions.client", "tag": "display_notification",
+            "params": {
+                "title": _("Corridor route times updated"),
+                "message": _("Suggested arrival/departure times were recalculated; manual overrides were kept."),
                 "type": "success", "sticky": False,
             },
         }
@@ -804,6 +936,12 @@ class LogisticsCorridor(models.Model):
         vals = dict(vals)
         if "destination_hub_id" in vals:
             vals.setdefault("destination_hub_distance_km", 0.0)
+        if (not self.env.context.get("apply_suggested_timing")
+                and "destination_hub_arrival_time" in vals
+                and "hub_arrival_time_source" not in vals):
+            # Any manual edit of the Hub Arrival Time turns it into a Manual
+            # Override so recalculation never silently reverts it.
+            vals["hub_arrival_time_source"] = "manual"
         result = super().write(vals)
         schedule_fields = {
             "operate_monday", "operate_tuesday", "operate_wednesday",
@@ -830,9 +968,28 @@ class LogisticsCorridorStop(models.Model):
     delivery_allowed = fields.Boolean(default=True)
     planned_arrival_time = fields.Float()
     planned_departure_time = fields.Float()
+    timing_source = fields.Selection([
+        ("suggested", "Suggested"),
+        ("manual", "Manual Override"),
+    ], string="Timing Source", default="suggested", copy=False,
+        help="Suggested = recalculated by Calculate Route Times / Calculate Route "
+             "Distance from Google durations. Manual Override = entered by hand "
+             "and preserved by recalculation. Editing a planned time flips this "
+             "stop to Manual Override automatically.")
     day_offset = fields.Integer(default=0)
     distance_from_origin_km = fields.Float()
     active = fields.Boolean(default=True)
+
+    def write(self, vals):
+        """Any manual edit of a planned clock time turns this stop into a
+        Manual Override so recalculation never silently reverts it. The
+        recalc itself writes with apply_suggested_timing in context and is
+        exempt; day-offset-only changes stay Suggested (day offsets are
+        structural rollover, not a manual preference)."""
+        if not self.env.context.get("apply_suggested_timing") and (
+                "planned_arrival_time" in vals or "planned_departure_time" in vals):
+            vals = dict(vals, timing_source="manual")
+        return super().write(vals)
 
 
 class LogisticsCorridorDeparture(models.Model):
