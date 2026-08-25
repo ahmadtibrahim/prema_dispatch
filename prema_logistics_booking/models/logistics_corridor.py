@@ -1059,6 +1059,25 @@ class LogisticsCorridorDeparture(models.Model):
     ], default="corridor_default", required=True, copy=False)
     driver_id = fields.Many2one("res.partner", string="Driver")
 
+    def effective_departure_driver(self):
+        """Canonical operational driver for this departure — ONE authority.
+
+        Resolution order: the departure's own driver_id (set at creation
+        from the truck, or by the Phase-3 truck-reassignment flow), else
+        the assigned truck's configured/default driver
+        (vehicle.driver_id or vehicle.x_current_driver_contact_id).
+        Never a second stored field — the helper only resolves what the
+        stored driver_id would be. If a dispatcher changes the departure
+        truck, the replacement truck's driver becomes the operational
+        driver (the write hook persists it)."""
+        self.ensure_one()
+        if self.driver_id:
+            return self.driver_id
+        vehicle = self.vehicle_id
+        if not vehicle:
+            return self.env["res.partner"]
+        return vehicle.driver_id or vehicle.x_current_driver_contact_id
+
     # ── Night-before route finalization ─────────────────────────────
     # Frozen by RouteFinalizationService at the configurable Route
     # Finalization Time (Dispatch Settings): ordered stops with confirmed
@@ -1231,6 +1250,19 @@ class LogisticsCorridorDeparture(models.Model):
                     "max_capacity",
                     corridor._vehicle_capacity(selected_vehicle) if selected_vehicle else 0,
                 )
+                # Phase 8 parity: a departure carrying a truck always carries
+                # that truck's configured/default driver — same resolution the
+                # truck-reassignment write() hook uses (vehicle.driver_id or
+                # vehicle.x_current_driver_contact_id). The Driver field stays
+                # an operational assignment, never a corridor scheduling
+                # authority (master log §8).
+                if "driver_id" not in vals and selected_vehicle:
+                    vehicle_driver = (
+                        selected_vehicle.driver_id
+                        or selected_vehicle.x_current_driver_contact_id
+                    )
+                    if vehicle_driver:
+                        vals["driver_id"] = vehicle_driver.id
         records = super().create(vals_list)
         records._check_vehicle_day_conflicts()
         return records

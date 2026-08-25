@@ -1197,6 +1197,12 @@ class PremaDispatchJob(models.Model):
                         ])
                     except Exception:
                         pass
+            # A job leaving the board for a cancelled stage releases its
+            # departure Load Plan (deactivates the plan-job link).
+            if (new_stage_id and pre_stage.get(job.id, job.stage_id).id != job.stage_id.id
+                    and job.stage_id.is_cancelled
+                    and not pre_stage.get(job.id, job.stage_id).is_cancelled):
+                job._release_from_load_plans()
         return result
 
     def _check_vehicle_compatibility(self, vehicle):
@@ -2595,9 +2601,12 @@ class PremaDispatchJob(models.Model):
             "completed_at": fields.Datetime.now(),
         })
         self._post_timeline(self, "all_stops_done")
-        if self.invoice_id:
+        # DEFERRED INVOICE: created at operational completion (idempotent),
+        # then the existing review gate runs.
+        inv = self._completion_invoice()
+        if inv:
             self._attach_documents_to_invoice()
-            all_jobs = self.invoice_id.dispatch_job_ids
+            all_jobs = inv.dispatch_job_ids
             all_done = all(
                 j.stage_id.is_completed and j.pod_complete
                 for j in all_jobs
@@ -2606,7 +2615,7 @@ class PremaDispatchJob(models.Model):
                 self._mark_invoice_ready_for_dispatch_review()
                 self._post_timeline(
                     self, "invoice_completed",
-                    notes=self.invoice_id.name,
+                    notes=inv.name,
                 )
 
     def action_reopen_job(self):
@@ -3073,6 +3082,34 @@ class PremaDispatchJob(models.Model):
         except Exception:
             _logger.exception("Failed to post timeline event %s for job %s", event_type, job.name)
 
+    def _completion_invoice(self):
+        """Deferred-invoice helper: the booking's draft customer invoice,
+        created NOW if the booking has none (idempotent — see
+        logistics.booking._ensure_completion_invoice). Jobs without a
+        booking (manual planner jobs) fall back to their own invoice_id.
+        Returns the invoice record or False."""
+        booking = self.logistics_booking_id.sudo()
+        if booking:
+            return booking._ensure_completion_invoice()
+        return self.invoice_id
+
+    def _release_from_load_plans(self):
+        """A cancelled job leaves every load plan carrying it: the plan-job
+        link is deactivated (never deleted — historical plans are kept).
+        The plan itself stays; an empty draft plan on an unused future date
+        can be archived by a dispatcher."""
+        plans = self.env["prema.dispatch.load.plan"].sudo().search([
+            ("load_plan_job_ids.job_id", "=", self.id),
+            ("load_plan_job_ids.active", "=", True),
+        ])
+        for plan in plans:
+            try:
+                plan.remove_job(self.id)
+            except Exception:
+                _logger.exception(
+                    "Failed to release job %s from load plan %s",
+                    self.name, plan.name)
+
     def _check_all_stops_done(self):
         """Called by stops when they complete — triggers job completion check."""
         for job in self:
@@ -3089,10 +3126,13 @@ class PremaDispatchJob(models.Model):
                     job.message_post(
                         body="All stops completed and POD received. Job automatically moved to Completed."
                     )
-                    if job.invoice_id:
+                    # DEFERRED INVOICE: created at operational completion
+                    # (idempotent), then the existing review gate runs.
+                    inv = job._completion_invoice()
+                    if inv:
                         job._attach_documents_to_invoice()
-                        job.invoice_id.sudo().message_post(body=job._build_completion_summary())
-                        all_jobs = job.invoice_id.sudo().dispatch_job_ids
+                        inv.sudo().message_post(body=job._build_completion_summary())
+                        all_jobs = inv.sudo().dispatch_job_ids
                         if all(j.stage_id.is_completed and j.pod_complete for j in all_jobs):
                             job._mark_invoice_ready_for_dispatch_review()
 
@@ -3223,6 +3263,12 @@ class PremaDispatchJob(models.Model):
             return
         invoice = self.invoice_id.sudo()
         if invoice.state != "draft":
+            return
+        # Idempotent review gate: a repeated completion action (re-click,
+        # re-triggered webhook / driver update / manual re-complete of an
+        # already-completed job) must not re-post the gate message.
+        if invoice.message_ids.filtered(
+                lambda m: "READY FOR DISPATCH REVIEW" in (m.body or "")):
             return
         invoice.message_post(
             body=(

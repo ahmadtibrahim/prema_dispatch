@@ -1336,6 +1336,9 @@ class LogisticsBooking(models.Model):
         if existing:
             if self.dispatch_job_id != existing[0]:
                 self.dispatch_job_id = existing[0].id
+            # Idempotent re-sync: repeated confirms/refreshes must never
+            # duplicate the departure load plan or its job links.
+            self._sync_load_plan_for_jobs(existing)
             return existing
 
         # Milk-run generalization: ONLY bookings explicitly created as
@@ -1348,6 +1351,7 @@ class LogisticsBooking(models.Model):
             route_job = self._create_dispatch_route_from_movements()
             if route_job:
                 self.dispatch_job_id = route_job.id
+                self._sync_load_plan_for_jobs(route_job)
                 return route_job
 
         jobs = self.env["prema.dispatch.job"]
@@ -1392,7 +1396,65 @@ class LogisticsBooking(models.Model):
             dupes.write({'status': 'cancelled'})
 
         self.dispatch_job_id = jobs[0].id
+        self._sync_load_plan_for_jobs(jobs)
         return jobs
+
+    def _sync_load_plan_for_jobs(self, jobs):
+        """LOAD-PLAN AUTO-SYNC: every scheduled-LTL job on a
+        departure+truck+date automatically gets its departure Load Plan.
+
+        One plan per physical truck+day — canonical key (vehicle_id,
+        operating_date, origin_stop_id=False, active=True), the same key
+        the Driver App / warehouse use. Find-or-create is idempotent and
+        add_job is idempotent (unique constraint
+        prema_dispatch_load_plan_job_job_unique_per_plan), so repeated
+        booking confirms / refreshes never duplicate plans or links.
+        Auto-optimization is deliberately NOT done here — pallet layout
+        stays dispatcher/warehouse driven. Never raises: a missing
+        layout template or any hiccup degrades to a logged warning —
+        booking confirmation must never depend on load planning.
+        """
+        Plan = self.env["prema.dispatch.load.plan"].sudo()
+        Vehicle = self.env["fleet.vehicle"].sudo()
+        for job in jobs:
+            if not job.auto_scheduled_ltl or not job.corridor_departure_id:
+                continue  # custom/expedited jobs keep the manual plan flow
+            if not job.vehicle_id or not job.operation_date:
+                continue
+            try:
+                plan = Plan.search([
+                    ("vehicle_id", "=", job.vehicle_id.id),
+                    ("operating_date", "=", job.operation_date),
+                    ("origin_stop_id", "=", False),
+                    ("active", "=", True),
+                ], limit=1)
+                if not plan:
+                    if not Plan.get_layout_templates(job.vehicle_id.id):
+                        _logger.warning(
+                            "Booking %s: no layout template for truck %s on "
+                            "%s — load plan not auto-created (dispatcher can "
+                            "create it manually).",
+                            self.booking_number, job.vehicle_id.name,
+                            job.operation_date)
+                        continue
+                    vehicle = Vehicle.browse(job.vehicle_id.id)
+                    driver = vehicle.driver_id or vehicle.x_current_driver_contact_id
+                    Plan.create_load_plan(
+                        job.vehicle_id.id, job.operation_date,
+                        driver_id=driver.id if driver else False,
+                        _skip_staff_check=True)
+                    plan = Plan.search([
+                        ("vehicle_id", "=", job.vehicle_id.id),
+                        ("operating_date", "=", job.operation_date),
+                        ("origin_stop_id", "=", False),
+                        ("active", "=", True),
+                    ], limit=1)
+                if plan:
+                    plan.add_job(job.id)
+            except Exception:
+                _logger.exception(
+                    "Booking %s: load plan auto-sync failed for job %s",
+                    self.booking_number, job.name)
 
     # ═══════════════════════════════════════════════════════════════════
     # Freight Tax Decision Engine
@@ -1657,6 +1719,43 @@ class LogisticsBooking(models.Model):
                 lines.append(self.pickup_instructions)
 
         return "\n".join(lines)
+
+    def _ensure_completion_invoice(self):
+        """DEFERRED INVOICE: create the draft customer invoice only when the
+        operational shipment has completed — called from the dispatch-job
+        completion paths (dispatch_job._check_all_stops_done /
+        action_mark_completed), i.e. after Pickup → Delivery → required POD
+        complete → all dispatch jobs of the booking completed. The booking
+        is never invoiced at confirmation anymore.
+
+        Idempotent: returns the booking's existing invoice if one is
+        already linked (booking.invoice_id or any account.move carrying
+        logistics_booking_id — _create_draft_invoice reuses it); repeated
+        completion actions / page refreshes / webhook / driver updates can
+        never create a second invoice. Every dispatch job of the booking is
+        linked to the invoice (jobs created before the invoice existed have
+        no invoice_id), so the multi-leg "ALL jobs complete + POD" gate
+        keeps working.
+
+        Returns the invoice record, or False when creation is not possible
+        (missing product mapping — the booking is flagged for review and
+        its state is preserved).
+        """
+        self.ensure_one()
+        prior_state = self.state
+        if not self.invoice_id:
+            created = self._create_draft_invoice()
+            if not created:
+                # Missing product mapping: booking flagged for review. Never
+                # downgrade a completed/delivered booking back to confirmed.
+                if self.state != prior_state:
+                    self.write({"state": prior_state})
+                return False
+        invoice = self.invoice_id.sudo()
+        jobs = self.dispatch_job_ids.sudo().filtered(lambda j: not j.invoice_id)
+        if jobs:
+            jobs.write({"invoice_id": invoice.id})
+        return invoice
 
     def _create_draft_invoice(self):
         """Create a draft customer invoice from this booking. Idempotent —

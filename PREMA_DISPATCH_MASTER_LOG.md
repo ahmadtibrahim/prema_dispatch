@@ -2677,3 +2677,19 @@ fix (4026420, exactly the required step-3 change) + docstring-only 06cf9d3; zero
   flags intact. 43/43 saved-location tests. Users with open tabs should
   hard-refresh; Odoo's reload prompt self-heals subsequent navigations.
 - Backup: /opt/odoo/backups/Prod-db_pre_search_hotfix_20260819.dump.
+
+## 2026-08-25 — MANUAL UAT FOLLOW-UP: LOAD PLAN AUTO-SYNC + DEFERRED INVOICE + DEPARTURE DRIVER (18.0.13.34.0 / 18.0.3.12.0) — DEPLOYED TO PROD 16:27, VERIFICATION A-I 100% PASS
+
+### INCIDENT (manual UAT on demo booking PF-260825-000031 / DISP/2026/00471 / dep 208 / PB38446)
+1. Load Plans menu EMPTY — no plan existed for the confirmed LTL booking (auto-create only via dispatcher button / driver-app / warehouse; nothing at booking confirm).
+2. Draft customer invoice (2471) existed at booking CONFIRMATION — too early.
+3. Departure Driver column blank while truck assigned (corridor-default departures never derived driver_id; only the truck-REASSIGNMENT write hook did).
+4. Weekly Capacity Planner empty — NOT a bug: cards are generated ONLY from active RECURRING agreements (logistics.weekly.plan, Phase 7); zero agreements exist on Prod-db.
+
+### FIXES
+- **Load Plan auto-sync (ISSUE 1)**: `logistics.booking._sync_load_plan_for_jobs()` runs at the end of `_create_dispatch_job()` (all channels: portal/phone/custom-quote/invoice-wizard/recurring generator; both legacy legs and movement_v1 route job). Find-or-create by canonical key (vehicle_id, operating_date, origin_stop_id=False, active=True) + idempotent `add_job` (unique plan-job constraint). Driver resolved from vehicle (`driver_id or x_current_driver_contact_id`). Never auto-optimizes. Never raises — no layout template degrades to a warning. Job cancellation (stage → cancelled, incl. booking action_cancel and all-stops-cancelled) releases the plan-job link via `dispatch_job._release_from_load_plans()`; the plan itself stays (empty draft on unused future date may be archived by a dispatcher; historical plans never touched).
+- **Deferred invoice (ISSUE 2)**: `booking_orchestration_service.confirm_from_internal` step 7 no longer creates a draft invoice (existing-invoice channel still links). New `logistics.booking._ensure_completion_invoice()` is called from the canonical completion authority (`dispatch_job._check_all_stops_done` / `action_mark_completed`) — i.e. Pickup → Delivery → required POD → ALL dispatch jobs of the booking completed. It reuses the already-idempotent `_create_draft_invoice()` (booking.invoice_id / logistics_booking_id search), links every booking job to the invoice, and the existing review gate then posts ONE "READY FOR DISPATCH REVIEW" (never auto-posted). `_mark_invoice_ready_for_dispatch_review` is now idempotent (repeat completion re-click/webhook/driver update can't re-post). Multi-leg bookings invoice only when ALL legs complete (gate = all jobs on invoice).
+- **Departure driver (ISSUE 3)**: `logistics.corridor.departure.create()` now derives driver_id from the assigned truck (same resolution as the Phase-3 reassignment hook); migration backfilled 42 existing driver-less departures. Canonical helper `effective_departure_driver()` = driver_id or truck driver — ONE stored authority, never a second field. Truck override still flows driver → jobs + plans (existing dispatch_job_extension hook).
+
+### VERIFICATION (rollback probes; live booking left usable)
+A capacity 1 pallet/500 lb ✓ · B exactly ONE plan 24 w/ DISP/2026/00471 ✓ · C job intact ✓ · D dep 208 driver=107 (Ahmad) + job driver ✓ · E no invoice before completion ✓ · F pickup-only → no invoice ✓ · G full completion → exactly ONE draft invoice (100.00) + READY once ✓ · H repeat completion → no dup ✓ · I cancellation → no invoice, job cancelled, plan link released ✓. Invoice 2471 deleted (user-approved; only it). Crons snapshot /opt/odoo/scripts/active_crons_1740_uat.txt, restored exactly (68/68). Restart done (Python-touching).

@@ -1280,12 +1280,15 @@ class BookingOrchestrationService:
                 # Apply tax decision
                 booking._apply_tax_decision()
 
-                # Create or link invoice
-                if not skip_invoice:
-                    if existing_invoice:
-                        self._link_existing_invoice(booking, existing_invoice)
-                    else:
-                        booking._create_draft_invoice()
+                # Invoice lifecycle: an EXISTING invoice (invoice-channel /
+                # book-load wizard) is linked here; a NEW draft customer
+                # invoice is deliberately NOT created at confirmation — it
+                # is created only when the operational shipment completes
+                # (all dispatch jobs complete + POD) by
+                # logistics.booking._ensure_completion_invoice, called from
+                # the dispatch-job completion paths.
+                if not skip_invoice and existing_invoice:
+                    self._link_existing_invoice(booking, existing_invoice)
 
                 # Create booking legs WITH atomic capacity reservation — the
                 # ONE reservation path for every channel. Only corridor-
