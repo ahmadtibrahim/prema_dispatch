@@ -1,6 +1,6 @@
 {
     "name": "Prema Dispatch",
-    "version": "18.0.3.27.0",
+    "version": "18.0.3.28.0",
     "summary": "Booking, planning, live GPS tracking, driver mobile app, interactive truck Load Plans, warehouse loading mode, AI document extraction, VoIP calling and reporting for PremaFirm dispatch operations",
     "category": "Logistics",
     "description": """
@@ -163,16 +163,19 @@ A full in-app user manual is available from the Prema Dispatch app menu.
     "assets": {
         "web.assets_backend": [
             "prema_dispatch/static/src/css/live_map.css",
+            "prema_dispatch/static/src/css/live_map_driver_updates.css",
             "prema_dispatch/static/src/css/dispatch_board.css",
             "prema_dispatch/static/src/css/booking_status_board.css",
             "prema_dispatch/static/src/css/pallet_layout.css",
             "prema_dispatch/static/src/xml/live_map.xml",
+            "prema_dispatch/static/src/xml/live_map_driver_updates.xml",
             "prema_dispatch/static/src/xml/dispatch_board.xml",
             "prema_dispatch/static/src/xml/booking_status_board.xml",
             "prema_dispatch/static/src/xml/pallet_layout.xml",
             "prema_dispatch/static/src/js/dispatch_time_utils.js",
             "prema_dispatch/static/src/js/google_maps_loader.js",
             "prema_dispatch/static/src/js/live_map.js",
+            "prema_dispatch/static/src/js/live_map_driver_updates.js",
             "prema_dispatch/static/src/js/pallet_layout.js",
             "prema_dispatch/static/src/js/dispatch_board.js",
             "prema_dispatch/static/src/js/booking_status_board.js",
