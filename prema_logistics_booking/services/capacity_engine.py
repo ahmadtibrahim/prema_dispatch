@@ -359,14 +359,26 @@ class CapacityEngine:
                 or snapshot.get("dest_region")
             )
             break
+        # Manual/negotiated legs carry no region fields and no route
+        # snapshot; fall back to the booking's own FSA-anchored regions so
+        # span validation is meaningful (and the booking counts) instead of
+        # raising a spurious ROUTE_DEPARTURE_MISMATCH for None regions.
+        if not origin or not destination:
+            booking = leg.booking_id
+            if booking:
+                if not origin and booking.pickup_fsa_id and booking.pickup_fsa_id.region_id:
+                    origin = self._canonical_region(booking.pickup_fsa_id.region_id)
+                if not destination and booking.delivery_fsa_id and booking.delivery_fsa_id.region_id:
+                    destination = self._canonical_region(booking.delivery_fsa_id.region_id)
         return origin, destination
 
     def _canonical_region(self, value):
         if not value:
             return False
-        if hasattr(value, "_name"):
-            return value
         from .region_resolver import RegionResolver
+        # Region records pass through the resolver too: legacy lane regions
+        # (1-20) must be bridged to the official set (142+) that corridor
+        # stops and span validation are keyed on.
         return RegionResolver(self.env).canonical_region(value)
 
     def _booking_segments(self, corridor_stops, booking):
@@ -415,15 +427,17 @@ class CapacityEngine:
                     })
             return result
 
-        # Legacy anchor: the booking's own FSA regions on this corridor.
-        # FSA→region mapping can point at anchor/legacy region records that
-        # no corridor stop references (corridors are keyed to the operational
-        # region set). When the FSA span matches nothing, fall back to the
-        # frozen route snapshot's operational region codes, then to the
-        # booking stops' coordinates (polygon resolution) — a confirmed
-        # booking must never be silently uncounted on its own departure.
-        pickup_region = booking.pickup_fsa_id.region_id
-        delivery_region = booking.delivery_fsa_id.region_id
+        # Legacy anchor: the booking's own FSA regions on this corridor,
+        # canonicalized (legacy lane regions 1-20 → official 142+) so the
+        # anchor matches corridor stops keyed to the operational region set.
+        # When the FSA span still matches nothing, fall back to the frozen
+        # route snapshot's operational region codes, then to the booking
+        # stops' coordinates (polygon resolution) — a confirmed booking must
+        # never be silently uncounted on its own departure.
+        pickup_region = self._canonical_region(
+            booking.pickup_fsa_id.region_id) if booking.pickup_fsa_id else False
+        delivery_region = self._canonical_region(
+            booking.delivery_fsa_id.region_id) if booking.delivery_fsa_id else False
         pickup_idx = None
         delivery_idx = None
         for i, stop in enumerate(corridor_stops):
