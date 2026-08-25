@@ -3959,8 +3959,21 @@ async function lpToggleStop(itemId, stopId){
     if(!S.loadPlan) return;
     const item=[...(S.loadPlan.unassigned_items||[]), ...(S.loadPlan.positions||[]).map(p=>p.item).filter(Boolean)].find(it=>it.id===itemId);
     if(!item) return;
-    const next=new Set((item.stops||[]).map(s=>s.stop_id));
-    if(next.has(stopId)) next.delete(stopId); else next.add(stopId);
+    const current=new Set((item.stops||[]).map(s=>s.stop_id));
+    // UAT 2026-08-25: clicking the already-assigned destination must never
+    // toggle it OFF — a physical pallet always needs >=1 delivery stop, and
+    // the old toggle sent [] to the server, silently unassigning the pallet
+    // and stranding the driver on Step 2. Clicking the last selected stop is
+    // now a no-op. Non-shared pallets REPLACE their selection (exactly one);
+    // shared skids keep the add/remove toggle (min 1, max 5).
+    if(current.has(stopId) && current.size<=1) return;
+    let next;
+    if(item.shared_skid){
+        next=new Set(current);
+        if(next.has(stopId)) next.delete(stopId); else next.add(stopId);
+    } else {
+        next=new Set([Number(stopId)]);
+    }
     if(next.size>5){ toast("A pallet can have at most five stops"); return; }
     const payload=[...next].map((id,idx)=>({stop_id:id, unload_sequence:(idx+1)*10}));
     const r=await lpCall("/dispatch/driver/loadplan/assign_stops",{item_id:itemId,stop_allocations:payload});

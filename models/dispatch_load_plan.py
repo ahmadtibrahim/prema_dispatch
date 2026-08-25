@@ -277,6 +277,8 @@ class PremaDispatchLoadPlan(models.Model):
                 "popp_photos": popp,
                 "popp_count": len(popp),
                 "popp_complete": bool(popp),
+                "delivery_stop_id": item.delivery_stop_id.id if item.delivery_stop_id else False,
+                "delivery_stop_name": _loc_label(item.delivery_stop_id),
                 "stops": [{
                     "stop_id": a.stop_id.id, "sequence": a.stop_id.sequence,
                     "customer": a.stop_id.job_id.partner_id.name,
@@ -341,6 +343,8 @@ class PremaDispatchLoadPlan(models.Model):
                     "sequence": stop.sequence,
                     "customer": stop.saved_location_id.business_name or stop.address,
                     "status": stop.status,
+                    "city": stop.saved_location_id.city or "",
+                    "state": stop.saved_location_id.province_code or "",
                 } for stop in job.stop_ids.filtered(lambda stop: stop.stop_type == "dropoff" and not stop.planning_only and stop.status != "cancelled").sorted("sequence")],
             } for job in self.load_plan_job_ids.filtered("active").mapped("job_id")],
             "warnings": self.validate_load_plan()["warnings"],
@@ -576,9 +580,20 @@ class PremaDispatchLoadPlan(models.Model):
         if item.pending_future_pickup:
             raise UserError("This pallet belongs to a future pickup and cannot be allocated yet.")
         stop_allocations = stop_allocations or []
+        if not stop_allocations:
+            # A physical pallet always needs at least one delivery destination.
+            # UAT 2026-08-25: the Driver App Step 2 toggle could send [] and
+            # silently unassign the pallet, stranding the driver on a step
+            # with nothing selected. The UI no longer offers that click, and
+            # the endpoint refuses the empty payload outright.
+            raise UserError("Select a delivery destination for this pallet.")
         if len(stop_allocations) > 5:
             raise UserError("A pallet can be allocated to at most five stops.")
         Alloc = self.env["prema.dispatch.pallet.stop.allocation"]
+        old_allocs = [{
+            "stop_id": a.stop_id.id,
+            "unload_sequence": a.unload_sequence,
+        } for a in item.stop_allocation_ids.filtered("active")]
         job_ids = set(self.load_plan_job_ids.filtered("active").mapped("job_id.id"))
         seen_stop_ids = set()
         active_stop_ids = set()
@@ -592,7 +607,12 @@ class PremaDispatchLoadPlan(models.Model):
                 raise UserError("Pallet allocations must stay within the same physical run and job.")
             seen_stop_ids.add(stop.id)
             active_stop_ids.add(stop.id)
-            existing = Alloc.search([("dispatch_item_id", "=", item.id), ("stop_id", "=", stop.id)])
+            # active_test=False: re-adding a stop that was previously
+            # deactivated (remove_stop_from_pallet / stale cleanup) must
+            # REACTIVATE that row — the plain search skips inactive records
+            # and would crash on the item_stop_unique constraint instead.
+            existing = Alloc.with_context(active_test=False).search(
+                [("dispatch_item_id", "=", item.id), ("stop_id", "=", stop.id)])
             vals = {
                 "dispatch_item_id": item.id, "stop_id": stop.id,
                 "invoice_id": a.get("invoice_id"), "unload_sequence": a.get("unload_sequence", idx * 10),
@@ -607,7 +627,9 @@ class PremaDispatchLoadPlan(models.Model):
         if stale_allocs:
             stale_allocs.write({"active": False})
         item.write({"shared_skid": len(item.stop_allocation_ids.filtered("active")) > 1})
-        self._log_event("stop_allocation_changed", item=item, new_value={"stop_allocations": stop_allocations})
+        self._log_event("stop_allocation_changed", item=item,
+                        old_value={"stop_allocations": old_allocs},
+                        new_value={"stop_allocations": stop_allocations})
         self._bump_version()
         return self.get_load_plan()
 

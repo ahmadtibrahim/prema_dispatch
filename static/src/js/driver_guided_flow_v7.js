@@ -208,14 +208,33 @@
         }
         if (step === 2) {
             if (!state.items.length) return `<div class="da-v7-empty"><b>No pickup pallets are available yet.</b><span>Contact Dispatch instead of creating a second pallet record.</span></div>`;
-            return `<div class="da-v7-note">Verify the destination already assigned by Dispatch. Change it only when the physical freight is different.</div>` +
+            const body = `<div class="da-v7-note">Verify the destination already assigned by Dispatch. Change it only when the physical freight is different.</div>` +
                 state.items.map(item => {
                     const choices = stopChoicesForItem(item);
                     const selected = new Set((item.stops || []).map(s2 => s2.stop_id));
+                    const assignedStopId = Number(item.delivery_stop_id) || 0;
+                    if (choices.length === 1) {
+                        // Single possible destination: read-only, no toggle
+                        // button — the dispatch assignment is the answer.
+                        const opt = choices[0];
+                        const isAssigned = selected.has(opt.stop_id);
+                        return `<article class="da-v7-pallet"><div class="da-v7-pallet-head"><b>${html(item.name)}</b>${item.shared_skid ? '<span>Shared pallet</span>' : ""}</div>
+                            <div class="da-v7-assigned ${isAssigned ? "ok" : ""}">
+                                <div class="da-v7-assigned-badge">${isAssigned ? "✓" : "○"} Assigned Destination</div>
+                                <b class="da-v7-assigned-name">${html(opt.customer || `Stop ${opt.sequence}`)}</b>
+                                ${opt.city || opt.state ? `<span class="da-v7-assigned-loc">${html([opt.city, opt.state].filter(Boolean).join(", "))}</span>` : ""}
+                                <span class="da-v7-assigned-by">Assigned by Dispatch — Continue when the freight matches.</span>
+                            </div></article>`;
+                    }
                     return `<article class="da-v7-pallet"><div class="da-v7-pallet-head"><b>${html(item.name)}</b>${item.shared_skid ? '<span>Shared pallet</span>' : ""}</div>
-                        ${choices.length ? `<div class="da-v7-choice-grid">${choices.map(opt => `<button type="button" class="da-v7-chip ${selected.has(opt.stop_id) ? "selected" : ""}" data-v7="toggle-stop" data-item="${item.id}" data-stop="${opt.stop_id}">${html(opt.customer || `Stop ${opt.sequence}`)}</button>`).join("")}</div>` : '<div class="da-v7-warning">No delivery stop assigned by Dispatch. Use Report Stop/Freight Change.</div>'}
-                    </article>`;
+                        ${choices.length ? `<div class="da-v7-choice-grid">${choices.map(opt => {
+                            const on = selected.has(opt.stop_id);
+                            const isDispatch = Number(opt.stop_id) === assignedStopId;
+                            return `<button type="button" class="da-v7-chip ${on ? "selected" : ""}" data-v7="toggle-stop" data-item="${item.id}" data-stop="${opt.stop_id}">${on ? "✓ " : ""}${html(opt.customer || `Stop ${opt.sequence}`)}${opt.city ? `<br/><small>${html(opt.city)}</small>` : ""}${on && isDispatch ? `<br/><small class="da-v7-assigned-by">Assigned by Dispatch</small>` : ""}</button>`;
+                        }).join("")}</div>` : '<div class="da-v7-warning">No delivery stop assigned by Dispatch. Use Report Stop/Freight Change.</div>'}
+                        </article>`;
                 }).join("");
+            return body + (state.destinationsDone ? "" : '<div class="da-v7-warning"><b>Select a delivery destination for this pallet.</b></div>');
         }
         if (step === 3) {
             if (!S.loadPlan) return `<div class="da-v7-empty">Load plan is not ready. Contact Dispatch.</div>`;
@@ -318,11 +337,13 @@
         // Driving lock mirrors live GPS state on every pass, independent of
         // the content signature. classList.toggle(force)/disabled writes are
         // no-ops when the value is unchanged, so they never re-trigger the
-        // observer loop.
+        // observer loop. Step 2 additionally hard-disables Continue while no
+        // delivery destination is selected — deterministic, never silent.
+        const blockedDest = pickup && guide.step === 2 && !pickupState(stop).destinationsDone;
         const cont = $('[data-v7="continue"]');
         if (cont) {
-            cont.classList.toggle("da-v7-danger-lock", movingNow());
-            cont.disabled = movingNow();
+            cont.classList.toggle("da-v7-danger-lock", movingNow() || blockedDest);
+            cont.disabled = movingNow() || blockedDest;
         }
     }
 
