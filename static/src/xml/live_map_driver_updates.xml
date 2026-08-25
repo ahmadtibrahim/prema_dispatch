@@ -1,0 +1,132 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+
+<t t-name="prema_dispatch.LiveMapDriverUpdates"
+   t-inherit="prema_dispatch.LiveMap"
+   t-inherit-mode="extension">
+
+    <!-- Keep the existing Fleet map/sidebar intact; Driver Updates is a
+         sibling tab inside the same 272px sidebar, never a second map panel. -->
+    <xpath expr="//div[@class='px-3 py-1 border-bottom bg-light d-flex align-items-center justify-content-between flex-shrink-0']" position="after">
+        <div class="o_driver_updates_tabs d-flex border-bottom flex-shrink-0">
+            <button type="button"
+                    t-attf-class="o_driver_updates_tab #{state.sidebarTab === 'fleet' ? 'active' : ''}"
+                    t-on-click="() => this.showSidebarTab('fleet')">
+                Fleet
+            </button>
+            <button type="button"
+                    t-attf-class="o_driver_updates_tab #{state.sidebarTab === 'updates' ? 'active' : ''}"
+                    t-on-click="() => this.showSidebarTab('updates')">
+                Driver Updates
+                <t t-if="state.driverUpdateOpenCount">
+                    <span class="o_driver_updates_count"><t t-esc="state.driverUpdateOpenCount"/></span>
+                </t>
+            </button>
+        </div>
+    </xpath>
+
+    <xpath expr="//div[@class='overflow-auto flex-grow-1']" position="attributes">
+        <attribute name="t-if">state.sidebarTab === 'fleet'</attribute>
+    </xpath>
+
+    <xpath expr="//div[@class='overflow-auto flex-grow-1']" position="after">
+        <div t-if="state.sidebarTab === 'updates'"
+             class="o_driver_updates_panel overflow-auto flex-grow-1">
+            <t t-if="state.driverUpdatesLoading and !state.driverUpdates.length">
+                <div class="p-3 text-center text-muted o_driver_updates_empty">
+                    <i class="fa fa-spinner fa-spin me-1"/>Loading driver updates…
+                </div>
+            </t>
+            <t t-elif="state.driverUpdatesError and !state.driverUpdates.length">
+                <div class="p-3 text-danger o_driver_updates_empty">
+                    <i class="fa fa-exclamation-triangle me-1"/>
+                    <t t-esc="state.driverUpdatesError"/>
+                </div>
+            </t>
+            <t t-elif="!state.driverUpdates.length">
+                <div class="p-3 text-center text-muted o_driver_updates_empty">
+                    <i class="fa fa-check-circle-o d-block mb-2"/>
+                    No active driver updates.
+                </div>
+            </t>
+            <t t-foreach="state.driverUpdates" t-as="update" t-key="update.id">
+                <article t-attf-class="o_driver_update_card severity-#{update.severity} status-#{update.status}">
+                    <div class="d-flex align-items-start justify-content-between gap-2">
+                        <div class="min-w-0">
+                            <div class="o_driver_update_title text-truncate">
+                                <t t-if="update.severity === 'urgent'">🚨 </t>
+                                <t t-elif="update.severity === 'warning'">⚠ </t>
+                                <t t-else="">ℹ </t>
+                                <t t-esc="update.title"/>
+                            </div>
+                            <div class="o_driver_update_job"><t t-esc="update.job_name"/></div>
+                        </div>
+                        <span t-attf-class="o_driver_update_status #{update.status}">
+                            <t t-esc="update.status === 'open' ? 'NEW' : 'READ'"/>
+                        </span>
+                    </div>
+
+                    <div class="o_driver_update_meta">
+                        <div><i class="fa fa-user me-1"/><t t-esc="update.driver_name or 'Driver'"/></div>
+                        <div t-if="update.stop_name"><i class="fa fa-map-marker me-1"/><t t-esc="update.stop_name"/></div>
+                        <div t-if="update.reported_at"><i class="fa fa-clock-o me-1"/><t t-esc="update.reported_at"/></div>
+                    </div>
+
+                    <div t-if="update.update_type === 'pickup_variance'" class="o_driver_update_variance">
+                        Expected <b><t t-esc="update.expected_pallets"/></b>
+                        <span>→</span>
+                        Actual <b><t t-esc="update.actual_pallets"/></b>
+                    </div>
+
+                    <div class="o_driver_update_message"><t t-esc="update.message"/></div>
+
+                    <div t-if="update.last_reply" class="o_driver_update_last_reply">
+                        <b>Last reply:</b> <t t-esc="update.last_reply"/>
+                    </div>
+
+                    <div class="o_driver_update_actions">
+                        <button t-if="update.status === 'open'"
+                                type="button" class="btn btn-sm btn-success"
+                                t-on-click="() => this.acknowledgeDriverUpdate(update.id)"
+                                title="Mark this update as read and tell the driver Dispatch saw it">
+                            OK
+                        </button>
+                        <button type="button" class="btn btn-sm btn-outline-primary"
+                                t-on-click="() => this.toggleDriverUpdateReply(update.id)">
+                            Reply
+                        </button>
+                        <button type="button" class="btn btn-sm btn-outline-secondary"
+                                t-on-click="() => this.dismissDriverUpdate(update.id)"
+                                title="Remove from the active panel without deleting its audit history">
+                            Dismiss
+                        </button>
+                    </div>
+
+                    <div t-if="state.replyOpenId === update.id" class="o_driver_update_reply_box">
+                        <textarea class="form-control form-control-sm"
+                                  rows="3"
+                                  placeholder="Reply to driver…"
+                                  t-on-input="onDriverUpdateReplyInput"><t t-esc="state.replyDraft"/></textarea>
+                        <div class="d-flex gap-1 mt-2">
+                            <button type="button" class="btn btn-sm btn-primary flex-grow-1"
+                                    t-on-click="() => this.sendDriverUpdateReply(update.id)">
+                                Send Reply
+                            </button>
+                            <button type="button" class="btn btn-sm btn-outline-secondary"
+                                    t-on-click="() => this.toggleDriverUpdateReply(update.id)">
+                                Cancel
+                            </button>
+                        </div>
+                    </div>
+                </article>
+            </t>
+        </div>
+    </xpath>
+
+    <xpath expr="//div[@class='px-3 py-2 border-top bg-light flex-shrink-0']" position="attributes">
+        <attribute name="t-if">state.sidebarTab === 'fleet'</attribute>
+    </xpath>
+
+</t>
+
+</templates>
