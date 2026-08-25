@@ -341,7 +341,13 @@ function renderTodaySummary(){
     const r=S.routeSummary;
     const picks=S.stops.filter(s=>isPickupLikeStop(s.type)).length;
     const dels=S.stops.filter(s=>s.type==="dropoff"||s.type==="return").length;
-    const pallets=S.stops.reduce((n,s)=>n+(isPickupLikeStop(s.type)?(s.pallets_in||0):(s.pallets_out||0)),0);
+    // One physical pallet is picked up at one stop and delivered at another —
+    // summing per-stop pallets would double-count it.  Count each job's
+    // physical pallet count (server sends job_pallets on every stop) once.
+    const pallets=[...new Set(S.stops.map(s=>s.job_id))].reduce((n,jid)=>{
+        const s=S.stops.find(x=>x.job_id===jid);
+        return n+(s.job_pallets ?? (isPickupLikeStop(s.type)?(s.pallets_in||0):(s.pallets_out||0)));
+    },0);
     // Spec §9: Jobs / Stops / Pickups / Deliveries / Pallets / Distance /
     // Estimated duration — the compact TODAY'S WORK strip on HOME.
     el.innerHTML=`

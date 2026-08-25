@@ -3537,6 +3537,36 @@ class PremaDispatchJob(models.Model):
             return today
         return parsed if window[0] <= parsed <= window[2] else today
 
+    @api.model
+    def _driver_utc_bounds(self, user_tz, start_date, end_date):
+        """UTC bounds covering [start_date 00:00, end_date 23:59:59] in the
+        driver's timezone — the single canonical conversion shared by every
+        driver schedule feed (available dates / daily jobs / daily stops) so
+        a date indicator can never drift from the jobs/stops it advertises."""
+        from datetime import datetime
+        import pytz
+        start = user_tz.localize(datetime.combine(start_date, datetime.min.time())).astimezone(pytz.utc).replace(tzinfo=None)
+        end = user_tz.localize(datetime.combine(end_date, datetime.max.time())).astimezone(pytz.utc).replace(tzinfo=None)
+        return start, end
+
+    @api.model
+    def _driver_jobs_domain(self, partner_id, utc_start, utc_end):
+        """Canonical driver-eligibility domain for the Driver App: this
+        driver's own, non-cancelled jobs whose scheduled pickup falls in the
+        UTC window — or undated jobs, which match every day.  Assignment is
+        read live from job.driver_id so a Phase-3 truck/driver reassignment
+        immediately moves the job off the old driver's schedule and onto the
+        replacement's."""
+        return [
+            ("driver_id", "=", partner_id),
+            ("stage_id.is_cancelled", "=", False),
+            "|",
+            ("scheduled_pickup", "=", False),
+            "&",
+            ("scheduled_pickup", ">=", utc_start),
+            ("scheduled_pickup", "<=", utc_end),
+        ]
+
     def _pickup_completion_step_state(self):
         self.ensure_one()
         pickup = self.stop_ids.filtered(lambda stop: stop.stop_type == "pickup" and not stop.planning_only)[:1]
@@ -4221,22 +4251,12 @@ class PremaDispatchJob(models.Model):
         user_tz = pytz.timezone(user.tz or "America/Toronto")
         check_d = self._sanitize_driver_date(date_str, user_tz)
 
-        def to_utc(d, t):
-            return user_tz.localize(datetime.combine(d, t)).astimezone(pytz.utc).replace(tzinfo=None)
-
         # Fetch all active driver jobs (wider window to capture multi-day jobs)
-        utc_start = to_utc(check_d - timedelta(days=2), datetime.min.time())
-        utc_end   = to_utc(check_d + timedelta(days=2), datetime.max.time())
+        utc_start, utc_end = self._driver_utc_bounds(
+            user_tz, check_d - timedelta(days=2), check_d + timedelta(days=2))
 
-        jobs = self.env["prema.dispatch.job"].search([
-            ("driver_id", "=", partner.id),
-            ("stage_id.is_cancelled", "=", False),
-            "|",
-            ("scheduled_pickup", "=", False),
-            "&",
-            ("scheduled_pickup", ">=", utc_start),
-            ("scheduled_pickup", "<=", utc_end),
-        ])
+        jobs = self.env["prema.dispatch.job"].search(
+            self._driver_jobs_domain(partner.id, utc_start, utc_end))
 
         api_key = self.env["ir.config_parameter"].sudo().get_param("google_maps_api_key", "")
         truck = jobs[0].vehicle_id if jobs else None
@@ -4267,6 +4287,7 @@ class PremaDispatchJob(models.Model):
                 "job_id":          job.id,
                 "job_name":        job.name,
                 "job_partner":     job.partner_id.name if job.partner_id else "",
+                "job_pallets":     job.max_onboard_pallets or job.approximate_skids or 0,
                 "job_all_stops_completed": job.all_stops_completed,
                 "job_completed":   bool(job.stage_id.is_completed),
                 "pop_attachments": att_list(s.pop_attachment_ids),
@@ -4869,19 +4890,10 @@ class PremaDispatchJob(models.Model):
         user_tz = pytz.timezone(user.tz or "America/Toronto")
         first, today, last = self._driver_seven_day_window(user_tz)
 
-        def to_utc(d, t): return user_tz.localize(datetime.combine(d, t)).astimezone(pytz.utc).replace(tzinfo=None)
-        utc_start = to_utc(first, datetime.min.time())
-        utc_end   = to_utc(last, datetime.max.time())
+        utc_start, utc_end = self._driver_utc_bounds(user_tz, first, last)
 
-        all_jobs = self.env["prema.dispatch.job"].search([
-            ("driver_id", "=", partner.id),
-            ("stage_id.is_cancelled", "=", False),
-            "|",
-            ("scheduled_pickup", "=", False),
-            "&",
-            ("scheduled_pickup", ">=", utc_start),
-            ("scheduled_pickup", "<=", utc_end),
-        ])
+        all_jobs = self.env["prema.dispatch.job"].search(
+            self._driver_jobs_domain(partner.id, utc_start, utc_end))
 
         dates_map = {}
         for job in all_jobs:
@@ -4946,20 +4958,10 @@ class PremaDispatchJob(models.Model):
 
         check_date = self._sanitize_driver_date(date_str, user_tz)
 
-        local_start = user_tz.localize(datetime.combine(check_date, datetime.min.time()))
-        local_end   = user_tz.localize(datetime.combine(check_date, datetime.max.time()))
-        utc_start   = local_start.astimezone(pytz.utc).replace(tzinfo=None)
-        utc_end     = local_end.astimezone(pytz.utc).replace(tzinfo=None)
+        utc_start, utc_end = self._driver_utc_bounds(user_tz, check_date, check_date)
 
-        jobs = self.env["prema.dispatch.job"].search([
-            ("driver_id", "=", partner.id),
-            ("stage_id.is_cancelled", "=", False),
-            "|",
-            ("scheduled_pickup", "=", False),
-            "&",
-            ("scheduled_pickup", ">=", utc_start),
-            ("scheduled_pickup", "<=", utc_end),
-        ])
+        jobs = self.env["prema.dispatch.job"].search(
+            self._driver_jobs_domain(partner.id, utc_start, utc_end))
 
         api_key = self.env["ir.config_parameter"].sudo().get_param("google_maps_api_key", "")
         truck = jobs[0].vehicle_id if jobs else None
