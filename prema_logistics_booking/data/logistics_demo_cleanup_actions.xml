@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- TEST DATA CLEANUP (§15): "Purge Demo Test Data" appears in the
+         Action dropdown of the Locations list. Calls
+         logistics.location.customer.access.action_purge_demo_data(),
+         which removes the demo access rows + demo facilities (is_demo)
+         with live-data and real-customer guards. The 9 demo locations
+         stay in place until this action is deliberately run. -->
+    <record id="action_purge_demo_data" model="ir.actions.server">
+        <field name="name">Purge Demo Test Data</field>
+        <field name="model_id" ref="model_prema_dispatch_location"/>
+        <field name="binding_model_id" ref="model_prema_dispatch_location"/>
+        <field name="state">code</field>
+        <field name="code">action = env["logistics.location.customer.access"].action_purge_demo_data()</field>
+    </record>
+</odoo>

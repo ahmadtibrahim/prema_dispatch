@@ -13,6 +13,7 @@ the join between that customer and the canonical facility.
 """
 
 from odoo import _, api, fields, models
+from odoo.exceptions import UserError
 
 
 class LogisticsLocationCustomerAccess(models.Model):
@@ -74,6 +75,12 @@ class LogisticsLocationCustomerAccess(models.Model):
     # Read of the access row in the booking UI (used to order the portal
     # selection lists the way the legacy saved-location list was ordered).
     last_used_date = fields.Datetime(string="Last Used")
+
+    # DEMO TEST SET (§7-§8): rows created for the PREMA DISPATCH DEMO
+    # customer's 9-route manual test matrix. is_demo is the single
+    # selector for the "Purge Demo Test Data" action (§15) — real
+    # customer flows never set it.
+    is_demo = fields.Boolean(string="Demo / Test", index=True, default=False)
 
     # ── Template-compatible computed proxies ───────────────────────────
     # The booking portal consumed logistics.saved.location fields
@@ -193,6 +200,87 @@ class LogisticsLocationCustomerAccess(models.Model):
         if vals:
             access.write(vals)
         return access
+
+    @api.model
+    def action_purge_demo_data(self):
+        """TEST DATA CLEANUP (§15) — remove the demo test set.
+
+        Deletes the access rows with ``is_demo=True`` and the facilities
+        that were created FOR the demo set (``prema.dispatch.location.
+        is_demo=True``). Never auto-runs — the demo locations stay
+        available for manual portal testing until an explicit cleanup
+        instruction.
+
+        Guards:
+          - refuses when ANY demo facility is referenced by live data
+            (booking stops, pricing-session stops, dispatch stops/jobs,
+            hubs, corridor stops);
+          - never deletes a demo facility that gained a NON-demo access
+            row (a real customer started using it — the facility is kept,
+            only its demo access rows are removed);
+          - the PREMA DISPATCH DEMO CUSTOMER account itself is kept
+            (it is the reusable manual-test login).
+        """
+        DispatchLoc = self.env["prema.dispatch.location"].sudo()
+        demo_access = self.sudo().search([("is_demo", "=", True)])
+        demo_fac_ids = demo_access.facility_id.ids
+        demo_facilities = DispatchLoc.search([("is_demo", "=", True)])
+
+        if not demo_fac_ids and not demo_facilities:
+            return {
+                "type": "ir.actions.client",
+                "tag": "display_notification",
+                "params": {
+                    "title": "No demo data",
+                    "message": "No demo access rows or demo facilities exist.",
+                    "type": "info",
+                    "sticky": False,
+                },
+            }
+
+        # Guard 1 — live-data references on any demo facility.
+        ref_checks = [
+            ("logistics.booking.stop", "saved_location_id"),
+            ("logistics.pricing.session.stop", "facility_id"),
+            ("prema.dispatch.stop", "saved_location_id"),
+            ("prema.dispatch.job", "pickup_saved_location_id"),
+            ("logistics.hub", "saved_location_id"),
+            ("logistics.corridor.stop", "saved_location_id"),
+        ]
+        for model, fk in ref_checks:
+            n = self.env[model].sudo().search_count([(fk, "in", demo_fac_ids)])
+            if n:
+                raise UserError(
+                    _("Cannot purge demo data: %d %s record(s) still reference a "
+                      "demo facility (field %s). Clear those first.") % (n, model, fk))
+
+        # Guard 2 — a real customer using a demo facility keeps it.
+        real_customers = self.sudo().search_count([
+            ("facility_id", "in", demo_fac_ids),
+            ("is_demo", "=", False),
+            ("active", "=", True),
+        ])
+        removed_access = len(demo_access)
+        removed_facilities = 0
+        demo_access.unlink()
+        if not real_customers:
+            removed_facilities = len(demo_facilities)
+            demo_facilities.unlink()
+
+        return {
+            "type": "ir.actions.client",
+            "tag": "display_notification",
+            "params": {
+                "title": "Demo data purged",
+                "message": ("Removed %d demo access row(s)%s." % (
+                    removed_access,
+                    " and %d demo facilities" % removed_facilities
+                    if removed_facilities else
+                    " (demo facilities kept — a real customer uses one)")),
+                "type": "success",
+                "sticky": False,
+            },
+        }
 
     def _get_effective_coordinates(self):
         """(lat, lng) from the canonical facility pins — the same contract

@@ -110,6 +110,12 @@ class PremaDispatchLocation(models.Model):
              "manually edited since. Cleared automatically when any address field is "
              "hand-edited.",
     )
+    is_demo = fields.Boolean(
+        string="Demo / Test",
+        index=True,
+        help="Demo-test facility (PREMA DISPATCH DEMO test set). Purged by the "
+             "'Purge Demo Test Data' action; never set by real customer flows.",
+    )
 
     # Address Validation API (same pattern as prema.dispatch.stop)
     address_validated = fields.Boolean(string="Address Validated", readonly=True)
