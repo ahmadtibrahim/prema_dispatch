@@ -608,15 +608,20 @@
         if (rootCard?.dataset?.v7RenderKey === renderKey) return;
         rendering = true;
         try {
-            let html;
+            // `cardHtml` (not `html`): `html` is the IIFE-scope escape helper
+            // used by simplifiedInfo/stopTitle in the templates below — a
+            // local shadow made out-of-sequence cards throw "html is not a
+            // function" and silently die whenever the opened stop was not the
+            // planned next stop.
+            let cardHtml;
             if (stop.status === "deferred") {
-                html = `${simplifiedInfo(stop)}<div class="da-v7-state-card deferred"><b>Come Back Later</b><span>This stop is still open and has not been completed.</span></div>
+                cardHtml = `${simplifiedInfo(stop)}<div class="da-v7-state-card deferred"><b>Come Back Later</b><span>This stop is still open and has not been completed.</span></div>
                     <div class="da-v7-stop-actions"><button class="da-v7-btn da-v7-btn-primary" data-v7="return-deferred">↩ Return to This Stop</button><button class="da-v7-btn da-v7-btn-secondary" data-v7="report-problem">⚠ Report Problem</button></div>`;
             } else if (stop.status === "exception") {
-                html = `${simplifiedInfo(stop)}<div class="da-v7-state-card exception"><b>Problem reported</b><span>The stop remains open until the issue is resolved.</span></div>
+                cardHtml = `${simplifiedInfo(stop)}<div class="da-v7-state-card exception"><b>Problem reported</b><span>The stop remains open until the issue is resolved.</span></div>
                     <div class="da-v7-stop-actions"><button class="da-v7-btn da-v7-btn-primary" data-v7="resume-exception">Problem Resolved — Resume Stop</button><button class="da-v7-btn da-v7-btn-secondary" onclick="APP.callDispatch()">📞 Call Dispatch</button></div>`;
             } else if (!arrived) {
-                html = `${simplifiedInfo(stop)}${outOfSequence ? `<div class="da-v7-warning">Planned next stop: <b>${html(stopTitle(next))}</b></div>` : ""}
+                cardHtml = `${simplifiedInfo(stop)}${outOfSequence ? `<div class="da-v7-warning">Planned next stop: <b>${html(stopTitle(next))}</b></div>` : ""}
                     <div class="da-v7-stop-actions">
                         <button class="da-v7-btn da-v7-btn-primary" data-v7="navigate" data-stop-id="${stop.id}">🗺️ ${outOfSequence ? "Go Here Instead" : "Navigate"}</button>
                         <button class="da-v7-btn da-v7-btn-success" data-v7="arrive">✓ I'm Here</button>
@@ -624,10 +629,10 @@
                         <button class="da-v7-btn da-v7-btn-warning" data-v7="report-problem">⚠ Report a Problem</button>
                     </div>`;
             } else {
-                html = `${simplifiedInfo(stop)}<div class="da-v7-state-card arrived"><b>✓ Arrived</b><span>Stop work is now unlocked. The app will guide you one step at a time.</span></div>
+                cardHtml = `${simplifiedInfo(stop)}<div class="da-v7-state-card arrived"><b>✓ Arrived</b><span>Stop work is now unlocked. The app will guide you one step at a time.</span></div>
                     <div class="da-v7-stop-actions"><button class="da-v7-btn da-v7-btn-primary" data-v7="open-guide">${stop.type === "pickup" ? "Continue Pickup" : "Continue Delivery"}</button><button class="da-v7-btn da-v7-btn-secondary" data-v7="defer">↪ Come Back Later</button><button class="da-v7-btn da-v7-btn-warning" data-v7="report-problem">⚠ Report a Problem</button></div>`;
             }
-            body.innerHTML = html;
+            body.innerHTML = cardHtml;
             if (body.firstElementChild) body.firstElementChild.dataset.v7RenderKey = renderKey;
             window.__v7Perf.stopRenders++;
         } finally { rendering = false; }
