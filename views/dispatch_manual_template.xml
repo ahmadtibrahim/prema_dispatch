@@ -41,7 +41,7 @@
 <div class="dm-wrap">
 
 <h1 class="dm-title">Prema Dispatch — User Manual</h1>
-<p class="dm-subtitle">Version 5.1 - Updated August 9, 2026 - PremaFirm Logistics</p>
+<p class="dm-subtitle">Version 5.2 - Updated August 24, 2026 - PremaFirm Logistics</p>
 
 <div class="dm-toc">
     <h2>Table of Contents</h2>
@@ -197,6 +197,17 @@
     <p>Each stop on a corridor has: sequence, region, pickup/delivery/transfer permission, planned arrival/departure offsets, service duration, distance from origin, customer-visibility flag.</p>
     <h3>Departures</h3>
     <p>A Departure is <b>one exact execution</b> of a Corridor. The system maintains an eight-week rolling horizon. The Corridor's start time and default truck populate each new departure. Open one Departure only when a specific date needs a different truck. Changing weekly days removes/rebuilds only future unbooked Scheduled rows; booked or completed history is preserved.</p>
+    <h3>Per-Departure Truck / Driver Override (Breakdown Flow)</h3>
+    <p>Open any departure date to override just that execution:</p>
+    <ul>
+        <li>Change the <b>Truck</b> — the field shows <b>Corridor Default</b> when it matches the corridor's truck, or <b>Departure Override</b> for any other truck. New departures always inherit the default.</li>
+        <li>When the truck changes, the truck's assigned driver is attached automatically. A truck with no driver blocks the change — select a driver explicitly. Never leave a departure driver-less.</li>
+        <li>Capacity guard: the replacement truck must physically carry the pallets already reserved on that departure — reassignment is refused otherwise.</li>
+        <li>Truck reassignment is restricted to <b>dispatch/operations management</b> roles only.</li>
+        <li>Every change is recorded on the departure chatter: "Truck reassigned A → B", "Driver reassigned A → B", with the user and timestamp.</li>
+        <li>All LTL Planner jobs for that departure update to the new truck automatically.</li>
+    </ul>
+    <div class="dm-info">Use this flow operationally when a truck breaks down: reassign the truck and driver on every affected departure date; booked capacity is re-validated against the replacement truck's layout automatically.</div>
 </div>
 
 <!-- ================================================================ -->
@@ -226,6 +237,10 @@
         <li>Temperature compatibility (Dry vs Reefer vehicle assignment)</li>
         <li>Corridor stop sequences and region coverage</li>
     </ul>
+    <h3>Automatic Arrival ETAs</h3>
+    <p>Every corridor stop carries a planned arrival/departure time computed from the departure's start time and the road distances between stops. The system shows the pickup and delivery ETA on quotes, bookings, and the live board — no manual ETA entry needed.</p>
+    <h3>One Route, Everywhere (Hub-Transfer Consistency)</h3>
+    <p>The calendar, Get Price, and the booking confirmation resolve the route with the <b>same strict logic</b>: pickup → hub-transfer → delivery legs with direction-aware transfer stops. A transfer shown in Where We Go is exactly the transfer priced in the quote and created on the booking — the portal can never show one route and book another. Corridors reachable only via a hub are correctly marked as transfer (never sold as direct), and exact departures are bound to each leg end-to-end.</p>
     <div class="dm-info">Map reachability, booking route resolution, pricing, and departure selection use the same Corridor topology.</div>
 </div>
 
@@ -243,6 +258,15 @@
         <tr><th>Corridor $/km</th><th>Planned Pallets</th><th>Customer $/km per Pallet</th><th>110 km × 1 Pallet</th></tr>
         <tr><td>$4.00</td><td>6</td><td>$0.666667</td><td>$73.33 → $150 minimum</td></tr>
     </table>
+    <h3>FTL Is Billed on Actual Road Distance</h3>
+    <p>Full Truckload / dedicated quotes are billed on the <b>actual door-to-door road distance</b> — the real point-to-point driving distance between the pickup and delivery coordinates (Google Directions; straight-line × 1.4 when no driving route resolves). It is <b>not</b> the scheduled corridor segment distance:</p>
+    <ul>
+        <li>Pickup/delivery addresses with valid coordinates → actual measured distance × FTL $/km</li>
+        <li>Coordinates unavailable (postal-only quote) → scheduled corridor segment distance, clearly flagged</li>
+        <li>Multi-stop FTL: base is the FTL rate to the furthest destination, plus a per-stop surcharge ($50 same-region, $75 regional)</li>
+        <li>Single-stop FTL prints one frozen <b>Dedicated FTL Transportation</b> line at the final price — never recalculated</li>
+        <li>LTL keeps the scheduled corridor segment distance: the scheduled route <i>is</i> the LTL billable basis</li>
+    </ul>
     <h3>Price vs Cost</h3>
     <p><b>Corridor pricing</b> = what the customer pays. <b>Prema AI Estimator</b> = internal cost and NET PROFIT. These are never mixed or shown on Where We Go. Rate Plans and technical lanes remain readable only for historical bookings.</p>
 </div>
@@ -287,9 +311,17 @@
         <li>Select <b>Customer</b></li>
         <li>Enter <b>Pickup Postal Code</b> and <b>Delivery Postal Code</b></li>
         <li>Enter <b>Pallets</b>, <b>Weight (lbs)</b>, <b>Temperature Mode</b> (Dry/Reefer)</li>
+        <li>Optionally enter the <b>Requested Pickup Date</b> the customer asked for</li>
         <li>Click <span class="dm-btn">Get Price</span> — system shows lane, service, pickup date, delivery date, price</li>
         <li>Click <span class="dm-btn">Confirm Booking</span> — creates booking with tax, invoice, dispatch job</li>
     </ol>
+    <h3>Requested Date vs Alternate Date</h3>
+    <ul>
+        <li>When the customer's <b>requested pickup date</b> matches a bookable departure, that date is quoted and used</li>
+        <li>When the requested date has no bookable departure (no corridor runs that day, or the departure is full), the system offers the <b>closest alternate date(s)</b> with spare capacity — the dispatcher confirms which date with the customer</li>
+        <li>The exact departure chosen is bound to the booking at confirmation — capacity is reserved on that departure, never on a different one</li>
+        <li>FTL phone quotes quote and reserve the departure the same way, and bill on actual road distance (see §7)</li>
+    </ul>
     <div class="dm-warn"><b>Double-click safe:</b> Clicking Confirm twice returns the same booking. No duplicate will be created.</div>
 </div>
 
@@ -356,6 +388,20 @@
         <li>State flow: <b>Draft → Reviewing → Quoted → Accepted/Declined → Converted</b></li>
         <li>When Accepted: click <span class="dm-btn">Convert to Booking</span> — creates complete booking through canonical service</li>
     </ol>
+    <h3>Printable Quotation (PDF)</h3>
+    <ul>
+        <li>Click <span class="dm-btn">Print Quotation</span> (available once a price is set) — renders a US-Letter PDF with the company letterhead</li>
+        <li>The document shows: quote number, issued/valid-until dates (<b>30 days</b> validity), status, shipment details, pickup/delivery addresses, the quoted freight charge, assigned departure, and terms</li>
+        <li>FTL quotations carry the actual-distance billing note (§7)</li>
+    </ul>
+    <h3>Quote → Booking → Job → Invoice</h3>
+    <ol>
+        <li>Pick the <b>Departure</b> on the quote, then Convert — one booking is created, confirmed at the agreed price</li>
+        <li>The booking gets real pickup/delivery stops, one reserved leg on the chosen departure, and a DISP job card</li>
+        <li>A <b>draft invoice</b> is created at the quoted price (tax-inclusive; HST/GST split per destination)</li>
+        <li>Conversion is idempotent — clicking Convert twice returns the same booking, never a duplicate</li>
+        <li>The booking counts against the departure's capacity like any other (see §16)</li>
+    </ol>
 </div>
 
 <!-- ================================================================ -->
@@ -387,6 +433,14 @@
     </table>
     <h3>Transactional Capacity</h3>
     <p>When a booking is confirmed, the system <b>locks the corridor departure row</b> (PostgreSQL SELECT FOR UPDATE), recalculates all active reservations, validates the proposed booking against per-segment limits, and commits atomically. If any segment fails, the entire booking rolls back — no partial reservations.</p>
+    <h3>Every Booking Counts — Including Manual and Phone</h3>
+    <ul>
+        <li>Portal, phone, internal, custom-quote, and recurring bookings all reserve capacity on their departure the same way</li>
+        <li>Manual/negotiated bookings without a frozen route are anchored by their pickup/delivery FSA regions (canonicalized against the corridor's official region set), so they count in the departure's peak pallets and in the planner</li>
+        <li>FTL / dedicated bookings hold the <b>entire truck</b> — no LTL load can join an exclusively held departure</li>
+        <li>If a booking's regions don't fit the departure's corridor span (wrong direction, delivery beyond the route), the system flags an <b>integrity conflict</b> and refuses further bookings until it is corrected — a booking can never be silently uncounted</li>
+        <li>Cancelled bookings drop out of the peak immediately</li>
+    </ul>
     <div class="dm-warn"><b>Payload weight limit</b> is always enforced independently of pallet count.</div>
 </div>
 
