@@ -78,6 +78,14 @@
     }
 
     function openGoogleMapsApp() {
+        // Route through the ONE canonical navigation function
+        // (driver_native_nav_v6.js launchStop): it builds the URL from
+        // lat/lng → place_id → address, hands off, and transitions
+        // pending → en_route without blocking the launch.
+        if (typeof launchStop === "function") {
+            launchStop(S.stop);
+            return;
+        }
         try {
             const stop = S.stop;
             if (!stop?.lat && !stop?.address) {

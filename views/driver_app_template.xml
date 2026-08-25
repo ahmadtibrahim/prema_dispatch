@@ -195,7 +195,7 @@
         <canvas id="scanPreviewCanvas" class="da-scan-canvas"></canvas>
       </div>
       <div class="da-scan-bar">
-        <button class="da-map-fab" onclick="closeScanner()" title="Close scanner">✕ Close</button>
+        <button id="scanCloseBtn" class="da-map-fab" onclick="closeScanner()" title="Close scanner">✕ Close</button>
         <button id="scanRetakeBtn" class="da-btn da-btn-ghost" onclick="retakeScan()">↺ Retake</button>
         <button id="scanAddPageBtn" class="da-btn da-btn-secondary" onclick="addScanPage()">＋ Add Page</button>
         <button id="scanEnhanceBtn" class="da-btn da-btn-secondary" onclick="toggleScanEnhance()">✨ Enhance</button>

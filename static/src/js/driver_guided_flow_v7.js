@@ -536,16 +536,24 @@
     async function navigateToStop(stop, resumed) {
         if (!stop) return;
         S.stop = stop;
-        if (!["en_route", "arrived", "completed", "cancelled"].includes(stop.status)) {
-            const ok = await callStop(stop.id, "en_route", {});
-            if (!ok) return;
-            patchStopState(stop.id, {status: "en_route"});
-        }
-        if (typeof APP?.openExternalNav === "function") APP.openExternalNav();
-        else if (stop.lat || stop.address) {
-            const params = new URLSearchParams({api: "1", travelmode: "driving", dir_action: "navigate"});
-            params.set("destination", stop.lat && stop.lng ? `${stop.lat},${stop.lng}` : stop.address);
-            location.href = `https://www.google.com/maps/dir/?${params.toString()}`;
+        // ONE canonical navigation function (driver_native_nav_v6.js):
+        // builds the maps URL from lat/lng → place_id → address, launches
+        // it, then flips pending → en_route without blocking the handoff.
+        if (typeof window.launchStop === "function") {
+            window.launchStop(stop);
+        } else {
+            // Legacy fallback — the nav layer never loaded.
+            if (!["en_route", "arrived", "completed", "cancelled"].includes(stop.status)) {
+                const ok = await callStop(stop.id, "en_route", {});
+                if (!ok) return;
+                patchStopState(stop.id, {status: "en_route"});
+            }
+            if (typeof APP?.openExternalNav === "function") APP.openExternalNav();
+            else if (stop.lat || stop.address) {
+                const params = new URLSearchParams({api: "1", travelmode: "driving", dir_action: "navigate"});
+                params.set("destination", stop.lat && stop.lng ? `${stop.lat},${stop.lng}` : stop.address);
+                location.href = `https://www.google.com/maps/dir/?${params.toString()}`;
+            }
         }
         if (resumed) tell("Returning to deferred stop");
     }
@@ -647,6 +655,13 @@
             // rewrites the reflected attribute — both re-trigger the audit
             // observer on every pass if left unconditional.
             if (nextButton.textContent !== "Navigate") nextButton.textContent = "Navigate";
+            // The canonical nav capture handler resolves the target from
+            // data-stop-id so the next-stop card opens the NEXT stop, not
+            // whatever stop is currently selected.
+            const nextNow = nextEligibleStop();
+            if (nextNow?.id && Number(nextButton.dataset.stopId) !== nextNow.id) {
+                nextButton.dataset.stopId = String(nextNow.id);
+            }
             if (!nextButton.dataset.v7Bound) {
                 nextButton.dataset.v7Bound = "1";
                 nextButton.onclick = async (ev) => {

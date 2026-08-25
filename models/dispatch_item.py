@@ -37,6 +37,29 @@ class PremaDispatchItem(models.Model):
         help="Freight is physically available only after this pickup/operation stop.",
     )
 
+    # Evidence (canonical prema.dispatch.evidence records for this pallet)
+    evidence_count = fields.Integer(
+        string="Evidence Records", compute="_compute_evidence_count",
+        help="Canonical evidence records for this physical pallet "
+             "(POPP photos, seal photos…).",
+    )
+
+    def _compute_evidence_count(self):
+        Evidence = self.env["prema.dispatch.evidence"]
+        for item in self:
+            item.evidence_count = Evidence.search_count([("pallet_id", "=", item.id)])
+
+    def action_open_evidence(self):
+        self.ensure_one()
+        return {
+            "type": "ir.actions.act_window",
+            "name": "Pallet Evidence",
+            "res_model": "prema.dispatch.evidence",
+            "view_mode": "list,form",
+            "domain": [("pallet_id", "=", self.id)],
+            "context": {"default_pallet_id": self.id},
+        }
+
     # Dimensions
     pallet_count = fields.Integer(string="Pallets / Skids", default=1)
     weight_lbs = fields.Float(string="Weight (lbs)", digits=(10, 1))

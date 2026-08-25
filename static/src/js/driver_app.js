@@ -591,7 +591,10 @@ const APP = window.APP = {
     openRouteSettings:  () => openRouteSettings(),
     closeRouteSettings: () => hide("oRouteSettings"),
     saveRouteSettings:  () => saveRouteSettings(),
-    openExternalNav: () => openNativeMaps(S.stop),
+    openExternalNav: () => {
+        if (typeof launchStop === "function") launchStop(S.stop);
+        else openNativeMaps(S.stop);
+    },
     closeFinishProof:() => closeFinishProof(),
     closePickupIntake:() => closePickupIntake(),
     closePickupConfirm:() => closePickupConfirm(),
@@ -1673,6 +1676,7 @@ async function finishNextStop(){
         return;
     }
     S.stop=next;
+    if(typeof launchStop === "function"){ launchStop(next); return; }
     await callStop(next.id,"en_route",{});
     patchStopState(next.id,{status:"en_route"});
     renderStopList();
@@ -2872,6 +2876,7 @@ async function doneNextStop(){
     const next=firstOpenStop();
     if(!next){ endDay(); return; }
     S.stop=next;
+    if(typeof launchStop === "function"){ launchStop(next); return; }
     await callStop(next.id,"en_route",{});
     patchStopState(next.id,{status:"en_route"});
     renderStopList();
@@ -4002,6 +4007,9 @@ function initStopMap(stop){
 function doNavigate(){
     // Spec §6: navigation is Google Maps' job — hand the stop off with its
     // verified coordinates / Place ID; no embedded nav screen anymore.
+    // ONE canonical function (driver_native_nav_v6.js launchStop) does the
+    // URL build, launch and pending → en_route transition.
+    if(typeof launchStop === "function"){ launchStop(S.stop); return; }
     openNativeMaps(S.stop);
     if(["arrived","completed","cancelled"].includes(S.stop?.status)) return;
     rpc("/dispatch/driver/stop/status",{stop_id:S.stop.id,action:"en_route",data:{}}).then(()=>{

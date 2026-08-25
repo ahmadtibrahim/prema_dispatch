@@ -112,6 +112,15 @@
               sequence="90"/>
 
     <!-- User Manual -->
+    <!-- Evidence -->
+    <menuitem id="menu_dispatch_evidence"
+              name="Evidence"
+              parent="menu_prema_dispatch_root"
+              action="action_dispatch_evidence"
+              sequence="75"
+              groups="prema_dispatch.group_dispatch_manager,prema_dispatch.group_dispatcher"/>
+
+    <!-- User Manual -->
     <menuitem id="menu_dispatch_manual"
               name="User Manual"
               parent="menu_prema_dispatch_root"

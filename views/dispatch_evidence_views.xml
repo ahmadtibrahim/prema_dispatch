@@ -1,0 +1,121 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<odoo>
+    <!--
+        Canonical evidence records (prema.dispatch.evidence) — the clean
+        staff path to driver-captured proof: every row links an ir.attachment
+        to job / stop / booking / pallet / driver / capture time / GPS.
+        The attachment itself stays in ir.attachment (single source of the
+        file — nothing is duplicated here); the m2o field opens the standard
+        attachment form with preview + download.
+    -->
+    <record id="view_dispatch_evidence_list" model="ir.ui.view">
+        <field name="name">prema.dispatch.evidence.list</field>
+        <field name="model">prema.dispatch.evidence</field>
+        <field name="arch" type="xml">
+            <list string="Dispatch Evidence" default_group_by="job_id">
+                <field name="job_id"/>
+                <field name="pallet_id" string="Pallet"/>
+                <field name="evidence_type" widget="badge"/>
+                <field name="attachment_id" string="File"/>
+                <field name="stop_id" string="Stop"/>
+                <field name="driver_id" string="Captured By"/>
+                <field name="captured_at" string="Captured At"/>
+                <field name="lat" string="Lat" optional="hide"/>
+                <field name="lng" string="Lng" optional="hide"/>
+                <field name="device" optional="hide"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="view_dispatch_evidence_search" model="ir.ui.view">
+        <field name="name">prema.dispatch.evidence.search</field>
+        <field name="model">prema.dispatch.evidence</field>
+        <field name="arch" type="xml">
+            <search string="Dispatch Evidence">
+                <field name="job_id"/>
+                <field name="pallet_id"/>
+                <field name="attachment_id"/>
+                <filter name="f_popp" string="Pallet Pickup Photos (POPP)"
+                        domain="[('evidence_type', '=', 'popp')]"/>
+                <filter name="f_pop_pod" string="POP / POD / Scans"
+                        domain="[('evidence_type', 'in', ('pop_general','pod_general','scanned_pop','scanned_pod','scan_page'))]"/>
+                <filter name="f_pending" string="No GPS"
+                        domain="[('lat', '=', 0)]"/>
+                <group expand="0" string="Group By">
+                    <filter name="g_job" string="Job" context="{'group_by': 'job_id'}"/>
+                    <filter name="g_pallet" string="Pallet" context="{'group_by': 'pallet_id'}"/>
+                    <filter name="g_type" string="Evidence Type" context="{'group_by': 'evidence_type'}"/>
+                    <filter name="g_driver" string="Captured By" context="{'group_by': 'driver_id'}"/>
+                </group>
+            </search>
+        </field>
+    </record>
+
+    <record id="view_dispatch_evidence_form" model="ir.ui.view">
+        <field name="name">prema.dispatch.evidence.form</field>
+        <field name="model">prema.dispatch.evidence</field>
+        <field name="arch" type="xml">
+            <form string="Dispatch Evidence">
+                <sheet>
+                    <group>
+                        <group string="Capture">
+                            <field name="evidence_type"/>
+                            <field name="driver_id" string="Captured By"/>
+                            <field name="captured_at" string="Captured At"/>
+                            <field name="device"/>
+                            <field name="lat" string="GPS Latitude"/>
+                            <field name="lng" string="GPS Longitude"/>
+                            <field name="checksum_sha256" string="SHA-256"/>
+                        </group>
+                        <group string="Shipment">
+                            <field name="job_id"/>
+                            <field name="booking_id"/>
+                            <field name="stop_id" string="Stop"/>
+                            <field name="pallet_id" string="Pallet"/>
+                            <field name="invoice_id"/>
+                        </group>
+                    </group>
+                    <group string="File">
+                        <field name="image_preview" nolabel="1" widget="image"
+                               class="o_form_field_image" options="{'preview_image': 'image_preview'}"/>
+                        <field name="attachment_id" nolabel="1"
+                               help="Opens the ir.attachment record — standard Odoo preview and download live there."/>
+                    </group>
+                    <group string="Scanner Session" invisible="not scan_session">
+                        <field name="scan_session"/>
+                        <field name="scan_page_index"/>
+                        <field name="merged_into_id"/>
+                    </group>
+                    <group string="Supersession" invisible="not superseded_by_id">
+                        <field name="superseded_by_id"/>
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <record id="action_dispatch_evidence" model="ir.actions.act_window">
+        <field name="name">Dispatch Evidence</field>
+        <field name="res_model">prema.dispatch.evidence</field>
+        <field name="view_mode">list,form</field>
+        <field name="search_view_id" ref="view_dispatch_evidence_search"/>
+        <field name="context">{}</field>
+    </record>
+
+    <record id="action_dispatch_evidence_by_job" model="ir.actions.act_window">
+        <field name="name">Job Evidence</field>
+        <field name="res_model">prema.dispatch.evidence</field>
+        <field name="view_mode">list,form</field>
+        <field name="search_view_id" ref="view_dispatch_evidence_search"/>
+        <field name="domain">[('job_id', '=', active_id)]</field>
+        <field name="context">{'search_default_group_by_job': 0}</field>
+    </record>
+
+    <record id="action_dispatch_evidence_by_item" model="ir.actions.act_window">
+        <field name="name">Pallet Evidence</field>
+        <field name="res_model">prema.dispatch.evidence</field>
+        <field name="view_mode">list,form</field>
+        <field name="search_view_id" ref="view_dispatch_evidence_search"/>
+        <field name="domain">[('pallet_id', '=', active_id)]</field>
+    </record>
+</odoo>

@@ -27,6 +27,20 @@
                     .lprog-badge.lprog-planned, .lprog-badge.lprog-driver_started { background: #6c757d; }
                     .lprog-badge.lprog-completed { background: #198754; }
                     .lprog-badge.lprog-loading, .lprog-badge.lprog-at_transfer { background: #6f42c1; }
+                    .pal-card { border:1px solid #dee2e6; border-radius:8px; padding:12px 14px; margin-bottom:10px; background:#fff; }
+                    .pal-head { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:6px; }
+                    .pal-ref { font-weight:700; color:#16253a; }
+                    .pal-status { font-size:.72rem; font-weight:700; text-transform:uppercase; padding:3px 10px; border-radius:12px; white-space:nowrap; }
+                    .pal-status.ps-in-transit { background:#fff3cd; color:#856404; }
+                    .pal-status.ps-picked { background:#d1e7dd; color:#0f5132; }
+                    .pal-status.ps-delivered { background:#198754; color:#fff; }
+                    .pal-status.ps-pending { background:#e9ecef; color:#495057; }
+                    .pal-route { font-size:.85rem; color:#495057; margin-top:2px; }
+                    .pal-route b { color:#16253a; }
+                    .pal-photos { display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
+                    .pal-photos a { display:block; width:76px; height:76px; border-radius:8px; overflow:hidden; border:1px solid #dee2e6; background:#f1f3f5; }
+                    .pal-photos img { width:100%; height:100%; object-fit:cover; display:block; }
+                    .pal-note { font-size:.78rem; color:#6c757d; margin-top:8px; font-style:italic; }
                     @media(max-width:540px){.track-live{grid-template-columns:1fr}.track-card{margin:8px;padding:16px}}
                 </style>
             </t>
@@ -69,6 +83,36 @@
                         <span style="font-weight:600;">Route: </span>
                         <t t-esc="job.pickup_city or '?'"/>
                         <t t-if="job.delivery_cities"> → <t t-esc="job.delivery_cities"/></t>
+                    </div>
+                </t>
+
+                <t t-if="pallets">
+                    <div style="margin-bottom:16px;">
+                        <div style="font-weight:600;margin-bottom:8px;">Pallets</div>
+                        <t t-foreach="pallets" t-as="pal">
+                            <div class="pal-card">
+                                <div class="pal-head">
+                                    <span class="pal-ref"><t t-esc="pal['ref']"/></span>
+                                    <span t-attf-class="pal-status ps-#{pal['status_label'].lower().replace(' ','-')}">
+                                        <t t-esc="pal['status_label']"/>
+                                    </span>
+                                </div>
+                                <div class="pal-route"><b>Pickup:</b> <t t-esc="pal['pickup_label']"/></div>
+                                <div class="pal-route"><b>Delivery:</b> <t t-esc="pal['delivery_label']"/></div>
+                                <t t-if="pal['photos']">
+                                    <div class="pal-photos">
+                                        <t t-foreach="pal['photos']" t-as="ph">
+                                            <a t-attf-href="#{ph['url']}" target="_blank" rel="noopener" title="View pickup photo">
+                                                <img t-attf-src="#{ph['url']}" alt="Pickup photo"/>
+                                            </a>
+                                        </t>
+                                    </div>
+                                </t>
+                                <t t-elif="pal['status_label'] != 'Pending Pickup'">
+                                    <div class="pal-note">Pickup photo available to the authorized customer.</div>
+                                </t>
+                            </div>
+                        </t>
                     </div>
                 </t>
 

@@ -69,6 +69,21 @@ class PremaDispatchEvidence(models.Model):
     device = fields.Char(string="Device / Source")
     checksum_sha256 = fields.Char(string="SHA-256 Checksum", index=True)
 
+    # Inline thumbnail for image attachments (backend staff view §2).
+    image_preview = fields.Binary(
+        string="Preview", compute="_compute_image_preview",
+        help="Inline thumbnail of the attachment when it is an image; "
+             "empty for PDFs/documents (View/Download still available).")
+
+    @api.depends("attachment_id", "attachment_id.mimetype", "attachment_id.datas")
+    def _compute_image_preview(self):
+        for ev in self:
+            att = ev.attachment_id
+            if att and (att.mimetype or "").startswith("image/"):
+                ev.image_preview = att.datas
+            else:
+                ev.image_preview = False
+
     # Scanner session state (spec §17 multi-page → single PDF)
     scan_session = fields.Char(string="Scan Session", index=True)
     scan_page_index = fields.Integer(string="Scan Page Index")

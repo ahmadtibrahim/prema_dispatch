@@ -78,6 +78,21 @@ class PremaDispatchJob(models.Model):
     booking_confirmed_at = fields.Datetime(
         string="Booking Confirmed At", readonly=True, copy=False,
     )
+
+    # ── Evidence ──────────────────────────────────────────────
+    evidence_count = fields.Integer(
+        string="Evidence Records", compute="_compute_evidence_count",
+        help="Canonical evidence records attached to this job (POPP photos, "
+             "scanned POP/POD, seal photos…).",
+    )
+
+    def _compute_evidence_count(self):
+        # Non-stored: recomputed on read so the smart button always reflects
+        # the latest evidence rows without a dependency chain to track.
+        Evidence = self.env["prema.dispatch.evidence"]
+        for job in self:
+            job.evidence_count = Evidence.search_count([("job_id", "=", job.id)])
+
     # ── Phase 13: Local Operations link ────────────────────────────
     local_operation_id = fields.Many2one(
         "logistics.daily.local.operation", string="Local Operation",
@@ -2653,6 +2668,17 @@ class PremaDispatchJob(models.Model):
             "type": "ir.actions.act_window",
             "name": "Stops",
             "res_model": "prema.dispatch.stop",
+            "view_mode": "list,form",
+            "domain": [("job_id", "=", self.id)],
+            "context": {"default_job_id": self.id},
+        }
+
+    def action_open_evidence(self):
+        self.ensure_one()
+        return {
+            "type": "ir.actions.act_window",
+            "name": "Evidence",
+            "res_model": "prema.dispatch.evidence",
             "view_mode": "list,form",
             "domain": [("job_id", "=", self.id)],
             "context": {"default_job_id": self.id},

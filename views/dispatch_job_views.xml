@@ -250,6 +250,14 @@
                                 <span class="o_stat_text">Stops</span>
                             </div>
                         </button>
+                        <button type="object" class="oe_stat_button"
+                                name="action_open_evidence"
+                                icon="fa-camera" string="Evidence">
+                            <div class="o_field_widget o_stat_info">
+                                <span class="o_stat_value"><field name="evidence_count"/></span>
+                                <span class="o_stat_text">Evidence</span>
+                            </div>
+                        </button>
                     </div>
 
                     <widget name="web_ribbon" title="URGENT" bg_color="bg-warning"

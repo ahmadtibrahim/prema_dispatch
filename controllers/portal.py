@@ -139,8 +139,121 @@ class DispatchTrackingController(http.Controller):
                 "google_api_key": api_key,
                 "live_progress": progress["key"],
                 "live_progress_label": progress["label"],
+                "pallets": self._tracking_pallets(job, tracking_token),
             },
         )
+
+    # ── Pallet evidence on the tracking page (spec §4-§6) ────────
+
+    @staticmethod
+    def _stop_label(stop):
+        """'Costco Wholesale — Toronto' style label from the saved location
+        or partner name + city. No raw model ids are shown to customers."""
+        if not stop:
+            return "Stop"
+        loc = stop.saved_location_id
+        name = (loc.business_name or stop.partner_id.name or "").strip() or "Stop"
+        city = (loc.city or "").strip()
+        if not city and stop.address and "," in stop.address:
+            city = stop.address.split(",")[1].strip()
+        return f"{name} — {city}" if city else name
+
+    def _evidence_viewer_ok(self, job, token):
+        """Photos are gated behind the tracking token OR an authenticated
+        partner authorized for the booking (commercial hierarchy) — even
+        when the legacy page renders without a token."""
+        if token:
+            tokens = {job.tracking_token}
+            if job.logistics_booking_id:
+                tokens.add(job.logistics_booking_id.tracking_token or "")
+            if token in tokens:
+                return True
+        user = request.env.user
+        if user._is_public():
+            return False
+        partner = user.partner_id
+        job_partner = job.partner_id
+        return bool(
+            partner
+            and job_partner
+            and partner.commercial_partner_id.id == job_partner.commercial_partner_id.id
+        )
+
+    def _tracking_pallets(self, job, tracking_token):
+        """Per-pallet card data for the tracking page: ref, status, pickup /
+        delivery labels and — only for an authorized viewer — that pallet's
+        own pickup photos via the token-validated evidence route."""
+        Evidence = request.env["prema.dispatch.evidence"]
+        show_photos = self._evidence_viewer_ok(job, tracking_token)
+        pallets = []
+        for item in job.item_ids.sorted("sequence"):
+            photos = []
+            if show_photos:
+                popp_evs = Evidence.sudo().search(
+                    [("job_id", "=", job.id), ("evidence_type", "=", "popp"),
+                     ("pallet_id", "=", item.id)],
+                    order="captured_at asc, id asc",
+                )
+                for ev in popp_evs:
+                    photos.append({
+                        "url": f"/dispatch/track/{job.tracking_number}/evidence/{ev.id}?token={job.tracking_token}",
+                        "name": ev.attachment_id.name or "photo",
+                    })
+            status = item.status
+            if status == "delivered":
+                label = "Delivered"
+            elif status in ("loaded", "out_for_delivery", "in_transit",
+                            "partially_unloaded", "cross_docked", "staged",
+                            "reloaded", "transferred"):
+                label = "In Transit"
+            elif status == "pending" and not photos:
+                label = "Pending Pickup"
+            else:
+                label = "Picked Up"
+            pallets.append({
+                "ref": item.name or item.item_ref or f"Pallet {item.id}",
+                "status_label": label,
+                "pickup_label": self._stop_label(item.pickup_stop_id),
+                "delivery_label": self._stop_label(item.delivery_stop_id),
+                "photos": photos,
+            })
+        return pallets
+
+    @http.route(
+        "/dispatch/track/<string:tracking_number>/evidence/<int:evidence_id>",
+        type="http", auth="public", sitemap=False,
+    )
+    def track_evidence_image(self, tracking_number, evidence_id, **kwargs):
+        """Secure evidence-image route: serves a shipment's pickup photo only
+        when the request carries the job's/booking's tracking token (or comes
+        from an authenticated partner of that booking). URLs carry the
+        evidence id, never a raw ir.attachment id, and other jobs' evidence
+        always 404s."""
+        token = (kwargs.get("token") or "").strip()
+        domain = [("tracking_number", "=", tracking_number)]
+        if token:
+            domain.append(("tracking_token", "=", token))
+        job = request.env["prema.dispatch.job"].sudo().search(domain, limit=1)
+        if not job or not self._evidence_viewer_ok(job, token):
+            return request.not_found()
+        ev = request.env["prema.dispatch.evidence"].sudo().browse(evidence_id)
+        if not ev.exists() or ev.job_id.id != job.id:
+            return request.not_found()
+        if ev.evidence_type not in ("popp", "pop_general"):
+            return request.not_found()
+        att = ev.attachment_id
+        try:
+            data = att.with_context(bin_size=False).raw
+        except Exception:
+            data = None
+        if not data:
+            return request.not_found()
+        return request.make_response(data, headers=[
+            ("Content-Type", att.mimetype or "image/jpeg"),
+            ("Content-Disposition", "inline"),
+            ("Cache-Control", "private, max-age=3600"),
+            ("X-Content-Type-Options", "nosniff"),
+        ])
 
     @http.route(
         "/dispatch/track/<string:tracking_number>/live",
