@@ -177,8 +177,6 @@ def _build_stop_pricing(session):
         pickup_city = ""
         if session.pickup_customer_access_id:
             pickup_city = session.pickup_customer_access_id.city or ""
-        if not pickup_city and session.pickup_saved_location_id:
-            pickup_city = session.pickup_saved_location_id.city or ""
         cities = [s["city"] for s in stops if s["city"]]
         route_label = " → ".join([c for c in [pickup_city] + cities if c])
     # ── Frozen per-leg breakdown (spec sections: "Base Pallet
@@ -343,52 +341,42 @@ def _portal_coord_pair(loc):
 
 
 def _resolve_loc(env, partner, loc_id):
-    """Resolve a submitted location id to the canonical record — the
-    "location-like union" (SAVED LOCATION CONSOLIDATION §14).
+    """Resolve a submitted location id to the canonical record (SAVED
+    LOCATION CONSOLIDATION §14).
 
-    New portal data is logistics.location.customer.access (access row,
-    whose id may also be referenced as `new_loc_id` / loc payload ids);
-    legacy logistics.saved.location ids still resolve during the
-    transition window. An access row always wins for a given partner; a
-    legacy row is the fallback. Ownership is enforced here — records that
-    do not belong to the partner resolve to an empty recordset."""
+    Portal location ids are logistics.location.customer.access rows
+    (access, whose id may also be referenced as `new_loc_id` / loc
+    payload ids). Ownership is enforced here — records that do not
+    belong to the partner resolve to an empty recordset. The legacy
+    logistics.saved.location fallback was retired in 18.0.13.25.0."""
     Access = env["logistics.location.customer.access"].sudo()
     try:
         raw_id = int(loc_id or 0)
     except (TypeError, ValueError):
-        return env["logistics.saved.location"].browse()
+        return Access.browse()
     if raw_id:
         acc = Access.browse(raw_id)
         if acc.exists() and acc.active and acc.commercial_partner_id.id == partner.id:
             return acc
-    Saved = env["logistics.saved.location"].sudo()
-    saved = Saved.browse(raw_id)
-    if saved.exists() and saved.active and saved.commercial_partner_id.id == partner.id:
-        return saved
-    return Saved.browse()
+    return Access.browse()
 
 
 def _partner_locations(env, partner, loc_type=None):
-    """Every portal location of this customer, canonical-first: active
-    access rows (logistics.location.customer.access) unioned with active
-    legacy logistics.saved.location rows (transition window only —
-    consolidation never creates new legacy rows). Both record types
-    expose the same physical/private field names (access rows via
-    computed proxies), so templates and the sort below are type-agnostic.
-    Returns a Python list sorted default-first, last-used-first, then
-    name."""
+    """Every portal location of this customer: active access rows
+    (logistics.location.customer.access — the sole portal location
+    model since the legacy logistics.saved.location was retired in
+    18.0.13.25.0). Access rows expose the physical/private field names
+    via computed proxies, so templates and the sort below stay
+    type-agnostic. Returns a Python list sorted default-first,
+    last-used-first, then name."""
     Access = env["logistics.location.customer.access"].sudo()
-    Saved = env["logistics.saved.location"].sudo()
     access_domain = [("commercial_partner_id", "=", partner.id), ("active", "=", True)]
-    saved_domain = [("commercial_partner_id", "=", partner.id), ("active", "=", True)]
     if loc_type == "pickup":
         access_domain.append(("can_pickup", "=", True))
-        saved_domain.append(("location_type", "in", ("pickup", "both")))
     elif loc_type == "delivery":
         access_domain.append(("can_delivery", "=", True))
-        saved_domain.append(("location_type", "in", ("delivery", "both")))
 
-    merged = list(Access.search(access_domain)) + list(Saved.search(saved_domain))
+    merged = list(Access.search(access_domain))
 
     def _sort_key(r):
         if loc_type == "pickup":
@@ -407,23 +395,16 @@ def _partner_locations(env, partner, loc_type=None):
 
 
 def _loc_hours_by_day(loc):
-    """{day: [open, close] or None} operating hours for a location-like
-    record (SAVED LOCATION CONSOLIDATION): access rows read the CANONICAL
-    facility hours (prema.dispatch.location.hours, general scope);
-    legacy rows read their own logistics.saved.location.hours."""
-    Hours = request.env["logistics.saved.location.hours"].sudo()
-    if hasattr(loc, "facility_id") and loc.facility_id:
-        CanH = request.env["prema.dispatch.location.hours"].sudo()
-        rows = CanH.search([
-            ("facility_id", "=", loc.facility_id.id),
-            ("service_scope", "=", "general"),
-            ("active", "=", True),
-        ])
-    else:
-        rows = Hours.search([
-            ("saved_location_id", "=", loc.id),
-            ("active", "=", True),
-        ])
+    """{day: [open, close] or None} operating hours for an access row:
+    the CANONICAL facility hours (prema.dispatch.location.hours, general
+    scope). The legacy logistics.saved.location.hours fallback was
+    retired in 18.0.13.25.0."""
+    CanH = request.env["prema.dispatch.location.hours"].sudo()
+    rows = CanH.search([
+        ("facility_id", "=", loc.facility_id.id if loc and loc.facility_id else -1),
+        ("service_scope", "=", "general"),
+        ("active", "=", True),
+    ])
     hours = {}
     for day in range(7):
         day_rows = rows.filtered(lambda r, d=str(day): r.day_of_week == d)
@@ -492,7 +473,6 @@ class LogisticsBookingPortal(http.Controller):
 
         user = request.env.user
         partner = user.partner_id.commercial_partner_id
-        SavedLocation = request.env["logistics.saved.location"].sudo()
 
         error = None
         if request.httprequest.method == "POST":
@@ -636,7 +616,6 @@ class LogisticsBookingPortal(http.Controller):
         require_visible()
 
         partner = request.env.user.partner_id.commercial_partner_id
-        SavedLocation = request.env["logistics.saved.location"].sudo()
 
         # Preferred route: the full stop list. All delivery saved-location
         # IDs are resolved server-side (ownership-validated) so the date
@@ -759,10 +738,9 @@ class LogisticsBookingPortal(http.Controller):
                     pass
 
         Fsa = request.env["logistics.fsa"].sudo()
-        SavedLocation = request.env["logistics.saved.location"].sudo()
         partner = request.env.user.partner_id.commercial_partner_id
 
-        # Route A: Saved Location with coordinates
+        # Route A: access-row location with coordinates
         if pickup_lat and delivery_lat:
             pickup_loc = None
             delivery_locs = []
@@ -881,12 +859,10 @@ class LogisticsBookingPortal(http.Controller):
         require_visible()
 
         Fsa = request.env["logistics.fsa"].sudo()
-        SavedLocation = request.env["logistics.saved.location"].sudo()
         partner = request.env.user.partner_id.commercial_partner_id
 
-        # Resolve pickup FSA: prefer saved location (access row canonical,
-        # legacy fallback — _resolve_loc enforces ownership), fall back to
-        # FSA code.
+        # Resolve pickup FSA: prefer the access row (_resolve_loc enforces
+        # ownership), fall back to FSA code.
         pickup_fsa = None
         pickup_loc_id = kwargs.get("pickup_loc_id")
         if pickup_loc_id:
@@ -987,8 +963,8 @@ class LogisticsBookingPortal(http.Controller):
                 capacity = VehicleCapacityService.for_pickup_date(
                     request.env, pickup_region, requested_pickup_date)
                 if capacity.get("available") and physical_pallets > capacity["remaining_pallets"]:
-                    pu_loc_for_err = SavedLocation.browse(int(pickup_loc_id)) if pickup_loc_id and SavedLocation.browse(int(pickup_loc_id)).exists() else None
-                    de_loc_for_err = SavedLocation.browse(int(delivery_loc_id)) if delivery_loc_id and SavedLocation.browse(int(delivery_loc_id)).exists() else None
+                    pu_loc_for_err = _resolve_loc(request.env, partner, pickup_loc_id) if pickup_loc_id else None
+                    de_loc_for_err = _resolve_loc(request.env, partner, delivery_loc_id) if delivery_loc_id else None
                     return request.render("prema_logistics_booking.portal_step2_shipment", {
                         "pickup_fsa": pickup_fsa, "delivery_fsa": delivery_fsa,
                         "pickup_loc": pu_loc_for_err, "delivery_loc": de_loc_for_err,
@@ -1243,8 +1219,6 @@ class LogisticsBookingPortal(http.Controller):
                 session.pickup_customer_access_id.id)
             if acc.exists():
                 pickup_loc = acc
-        if not pickup_loc and session.pickup_saved_location_id:
-            pickup_loc = session.pickup_saved_location_id
         delivery_stops = session.delivery_stop_ids if session.delivery_stop_ids else None
 
         return request.render("prema_logistics_booking.portal_step3_result", {
@@ -1399,28 +1373,35 @@ class LogisticsBookingPortal(http.Controller):
                 "message": _("Session expired. Please start over."),
             })
 
-        # Pull address data from session's frozen saved locations first,
-        # fall back to form fields (for postal-code-only quotes). The
-        # canonical access row is preferred over the legacy saved
-        # location (SAVED LOCATION CONSOLIDATION).
+        # Pull address data from the session's frozen canonical locations
+        # first, fall back to form fields (for postal-code-only quotes).
+        # The access row is preferred, the facility is the physical
+        # fallback (SAVED LOCATION CONSOLIDATION 18.0.13.25.0).
         Access = request.env["logistics.location.customer.access"].sudo()
         pu_loc = None
         if session.pickup_customer_access_id:
             acc = Access.browse(session.pickup_customer_access_id.id)
             if acc.exists():
                 pu_loc = acc
-        if not pu_loc and session.pickup_saved_location_id:
-            pu_loc = session.pickup_saved_location_id
         de_loc = None
         if session.delivery_customer_access_id:
             acc = Access.browse(session.delivery_customer_access_id.id)
             if acc.exists():
                 de_loc = acc
-        if not de_loc and session.delivery_saved_location_id:
-            de_loc = session.delivery_saved_location_id
+        Facility = request.env["prema.dispatch.location"].sudo()
+        pu_fac = None
+        if session.pickup_facility_id:
+            fac = Facility.browse(session.pickup_facility_id.id)
+            if fac.exists():
+                pu_fac = fac
+        de_fac = None
+        if session.delivery_facility_id:
+            fac = Facility.browse(session.delivery_facility_id.id)
+            if fac.exists():
+                de_fac = fac
 
         # Per-stop contact/instructions (UAT-011) — access rows carry the
-        # private contact data; legacy saved locations the fallback.
+        # private contact data.
         delivery_stops_data = []
         for stop in session.delivery_stop_ids:
             seq = stop.sequence
@@ -1435,16 +1416,18 @@ class LogisticsBookingPortal(http.Controller):
             })
 
         address_vals = {
-            "pickup_company": pu_loc.business_name or pu_loc.name if pu_loc else kwargs.get("pickup_company"),
-            "pickup_postal_code": pu_loc.postal_code if pu_loc else kwargs.get("pickup_postal_code"),
-            "pickup_address": pu_loc.street if pu_loc else kwargs.get("pickup_address"),
+            "pickup_company": (pu_loc.business_name if pu_loc and pu_loc.business_name
+                               else (pu_fac.business_name if pu_fac else "")) or kwargs.get("pickup_company"),
+            "pickup_postal_code": pu_loc.postal_code if pu_loc else (pu_fac.postal_code if pu_fac else kwargs.get("pickup_postal_code")),
+            "pickup_address": pu_loc.street if pu_loc else (pu_fac.street if pu_fac else kwargs.get("pickup_address")),
             "pickup_contact_name": kwargs.get("pickup_contact_name") or (pu_loc.contact_name if pu_loc else ""),
             "pickup_phone": kwargs.get("pickup_phone") or (pu_loc.contact_phone if pu_loc else ""),
             "pickup_instructions": kwargs.get("pickup_instructions") or (pu_loc.pickup_instructions if pu_loc else ""),
             "pickup_dock_info": kwargs.get("pickup_dock_info") or (pu_loc.dock_info if pu_loc else ""),
-            "delivery_company": de_loc.business_name or de_loc.name if de_loc else kwargs.get("delivery_company"),
-            "delivery_postal_code": de_loc.postal_code if de_loc else kwargs.get("delivery_postal_code"),
-            "delivery_address": de_loc.street if de_loc else kwargs.get("delivery_address"),
+            "delivery_company": (de_loc.business_name if de_loc and de_loc.business_name
+                                 else (de_fac.business_name if de_fac else "")) or kwargs.get("delivery_company"),
+            "delivery_postal_code": de_loc.postal_code if de_loc else (de_fac.postal_code if de_fac else kwargs.get("delivery_postal_code")),
+            "delivery_address": de_loc.street if de_loc else (de_fac.street if de_fac else kwargs.get("delivery_address")),
             "delivery_contact_name": delivery_stops_data[0]["contact_name"] if delivery_stops_data else kwargs.get("delivery_contact_name"),
             "delivery_phone": delivery_stops_data[0]["phone"] if delivery_stops_data else kwargs.get("delivery_phone"),
             "delivery_instructions": delivery_stops_data[0]["instructions"] if delivery_stops_data else kwargs.get("delivery_instructions"),

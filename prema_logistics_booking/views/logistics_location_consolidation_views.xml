@@ -3,18 +3,15 @@
     <!-- ═════════════════════════════════════════════════════════════════
          SAVED LOCATION CONSOLIDATION — ONE backend menu:
          Prema Dispatch → Bookings → Locations (prema.dispatch.location).
-         "Customer Locations" (logistics.saved.location) and "Master
-         Facilities" are hidden from navigation; their ACTIONS stay
-         historically intact (no deletes).
+         The legacy "Customer Locations" menu (logistics.saved.location)
+         was REMOVED in 18.0.13.25.0; "Master Facilities" stays hidden —
+         the canonical Locations menu carries the facility action.
          ═════════════════════════════════════════════════════════════════ -->
     <record id="menu_v4_locations" model="ir.ui.menu">
         <field name="name">Locations</field>
         <field name="parent_id" ref="menu_v4_bookings"/>
         <field name="action" ref="prema_dispatch.action_dispatch_locations"/>
         <field name="sequence">60</field>
-    </record>
-    <record id="menu_saved_locations" model="ir.ui.menu">
-        <field name="active" eval="False"/>
     </record>
     <record id="menu_v4_saved_locations" model="ir.ui.menu">
         <field name="active" eval="False"/>

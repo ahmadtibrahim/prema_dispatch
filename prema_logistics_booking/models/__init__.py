@@ -1,7 +1,8 @@
 from . import res_country_extension
 from . import res_country_state_extension
-from . import logistics_saved_location
-from . import logistics_saved_location_hours
+# logistics_saved_location / logistics_saved_location_hours RETIRED in
+# 18.0.13.25.0 (SAVED LOCATION CONSOLIDATION): zero live references after
+# test-data cleanup; model + tables dropped in migrations/18.0.13.25.0.
 from . import logistics_location_customer_access
 from . import prema_dispatch_location_hours
 from . import logistics_direct_delivery_rule

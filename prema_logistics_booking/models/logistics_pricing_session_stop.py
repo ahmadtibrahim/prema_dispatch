@@ -40,10 +40,6 @@ class LogisticsPricingSessionStop(models.TransientModel):
     operating_hours_snapshot = fields.Json()
     timezone = fields.Char(default="America/Toronto")
     instructions = fields.Char()
-    saved_location_id = fields.Many2one(
-        "logistics.saved.location", string="Saved Location",
-        help="Legacy — new stops prefer facility_id/customer_access_id.",
-    )
     facility_id = fields.Many2one(
         "prema.dispatch.location", string="Facility",
         help="Canonical physical facility for this stop (one building = "

@@ -645,25 +645,21 @@ class BookingOrchestrationService:
 
             # Create pricing session
             Session = self.env["logistics.pricing.session"].sudo()
-            # Extract saved location IDs from normalized request — legacy
-            # saved_location_id convention PLUS the canonical access/facility
-            # refs (SAVED LOCATION CONSOLIDATION §14: new sessions prefer
-            # pickup_facility_id / pickup_customer_access_id; the legacy
-            # fields stay populated for historical readability).
-            pu_saved_id = None
-            de_saved_id = None
+            # Extract canonical location refs from the normalized request
+            # (SAVED LOCATION CONSOLIDATION §14: sessions carry the
+            # access/facility pair — the legacy saved_location_id session
+            # fields were retired in 18.0.13.25.0).
             pu_access_id = None
             de_access_id = None
             pu_facility_id = None
             de_facility_id = None
 
             def _stop_refs(stop):
-                return (stop.get("saved_location_id"),
-                        stop.get("customer_access_id"),
+                return (stop.get("customer_access_id"),
                         stop.get("facility_id"))
 
             if normalized_request.pickup_stops:
-                pu_saved_id, pu_access_id, pu_facility_id = _stop_refs(
+                pu_access_id, pu_facility_id = _stop_refs(
                     normalized_request.pickup_stops[0])
             if normalized_request.delivery_stops:
                 if normalized_request.route_stops:
@@ -672,10 +668,10 @@ class BookingOrchestrationService:
                     # the same stop whose FSA defines delivery_fsa_id.
                     # (The first delivery would break the confirm-time
                     # postal re-check against the last stop's FSA.)
-                    de_saved_id, de_access_id, de_facility_id = _stop_refs(
+                    de_access_id, de_facility_id = _stop_refs(
                         normalized_request.delivery_stops[-1])
                 else:
-                    de_saved_id, de_access_id, de_facility_id = _stop_refs(
+                    de_access_id, de_facility_id = _stop_refs(
                         normalized_request.delivery_stops[0])
 
             session = Session.create({
@@ -709,8 +705,6 @@ class BookingOrchestrationService:
                     {"_stop_cost_allocations": stop_cost_allocations},
                 ] if stop_cost_allocations else []),
                 "route_snapshot": route_snapshot_for_session,
-                "pickup_saved_location_id": pu_saved_id,
-                "delivery_saved_location_id": de_saved_id,
                 "pickup_customer_access_id": pu_access_id,
                 "delivery_customer_access_id": de_access_id,
                 "pickup_facility_id": pu_facility_id,
@@ -725,40 +719,31 @@ class BookingOrchestrationService:
             StopModel = self.env["logistics.pricing.session.stop"].sudo()
             if normalized_request.route_stops:
                 from ..services.itinerary_planner import (
-                    snapshot_facility_hours, snapshot_saved_location_hours,
+                    snapshot_facility_hours,
                 )
                 for position, rs in enumerate(normalized_request.route_stops):
-                    # Location union: canonical access row (customer_access_id)
-                    # preferred, legacy saved_location_id fallback.
-                    sl_id = rs.get("saved_location_id")
+                    # Location union (SAVED LOCATION CONSOLIDATION): the
+                    # canonical access row (customer_access_id) carries the
+                    # facility; the legacy saved_location_id fallback was
+                    # retired in 18.0.13.25.0.
                     acc_id = rs.get("customer_access_id")
                     fac_id = rs.get("facility_id")
                     sl = None
                     if acc_id:
                         sl = self.env["logistics.location.customer.access"].browse(acc_id)
-                    if (not sl or not sl.exists()) and sl_id:
-                        sl = self.env["logistics.saved.location"].browse(sl_id)
                     if not sl or not sl.exists():
                         sl = None
-                    # Facility authority behind the union record (fall back
-                    # to the legacy link when the stop carries no facility).
-                    if not fac_id:
-                        if sl and hasattr(sl, "facility_id") and sl.facility_id:
-                            fac_id = sl.facility_id.id
-                        elif sl and sl.dispatch_location_id:
-                            fac_id = sl.dispatch_location_id.id
+                    if not fac_id and sl and sl.facility_id:
+                        fac_id = sl.facility_id.id
                     facility = (self.env["prema.dispatch.location"].browse(fac_id)
                                 if fac_id else None)
                     stop_type = rs.get("stop_type") or "delivery"
-                    hours_snapshot = (snapshot_facility_hours(self.env, facility, stop_type)
-                                      if facility else
-                                      snapshot_saved_location_hours(self.env, sl, stop_type))
+                    hours_snapshot = snapshot_facility_hours(self.env, facility, stop_type)
                     StopModel.create({
                         "session_id": session.id,
                         "sequence": (position + 1) * 10,
                         "stop_key": rs.get("stop_key") or "",
                         "stop_type": stop_type,
-                        "saved_location_id": sl_id or False,
                         "facility_id": fac_id or False,
                         "customer_access_id": acc_id or False,
                         "location_name": rs.get("location_name")
@@ -789,23 +774,18 @@ class BookingOrchestrationService:
                     })
             else:
                 for i, ds in enumerate(normalized_request.delivery_stops):
-                    # Location union (SAVED LOCATION CONSOLIDATION): access
-                    # row canonical, legacy saved location fallback.
-                    sl_id = ds.get("saved_location_id")
+                    # Location union (SAVED LOCATION CONSOLIDATION): the
+                    # canonical access row carries the facility; the legacy
+                    # saved_location_id fallback was retired in 18.0.13.25.0.
                     acc_id = ds.get("customer_access_id")
                     fac_id = ds.get("facility_id")
                     sl = None
                     if acc_id:
                         sl = self.env["logistics.location.customer.access"].browse(acc_id)
-                    if (not sl or not sl.exists()) and sl_id:
-                        sl = self.env["logistics.saved.location"].browse(sl_id)
                     if not sl or not sl.exists():
                         sl = None
-                    if not fac_id:
-                        if sl and hasattr(sl, "facility_id") and sl.facility_id:
-                            fac_id = sl.facility_id.id
-                        elif sl and sl.dispatch_location_id:
-                            fac_id = sl.dispatch_location_id.id
+                    if not fac_id and sl and sl.facility_id:
+                        fac_id = sl.facility_id.id
                     stop_idx = i + 1  # 1-based stop index matching pallet_allocations
                     # Compute allocated pallets and shared flag from pallet_allocations
                     allocs = normalized_request.pallet_allocations or []
@@ -817,7 +797,6 @@ class BookingOrchestrationService:
                     StopModel.create({
                         "session_id": session.id,
                         "sequence": stop_idx,
-                        "saved_location_id": sl_id or False,
                         "facility_id": fac_id or False,
                         "customer_access_id": acc_id or False,
                         "location_name": sl.name if sl else ds.get("city", ""),
@@ -907,21 +886,18 @@ class BookingOrchestrationService:
                 friendly = "This shipment requires manual scheduling. Please request a quote."
             raise UserError(_(friendly))
 
-        # Extract saved location IDs from normalized request — legacy
-        # saved_location_id convention PLUS canonical access/facility refs
-        # (SAVED LOCATION CONSOLIDATION §14).
-        pu_saved_id = None
-        de_saved_id = None
+        # Extract canonical location refs from the normalized request
+        # (SAVED LOCATION CONSOLIDATION §14: the session carries the
+        # access/facility pair — the legacy saved_location_id convention
+        # was retired in 18.0.13.25.0).
         pu_access_id = None
         de_access_id = None
         pu_facility_id = None
         de_facility_id = None
         if normalized_request.pickup_stops:
-            pu_saved_id = normalized_request.pickup_stops[0].get("saved_location_id")
             pu_access_id = normalized_request.pickup_stops[0].get("customer_access_id")
             pu_facility_id = normalized_request.pickup_stops[0].get("facility_id")
         if normalized_request.delivery_stops:
-            de_saved_id = normalized_request.delivery_stops[0].get("saved_location_id")
             de_access_id = normalized_request.delivery_stops[0].get("customer_access_id")
             de_facility_id = normalized_request.delivery_stops[0].get("facility_id")
 
@@ -974,8 +950,6 @@ class BookingOrchestrationService:
             "calculated_price": calculated_price,
             "price_snapshot": price_lines + [{"_pallet_allocs": normalized_request.pallet_allocations}],
             "route_snapshot": route_snapshot_for_session,
-            "pickup_saved_location_id": pu_saved_id,
-            "delivery_saved_location_id": de_saved_id,
             "pickup_customer_access_id": pu_access_id,
             "delivery_customer_access_id": de_access_id,
             "pickup_facility_id": pu_facility_id,
@@ -986,23 +960,18 @@ class BookingOrchestrationService:
         # Create per-stop records for multi-stop bookings
         StopModel = self.env["logistics.pricing.session.stop"].sudo()
         for i, ds in enumerate(normalized_request.delivery_stops):
-            # Location union: canonical access row preferred, legacy
-            # saved_location_id fallback (SAVED LOCATION CONSOLIDATION).
-            sl_id = ds.get("saved_location_id")
+            # Location union (SAVED LOCATION CONSOLIDATION): the canonical
+            # access row carries the facility; the legacy saved_location_id
+            # fallback was retired in 18.0.13.25.0.
             acc_id = ds.get("customer_access_id")
             fac_id = ds.get("facility_id")
             sl = None
             if acc_id:
                 sl = self.env["logistics.location.customer.access"].browse(acc_id)
-            if (not sl or not sl.exists()) and sl_id:
-                sl = self.env["logistics.saved.location"].browse(sl_id)
             if not sl or not sl.exists():
                 sl = None
-            if not fac_id:
-                if sl and hasattr(sl, "facility_id") and sl.facility_id:
-                    fac_id = sl.facility_id.id
-                elif sl and sl.dispatch_location_id:
-                    fac_id = sl.dispatch_location_id.id
+            if not fac_id and sl and sl.facility_id:
+                fac_id = sl.facility_id.id
             stop_idx = i + 1
             # Shared-pallet flag is derived from the canonical pallet
             # allocations; the allocations themselves live in the
@@ -1017,7 +986,6 @@ class BookingOrchestrationService:
             StopModel.create({
                 "session_id": session.id,
                 "sequence": stop_idx,
-                "saved_location_id": sl_id or False,
                 "facility_id": fac_id or False,
                 "customer_access_id": acc_id or False,
                 "location_name": sl.name if sl else ds.get("city", ""),
@@ -1476,62 +1444,25 @@ class BookingOrchestrationService:
 
     @staticmethod
     def _stop_saved_ids(env, stop_dict):
-        """Resolve the canonical saved-location FK pair for one stop dict.
+        """Resolve the canonical facility FK for one stop dict.
 
-        Two conventions exist in the wild and BOTH must work here:
-          - the portal / quote flow carries logistics.saved.location ids in
-            saved_location_id (the session's FK is that table);
-          - internal channels (recurring agreements, import wizards) carry
-            prema.dispatch.location master-facility ids.
-        Booking stops store BOTH ids — dispatch facility (operational
-        anchor, saved_location_id FK) and customer logistics location —
-        so the missing side is resolved instead of trusting either
-        convention blindly. Mirrors the translation confirm_from_session
-        (logistics_booking.py) performs for the portal path.
+        SAVED LOCATION CONSOLIDATION (18.0.13.25.0): the legacy
+        logistics.saved.location convention was retired — stop dicts
+        carry the canonical prema.dispatch.location facility id, either
+        directly (facility_id) or via the customer-access row. The
+        booking stop's saved_location_id FK IS the facility id.
 
-        Returns (dispatch_location_id, logistics_saved_location_id).
+        Returns (dispatch_location_id, False).
         """
-        LogisticsLoc = env["logistics.saved.location"]
-        dispatch_id = stop_dict.get("saved_location_id") or False
-        logistics_id = stop_dict.get("logistics_saved_location_id") or False
-
-        # SAVED LOCATION CONSOLIDATION: the canonical branch — the stop
-        # carries an explicit customer-access row (access id) or the
-        # facility id. The access row resolves straight to its facility;
-        # no legacy row is involved, so logistics_saved_location_id stays
-        # unset (a historical booking stop with no legacy profile record).
         access_id = stop_dict.get("customer_access_id") or False
         if access_id:
             acc = env["logistics.location.customer.access"].browse(access_id)
-            if acc.exists():
+            if acc.exists() and acc.facility_id:
                 return acc.facility_id.id, False
-            # stale access id — fall through to the legacy conventions
         if stop_dict.get("facility_id"):
-            return int(stop_dict["facility_id"]), logistics_id or False
-
-        if logistics_id:
-            sl = LogisticsLoc.browse(logistics_id)
-            if sl.exists():
-                if sl.dispatch_location_id:
-                    dispatch_id = sl.dispatch_location_id.id
-                elif not dispatch_id:
-                    dispatch_id = False
-                logistics_id = sl.id
-            else:
-                logistics_id = False
-        elif dispatch_id:
-            sl = LogisticsLoc.browse(dispatch_id)
-            if sl.exists():
-                # Portal convention: saved_location_id IS the logistics id.
-                logistics_id = sl.id
-                dispatch_id = sl.dispatch_location_id.id if sl.dispatch_location_id else False
-            else:
-                # Internal convention: saved_location_id is a dispatch id.
-                sl = LogisticsLoc.search(
-                    [("dispatch_location_id", "=", dispatch_id)], limit=1,
-                )
-                logistics_id = sl.id if sl else False
-        return dispatch_id, logistics_id
+            return int(stop_dict["facility_id"]), False
+        dispatch_id = stop_dict.get("saved_location_id") or False
+        return dispatch_id, False
 
     def _create_booking_stops(self, booking, pickup_stops, delivery_stops):
         """Create real booking stops from raw pickup/delivery stop dicts.
@@ -1548,7 +1479,6 @@ class BookingOrchestrationService:
                 "stop_type": "pickup",
                 "stop_key": pu.get("stop_key") or "",
                 "saved_location_id": dispatch_id,
-                "logistics_saved_location_id": logistics_id,
                 "company_name": pu.get("company_name", ""),
                 "street": pu.get("street", ""),
                 "city": pu.get("city", ""),
@@ -1586,7 +1516,6 @@ class BookingOrchestrationService:
                 "stop_type": "delivery",
                 "stop_key": dl.get("stop_key") or "",
                 "saved_location_id": dispatch_id,
-                "logistics_saved_location_id": logistics_id,
                 "company_name": dl.get("company_name", ""),
                 "street": dl.get("street", ""),
                 "city": dl.get("city", ""),

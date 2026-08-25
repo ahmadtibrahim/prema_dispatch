@@ -90,18 +90,9 @@ class LogisticsPricingSession(models.TransientModel):
     residential = fields.Boolean()
     same_day_requested = fields.Boolean()
 
-    pickup_saved_location_id = fields.Many2one(
-        "logistics.saved.location", string="Pickup Saved Location",
-        help="Frozen from Step 1 selection — used for Step 3 display. "
-             "Legacy — new sessions prefer pickup_facility_id.",
-    )
-    delivery_saved_location_id = fields.Many2one(
-        "logistics.saved.location", string="Delivery Saved Location",
-        help="Frozen from Step 1 selection — used for Step 3 display. "
-             "Legacy — new sessions prefer delivery_facility_id.",
-    )
-    # Canonical references (consolidation): the physical facility +
-    # the customer's access relation carry the data new sessions use.
+    # Canonical references (SAVED LOCATION CONSOLIDATION — legacy
+    # logistics.saved.location M2Os retired in 18.0.13.25.0): the physical
+    # facility + the customer's access relation carry the data sessions use.
     pickup_facility_id = fields.Many2one(
         "prema.dispatch.location", string="Pickup Facility",
         help="Canonical physical facility for the pickup (one building = "

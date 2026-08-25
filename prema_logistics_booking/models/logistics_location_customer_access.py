@@ -108,21 +108,15 @@ class LogisticsLocationCustomerAccess(models.Model):
          ("NETWORK_DISABLED", "Automatic Booking Unavailable"),
          ("AMBIGUOUS", "Manual Region Review Required")],
         compute="_compute_region_match_result", store=False,
-        help="Display-only badge for the portal list: the last region-match "
-             "outcome computed for a legacy saved location linked to this "
-             "facility. The booking engine's authority is unchanged; this "
-             "only feeds the customer-facing badge.",
+        help="Display-only badge for the portal list. RETIRED in 18.0.13.25.0 "
+             "(SAVED LOCATION CONSOLIDATION — the legacy saved-location "
+             "model was dropped); always False.",
     )
 
     @api.depends("facility_id")
     def _compute_region_match_result(self):
-        Saved = self.env["logistics.saved.location"]
         for rec in self:
-            saved = Saved.search([
-                ("dispatch_location_id", "=", rec.facility_id.id),
-                ("active", "=", True),
-            ], limit=1)
-            rec.region_match_result = saved.region_match_result or False
+            rec.region_match_result = False
 
     @api.depends("facility_id", "customer_alias", "can_pickup", "can_delivery")
     def _compute_location_proxies(self):
@@ -280,27 +274,18 @@ class PremaDispatchLocationExtension(models.Model):
                  "facility_hours_ids.open_time", "facility_hours_ids.close_time")
     def _compute_location_aggregates(self):
         from .prema_dispatch_location_hours import hours_summary_from_rows
-        SavedLocation = self.env["logistics.saved.location"]
         for loc in self:
             loc.customer_access_count = len(loc.customer_access_ids)
 
-            # Facility hours: canonical hours on the master itself are the
-            # authority; fall back to a linked saved location's structured
-            # schedule only while no canonical rows exist (legacy window).
+            # Facility hours: canonical hours on the facility itself are the
+            # only authority (SAVED LOCATION CONSOLIDATION 18.0.13.25.0 —
+            # the legacy saved-location schedule fallback was retired).
             canonical = loc.facility_hours_ids.filtered(
                 lambda r: r.active and r.service_scope == "general")
             if canonical:
                 loc.facility_hours_summary = hours_summary_from_rows(canonical)
             else:
-                linked = SavedLocation.search(
-                    [("dispatch_location_id", "=", loc.id),
-                     ("active", "=", True)], limit=5)
-                summary = ""
-                for saved in linked:
-                    if saved.hours_status == "configured":
-                        summary = saved.hours_summary
-                        break
-                loc.facility_hours_summary = summary or ""
+                loc.facility_hours_summary = ""
 
             # Region: prefer a detected logistics region from linked saved
             # locations, fall back to province-group label.

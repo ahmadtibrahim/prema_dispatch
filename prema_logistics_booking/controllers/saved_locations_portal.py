@@ -785,18 +785,10 @@ class LogisticsSavedLocationsPortal(http.Controller):
 
         api_key = request.env["ir.config_parameter"].sudo().get_param("google_maps_api_key", "")
 
-        # Facility canonical hours → form week. While a facility has NO
-        # canonical hours rows at all (pre-migration legacy window), the
-        # linked legacy saved location's schedule is shown instead.
+        # Facility canonical hours → form week. The legacy
+        # logistics.saved.location schedule fallback was retired in
+        # 18.0.13.25.0 — canonical facility hours are the only authority.
         hours_by_day = self._facility_hours_by_day(acc.facility_id)
-        if not request.env["prema.dispatch.location.hours"].sudo().search_count([
-                ("facility_id", "=", acc.facility_id.id)]):
-            saved = request.env["logistics.saved.location"].sudo().search([
-                ("dispatch_location_id", "=", acc.facility_id.id),
-                ("active", "=", True)], limit=1)
-            if saved:
-                hours_by_day = saved.hours_context_dict().get(
-                    "hours_by_day", hours_by_day)
 
         return request.render("prema_logistics_booking.portal_saved_location_form_enhanced", {
             "error": error,

@@ -44,7 +44,6 @@
     <menuitem id="menu_v4_regions" name="Regions" parent="menu_v4_network" action="action_logistics_region" sequence="40"/>
     <menuitem id="menu_v4_schedule_exceptions" name="Schedule Exceptions" parent="menu_v4_network" action="action_logistics_holiday_calendar" sequence="50"/>
     <menuitem id="menu_v4_saved_locations" name="Master Facilities" parent="menu_v4_locations" action="prema_dispatch.action_dispatch_locations" sequence="20"/>
-    <menuitem id="menu_saved_locations" name="Customer Locations" parent="menu_v4_locations" action="action_logistics_saved_location" sequence="10"/>
 
     <!-- menu_v4_lanes_pricing (Pricing -> "Service Routes" -> logistics.lane)
          intentionally removed: logistics.lane is hidden technical topology

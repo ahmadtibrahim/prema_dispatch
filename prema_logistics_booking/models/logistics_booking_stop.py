@@ -44,14 +44,11 @@ class LogisticsBookingStop(models.Model):
              "against, never silently re-read from the master location.")
     timezone = fields.Char(default="America/Toronto")
 
-    # Saved location (reuse existing dispatch.location)
+    # Canonical facility (SAVED LOCATION CONSOLIDATION: one building =
+    # one prema.dispatch.location row). The legacy
+    # logistics.saved.location customer-profile M2O was retired in
+    # 18.0.13.25.0 (zero live references proven before the drop).
     saved_location_id = fields.Many2one("prema.dispatch.location", string="Saved Location", index=True, ondelete="set null")
-    # New customer Saved Location (commercial layer)
-    logistics_saved_location_id = fields.Many2one(
-        "logistics.saved.location", string="Customer Saved Location",
-        index=True, ondelete="set null",
-        help="Customer-facing saved location reference.",
-    )
 
     # Identity
     company_name = fields.Char()

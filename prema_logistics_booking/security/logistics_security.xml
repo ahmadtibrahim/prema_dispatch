@@ -114,53 +114,9 @@
             <field name="perm_unlink">0</field>
         </record>
 
-        <!-- Saved Locations — portal security: customer sees only own company's locations -->
-        <record id="ir_rule_saved_location_portal_own" model="ir.rule">
-            <field name="name">Portal: Own Commercial Partner Saved Locations</field>
-            <field name="model_id" ref="model_logistics_saved_location"/>
-            <field name="domain_force">[('commercial_partner_id', '=', user.partner_id.commercial_partner_id.id)]</field>
-            <field name="groups" eval="[(4, ref('base.group_portal'))]"/>
-            <field name="perm_read">1</field>
-            <field name="perm_write">1</field>
-            <field name="perm_create">1</field>
-            <field name="perm_unlink">0</field>
-        </record>
-
-        <record id="ir_rule_saved_location_internal" model="ir.rule">
-            <field name="name">Internal: All Saved Locations</field>
-            <field name="model_id" ref="model_logistics_saved_location"/>
-            <field name="domain_force">[(1, '=', 1)]</field>
-            <field name="groups" eval="[(4, ref('base.group_user'))]"/>
-            <field name="perm_read">1</field>
-            <field name="perm_write">1</field>
-            <field name="perm_create">1</field>
-            <field name="perm_unlink">0</field>
-        </record>
-
-        <!-- Saved Location Operating Hours — same privacy scoping as the
-             location itself: portal customers read their own facilities'
-             hours (the route builder shows them), internal users read all. -->
-        <record id="ir_rule_saved_location_hours_portal_own" model="ir.rule">
-            <field name="name">Portal: Own Saved Location Hours</field>
-            <field name="model_id" ref="model_logistics_saved_location_hours"/>
-            <field name="domain_force">[('saved_location_id.commercial_partner_id', '=', user.partner_id.commercial_partner_id.id)]</field>
-            <field name="groups" eval="[(4, ref('base.group_portal'))]"/>
-            <field name="perm_read">1</field>
-            <field name="perm_write">1</field>
-            <field name="perm_create">1</field>
-            <field name="perm_unlink">0</field>
-        </record>
-
-        <record id="ir_rule_saved_location_hours_internal" model="ir.rule">
-            <field name="name">Internal: All Saved Location Hours</field>
-            <field name="model_id" ref="model_logistics_saved_location_hours"/>
-            <field name="domain_force">[(1, '=', 1)]</field>
-            <field name="groups" eval="[(4, ref('base.group_user'))]"/>
-            <field name="perm_read">1</field>
-            <field name="perm_write">1</field>
-            <field name="perm_create">1</field>
-            <field name="perm_unlink">0</field>
-        </record>
+        <!-- SAVED LOCATION CONSOLIDATION 18.0.13.25.0: the legacy
+             logistics.saved.location / .hours record rules were removed
+             with their models (pre-migrate drops them). -->
 
         <!-- Customer-access relations — PRIVACY: a portal customer may only
              see ITS OWN access rows (own alias, contact, instructions).

@@ -136,8 +136,9 @@ class RouteFinalizationService:
 
     def finalize_departure(self, departure):
         """Freeze one departure's confirmed itinerary."""
-        from ..services.itinerary_planner import ItineraryPlanner
-        from ..services.itinerary_planner import snapshot_saved_location_hours
+        from ..services.itinerary_planner import (
+            ItineraryPlanner, snapshot_facility_hours,
+        )
 
         Booking = self.env["logistics.booking"]
         bookings = Booking.search([
@@ -169,17 +170,17 @@ class RouteFinalizationService:
                 for index, bstop in enumerate(side_stops):
                     stop_key = f"b{booking.id}-{key_prefix}{index + 1}"
                     hours = bstop.operating_hours_snapshot or (
-                        snapshot_saved_location_hours(
-                            self.env, bstop.logistics_saved_location_id, side)
-                        if bstop.logistics_saved_location_id else None)
+                        snapshot_facility_hours(
+                            self.env, bstop.saved_location_id, side)
+                        if bstop.saved_location_id else None)
                     planner_stops.append({
                         "stop_key": stop_key,
                         "stop_type": side,
                         "latitude": bstop.latitude
-                            or (bstop.saved_location_id.latitude
+                            or (bstop.saved_location_id.pin_lat
                                 if bstop.saved_location_id else 0.0) or 0.0,
                         "longitude": bstop.longitude
-                            or (bstop.saved_location_id.longitude
+                            or (bstop.saved_location_id.pin_lng
                                 if bstop.saved_location_id else 0.0) or 0.0,
                         "city": bstop.city or bstop.location_name or "",
                         "timezone": bstop.timezone or "America/Toronto",

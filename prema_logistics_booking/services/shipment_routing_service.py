@@ -100,25 +100,42 @@ class ShipmentRoutingService:
         region_resolver = RegionResolver(self.env)
         direct_svc = DirectDeliveryService(self.env)
 
-        # Enrich coordinates + postal from saved locations (same rule as
-        # plan_milk_run_route: client coords win, saved location supplements).
-        SavedLocation = self.env["logistics.saved.location"]
+        # Enrich coordinates + postal from the canonical facility (same
+        # rule as plan_milk_run_route: client coords win, the facility
+        # pin supplements). Access row preferred; the facility is the
+        # physical fallback (SAVED LOCATION CONSOLIDATION 18.0.13.25.0).
+        Access = self.env["logistics.location.customer.access"]
+        Facility = self.env["prema.dispatch.location"]
         enriched = []
         for stop in stops or []:
             stop = dict(stop)
-            loc_id = stop.get("saved_location_id")
-            loc = None
-            if loc_id:
-                loc = SavedLocation.browse(int(loc_id))
-                if not loc.exists():
-                    loc = None
-            if loc:
+            acc = None
+            acc_id = stop.get("customer_access_id")
+            if acc_id:
+                acc = Access.browse(int(acc_id))
+                if not acc.exists():
+                    acc = None
+            fac = None
+            fac_id = stop.get("facility_id") or (acc.facility_id.id if acc and acc.facility_id else None)
+            if fac_id:
+                fac = Facility.browse(int(fac_id))
+                if not fac.exists():
+                    fac = None
+            if acc or fac:
+                latitude = (acc.latitude if acc and acc.latitude
+                            else (fac.pin_lat if fac and fac.pin_lat else 0.0))
+                longitude = (acc.longitude if acc and acc.longitude
+                             else (fac.pin_lng if fac and fac.pin_lng else 0.0))
                 if not (stop.get("latitude") and stop.get("longitude")):
-                    if loc.latitude and loc.longitude:
-                        stop["latitude"] = loc.latitude
-                        stop["longitude"] = loc.longitude
+                    if latitude and longitude:
+                        stop["latitude"] = latitude
+                        stop["longitude"] = longitude
                 if not stop.get("postal_code"):
-                    stop["postal_code"] = loc.postal_code or ""
+                    stop["postal_code"] = (acc.postal_code if acc else "") or (fac.postal_code if fac else "") or ""
+                if not stop.get("saved_location_id"):
+                    # Normalize: downstream consumers read saved_location_id
+                    # as the facility id.
+                    stop["saved_location_id"] = fac.id if fac else None
             enriched.append(stop)
         stops = enriched
 
@@ -282,18 +299,18 @@ class ShipmentRoutingService:
         try:
             from ..services.itinerary_planner import (
                 ItineraryPlanner,
-                snapshot_saved_location_hours,
+                snapshot_facility_hours,
             )
-            loc = self.env["logistics.saved.location"].sudo().browse(
+            fac = self.env["prema.dispatch.location"].sudo().browse(
                 int(stop["saved_location_id"]))
-            if not loc.exists():
+            if not fac.exists():
                 return arrival_dt, None, False
-            hours = snapshot_saved_location_hours(self.env, loc, stop_type)
+            hours = snapshot_facility_hours(self.env, fac, stop_type)
             planner = ItineraryPlanner(self.env)
             plan_stop = {
-                "latitude": stop.get("latitude") or loc.latitude or 0.0,
-                "longitude": stop.get("longitude") or loc.longitude or 0.0,
-                "timezone": stop.get("timezone") or loc.timezone or "America/Toronto",
+                "latitude": stop.get("latitude") or fac.pin_lat or 0.0,
+                "longitude": stop.get("longitude") or fac.pin_lng or 0.0,
+                "timezone": stop.get("timezone") or "America/Toronto",
                 "operating_hours_snapshot": hours,
                 "timing_type": stop.get("timing_type") or "flexible",
                 "window_start": stop.get("window_start"),
@@ -945,20 +962,21 @@ class ShipmentRoutingService:
                 "manual review required." % basis)
 
         # Coordinates may live on the stop dict itself (client-validated
-        # Google pin) OR on the stop's saved location — the portal passes
-        # route_stops through with saved_location_id only. Client coords
-        # win; the saved location supplements when they are missing.
-        SavedLocation = self.env["logistics.saved.location"]
+        # Google pin) OR on the stop's canonical facility — the portal
+        # passes route_stops through with saved_location_id = facility id
+        # only. Client coords win; the facility pin supplements when they
+        # are missing (SAVED LOCATION CONSOLIDATION 18.0.13.25.0).
+        Facility = self.env["prema.dispatch.location"]
 
         def _enrich(stop):
             stop = dict(stop)
             if not (stop.get("latitude") and stop.get("longitude")):
                 loc_id = stop.get("saved_location_id")
                 if loc_id:
-                    loc = SavedLocation.browse(int(loc_id))
-                    if loc.exists() and loc.latitude and loc.longitude:
-                        stop["latitude"] = loc.latitude
-                        stop["longitude"] = loc.longitude
+                    fac = Facility.browse(int(loc_id))
+                    if fac.exists() and fac.pin_lat and fac.pin_lng:
+                        stop["latitude"] = fac.pin_lat
+                        stop["longitude"] = fac.pin_lng
             return stop
 
         stops = [_enrich(s) for s in (stops or [])]

@@ -106,40 +106,21 @@ class LogisticsPhoneBooking(models.TransientModel):
             ("active", "=", True),
         ], limit=1)
 
-    def _saved_location_for(self, location):
-        """Return this customer's existing Saved Location copy when present.
-
-        This is a lookup only. The phone quote flow never creates one.
-        """
-        self.ensure_one()
-        if not location or not self.partner_id:
-            return self.env["logistics.saved.location"].browse()
-        return self.env["logistics.saved.location"].sudo().search([
-            ("dispatch_location_id", "=", location.id),
-            ("commercial_partner_id", "=", self.partner_id.commercial_partner_id.id),
-            ("active", "=", True),
-        ], limit=1)
-
     def _location_payload(self, location, stop_type):
-        """Physical master + only this customer's private metadata."""
+        """Physical master + only this customer's private metadata.
+
+        (The legacy logistics.saved.location lookup was retired in
+        18.0.13.25.0 — access rows are the only customer-profile source.)
+        """
         self.ensure_one()
         if not location:
             return {}
         access = self._customer_access_for(location)
-        saved = self._saved_location_for(location)
-        instructions = ""
-        if stop_type == "pickup":
-            instructions = (
-                (access.pickup_instructions if access else "")
-                or (saved.pickup_instructions if saved else "")
-                or ""
-            )
-        else:
-            instructions = (
-                (access.delivery_instructions if access else "")
-                or (saved.delivery_instructions if saved else "")
-                or ""
-            )
+        instructions = (
+            (access.pickup_instructions if access else "")
+            if stop_type == "pickup" else
+            (access.delivery_instructions if access else "")
+        )
         return {
             "company_name": location.business_name or location.name or "",
             "formatted_address": location.address_formatted or location.address or "",
@@ -152,7 +133,6 @@ class LogisticsPhoneBooking(models.TransientModel):
             "contact_name": (access.contact_name if access else "") or "",
             "phone": (access.contact_phone if access else "") or "",
             "email": (access.contact_email if access else "") or "",
-            "saved_location_id": saved.id if saved else False,
             "dispatch_location_id": location.id,
             # Canonical refs (SAVED LOCATION CONSOLIDATION §14): the
             # orchestrator's _stop_refs reads facility_id/customer_access_id

@@ -43,50 +43,17 @@ def _snapshot_from_rows(rows, day, scope):
     return [float(row.open_time or 0.0), float(row.close_time or 24.0)]
 
 
-def snapshot_saved_location_hours(env, saved_location, stop_type="pickup"):
-    """Freeze a saved location's CURRENT operating hours into a planning
-    snapshot {weekday: [open, close] or None}.
+def snapshot_facility_hours(env, facility, stop_type="pickup"):
+    """Snapshot a canonical facility's OWN hours into a planning snapshot
+    {weekday: [open, close] or None}.
 
     Preference order per day: scope-specific rows (pickup hours for pickup
     stops, receiving hours for delivery stops) → general rows → first row.
     A day with no rows or status=closed maps to None (closed day).
-    Once snapshotted, later master-location edits never change historical
-    booking planning.
-
-    Consolidation: the canonical facility's own hours
-    (prema.dispatch.location.hours on the linked master) are the
-    authority when present; legacy logistics.saved.location.hours rows are
-    the fallback. Legacy "delivery" scope maps to canonical "receiving".
-    """
-    snapshot = {key: None for key in WEEKDAY_KEYS}
-    if not saved_location:
-        return snapshot
-    scope = "pickup" if stop_type == "pickup" else "receiving"
-
-    master = saved_location.dispatch_location_id
-    if master:
-        canonical = master.facility_hours_ids.filtered(lambda r: r.active)
-        if canonical:
-            for day in WEEKDAY_KEYS:
-                snapshot[day] = _snapshot_from_rows(canonical, day, scope)
-            return snapshot
-
-    rows = env["logistics.saved.location.hours"].search([
-        ("saved_location_id", "=", saved_location.id),
-        ("active", "=", True),
-    ])
-    legacy_scope = "pickup" if stop_type == "pickup" else "delivery"
-    for day in WEEKDAY_KEYS:
-        snapshot[day] = _snapshot_from_rows(rows, day, legacy_scope)
-    return snapshot
-
-
-def snapshot_facility_hours(env, facility, stop_type="pickup"):
-    """Snapshot a canonical facility's OWN hours (consolidation path).
-
-    Same algorithm and preference order as
-    snapshot_saved_location_hours, but the facility record is the hours
-    authority directly — no legacy saved-location bridge needed.
+    Once snapshotted, later facility-hour edits never change historical
+    booking planning. (SAVED LOCATION CONSOLIDATION 18.0.13.25.0: the
+    legacy snapshot_saved_location_hours bridge was retired — the
+    facility record is the hours authority directly.)
     """
     snapshot = {key: None for key in WEEKDAY_KEYS}
     if not facility:

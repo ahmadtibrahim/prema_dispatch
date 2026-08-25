@@ -817,24 +817,13 @@ class RegionResolver:
     # ── Bridge internals ──────────────────────────────────────────────
 
     def _location_to_region(self, location):
-        """Reduce any location-ish input to a logistics.region record
-        (old OR new — not yet canonicalized)."""
+        """Reduce any location-ish input to a logistics.region record."""
         if location is None or location is False or location == 0:
             return self.env["logistics.region"]
         if hasattr(location, "_name"):
             model = location._name
             if model == "logistics.region":
                 return location if location.exists() else self.env["logistics.region"]
-            if model == "logistics.saved.location":
-                if location.override_region_id:
-                    return location.override_region_id
-                if location.detected_region_id:
-                    return location.detected_region_id
-                if location.postal_code:
-                    return self._postal_to_region(location.postal_code)
-                if location.city:
-                    return self._city_to_region(location.city)
-                return self.env["logistics.region"]
             if model == "logistics.hub":
                 return location.canonical_region_id or self.env["logistics.region"]
             if model == "logistics.fsa":
@@ -957,8 +946,9 @@ class RegionResolver:
             full_new_ids, fsa_code, fsa.display_city or "")
 
     def _city_to_region(self, city):
-        """Resolve a city name to a region via logistics.city, saved
-        locations, then region main_city."""
+        """Resolve a city name to a region via logistics.city, then region
+        main_city. (SAVED LOCATION CONSOLIDATION 18.0.13.25.0: the legacy
+        saved-location hint was retired.)"""
         name = str(city or "").strip()
         if not name:
             return self.env["logistics.region"]
@@ -967,11 +957,6 @@ class RegionResolver:
         for city_rec in cities:
             if city_rec.region_id:
                 return city_rec.region_id
-        locs = self.env["logistics.saved.location"].sudo().search(
-            [("city", "=ilike", name)], limit=5)
-        for loc in locs:
-            if loc.detected_region_id:
-                return loc.detected_region_id
         # Fallback: region main_city (new regions), hub_name (old regions),
         # then region name itself.
         Region = self.env["logistics.region"].sudo().with_context(active_test=False)

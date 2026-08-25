@@ -362,39 +362,41 @@ class LogisticsBooking(models.Model):
         NOW from the location authority — later edits to the location's
         hours never change this booking's planning.
 
-        SAVED LOCATION CONSOLIDATION: the location union prefers the
-        canonical access row (logistics.location.customer.access) and
-        falls back to the legacy logistics.saved.location."""
+        SAVED LOCATION CONSOLIDATION (18.0.13.25.0): the location union is
+        the canonical access row (logistics.location.customer.access) with
+        the facility (prema.dispatch.location) as physical fallback — the
+        legacy logistics.saved.location fallback was retired."""
         from ..services.itinerary_planner import (
-            snapshot_facility_hours, snapshot_saved_location_hours,
+            snapshot_facility_hours,
         )
         pickups, deliveries = [], []
         for stop in session.stop_ids.sorted("sequence"):
-            sl = stop.customer_access_id or stop.saved_location_id
-            # Facility id behind the union record: access → facility_id,
-            # legacy → dispatch_location_id.
+            acc = stop.customer_access_id
+            fac = stop.facility_id
+            # Physical facility behind the union: access → its facility,
+            # else the stop's own facility id.
             dispatch_loc_id = None
-            if sl:
-                if hasattr(sl, "facility_id") and sl.facility_id:
-                    dispatch_loc_id = sl.facility_id.id
-                elif sl.dispatch_location_id:
-                    dispatch_loc_id = sl.dispatch_location_id.id
-            hours_snapshot = (snapshot_facility_hours(self.env, sl.facility_id, stop.stop_type)
-                              if hasattr(sl, "facility_id") and sl.facility_id
-                              else snapshot_saved_location_hours(self.env, sl, stop.stop_type))
+            if acc and acc.facility_id:
+                dispatch_loc_id = acc.facility_id.id
+            elif fac:
+                dispatch_loc_id = fac.id
+            hours_snapshot = snapshot_facility_hours(self.env, dispatch_loc_id, stop.stop_type)
             values = {
                 "stop_key": stop.stop_key or "",
-                "company_name": sl.business_name or sl.name if sl else stop.location_name or "",
-                "street": sl.street if sl else stop.street or "",
-                "city": sl.city if sl else stop.city or "",
-                "province_state": sl.state_id.code if sl and sl.state_id else stop.state_code or "",
-                "postal_code": sl.postal_code if sl else stop.postal_code or "",
-                "formatted_address": sl.street if sl else stop.street or "",
-                "latitude": sl.latitude if sl and sl.latitude else stop.latitude,
-                "longitude": sl.longitude if sl and sl.longitude else stop.longitude,
-                "google_place_id": sl.google_place_id if sl else "",
-                "contact_name": sl.contact_name if sl else "",
-                "phone": sl.contact_phone if sl else "",
+                "company_name": (acc.business_name if acc and acc.business_name
+                                 else (fac.business_name if fac else "")) or stop.location_name or "",
+                "street": acc.street if acc else (fac.street if fac else stop.street or ""),
+                "city": acc.city if acc else (fac.city if fac else stop.city or ""),
+                "province_state": (acc.state_id.code if acc and acc.state_id
+                                   else (fac.province_code if fac else "")) or stop.state_code or "",
+                "postal_code": acc.postal_code if acc else (fac.postal_code if fac else stop.postal_code or ""),
+                "formatted_address": (acc.formatted_address if acc and acc.formatted_address
+                                      else (fac.address or fac.street if fac else "")) or stop.street or "",
+                "latitude": acc.latitude if acc and acc.latitude else (fac.pin_lat if fac and fac.pin_lat else stop.latitude),
+                "longitude": acc.longitude if acc and acc.longitude else (fac.pin_lng if fac and fac.pin_lng else stop.longitude),
+                "google_place_id": acc.google_place_id if acc else (fac.google_place_id if fac else ""),
+                "contact_name": acc.contact_name if acc else "",
+                "phone": acc.contact_phone if acc else "",
                 "instructions": stop.instructions or "",
                 "pallet_count": stop.pallets or 1,
                 "weight_lb": stop.weight_lbs or 0.0,
@@ -408,16 +410,14 @@ class LogisticsBooking(models.Model):
                 "window_end": stop.window_end,
                 "appointment_time": stop.appointment_time,
                 "service_time_minutes": stop.service_time_minutes or 15,
-                "timezone": stop.timezone or (sl.timezone if sl else "America/Toronto"),
+                "timezone": stop.timezone or (acc.timezone if acc else "America/Toronto"),
                 # Fresh snapshot at confirmation (spec: freeze current
                 # facility hours onto the persistent booking stop).
                 "operating_hours_snapshot": hours_snapshot,
                 # CRITICAL: saved_location_id = prema.dispatch.location
-                # (master facility); logistics_saved_location_id = customer
-                # profile record.
+                # (master facility); the legacy customer-profile FK was
+                # retired in 18.0.13.25.0.
                 "saved_location_id": dispatch_loc_id,
-                "logistics_saved_location_id": (
-                    sl.id if sl and not hasattr(sl, "facility_id") else None),
             }
             if stop.stop_type == "pickup":
                 pickups.append(values)
@@ -430,42 +430,49 @@ class LogisticsBooking(models.Model):
         multi-stop with per-stop pallets and shared-pallet mode.
 
         CRITICAL: logistics.booking.stop.saved_location_id points to
-        prema.dispatch.location (the master facility), NOT to
+        prema.dispatch.location (the master facility), NOT to the retired
         logistics.saved.location. We resolve the facility from the union
         record (SAVED LOCATION CONSOLIDATION: access row → facility_id,
-        legacy saved location → dispatch_location_id) and snapshot the
-        address/contact data at confirm time.
+        else the stop's own facility id) and snapshot the address/contact
+        data at confirm time.
         """
         stops_data = address_vals.get("delivery_stops_data") or []
         if stops_data:
             stops = []
             for sd in stops_data:
+                # The confirm payload's saved_location_id is the UNION id:
+                # the canonical access row when present, else the facility.
+                sl = None
                 sl_id = sd.get("saved_location_id") or 0
-                sl = self.env["logistics.location.customer.access"].browse(sl_id)
-                if not sl or not sl.exists():
-                    sl = self.env["logistics.saved.location"].browse(sl_id)
-                if not sl or not sl.exists():
-                    sl = self.env["logistics.saved.location"].browse()
+                if sl_id:
+                    sl = self.env["logistics.location.customer.access"].browse(sl_id)
+                    if not sl.exists():
+                        sl = None
+                fac = None
+                if sl and sl.facility_id:
+                    fac = sl.facility_id
+                elif sl_id:
+                    fac = self.env["prema.dispatch.location"].browse(sl_id)
+                    if not fac.exists():
+                        fac = None
                 session_stop = session.delivery_stop_ids.filtered(
                     lambda s, seq=sd.get("sequence", 0): s.sequence == seq
                 )[:1]
-                # Resolve the facility behind the union record
-                dispatch_loc_id = None
-                if sl:
-                    if hasattr(sl, "facility_id") and sl.facility_id:
-                        dispatch_loc_id = sl.facility_id.id
-                    elif sl.dispatch_location_id:
-                        dispatch_loc_id = sl.dispatch_location_id.id
+                # The physical facility behind the union record
+                dispatch_loc_id = fac.id if fac else None
                 stops.append({
-                    "company_name": sl.business_name or sl.name if sl else "",
-                    "street": sl.street if sl else "",
-                    "city": sl.city if sl else "",
-                    "province_state": sl.state_id.code if sl and sl.state_id else "",
-                    "postal_code": sl.postal_code if sl else "",
-                    "formatted_address": sl.street if sl else "",
-                    "latitude": sl.latitude if sl else 0.0,
-                    "longitude": sl.longitude if sl else 0.0,
-                    "google_place_id": sl.google_place_id if sl else "",
+                    "company_name": (sl.business_name if sl and sl.business_name
+                                     else (fac.business_name if fac else "")) or "",
+                    "street": sl.street if sl else (fac.street if fac else ""),
+                    "city": sl.city if sl else (fac.city if fac else ""),
+                    "province_state": (sl.state_id.code if sl and sl.state_id
+                                       else (fac.province_code if fac else "")),
+                    "postal_code": sl.postal_code if sl else (fac.postal_code if fac else ""),
+                    "formatted_address": (sl.formatted_address if sl and sl.formatted_address
+                                          else (fac.address or fac.street if fac else "")),
+                    "latitude": sl.latitude if sl and sl.latitude else (fac.pin_lat if fac and fac.pin_lat else 0.0),
+                    "longitude": sl.longitude if sl and sl.longitude else (fac.pin_lng if fac and fac.pin_lng else 0.0),
+                    "google_place_id": sl.google_place_id if sl else (fac.google_place_id if fac else ""),
                     "contact_name": sd.get("contact_name") or (sl.contact_name if sl else ""),
                     "phone": sd.get("phone") or (sl.contact_phone if sl else ""),
                     "instructions": sd.get("instructions") or (sl.delivery_instructions if sl else ""),
@@ -475,40 +482,38 @@ class LogisticsBooking(models.Model):
                     "liftgate_required": session.liftgate_delivery or (sl.liftgate_required if sl else False),
                     # CRITICAL: saved_location_id = prema.dispatch.location (master facility)
                     "saved_location_id": dispatch_loc_id,
-                    # logistics_saved_location_id = logistics.saved.location (customer profile)
-                    "logistics_saved_location_id": (
-                        sl.id if sl and not hasattr(sl, "facility_id") else None),
                     "shared_pallet": bool(session_stop.shared_pallet) if session_stop else False,
                 })
             return stops
         # Single-stop fallback — canonical access row preferred.
-        de_loc = session.delivery_customer_access_id or session.delivery_saved_location_id
+        de_acc = session.delivery_customer_access_id
+        de_fac = session.delivery_facility_id
         dispatch_loc_id = None
-        if de_loc:
-            if hasattr(de_loc, "facility_id") and de_loc.facility_id:
-                dispatch_loc_id = de_loc.facility_id.id
-            elif de_loc.dispatch_location_id:
-                dispatch_loc_id = de_loc.dispatch_location_id.id
+        if de_acc and de_acc.facility_id:
+            dispatch_loc_id = de_acc.facility_id.id
+        elif de_fac:
+            dispatch_loc_id = de_fac.id
         return [{
-            "company_name": de_loc.business_name or de_loc.name if de_loc else "",
-            "street": de_loc.street if de_loc else "",
-            "city": de_loc.city if de_loc else "",
-            "province_state": de_loc.state_id.code if de_loc and de_loc.state_id else "",
-            "postal_code": de_loc.postal_code if de_loc else "",
-            "formatted_address": de_loc.street if de_loc else "",
-            "latitude": de_loc.latitude if de_loc else 0.0,
-            "longitude": de_loc.longitude if de_loc else 0.0,
-            "google_place_id": de_loc.google_place_id if de_loc else "",
-            "contact_name": address_vals.get("delivery_contact_name") or (de_loc.contact_name if de_loc else ""),
-            "phone": address_vals.get("delivery_phone") or (de_loc.contact_phone if de_loc else ""),
-            "instructions": address_vals.get("delivery_instructions") or (de_loc.delivery_instructions if de_loc else ""),
-            "dock_available": bool(de_loc.dock_info) if de_loc else False,
+            "company_name": (de_acc.business_name if de_acc and de_acc.business_name
+                             else (de_fac.business_name if de_fac else "")) or "",
+            "street": de_acc.street if de_acc else (de_fac.street if de_fac else ""),
+            "city": de_acc.city if de_acc else (de_fac.city if de_fac else ""),
+            "province_state": (de_acc.state_id.code if de_acc and de_acc.state_id
+                               else (de_fac.province_code if de_fac else "")),
+            "postal_code": de_acc.postal_code if de_acc else (de_fac.postal_code if de_fac else ""),
+            "formatted_address": (de_acc.formatted_address if de_acc and de_acc.formatted_address
+                                  else (de_fac.address or de_fac.street if de_fac else "")),
+            "latitude": de_acc.latitude if de_acc and de_acc.latitude else (de_fac.pin_lat if de_fac and de_fac.pin_lat else 0.0),
+            "longitude": de_acc.longitude if de_acc and de_acc.longitude else (de_fac.pin_lng if de_fac and de_fac.pin_lng else 0.0),
+            "google_place_id": de_acc.google_place_id if de_acc else (de_fac.google_place_id if de_fac else ""),
+            "contact_name": address_vals.get("delivery_contact_name") or (de_acc.contact_name if de_acc else ""),
+            "phone": address_vals.get("delivery_phone") or (de_acc.contact_phone if de_acc else ""),
+            "instructions": address_vals.get("delivery_instructions") or (de_acc.delivery_instructions if de_acc else ""),
+            "dock_available": bool(de_acc.dock_info) if de_acc else False,
             "pallet_count": session.physical_pallets or session.pallets,
             "weight_lb": session.weight_lbs,
-            "liftgate_required": session.liftgate_delivery or (de_loc.liftgate_required if de_loc else False),
+            "liftgate_required": session.liftgate_delivery or (de_acc.liftgate_required if de_acc else False),
             "saved_location_id": dispatch_loc_id,
-            "logistics_saved_location_id": (
-                de_loc.id if de_loc and not hasattr(de_loc, "facility_id") else None),
             "shared_pallet": False,
         }]
 
@@ -574,22 +579,15 @@ class LogisticsBooking(models.Model):
 
         svc = BookingOrchestrationService(self.env)
         movements = self._extract_pallet_movements_from_snapshot(session.price_snapshot)
-        # Pickup location union: canonical access row first, legacy saved
-        # location fallback (SAVED LOCATION CONSOLIDATION §14).
-        pu_loc = None
-        if session.pickup_customer_access_id:
-            acc = self.env["logistics.location.customer.access"].browse(
-                session.pickup_customer_access_id.id)
-            if acc.exists():
-                pu_loc = acc
-        if not pu_loc and session.pickup_saved_location_id:
-            pu_loc = session.pickup_saved_location_id
+        # Pickup location union (SAVED LOCATION CONSOLIDATION §14): the
+        # canonical access row, with the facility as physical fallback.
+        pu_acc = session.pickup_customer_access_id
+        pu_fac = session.pickup_facility_id
         pu_dispatch_id = None
-        if pu_loc:
-            if hasattr(pu_loc, "facility_id") and pu_loc.facility_id:
-                pu_dispatch_id = pu_loc.facility_id.id
-            elif pu_loc.dispatch_location_id:
-                pu_dispatch_id = pu_loc.dispatch_location_id.id
+        if pu_acc and pu_acc.facility_id:
+            pu_dispatch_id = pu_acc.facility_id.id
+        elif pu_fac:
+            pu_dispatch_id = pu_fac.id
         if movements:
             # Generalized milk-run: pickup AND delivery stops come from the
             # ordered session stop list (stable stop keys, per-stop
@@ -598,26 +596,26 @@ class LogisticsBooking(models.Model):
             pickup_stops, delivery_stops = self._build_confirm_stops_from_session(session)
         else:
             pickup_stops = [{
-                "company_name": pu_loc.business_name or pu_loc.name if pu_loc else "",
-                "street": pu_loc.street if pu_loc else "",
-                "city": pu_loc.city if pu_loc else "",
-                "province_state": pu_loc.state_id.code if pu_loc and pu_loc.state_id else "",
-                "postal_code": pu_loc.postal_code if pu_loc else address_vals.get("pickup_postal_code") or "",
-                "formatted_address": pu_loc.street if pu_loc else address_vals.get("pickup_address") or "",
-                "latitude": pu_loc.latitude if pu_loc else 0.0,
-                "longitude": pu_loc.longitude if pu_loc else 0.0,
-                "google_place_id": pu_loc.google_place_id if pu_loc else "",
-                "contact_name": address_vals.get("pickup_contact_name") or (pu_loc.contact_name if pu_loc else ""),
-                "phone": address_vals.get("pickup_phone") or (pu_loc.contact_phone if pu_loc else ""),
-                "instructions": address_vals.get("pickup_instructions") or (pu_loc.pickup_instructions if pu_loc else ""),
+                "company_name": (pu_acc.business_name if pu_acc and pu_acc.business_name
+                                 else (pu_fac.business_name if pu_fac else "")) or "",
+                "street": pu_acc.street if pu_acc else (pu_fac.street if pu_fac else ""),
+                "city": pu_acc.city if pu_acc else (pu_fac.city if pu_fac else ""),
+                "province_state": (pu_acc.state_id.code if pu_acc and pu_acc.state_id
+                                   else (pu_fac.province_code if pu_fac else "")) or "",
+                "postal_code": pu_acc.postal_code if pu_acc else (pu_fac.postal_code if pu_fac else address_vals.get("pickup_postal_code") or ""),
+                "formatted_address": (pu_acc.formatted_address if pu_acc and pu_acc.formatted_address
+                                      else (pu_fac.address or pu_fac.street if pu_fac else "")) or address_vals.get("pickup_address") or "",
+                "latitude": pu_acc.latitude if pu_acc and pu_acc.latitude else (pu_fac.pin_lat if pu_fac and pu_fac.pin_lat else 0.0),
+                "longitude": pu_acc.longitude if pu_acc and pu_acc.longitude else (pu_fac.pin_lng if pu_fac and pu_fac.pin_lng else 0.0),
+                "google_place_id": pu_acc.google_place_id if pu_acc else (pu_fac.google_place_id if pu_fac else ""),
+                "contact_name": address_vals.get("pickup_contact_name") or (pu_acc.contact_name if pu_acc else ""),
+                "phone": address_vals.get("pickup_phone") or (pu_acc.contact_phone if pu_acc else ""),
+                "instructions": address_vals.get("pickup_instructions") or (pu_acc.pickup_instructions if pu_acc else ""),
                 "pallet_count": session.physical_pallets or session.pallets,
                 "weight_lb": session.weight_lbs,
-                "liftgate_required": session.liftgate_pickup or (pu_loc.liftgate_required if pu_loc else False),
+                "liftgate_required": session.liftgate_pickup or (pu_acc.liftgate_required if pu_acc else False),
                 # CRITICAL: saved_location_id = prema.dispatch.location (master facility)
                 "saved_location_id": pu_dispatch_id,
-                # logistics_saved_location_id = logistics.saved.location (customer profile)
-                "logistics_saved_location_id": (
-                    pu_loc.id if pu_loc and not hasattr(pu_loc, "facility_id") else None),
             }]
             delivery_stops = self._build_confirm_delivery_stops(session, address_vals)
         normalized = svc.normalize_request({
