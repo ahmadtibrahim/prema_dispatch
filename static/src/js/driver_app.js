@@ -923,8 +923,8 @@ function renderStopList() {
             <div class="da-next-stop-name">${esc(stopCompany(next))}</div>
             <div class="da-next-stop-addr">${esc(next.address)}</div>
             <div class="da-next-stop-actions">
-                <button class="da-btn da-btn-green da-next-go" id="nextStopGo">GO →</button>
-                <button class="da-btn da-btn-secondary" id="nextStopDetails">Details</button>
+                <button class="da-btn da-btn-green da-next-go" id="nextStopGo" data-stop-id="${next.id}">GO →</button>
+                <button class="da-btn da-btn-secondary" id="nextStopDetails" data-stop-id="${next.id}">Details</button>
             </div>`;
         card.querySelector("#nextStopGo").onclick=()=>showViewTab("nav");
         card.querySelector("#nextStopDetails").onclick=()=>openStop(next);
@@ -1609,7 +1609,7 @@ function renderFinishProof(){
                 <div class="da-finish-actions">
                     <button class="da-btn da-btn-secondary" onclick="APP.finishSchedule()">Back to Schedule</button>
                     <button class="da-btn da-btn-secondary" onclick="openLoadPlan()">Open Load Plan</button>
-                    <button class="da-btn da-btn-green" onclick="APP.finishNextStop()">🗺️ Navigate to Next Stop</button>
+                    <button class="da-btn da-btn-green" onclick="APP.finishNextStop()" data-stop-id="${next.id}">🗺️ Navigate to Next Stop</button>
                 </div>`
                 :`<div class="da-finish-note">🎉 No remaining open stops on this route.</div>
                 <div class="da-finish-actions">
@@ -2862,7 +2862,7 @@ function renderActions(stop,isDone,isActive){
         ${note?`<div class="da-transfer-note">${note} ${(stop.type==="transfer"||isCrossDockStop(stop.type))?`${hasProof ? "Custody proof has been added." : "Custody proof is optional."}`:""}</div>`:""}
         ${(stop.type==="transfer"||stop.type==="cross_dock_drop")?renderReceivingTruckSection(stop,false):""}
         <div class="da-btn-row">
-            <button class="da-btn da-btn-nav" onclick="doNavigate()">${navLabel}</button>
+            <button class="da-btn da-btn-nav" onclick="doNavigate()" data-stop-id="${stop.id}">${navLabel}</button>
             <button class="da-btn da-btn-secondary" onclick="APP.openPinEdit()">📍 Edit Pin</button>
             <button class="da-btn da-btn-secondary" onclick="doRestoreStop()">↺ Restore</button>
             <button class="da-btn da-btn-ghost" onclick="doSkip()">↩ Skip</button>

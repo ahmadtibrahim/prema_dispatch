@@ -39,7 +39,12 @@
     }
 
     function nextEligibleStop() {
-        const stops = (window.S?.stops || []);
+        // `S` is a top-level const (driver_app.js) — it lives in the global
+        // lexical scope, NOT on window. window.S is always undefined, so the
+        // old guard silently made every next-stop resolution fail, which left
+        // the schedule card's Navigate button without data-stop-id and the
+        // nav capture fell back to null S.stop → "Could not open navigation."
+        const stops = (typeof S !== "undefined" && S.stops) || [];
         const active = stops.find(s => ["en_route", "arrived"].includes(s.status));
         return active || stops.find(s => operational(s));
     }
@@ -110,7 +115,7 @@
     function movingNow() { return speedMps !== null && speedMps > DRIVING_MPS; }
 
     async function ensurePlan() {
-        if (window.S?.loadPlan) return S.loadPlan;
+        if (typeof S !== "undefined" && S.loadPlan) return S.loadPlan;
         if (typeof ensurePickupLoadPlan === "function") {
             try { return await ensurePickupLoadPlan(true); } catch (_) {}
         }
@@ -613,7 +618,7 @@
             } else if (!arrived) {
                 html = `${simplifiedInfo(stop)}${outOfSequence ? `<div class="da-v7-warning">Planned next stop: <b>${html(stopTitle(next))}</b></div>` : ""}
                     <div class="da-v7-stop-actions">
-                        <button class="da-v7-btn da-v7-btn-primary" data-v7="navigate">🗺️ ${outOfSequence ? "Go Here Instead" : "Navigate"}</button>
+                        <button class="da-v7-btn da-v7-btn-primary" data-v7="navigate" data-stop-id="${stop.id}">🗺️ ${outOfSequence ? "Go Here Instead" : "Navigate"}</button>
                         <button class="da-v7-btn da-v7-btn-success" data-v7="arrive">✓ I'm Here</button>
                         <button class="da-v7-btn da-v7-btn-secondary" data-v7="defer">↪ Come Back Later</button>
                         <button class="da-v7-btn da-v7-btn-warning" data-v7="report-problem">⚠ Report a Problem</button>
@@ -734,8 +739,13 @@
         if (action === "report-problem") return reportProblem();
         if (action === "resume-exception") return resumeException(S.stop);
         if (action === "navigate") {
+            // The button carries its own stop identity (data-stop-id) — never
+            // resolve navigation from a global/stale S.stop.
+            const stopId = Number(target.dataset.stopId);
+            const stop = (S.stops || []).find(s => s.id === stopId) || S.stop;
+            if (!stop) return;
             const next = nextEligibleStop();
-            return next && next.id !== S.stop.id ? makeOutOfSequenceNext(S.stop) : navigateToStop(S.stop, false);
+            return next && next.id !== stop.id ? makeOutOfSequenceNext(stop) : navigateToStop(stop, false);
         }
         if (action === "actual-minus" || action === "actual-plus") {
             const input = $("#v7Actual");
