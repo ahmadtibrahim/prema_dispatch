@@ -5,7 +5,7 @@
 **Branch:** `feature/multi-pickup-multi-delivery` (milk-run implementation, NOT yet deployed to production)
 **Database:** Prod-db (production), Prod-db-test1a (test)
 **Odoo Config:** `/etc/odoo18.conf`
-**Version:** 6.4 · **Last Updated:** 2026-08-17
+**Version:** 6.5 · **Last Updated:** 2026-08-25
 
 > This is the SINGLE authoritative file for everything Prema Dispatch. All architecture, business rules, pricing, capacity, deployment procedures, file index, booking module notes, decision history, and test results live here. No other Prema Dispatch .md files should exist outside `docs/archive/`.
 
@@ -1067,6 +1067,106 @@ stop(s), weight, custody, current truck/location and status.
   not globally optimal (look-ahead protects hard windows); the 106 pre-existing dispatch
   test errors remain a cleanup ticket unrelated to this work; the new builder JS is
   validated at the HTTP-contract level — a real browser pass is recommended before prod.
+
+## 34. UAT Follow-Up: Pallet Photo Evidence + Customer Tracking + Camera/Scanner UI + Navigate (18.0.3.21.0 / 18.0.3.22.0) — 2026-08-25
+
+Manual UAT follow-up campaign on the live test shipment (booking PF-260825-000031,
+job DISP/2026/00471, pallet PD-01, driver Ahmad Ibrahim). Every section verified by
+live probes against prod. Shipment preserved: pickup stop 1177 completed, delivery
+stop 1178 en_route (NOT completed), PD-01 loaded at position L1, invoice 0.
+
+### Backend evidence views (probe B — PASS)
+- Job form → **Evidence** smart button; Item form → **Pallet Evidence** smart button;
+  both `type="object"` calling `action_open_evidence()` (Odoo 18 `_validate_tag_button`
+  rejects bare `type="action"` xmlids — the module idiom is object methods returning
+  act_window dicts). Evidence list default-grouped by job; search filters (POPP,
+  POP/POD/scans, no-GPS); form shows Capture (type, driver, captured_at, device,
+  lat/lng, SHA-256) + Shipment (job/booking/stop/pallet/invoice) + File groups.
+- **Inline thumbnail**: `image_preview` computed Binary on prema.dispatch.evidence
+  (attachment datas when mimetype starts image/; empty for PDFs). Serves real
+  image bytes on the form (200 image/jpeg). No attachment duplication anywhere —
+  ir.attachment remains the single file store.
+- Probes verified: Evidence menu → job-filtered list (group DISP/2026/00471, 2 rows
+  with PD-01 / POPP / 1G2A9644_stamped.jpg / Ahmad Ibrahim), form values (PD-01,
+  POPP — Proof of Pickup Pallet, captured 2026-08-25 15:12:21, GPS
+  43.5548598/-79.7401178), thumbnail rendered + bytes served.
+
+### Customer tracking pallets + photos (probe C — PASS)
+- `/dispatch/track/<tn>` now renders a **PALLETS** section: per-pallet card with
+  reference, status label, pickup/delivery stop labels, and 76px photo thumbnails
+  linking to secure evidence URLs.
+- New route `/dispatch/track/<tracking_number>/evidence/<evidence_id>` (auth="public"):
+  validates the tracking token (job or booking token) OR an authenticated user whose
+  commercial_partner_id matches the booking's partner; serves raw attachment bytes
+  with nosniff; 404 for evidence that belongs to a different job. No raw attachment
+  IDs as unrestricted URLs anywhere in the tracking page.
+- Probes: valid token → 200 with PALLETS section (PD-01, In Transit, pickup/delivery
+  labels, thumbnail); evidence/4 serves byte-exact JPEG (105726 B = attachment 7870);
+  wrong/no token → 404; legacy no-token render → 200 with zero photo URLs.
+
+### Camera/scanner UI (probes D/E — PASS)
+- **Root cause**: scanner overlay was `.da-scanner-overlay` at z-index 200 with the
+  camera element inside — the v7 guided-flow guide (2600) and driving badge (3000)
+  painted ABOVE it, so the camera appeared behind the app UI and was unusable.
+  **Fix**: `z-index:4000!important` + `height:100dvh` + full positioning, making the
+  scanner a TRUE top-level overlay.
+- **Root cause (broken mobile controls)**: review bar was a 6-button flex row that
+  compressed to invisible widths at 360px. **Fix**: `#scanPreviewStage .da-scan-bar`
+  becomes a 4-column grid (`repeat(4,minmax(0,1fr))`), `#scanUseBtn`/`#scanCompleteBtn`
+  span `grid-column:1/-1` with min-height 46px, close/retake/add/enhance min-height
+  42px, `padding-bottom:max(12px,env(safe-area-inset-bottom))`, `scanCloseBtn` id.
+- Probes (live template + live CSS, real layout — hidden-ancestor artifact from the
+  first run fixed by reopening the overlay chain): E0 all 8 control ids present;
+  E1 no horizontal overflow at 360/390/412/430; E2 4-col row + full-width CTA
+  rendered inside viewport at all 4 widths; E3 Use Page grid-column 1/-1, width =
+  grid content width, min-height 46px. Headless limitation: no camera device, so
+  camera-capture itself is not exercisable in automation — markup/CSS verified live.
+
+### Navigation (probes G/H — PASS)
+- **Root cause**: every Navigate call site had its own fragile multi-branch chain
+  (per-site URL builders, different failure handling, some silently doing nothing).
+- **Fix**: ONE canonical `window.launchStop` (driver_native_nav_v6.js): resolveStop
+  (object or id) → mapsUrl (lat/lng → `destination_place_id` → address fallback) →
+  en_route RPC fired FIRST (never awaited — a same-tab maps handoff must not kill
+  it) → `window.location.href = mapsUrl` → never-silent failure toast on any error.
+  All other sites (driver_app.js doNavigate/APP.openExternalNav, driver_flow_v6.js
+  openGoogleMapsApp, driver_guided_flow_v7.js navigateToStop) delegate to it.
+  `capturePrimaryNavigate` capture-phase listener covers legacy in-page Navigate
+  buttons by text/data-v7.
+- Probes: from pending → canonical URL
+  `https://www.google.com/maps/dir/?api=1&travelmode=driving&dir_action=navigate&destination=43.065947%2C-79.127155`
+  + en_route RPC + server flip; from en_route → idempotent, stays en_route, NOT
+  arrived/completed. Live stop 1178 left en_route for manual continuation.
+
+### TECHNICAL DEBT — Google Maps deprecations (§13 directive: record, do NOT migrate)
+- Google Maps JavaScript API deprecation of `google.maps.Marker`-style legacy
+  options and the removal of `places` from Maps JS (replaced by Places API) apply
+  to the app's map layers (live_map.js, driver app route map). Per UAT directive,
+  NO migration was launched now. Tracked here; when migrated, move the marker
+  layer to `google.maps.marker.AdvancedMarkerElement` and Places lookups to the
+  Places API client. (Also noted: web navigation via `maps/dir/?api=1` is a stable
+  public surface unaffected by Maps JS deprecations.)
+
+### DOCUMENTED — `runtime.lastError` "Could not establish connection" (§14)
+- Appears in the driver console; verified to originate from the browser's
+  extension messaging (Odoo web client polls for web-extensions; headless/private
+  contexts show it as benign noise). NOT from bundled code — no handler added;
+  documented here as extension noise. If it ever appears attributable to a bundled
+  script (line number in a prema_dispatch file), revisit.
+
+### Verification summary
+- Probe B backend views: PASS (menu, job/item buttons, list, form, thumbnail bytes)
+- Probe C tracking + photo security: PASS (200/404 matrix, byte-exact JPEG, no raw URLs)
+- Probe D served CSS: PASS (z-index:4000!important, 100dvh, 4-col grid live)
+- Probe E widths 360/390/412/430: PASS (E0-E3, 13 checks)
+- Probe F multi-page scan → one ordered PDF: PASS (RED→BLUE page order, cleanup,
+  rollback-clean)
+- Probes G/H Navigate: PASS (canonical URL, en_route preservation, idempotency)
+- Probe I end-state (§16): PASS — stop 1177 completed, 1178 en_route, PD-01 loaded
+  @ L1 on PB38446 plan, invoice 0, evidence rows 4/5 intact
+
+Deployed: 18.0.3.21.0 then 18.0.3.22.0 (thumbnail), 68 crons restored, service
+restarted. Commit c280f06 (main).
 
 ## Appendix A: File Index (CLAUDE.md)
 
