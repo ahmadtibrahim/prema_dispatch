@@ -907,7 +907,12 @@ function renderStopList() {
 
     const openStops=S.stops.filter(s=>!["completed","skipped","cancelled"].includes(s.status));
     const doneStops=S.stops.filter(s=>["completed","skipped"].includes(s.status));
-    const next=openStops[0];
+    // The NEXT STOP card must always show the CURRENT actionable stop: a
+    // deferred/exception stop stays listed below with its v7 badge but must
+    // never drive the card — its Navigate button resolves the next real
+    // stop, so the card body has to agree with it (matches v7
+    // nextEligibleStop()).
+    const next=openStops.find(s=>!["deferred","exception"].includes(s.status)) || openStops[0];
 
     // 1. NEXT STOP card (spec §10) — GO opens the NAVIGATION tab.
     if(next){
