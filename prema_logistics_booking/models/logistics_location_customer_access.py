@@ -362,7 +362,8 @@ class PremaDispatchLocationExtension(models.Model):
                  "facility_hours_ids", "facility_hours_ids.status",
                  "facility_hours_ids.day_of_week",
                  "facility_hours_ids.service_scope",
-                 "facility_hours_ids.open_time", "facility_hours_ids.close_time")
+                 "facility_hours_ids.open_time", "facility_hours_ids.close_time",
+                 "pin_lat", "pin_lng", "postal_code", "city", "province_code")
     def _compute_location_aggregates(self):
         from .prema_dispatch_location_hours import hours_summary_from_rows
         for loc in self:
@@ -378,13 +379,25 @@ class PremaDispatchLocationExtension(models.Model):
             else:
                 loc.facility_hours_summary = ""
 
-            # Region: prefer a detected logistics region from linked saved
-            # locations, fall back to province-group label.
+            # Region label — successor of the retired linked-saved-location
+            # detected_region_id (the old loop iterated a variable that
+            # stopped existing when logistics.saved.location was dropped in
+            # 18.0.13.25.0 and NameError'd every Locations list view, RPC
+            # 2026-08-25). Same precedence as the legacy detection: polygon
+            # detection on verified coordinates first, then the
+            # booking-authority postal/city path, then province label.
             region = ""
-            for saved in linked:
-                if saved.detected_region_id:
-                    region = saved.detected_region_id.name or ""
-                    break
+            from ..services.region_resolver import RegionResolver
+            rr = RegionResolver(self.env)
+            if loc.pin_lat and loc.pin_lng:
+                match = rr.resolve(loc.pin_lat, loc.pin_lng,
+                                   postal=loc.postal_code)
+                if match.matched_region:
+                    region = match.matched_region.name or ""
+            if not region:
+                canonical_region = rr.canonical_region(loc)
+                if canonical_region:
+                    region = canonical_region.name or ""
             if not region and loc.province_code:
                 region = self._PROVINCE_REGION_LABELS.get(
                     loc.province_code.upper(), "")
