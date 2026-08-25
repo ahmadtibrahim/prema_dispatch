@@ -89,6 +89,17 @@ class PricingService:
             return PricingResult(False, reason="required_temperature_c_missing")
         origin_region = pickup_fsa.region_id
         destination_region = delivery_fsa.region_id
+        # FSA rows point at the legacy lane regions (ids 1-20); corridors
+        # and hubs are keyed by the official LTL regions (142+). Canonicalize
+        # through the same bridge the coordinate path uses, so an FSA-only
+        # request (typed postal, no facility) resolves the same corridor the
+        # coordinate-based quote would.
+        from .region_resolver import RegionResolver
+        region_resolver = RegionResolver(self.env)
+        origin_region = region_resolver.canonical_region(origin_region)
+        destination_region = region_resolver.canonical_region(destination_region)
+        if not origin_region or not destination_region:
+            return PricingResult(False, reason="fsa_not_mapped_to_region")
         topology_legs = []
         pickup_date = delivery_date = None
         if resolve_departures:

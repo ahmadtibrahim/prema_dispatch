@@ -913,6 +913,10 @@ class BookingOrchestrationService:
             sl_id = ds.get("saved_location_id")
             sl = self.env["logistics.saved.location"].browse(sl_id) if sl_id else None
             stop_idx = i + 1
+            # Shared-pallet flag is derived from the canonical pallet
+            # allocations; the allocations themselves live in the
+            # price_snapshot _pallet_allocs and the booking movement
+            # model — the stop record only carries the boolean.
             allocs = normalized_request.pallet_allocations or []
             stop_pallets = [a["pallet"] for a in allocs if stop_idx in (a.get("stops") or [])]
             stop_shared = len(stop_pallets) > 0 and any(
@@ -933,7 +937,6 @@ class BookingOrchestrationService:
                 "pallets": ds.get("pallets", 1),
                 "weight_lbs": ds.get("weight_lbs", 500),
                 "shared_pallet": stop_shared or ds.get("shared_pallet", False),
-                "allocated_pallets": stop_pallets,
                 "timing_type": ds.get("timing_type", "flexible"),
                 "window_start": ds.get("window_start") or False,
                 "window_end": ds.get("window_end") or False,

@@ -44,6 +44,15 @@ class RouteResolver:
         destination = delivery_fsa.region_id
         if not origin or not destination:
             return ResolvedRoute(False, "fsa_not_mapped_to_region", [], pallets, weight_lbs)
+        # FSA rows point at the legacy lane regions (ids 1-20); corridors
+        # and hubs are keyed by the official LTL regions (142+). Canonicalize
+        # through the same bridge the coordinate path uses.
+        from .region_resolver import RegionResolver
+        region_resolver = RegionResolver(self.env)
+        origin = region_resolver.canonical_region(origin)
+        destination = region_resolver.canonical_region(destination)
+        if not origin or not destination:
+            return ResolvedRoute(False, "fsa_not_mapped_to_region", [], pallets, weight_lbs)
 
         direct = self.resolve_regions(origin, destination)
         if not direct.available:

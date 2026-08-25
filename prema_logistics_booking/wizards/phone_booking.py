@@ -1,3 +1,5 @@
+import datetime
+
 from odoo import _, api, fields, models
 from odoo.exceptions import UserError
 
@@ -48,7 +50,15 @@ class LogisticsPhoneBooking(models.TransientModel):
 
     requested_pickup_date = fields.Date(
         string="Requested Pickup Date",
-        help="Optional. Leave blank to price the next compatible scheduled departure.",
+        help="Optional. Leave blank to price the next compatible scheduled departure. "
+             "An unserved date is refused (never silently moved) with the nearest "
+             "valid pickup dates listed below.",
+    )
+    available_pickup_dates = fields.Char(
+        string="Available Pickup Dates",
+        readonly=True,
+        help="Nearest valid pickup dates for this request, from the same "
+             "availability authority the customer portal calendar uses.",
     )
     pallets = fields.Integer(default=1, required=True)
     weight_lbs = fields.Float(string="Weight (lbs)", default=750.0)
@@ -192,6 +202,7 @@ class LogisticsPhoneBooking(models.TransientModel):
             self.pickup_date = False
             self.delivery_date = False
             self.result_text = False
+            self.available_pickup_dates = False
 
     # ── Canonical pricing request ────────────────────────────────────
 
@@ -286,9 +297,142 @@ class LogisticsPhoneBooking(models.TransientModel):
             self.quote_id = self.env["logistics.custom.quote"].sudo().create(vals)
         return self.quote_id
 
+    # ── Requested-date availability (the portal's own authority) ─────
+
+    def _available_pickup_dates(self):
+        """Nearest valid pickup dates for this exact request.
+
+        ONE authority per path, the same the customer portal uses:
+          - Coordinates available (an existing facility is selected): the
+            exact calendar_availability service the portal calendar renders
+            (eligible_pickup_dates) — full date list, transfer chains
+            included, capacity-validated per departure.
+          - FSA-only path (one-off typed address): enumerate the same
+            DepartureResolver the FSA pricing path runs — resolve, then
+            step past each found date — so direct, transfer, LTL and FTL
+            all report exactly the dates the pricing engine will accept.
+
+        The portal calendar never offers TODAY (same-day pickup requires a
+        cutoff check), so the list starts tomorrow — a requested date that
+        equals today is treated as unavailable, exactly as the portal does.
+
+        Returns a sorted list of datetime.date (bounded). Creates nothing.
+        """
+        self.ensure_one()
+        pickup = self._stop_values("pickup")
+        delivery = self._stop_values("delivery")
+        stops = [
+            {"stop_type": "pickup", "latitude": pickup.get("latitude") or 0.0,
+             "longitude": pickup.get("longitude") or 0.0,
+             "city": pickup.get("city") or "",
+             "postal_code": pickup.get("postal_code") or ""},
+            {"stop_type": "delivery", "latitude": delivery.get("latitude") or 0.0,
+             "longitude": delivery.get("longitude") or 0.0,
+             "city": delivery.get("city") or "",
+             "postal_code": delivery.get("postal_code") or ""},
+        ]
+        if all(s["latitude"] and s["longitude"] for s in stops):
+            from ..services.shipment_routing_service import ShipmentRoutingService
+            verdict = ShipmentRoutingService(self.env).calendar_availability(
+                stops,
+                physical_pallets=self.pallets,
+                weight_lbs=self.weight_lbs,
+                equipment=self.temperature_mode,
+                shipment_type=self.shipment_type,
+            )
+            dates = []
+            for entry in verdict["dates"] or []:
+                date_val = entry.get("date")
+                if hasattr(date_val, "strftime"):
+                    date_val = date_val.date() if hasattr(date_val, "date") else date_val
+                elif date_val:
+                    date_val = datetime.date.fromisoformat(str(date_val)[:10])
+                if date_val and date_val not in dates:
+                    dates.append(date_val)
+            return sorted(dates)[:24]
+
+        Fsa = self.env["logistics.fsa"].sudo()
+        pickup_fsa = Fsa.resolve_from_postal(self.pickup_postal_code)
+        delivery_fsa = Fsa.resolve_from_postal(self.delivery_postal_code)
+        if not pickup_fsa or not delivery_fsa \
+                or not pickup_fsa.region_id or not delivery_fsa.region_id:
+            return []
+
+        from ..services.departure_resolver import DepartureResolver
+        from ..services.region_resolver import RegionResolver
+        from ..services.temperature_compat import to_canonical_temperature_mode
+        region_resolver = RegionResolver(self.env)
+        origin_region = region_resolver.canonical_region(pickup_fsa.region_id)
+        dest_region = region_resolver.canonical_region(delivery_fsa.region_id)
+        if not origin_region or not dest_region:
+            return []
+        resolver = DepartureResolver(self.env)
+        equipment = to_canonical_temperature_mode(self.temperature_mode)
+        dates = []
+        cursor = datetime.date.today() + datetime.timedelta(days=1)
+        horizon_end = cursor + datetime.timedelta(days=56)
+        while cursor <= horizon_end and len(dates) < 24:
+            resolution = resolver.resolve(
+                origin_region, dest_region, equipment,
+                self.pallets, self.weight_lbs,
+                earliest_pickup_date=cursor,
+                service_type=self.shipment_type,
+            )
+            if not resolution.available:
+                break
+            dep_date = resolution.legs[0].departure.departure_date
+            if dep_date not in dates:
+                dates.append(dep_date)
+            cursor = dep_date + datetime.timedelta(days=1)
+        return sorted(dates)[:24]
+
+    def _quote_form_action(self):
+        self.ensure_one()
+        return {
+            "type": "ir.actions.act_window",
+            "res_model": "logistics.phone.booking",
+            "res_id": self.id,
+            "view_mode": "form",
+            "target": "new",
+        }
+
     def action_get_price(self):
         self.ensure_one()
         from ..services.booking_orchestration_service import BookingOrchestrationService
+
+        # ── Requested-date validation ───────────────────────────────
+        # A requested pickup date no scheduled departure can serve must
+        # never be silently moved to another date — the price shown would
+        # bind to a different pickup. Refuse it and offer the nearest
+        # valid pickup dates (the same authority as the portal calendar)
+        # so staff can pick an alternate and recalculate.
+        if self.requested_pickup_date:
+            requested = self.requested_pickup_date
+            if not isinstance(requested, datetime.date):
+                try:
+                    requested = datetime.date.fromisoformat(str(requested)[:10])
+                except ValueError:
+                    raise UserError(_("The requested pickup date is not valid."))
+            available = self._available_pickup_dates()
+            if requested not in available:
+                self.quote_token = False
+                self.price = 0.0
+                self.pickup_date = False
+                self.delivery_date = False
+                if not available:
+                    self.available_pickup_dates = False
+                    self.result_text = _(
+                        "No scheduled service is available for this route in the "
+                        "coming weeks.\nSubmit a Custom Quote request, or check "
+                        "corridor configuration.")
+                else:
+                    labels = ", ".join(
+                        d.strftime("%a %b %d") for d in available[:6])
+                    self.available_pickup_dates = labels
+                    self.result_text = _(
+                        "Requested date unavailable. Available pickup dates: %s"
+                        % labels)
+                return self._quote_form_action()
 
         service = BookingOrchestrationService(self.env)
         quote = service.prepare_quote(self._normalized_request(service))
@@ -319,13 +463,7 @@ class LogisticsPhoneBooking(models.TransientModel):
             lines.append(f"  {line['label']:<35s} ${line['amount']:>10.2f}")
         lines.extend(["", f"TOTAL{'':<30s} ${session.calculated_price:>10.2f}"])
         self.result_text = "\n".join(lines)
-        return {
-            "type": "ir.actions.act_window",
-            "res_model": "logistics.phone.booking",
-            "res_id": self.id,
-            "view_mode": "form",
-            "target": "new",
-        }
+        return self._quote_form_action()
 
     def action_open_quote(self):
         self.ensure_one()

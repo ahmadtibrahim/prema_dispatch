@@ -28,6 +28,8 @@
                         <group string="Customer">
                             <field name="partner_id" required="1"/>
                             <field name="requested_pickup_date"/>
+                            <field name="available_pickup_dates" readonly="1"
+                                   invisible="not available_pickup_dates"/>
                         </group>
                         <group string="Shipment">
                             <field name="shipment_type"/>
