@@ -407,6 +407,7 @@
                 }
                 return true;
             }
+            tell("Could not save the pallet count. Please try again.");
             return false;
         } finally {
             savingStep1 = false;
@@ -441,7 +442,10 @@
         if (movingNow()) return tell("Stop-work controls unlock when the vehicle is stopped.");
         if (guide.mode === "pickup") {
             if (guide.step === 1) {
-                if (!await saveActualAndContinue(stop)) return tell("Save the actual pallet count before continuing.");
+                // saveActualAndContinue explains its own refusal (variance
+                // reason, save failure, not-confirmed) — never overwrite it
+                // with a generic second toast.
+                if (!await saveActualAndContinue(stop)) return;
             } else if (guide.step === 2) {
                 await ensurePlan();
                 if (!pickupState(stop).destinationsDone) return tell("Assign every pallet to its delivery stop first.");
