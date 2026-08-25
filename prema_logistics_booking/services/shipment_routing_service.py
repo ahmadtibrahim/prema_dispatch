@@ -776,11 +776,31 @@ class ShipmentRoutingService:
         booking_min = corridor.minimum_booking_charge if corridor else 150.0
         leg_total_raw = sum(leg.leg_price for leg in legs)
         if use_ftl:
-            # Billable distance = the corridor's own segment distance — the
-            # same source the pricing engine freezes into booking snapshots —
-            # never the full corridor length.
+            # Billable distance for a dedicated truck = the ACTUAL
+            # point-to-point road distance between the real pickup and
+            # delivery facilities when their coordinates are known — a
+            # dedicated FTL truck drives door-to-door, not along the
+            # corridor's scheduled route. Google Routes (with the built-in
+            # straight-line ×1.4 fallback) is the same road-distance
+            # authority the corridor distance recalculation uses; the
+            # corridor's segment distance remains the estimate for
+            # coordinate-less (FSA-only) requests — never the full
+            # corridor length.
+            actual_km = 0.0
+            if pickup_lat and pickup_lng and delivery_lat and delivery_lng:
+                try:
+                    from odoo.addons.prema_dispatch.services.route_service import DispatchRouteService
+                    actual_legs = DispatchRouteService(self.env).get_sequential_travel([
+                        (float(pickup_lat), float(pickup_lng)),
+                        (float(delivery_lat), float(delivery_lng)),
+                    ])
+                    if actual_legs:
+                        actual_km = float(actual_legs[0].get("distance_km") or 0.0)
+                except (TypeError, ValueError):
+                    actual_km = 0.0
             segment = corridor.resolve_region_segment(origin_region, dest_region)
-            distance = segment["distance_km"] if segment else (legs[0].estimated_distance_km or 0.0)
+            distance = actual_km or (
+                segment["distance_km"] if segment else (legs[0].estimated_distance_km or 0.0))
             ftl = corridor.compute_ftl_price(origin_region, dest_region, distance)
             if ftl["pricing_type"] == "flat_rate":
                 if not ftl["regional_rule"] or ftl["regional_rule"].flat_rate <= 0:
