@@ -754,7 +754,8 @@ class RegionResolver:
             ``logistics.fsa``, ``logistics.corridor.stop``,
             ``logistics.booking.stop`` records
           - FSA or full postal code string ("L5M", "L5M 2C3")
-          - region code string ("R1" .. "R15", "R-GTA")
+          - region code string ("R1" .. "R15", "R-GTA",
+            "ON-GTA", "QC-MONTREAL")
           - city name string ("Mississauga", "Montréal")
 
         Returns an EMPTY recordset when nothing resolvable is found —
@@ -870,6 +871,22 @@ class RegionResolver:
         #    Legacy regions are archived (active=False), so the implicit
         #    active filter must be disabled for code lookups.
         if re.match(r"^R-[A-Z]{3}$", upper) or re.match(r"^R\d{1,2}$", upper):
+            region = self.env["logistics.region"].sudo().with_context(
+                active_test=False,
+            ).search([("code", "=ilike", upper)], limit=1)
+            if region:
+                return region
+        # 1b. Region code — canonical official-LTL codes ("ON-GTA",
+        #     "QC-MONTREAL", "ON-HALIBURTON-OTTAWA-VALLEY"). Route-snapshot
+        #     legs store these codes, and the confirm-time departure-span
+        #     revalidation turns them back into region records. Surfaced by
+        #     the demo route matrix 2026-08-25: every canonical-region
+        #     quote failed at confirm with ROUTE_DEPARTURE_MISMATCH /
+        #     "not available on the selected departure" because the code
+        #     could not be parsed. A city name like "ST-JÉRÔME" also matches
+        #     the shape — the code search simply misses and we fall through
+        #     to the city lookup, so the branch is safe.
+        if re.match(r"^[A-Z]{2}-[A-Z][A-Z-]*$", upper):
             region = self.env["logistics.region"].sudo().with_context(
                 active_test=False,
             ).search([("code", "=ilike", upper)], limit=1)

@@ -337,7 +337,11 @@ def _portal_coord_pair(loc):
     if not loc:
         return (None, None)
     eff = loc._get_effective_coordinates()
-    return (eff["latitude"], eff["longitude"])
+    # Tuple contract (lat, lng) — the canonical helper on access rows
+    # returns a pair, not a dict. Dict-style indexing here crashed every
+    # portal booking request with TypeError (caught by the demo route
+    # matrix 2026-08-25).
+    return (eff[0], eff[1])
 
 
 def _resolve_loc(env, partner, loc_id):
