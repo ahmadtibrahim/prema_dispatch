@@ -27,6 +27,9 @@ from werkzeug.exceptions import NotFound
 from odoo.addons.prema_logistics_booking.services.google_places_service import (
     GooglePlacesService, valid_coordinate_pair,
 )
+from odoo.addons.prema_logistics_booking.services.location_resolver_service import (
+    LocationResolverService,
+)
 
 _GOOGLE_INSTRUCTION = _(
     "Please select the address from the Google address suggestions so we can "
@@ -394,70 +397,18 @@ class LogisticsSavedLocationsPortal(http.Controller):
             ], limit=1)
         return (state.id if state else False), (country.id if country else False)
 
-    # ── Facility find-or-create (§4 dedupe priority) ───────────────────
+    # ── Facility find-or-create (§5 dedupe priority) ───────────────────
     def _resolve_facility(self, gv, unit, vals):
-        """Dedupe priority: Google Place ID + normalized unit → normalized
-        address + unit hash → create. Never a fuzzy business-name merge.
+        """Canonical resolver (delegates to LocationResolverService).
+
+        §5 dedupe priority: normalized Google Place ID + unit →
+        normalized full address + unit → caller-supplied facility id →
+        create. Never a fuzzy business-name merge, and NEVER a
+        "Location already exists" error — the unique key indexes
+        (prema_dispatch 18.0.3.9.0) make a duplicate insert impossible,
+        so an exact re-add reuses the facility.
         Returns (facility, created_bool)."""
-        DispatchLoc = request.env["prema.dispatch.location"].sudo()
-        if gv["source"] == "master":
-            return gv["master"], False
-
-        place_id = (gv.get("place_id") or "").strip()
-        norm_unit = DispatchLoc._normalize_unit(unit or "")
-        facility = DispatchLoc.browse()
-        if place_id:
-            facility = DispatchLoc.search([
-                ("google_place_id", "=", place_id),
-                ("active", "=", True),
-            ], limit=1)
-        if not facility and (place_id or (gv.get("street") and gv.get("city"))):
-            import hashlib
-            raw_addr = " ".join(p for p in [
-                gv.get("street") or "", gv.get("city") or "",
-                gv.get("province_code") or "",
-                DispatchLoc._normalize_postal(gv.get("postal_code") or ""),
-                gv.get("country_code") or "",
-            ] if p)
-            normalized = DispatchLoc._normalize_address_street(raw_addr)
-            if normalized:
-                facility = DispatchLoc.search([
-                    ("normalized_address_hash", "=",
-                     hashlib.sha256(normalized.encode()).hexdigest()),
-                    ("normalized_unit", "=", norm_unit),
-                    ("active", "=", True),
-                ], limit=1)
-        if facility:
-            return facility, False
-
-        state_id, country_id = self._google_state_country(
-            gv.get("province_code"), gv.get("country_code"))
-        facility = DispatchLoc.create({
-            "name": vals.get("name") or gv.get("street") or "",
-            "address": gv.get("formatted_address") or ", ".join(p for p in [
-                gv.get("street") or "", gv.get("city") or "",
-            ] if p) or vals.get("name") or "",
-            "street": gv.get("street") or vals.get("street") or "",
-            "street2": vals.get("street2") or "",
-            "unit": unit or "",
-            "city": gv.get("city") or vals.get("city") or "",
-            "province_code": gv.get("province_code") or "",
-            "country_id": country_id or vals.get("country_id") or False,
-            "pin_lat": gv.get("latitude") or 0.0,
-            "pin_lng": gv.get("longitude") or 0.0,
-            "google_place_id": place_id or "",
-            "google_verified": bool(place_id),
-            "partner_id": vals.get("partner_id") or False,
-            "business_name": vals.get("business_name") or "",
-            "chain_name": vals.get("chain_name") or "",
-            "branch_name": vals.get("branch_name") or "",
-            "location_number": vals.get("store_number") or "",
-            "postal_code": gv.get("postal_code") or vals.get("postal_code") or "",
-            "stop_type": vals.get("stop_type") or "delivery",
-            "dock_door": vals.get("dock_info") or "",
-            "liftgate_required": bool(vals.get("liftgate_required")),
-        })
-        return facility, True
+        return LocationResolverService(request.env).resolve_or_create(gv, unit, vals)
 
     # ── Canonical facility hours ───────────────────────────────────────
     def _write_facility_hours(self, facility, hour_rows):
@@ -614,7 +565,10 @@ class LogisticsSavedLocationsPortal(http.Controller):
                     facility, created = self._resolve_facility(gv, unit, vals)
 
                     # Access row ONLY — never a logistics.saved.location.
-                    access = Access.ensure_access(
+                    # §6 get-or-create: exactly ONE active row per
+                    # facility × customer (resurrects an archived row so a
+                    # re-add is never invisible).
+                    access = LocationResolverService(request.env).get_or_create_access(
                         facility, partner,
                         portal_enabled=True,
                         can_pickup=location_type in ("pickup", "both"),

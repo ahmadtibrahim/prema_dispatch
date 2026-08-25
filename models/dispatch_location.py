@@ -67,6 +67,20 @@ class PremaDispatchLocation(models.Model):
     country_id = fields.Many2one("res.country", string="Country")
     normalized_address = fields.Char(compute="_compute_location_search_fields", store=True, index=True)
     normalized_address_hash = fields.Char(compute="_compute_location_search_fields", store=True, index=True)
+    # SAVED LOCATION CONSOLIDATION (§5): ONE canonical dedupe key pair.
+    # Every facility resolver searches these two stored keys — the unique
+    # partial indexes (migration 18.0.3.9.0) make reuse the only possible
+    # outcome: a duplicate insert cannot happen, so the portal NEVER needs
+    # a "Location already exists" error — it reuses + creates/updates the
+    # customer's access relationship.
+    normalized_google_place_key = fields.Char(
+        compute="_compute_location_search_fields", store=True, index=True,
+        help="google_place_id (normalized) + '|' + normalized_unit — the "
+             "highest-priority dedupe key (Google-verified identity + unit).")
+    normalized_address_key = fields.Char(
+        compute="_compute_location_search_fields", store=True, index=True,
+        help="normalized_address + '|' + normalized_unit — the second "
+             "dedupe key (full normalized address + unit).")
     verification_state = fields.Selection([
         ("driver_submitted", "Driver Submitted"), ("pending_review", "Pending Review"),
         ("verified", "Verified"), ("rejected", "Rejected"), ("legacy", "Legacy / Imported"),
@@ -330,6 +344,29 @@ class PremaDispatchLocation(models.Model):
         return v.strip()
 
     @api.model
+    def _normalize_google_place_key(self, place_id, normalized_unit=""):
+        """Dedupe key #1: normalized google_place_id + '|' + normalized unit.
+
+        Google place ids are case-sensitive in the Places API, but the KEY
+        deliberately lowercases + strips so case drift from imports still
+        collides on the unique index. Empty when there is no place id (a
+        facility without Google verification never occupies this key).
+        """
+        pid = (place_id or "").strip().lower()
+        return (pid + "|" + (normalized_unit or "")) if pid else ""
+
+    @api.model
+    def _normalize_address_key(self, normalized_address, normalized_unit=""):
+        """Dedupe key #2: normalized full address + '|' + normalized unit.
+
+        Consumes the ALREADY-normalized street-form address (street +
+        street2 + city + province + postal + country). Empty when the
+        address is blank — a Google-only resolve never blocks on it.
+        """
+        addr = (normalized_address or "").strip()
+        return (addr + "|" + (normalized_unit or "")) if addr else ""
+
+    @api.model
     def _normalize_location_number(self, value):
         """Normalize a store / branch number.
 
@@ -392,7 +429,7 @@ class PremaDispatchLocation(models.Model):
     @api.depends(
         "chain_name", "location_number", "business_name", "branch_name", "name",
         "city", "postal_code", "address", "street", "street2", "unit",
-        "province_code", "country_id",
+        "province_code", "country_id", "google_place_id",
         "dock_door", "receiving_entrance", "truck_entrance", "gate_code",
         "partner_id.name",
     )
@@ -416,6 +453,10 @@ class PremaDispatchLocation(models.Model):
             loc.normalized_address_hash = (
                 hashlib.sha256(normalized.encode()).hexdigest() if normalized else False
             )
+            loc.normalized_google_place_key = self._normalize_google_place_key(
+                loc.google_place_id, loc.normalized_unit)
+            loc.normalized_address_key = self._normalize_address_key(
+                normalized, loc.normalized_unit)
 
             # ── Search key (free-text, all signals) ──
             # Everything the Saved Locations search box must find: display

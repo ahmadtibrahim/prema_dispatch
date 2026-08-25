@@ -172,13 +172,16 @@ class LogisticsLocationCustomerAccess(models.Model):
 
         Never duplicates: the UNIQUE constraint guarantees one row per
         customer/facility pair, so customers reuse the canonical facility
-        instead of cloning it.
+        instead of cloning it. The search runs with active_test=False so a
+        customer-archived row is FOUND and resurrected (a re-add after
+        archive would otherwise hit the UNIQUE constraint and crash with
+        "Location already exists" instead of reusing).
         """
         facility_id = facility.id if hasattr(facility, "id") else int(facility or 0)
         partner_id = partner.id if hasattr(partner, "id") else int(partner or 0)
         if not facility_id or not partner_id:
             return self.browse()
-        access = self.search([
+        access = self.with_context(active_test=False).search([
             ("facility_id", "=", facility_id),
             ("commercial_partner_id", "=", partner_id),
         ], limit=1)
