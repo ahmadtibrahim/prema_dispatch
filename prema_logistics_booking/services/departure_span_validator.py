@@ -47,9 +47,22 @@ class DepartureSpanValidator:
         destination_direction = segment.get("destination_direction")
         if origin_direction == "return" and destination_direction == "outbound":
             return self._result(False, "ROUTE_DEPARTURE_MISMATCH")
-        if (origin_direction == "outbound" and destination_direction == "outbound"
-                and origin_stop.sequence >= destination_stop.sequence):
-            return self._result(False, "ROUTE_DEPARTURE_MISMATCH")
+        # The sequence check uses the SEGMENT's own visits, not stops
+        # re-derived by region: a hub-origin visit (segment origin_stop is
+        # False — the truck departs the origin hub at route position 0)
+        # starts the route physically before every outbound stop, so a
+        # hub-origin -> first-stop delivery is a real movement. The old
+        # comparison of the origin stop's sequence against the re-derived
+        # destination stop refused exactly that (corridor 12 GTA hub ->
+        # York: GTA's stop sequence 12 sorts after York's 10 in the
+        # return-leg order, yet the hub is the route start). The
+        # destination sequence is the segment's own too, so a visit whose
+        # stop is the destination hub (sequence 99999) compares correctly.
+        if (origin_direction == "outbound" and destination_direction == "outbound"):
+            origin_seq = (segment["origin_stop"].sequence
+                          if segment.get("origin_stop") else 0)
+            if origin_seq >= segment["destination_sequence"]:
+                return self._result(False, "ROUTE_DEPARTURE_MISMATCH")
 
         return self._result(
             True,

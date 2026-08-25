@@ -1999,9 +1999,36 @@ class ShipmentRoutingService:
         no scheduled departure within the horizon (the caller converts
         that to NO_LEGS).
         """
-        direct = self.env["logistics.corridor"].find_direct_service(
-            origin_region, dest_region)
+        origin = self._canonical_region(origin_region)
+        dest = self._canonical_region(dest_region)
+        Corridor = self.env["logistics.corridor"]
+        if origin and dest and origin.id == dest.id:
+            # Same-region lanes are carried ONLY by local corridors
+            # (resolve_region_segment refuses same-region on linehaul
+            # corridors that revisit the hub region). find_direct_service's
+            # same-region early return hands back the FIRST corridor with a
+            # stop in the region regardless of direction — trusting it
+            # chained the "next eligible pickup" forever for lanes like
+            # Belleville → Kingston (both ON-SOUTHEASTERN — no local
+            # corridor) by proposing the next c9/c13 departure that can
+            # never carry the lane. Search segment-first, the way
+            # DepartureResolver._candidate_corridors does.
+            direct = next(
+                (c for c in Corridor.search([("active", "=", True)])
+                 if c.resolve_region_segment(origin, dest)), False)
+        else:
+            direct = Corridor.find_direct_service(origin_region, dest_region)
+            if direct and not direct.resolve_region_segment(origin, dest):
+                # find_direct_service can return a corridor whose segment
+                # cannot be built for this lane — never advise a date on it.
+                direct = False
         if not direct:
+            # Hub transfers never serve same-region lanes — the transfer
+            # resolver would propose a meaningless round trip through the
+            # hub (e.g. SEO → GTA on corridor 11, GTA → SEO on 13). No
+            # route at all.
+            if origin and dest and origin.id == dest.id:
+                return None
             from ..services.departure_resolver import DepartureResolver
             resolution = DepartureResolver(self.env).resolve(
                 origin_region, dest_region, "dry", 1, 500,
