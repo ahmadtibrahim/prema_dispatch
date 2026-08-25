@@ -571,11 +571,17 @@ class PremaDispatchJobDriverUpdateBridge(models.Model):
         """Observe the existing pickup-confirm path; never change its rules."""
         stop = self.env["prema.dispatch.stop"].browse(int(stop_id)).exists()
         job = stop.job_id if stop else self.env["prema.dispatch.job"]
-        # pallets_in is the planned/booking count and is NOT overwritten by
-        # actual confirmation, so it stays stable across retries. Fall back to
-        # the pre-sync physical item count only for legacy/manual stops.
+        # The driver-facing "Expected" count comes from job.expected_pallet_count
+        # (see driver_app pickupSummary), so the update must compare against it.
+        # stop.pallets_in is NOT stable: the variance's downstream pallets_out
+        # write re-triggers _estimate_pickup_pallets and drifts it 1 -> 2, which
+        # would make a repeated identical confirmation resolve (not record) the
+        # variance. Fall back to it, then to the physical item count, only for
+        # jobs without a planned expectation.
         expected = 0
-        if stop:
+        if job and job.expected_pallet_count:
+            expected = int(job.expected_pallet_count)
+        if not expected and stop:
             expected = int(stop.pallets_in or 0)
             if not expected:
                 expected = len(stop._items_picked_here())
