@@ -359,13 +359,29 @@ class LogisticsBooking(models.Model):
 
         Each stop keeps its stable stop_key so pallet movements resolve
         against persistent booking stops. Operating hours are SNAPSHOTTED
-        NOW from the master saved location — later edits to the location's
-        hours never change this booking's planning."""
-        from ..services.itinerary_planner import snapshot_saved_location_hours
+        NOW from the location authority — later edits to the location's
+        hours never change this booking's planning.
+
+        SAVED LOCATION CONSOLIDATION: the location union prefers the
+        canonical access row (logistics.location.customer.access) and
+        falls back to the legacy logistics.saved.location."""
+        from ..services.itinerary_planner import (
+            snapshot_facility_hours, snapshot_saved_location_hours,
+        )
         pickups, deliveries = [], []
         for stop in session.stop_ids.sorted("sequence"):
-            sl = stop.saved_location_id
-            dispatch_loc_id = sl.dispatch_location_id.id if sl and sl.dispatch_location_id else None
+            sl = stop.customer_access_id or stop.saved_location_id
+            # Facility id behind the union record: access → facility_id,
+            # legacy → dispatch_location_id.
+            dispatch_loc_id = None
+            if sl:
+                if hasattr(sl, "facility_id") and sl.facility_id:
+                    dispatch_loc_id = sl.facility_id.id
+                elif sl.dispatch_location_id:
+                    dispatch_loc_id = sl.dispatch_location_id.id
+            hours_snapshot = (snapshot_facility_hours(self.env, sl.facility_id, stop.stop_type)
+                              if hasattr(sl, "facility_id") and sl.facility_id
+                              else snapshot_saved_location_hours(self.env, sl, stop.stop_type))
             values = {
                 "stop_key": stop.stop_key or "",
                 "company_name": sl.business_name or sl.name if sl else stop.location_name or "",
@@ -395,14 +411,13 @@ class LogisticsBooking(models.Model):
                 "timezone": stop.timezone or (sl.timezone if sl else "America/Toronto"),
                 # Fresh snapshot at confirmation (spec: freeze current
                 # facility hours onto the persistent booking stop).
-                "operating_hours_snapshot": snapshot_saved_location_hours(
-                    self.env, sl, stop.stop_type,
-                ),
+                "operating_hours_snapshot": hours_snapshot,
                 # CRITICAL: saved_location_id = prema.dispatch.location
                 # (master facility); logistics_saved_location_id = customer
                 # profile record.
                 "saved_location_id": dispatch_loc_id,
-                "logistics_saved_location_id": sl.id if sl else None,
+                "logistics_saved_location_id": (
+                    sl.id if sl and not hasattr(sl, "facility_id") else None),
             }
             if stop.stop_type == "pickup":
                 pickups.append(values)
@@ -416,19 +431,31 @@ class LogisticsBooking(models.Model):
 
         CRITICAL: logistics.booking.stop.saved_location_id points to
         prema.dispatch.location (the master facility), NOT to
-        logistics.saved.location. We resolve dispatch_location_id from the
-        saved location and snapshot the address/contact data at confirm time.
+        logistics.saved.location. We resolve the facility from the union
+        record (SAVED LOCATION CONSOLIDATION: access row → facility_id,
+        legacy saved location → dispatch_location_id) and snapshot the
+        address/contact data at confirm time.
         """
         stops_data = address_vals.get("delivery_stops_data") or []
         if stops_data:
             stops = []
             for sd in stops_data:
-                sl = self.env["logistics.saved.location"].browse(sd.get("saved_location_id") or 0)
+                sl_id = sd.get("saved_location_id") or 0
+                sl = self.env["logistics.location.customer.access"].browse(sl_id)
+                if not sl or not sl.exists():
+                    sl = self.env["logistics.saved.location"].browse(sl_id)
+                if not sl or not sl.exists():
+                    sl = self.env["logistics.saved.location"].browse()
                 session_stop = session.delivery_stop_ids.filtered(
                     lambda s, seq=sd.get("sequence", 0): s.sequence == seq
                 )[:1]
-                # Resolve the master dispatch location from the customer saved location
-                dispatch_loc_id = sl.dispatch_location_id.id if sl and sl.dispatch_location_id else None
+                # Resolve the facility behind the union record
+                dispatch_loc_id = None
+                if sl:
+                    if hasattr(sl, "facility_id") and sl.facility_id:
+                        dispatch_loc_id = sl.facility_id.id
+                    elif sl.dispatch_location_id:
+                        dispatch_loc_id = sl.dispatch_location_id.id
                 stops.append({
                     "company_name": sl.business_name or sl.name if sl else "",
                     "street": sl.street if sl else "",
@@ -449,13 +476,19 @@ class LogisticsBooking(models.Model):
                     # CRITICAL: saved_location_id = prema.dispatch.location (master facility)
                     "saved_location_id": dispatch_loc_id,
                     # logistics_saved_location_id = logistics.saved.location (customer profile)
-                    "logistics_saved_location_id": sl.id if sl else None,
+                    "logistics_saved_location_id": (
+                        sl.id if sl and not hasattr(sl, "facility_id") else None),
                     "shared_pallet": bool(session_stop.shared_pallet) if session_stop else False,
                 })
             return stops
-        # Single-stop fallback
-        de_loc = session.delivery_saved_location_id
-        dispatch_loc_id = de_loc.dispatch_location_id.id if de_loc and de_loc.dispatch_location_id else None
+        # Single-stop fallback — canonical access row preferred.
+        de_loc = session.delivery_customer_access_id or session.delivery_saved_location_id
+        dispatch_loc_id = None
+        if de_loc:
+            if hasattr(de_loc, "facility_id") and de_loc.facility_id:
+                dispatch_loc_id = de_loc.facility_id.id
+            elif de_loc.dispatch_location_id:
+                dispatch_loc_id = de_loc.dispatch_location_id.id
         return [{
             "company_name": de_loc.business_name or de_loc.name if de_loc else "",
             "street": de_loc.street if de_loc else "",
@@ -474,7 +507,8 @@ class LogisticsBooking(models.Model):
             "weight_lb": session.weight_lbs,
             "liftgate_required": session.liftgate_delivery or (de_loc.liftgate_required if de_loc else False),
             "saved_location_id": dispatch_loc_id,
-            "logistics_saved_location_id": de_loc.id if de_loc else None,
+            "logistics_saved_location_id": (
+                de_loc.id if de_loc and not hasattr(de_loc, "facility_id") else None),
             "shared_pallet": False,
         }]
 
@@ -540,8 +574,22 @@ class LogisticsBooking(models.Model):
 
         svc = BookingOrchestrationService(self.env)
         movements = self._extract_pallet_movements_from_snapshot(session.price_snapshot)
-        pu_loc = session.pickup_saved_location_id
-        pu_dispatch_id = pu_loc.dispatch_location_id.id if pu_loc and pu_loc.dispatch_location_id else None
+        # Pickup location union: canonical access row first, legacy saved
+        # location fallback (SAVED LOCATION CONSOLIDATION §14).
+        pu_loc = None
+        if session.pickup_customer_access_id:
+            acc = self.env["logistics.location.customer.access"].browse(
+                session.pickup_customer_access_id.id)
+            if acc.exists():
+                pu_loc = acc
+        if not pu_loc and session.pickup_saved_location_id:
+            pu_loc = session.pickup_saved_location_id
+        pu_dispatch_id = None
+        if pu_loc:
+            if hasattr(pu_loc, "facility_id") and pu_loc.facility_id:
+                pu_dispatch_id = pu_loc.facility_id.id
+            elif pu_loc.dispatch_location_id:
+                pu_dispatch_id = pu_loc.dispatch_location_id.id
         if movements:
             # Generalized milk-run: pickup AND delivery stops come from the
             # ordered session stop list (stable stop keys, per-stop
@@ -568,7 +616,8 @@ class LogisticsBooking(models.Model):
                 # CRITICAL: saved_location_id = prema.dispatch.location (master facility)
                 "saved_location_id": pu_dispatch_id,
                 # logistics_saved_location_id = logistics.saved.location (customer profile)
-                "logistics_saved_location_id": pu_loc.id if pu_loc else None,
+                "logistics_saved_location_id": (
+                    pu_loc.id if pu_loc and not hasattr(pu_loc, "facility_id") else None),
             }]
             delivery_stops = self._build_confirm_delivery_stops(session, address_vals)
         normalized = svc.normalize_request({

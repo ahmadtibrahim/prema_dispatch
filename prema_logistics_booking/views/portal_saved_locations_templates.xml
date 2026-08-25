@@ -79,16 +79,24 @@
                             <div class="card-footer bg-transparent">
                                 <a t-attf-href="/my/saved-locations/{{loc.id}}/edit"
                                    class="btn btn-sm btn-outline-primary">Edit</a>
-                                <a t-attf-href="/my/saved-locations/{{loc.id}}/set-default-pickup"
-                                   class="btn btn-sm btn-outline-secondary"
-                                   t-if="loc.location_type in ('pickup','both') and not loc.is_default_pickup">
-                                    Set Default Pickup
-                                </a>
-                                <a t-attf-href="/my/saved-locations/{{loc.id}}/set-default-delivery"
-                                   class="btn btn-sm btn-outline-secondary"
-                                   t-if="loc.location_type in ('delivery','both') and not loc.is_default_delivery">
-                                    Set Default Delivery
-                                </a>
+                                <form t-if="loc.location_type in ('pickup','both') and not loc.is_default_pickup"
+                                      t-attf-action="/my/saved-locations/{{loc.id}}/set-default-pickup"
+                                      method="post" class="d-inline">
+                                    <input type="hidden" name="csrf_token"
+                                           t-att-value="csrf_token"/>
+                                    <button type="submit" class="btn btn-sm btn-outline-secondary">
+                                        Set Default Pickup
+                                    </button>
+                                </form>
+                                <form t-if="loc.location_type in ('delivery','both') and not loc.is_default_delivery"
+                                      t-attf-action="/my/saved-locations/{{loc.id}}/set-default-delivery"
+                                      method="post" class="d-inline">
+                                    <input type="hidden" name="csrf_token"
+                                           t-att-value="csrf_token"/>
+                                    <button type="submit" class="btn btn-sm btn-outline-secondary">
+                                        Set Default Delivery
+                                    </button>
+                                </form>
                             </div>
                         </div>
                     </div>

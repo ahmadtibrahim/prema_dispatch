@@ -154,6 +154,11 @@ class LogisticsPhoneBooking(models.TransientModel):
             "email": (access.contact_email if access else "") or "",
             "saved_location_id": saved.id if saved else False,
             "dispatch_location_id": location.id,
+            # Canonical refs (SAVED LOCATION CONSOLIDATION §14): the
+            # orchestrator's _stop_refs reads facility_id/customer_access_id
+            # for the session + stop records — never a legacy create.
+            "facility_id": location.id,
+            "customer_access_id": access.id if access else False,
         }
 
     @api.onchange("pickup_location_id")

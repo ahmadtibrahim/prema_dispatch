@@ -188,6 +188,15 @@ class LogisticsSavedLocation(models.Model):
         help="Linked internal dispatch location. Auto-created if left empty; "
              "set directly when selecting a shared master facility.",
     )
+    legacy_location = fields.Boolean(
+        string="Legacy Location", default=False,
+        help="Marked True by the Saved Location Consolidation migration. "
+             "Pre-consolidation records are kept (history preserved, no hard "
+             "deletes) but are no longer created or exposed: the canonical "
+             "facility (prema.dispatch.location) holds the physical data and "
+             "logistics.location.customer.access holds the customer's "
+             "private data. New rows must never be created after migration.",
+    )
 
     # ── Constraints ───────────────────────────────────────────────────
     _sql_constraints = [
@@ -317,6 +326,20 @@ class LogisticsSavedLocation(models.Model):
     def _is_delivery_capable(self):
         self.ensure_one()
         return self.location_type in ("delivery", "both")
+
+    # ── Canonical facility bridge (consolidation) ───────────────────
+
+    def _get_canonical_facility(self):
+        """Compatibility bridge to the canonical physical facility.
+
+        The canonical physical authority is prema.dispatch.location (one
+        row per physical building); this legacy record's private data
+        lives on logistics.location.customer.access. Callers that still
+        hold a legacy id MUST go through here instead of reading address
+        fields directly, so booking/planning code keeps working after
+        consolidation.
+        """
+        return self.mapped("dispatch_location_id")
 
     # ── Canonical physical coordinates ──────────────────────────────
 

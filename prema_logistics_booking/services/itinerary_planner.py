@@ -23,6 +23,26 @@ REASON_CAPACITY = "peak_capacity"
 WEEKDAY_KEYS = [str(day) for day in range(7)]
 
 
+def _snapshot_from_rows(rows, day, scope):
+    """Per-day window from structured hours rows: scope-specific rows
+    (pickup scope for pickup stops, receiving scope for delivery stops) →
+    general rows → first row. Closed/no row → None."""
+    day_rows = rows.filtered(lambda r, d=day: r.day_of_week == d)
+    if not day_rows:
+        return None
+    chosen = (
+        day_rows.filtered(lambda r, s=scope: r.service_scope == s)
+        or day_rows.filtered(lambda r: r.service_scope == "general")
+        or day_rows[:1]
+    )
+    row = chosen[0]
+    if row.status == "closed":
+        return None
+    if row.status == "open_24h":
+        return [0.0, 24.0]
+    return [float(row.open_time or 0.0), float(row.close_time or 24.0)]
+
+
 def snapshot_saved_location_hours(env, saved_location, stop_type="pickup"):
     """Freeze a saved location's CURRENT operating hours into a planning
     snapshot {weekday: [open, close] or None}.
@@ -32,31 +52,50 @@ def snapshot_saved_location_hours(env, saved_location, stop_type="pickup"):
     A day with no rows or status=closed maps to None (closed day).
     Once snapshotted, later master-location edits never change historical
     booking planning.
+
+    Consolidation: the canonical facility's own hours
+    (prema.dispatch.location.hours on the linked master) are the
+    authority when present; legacy logistics.saved.location.hours rows are
+    the fallback. Legacy "delivery" scope maps to canonical "receiving".
     """
     snapshot = {key: None for key in WEEKDAY_KEYS}
     if not saved_location:
         return snapshot
-    scope = "pickup" if stop_type == "pickup" else "delivery"
+    scope = "pickup" if stop_type == "pickup" else "receiving"
+
+    master = saved_location.dispatch_location_id
+    if master:
+        canonical = master.facility_hours_ids.filtered(lambda r: r.active)
+        if canonical:
+            for day in WEEKDAY_KEYS:
+                snapshot[day] = _snapshot_from_rows(canonical, day, scope)
+            return snapshot
+
     rows = env["logistics.saved.location.hours"].search([
         ("saved_location_id", "=", saved_location.id),
         ("active", "=", True),
     ])
+    legacy_scope = "pickup" if stop_type == "pickup" else "delivery"
     for day in WEEKDAY_KEYS:
-        day_rows = rows.filtered(lambda r, d=day: r.day_of_week == d)
-        if not day_rows:
-            continue
-        chosen = (
-            day_rows.filtered(lambda r, s=scope: r.service_scope == s)
-            or day_rows.filtered(lambda r: r.service_scope == "general")
-            or day_rows[:1]
-        )
-        row = chosen[0]
-        if row.status == "closed":
-            snapshot[day] = None
-        elif row.status == "open_24h":
-            snapshot[day] = [0.0, 24.0]
-        else:
-            snapshot[day] = [float(row.open_time or 0.0), float(row.close_time or 24.0)]
+        snapshot[day] = _snapshot_from_rows(rows, day, legacy_scope)
+    return snapshot
+
+
+def snapshot_facility_hours(env, facility, stop_type="pickup"):
+    """Snapshot a canonical facility's OWN hours (consolidation path).
+
+    Same algorithm and preference order as
+    snapshot_saved_location_hours, but the facility record is the hours
+    authority directly — no legacy saved-location bridge needed.
+    """
+    snapshot = {key: None for key in WEEKDAY_KEYS}
+    if not facility:
+        return snapshot
+    scope = "pickup" if stop_type == "pickup" else "receiving"
+    canonical = facility.facility_hours_ids.filtered(lambda r: r.active)
+    if canonical:
+        for day in WEEKDAY_KEYS:
+            snapshot[day] = _snapshot_from_rows(canonical, day, scope)
     return snapshot
 
 

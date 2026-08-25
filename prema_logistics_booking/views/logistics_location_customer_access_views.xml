@@ -70,54 +70,17 @@
     </record>
 
     <!-- ═════════════════════════════════════════════════════════════════
-         FACILITY FORM — add "Customers Using Location" + "Operating
-         Hours" tabs to the canonical facility (prema.dispatch.location).
+         NOTE: the facility FORM tab structure (FACILITY / HOURS / CUSTOMERS
+         USING LOCATION / DRIVER-OPERATIONS / PHOTOS / ANALYTICS) lives in
+         views/logistics_location_consolidation_views.xml — the old
+         sheet-end notebook extension was removed in 18.0.13.24.0 (it would
+         have nested a second notebook).
          ═════════════════════════════════════════════════════════════════ -->
-    <record id="dispatch_location_form_customer_access_tabs" model="ir.ui.view">
-        <field name="name">prema.dispatch.location.form.customer.access.tabs</field>
-        <field name="model">prema.dispatch.location</field>
-        <field name="inherit_id" ref="prema_dispatch.dispatch_location_form"/>
-        <field name="arch" type="xml">
-            <xpath expr="//sheet" position="inside">
-                <notebook>
-                    <page string="Customers Using Location"
-                          groups="prema_dispatch.group_dispatch_manager">
-                        <field name="customer_access_ids" nolabel="1"
-                               context="{'default_facility_id': id}">
-                            <list string="Customers Using This Facility" editable="bottom">
-                                <field name="commercial_partner_id"/>
-                                <field name="customer_alias"/>
-                                <field name="portal_enabled"/>
-                                <field name="can_pickup"/>
-                                <field name="can_delivery"/>
-                                <field name="is_default_pickup"/>
-                                <field name="is_default_delivery"/>
-                                <field name="contact_name"/>
-                                <field name="contact_phone"/>
-                            </list>
-                        </field>
-                    </page>
-                    <page string="Operating Hours"
-                          groups="prema_dispatch.group_dispatch_manager">
-                        <p class="text-muted mb-2">
-                            Facility hours are drawn from the linked saved
-                            locations' structured weekly schedules (the
-                            facility master holds no hours of its own).
-                            Customer-specific hours live on each customer's
-                            saved location.
-                        </p>
-                        <field name="facility_hours_summary" readonly="1"/>
-                        <field name="customer_access_ids" invisible="1"/>
-                    </page>
-                </notebook>
-            </xpath>
-        </field>
-    </record>
 
     <!-- ═════════════════════════════════════════════════════════════════
          LOCATIONS MENU LIST — one menu with the canonical columns:
-         Facility, Address, City, Region, Google Verified, Facility Hours,
-         Customers Using, Visits, Last Visit, Active.
+         Location, Business, City, Province, Region, Stop Type,
+         Google Verified, Facility Hours, Customers Using, Use Count, Active.
          ═════════════════════════════════════════════════════════════════ -->
     <record id="dispatch_location_list_canonical_columns" model="ir.ui.view">
         <field name="name">prema.dispatch.location.list.canonical.columns</field>
@@ -126,12 +89,16 @@
         <field name="arch" type="xml">
             <field name="chain_name" position="after">
                 <field name="city" string="City"/>
+                <field name="province_code" string="Province"/>
             </field>
             <field name="google_verified" position="after">
                 <field name="region_label" string="Region" optional="show"/>
                 <field name="facility_hours_summary" string="Facility Hours" optional="show"/>
                 <field name="customer_access_count" string="Customers Using" optional="show"/>
                 <field name="active" string="Active" optional="hide"/>
+            </field>
+            <field name="use_count" position="attributes">
+                <attribute name="string">Use Count</attribute>
             </field>
         </field>
     </record>

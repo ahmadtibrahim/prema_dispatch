@@ -2139,8 +2139,10 @@
                                             <small class="text-muted"><t t-esc="'%g' % stop.weight_lbs"/> lb</small>
                                         </div>
                                     </div>
-                                    <!-- Per-stop Contact & Instructions -->
-                                    <t t-set="sl" t-value="stop.saved_location_id"/>
+                                    <!-- Per-stop Contact & Instructions —
+                                         canonical access row first, legacy
+                                         saved location fallback. -->
+                                    <t t-set="sl" t-value="stop.customer_access_id or stop.saved_location_id"/>
                                     <div class="mt-2 pt-2 border-top">
                                         <a href="#" class="text-decoration-none small fw-bold contact-toggle" t-att-data-target="'de_contact_' + str(stop.sequence)">
                                             CONTACT &amp; INSTRUCTIONS ▾

@@ -92,11 +92,35 @@ class LogisticsPricingSession(models.TransientModel):
 
     pickup_saved_location_id = fields.Many2one(
         "logistics.saved.location", string="Pickup Saved Location",
-        help="Frozen from Step 1 selection — used for Step 3 display.",
+        help="Frozen from Step 1 selection — used for Step 3 display. "
+             "Legacy — new sessions prefer pickup_facility_id.",
     )
     delivery_saved_location_id = fields.Many2one(
         "logistics.saved.location", string="Delivery Saved Location",
-        help="Frozen from Step 1 selection — used for Step 3 display.",
+        help="Frozen from Step 1 selection — used for Step 3 display. "
+             "Legacy — new sessions prefer delivery_facility_id.",
+    )
+    # Canonical references (consolidation): the physical facility +
+    # the customer's access relation carry the data new sessions use.
+    pickup_facility_id = fields.Many2one(
+        "prema.dispatch.location", string="Pickup Facility",
+        help="Canonical physical facility for the pickup (one building = "
+             "one row). Preferred over pickup_saved_location_id for new "
+             "sessions.",
+    )
+    delivery_facility_id = fields.Many2one(
+        "prema.dispatch.location", string="Delivery Facility",
+        help="Canonical physical facility for the delivery. Preferred over "
+             "delivery_saved_location_id for new sessions.",
+    )
+    pickup_customer_access_id = fields.Many2one(
+        "logistics.location.customer.access", string="Pickup Customer Access",
+        help="This customer's access relation for the pickup facility — "
+             "holds their private contact/instructions for this facility.",
+    )
+    delivery_customer_access_id = fields.Many2one(
+        "logistics.location.customer.access", string="Delivery Customer Access",
+        help="This customer's access relation for the delivery facility.",
     )
 
     delivery_stop_ids = fields.One2many(

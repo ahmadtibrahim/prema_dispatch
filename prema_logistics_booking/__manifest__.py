@@ -1,6 +1,6 @@
 {
     "name": "Prema Logistics Booking",
-    "version": "18.0.13.23.0",
+    "version": "18.0.13.24.0",
     "summary": "Private customer LTL/FTL pricing, scheduling, and booking engine "
                "for PremaFirm Logistics — integrates with Prema Dispatch.",
     "category": "Logistics",
@@ -43,6 +43,10 @@ root for architecture notes, decisions, and phase status.
         "views/logistics_holiday_calendar_views.xml",
         "views/logistics_saved_location_views.xml",
         "views/logistics_location_customer_access_views.xml",
+        # SAVED LOCATION CONSOLIDATION (18.0.13.24.0): one Locations menu +
+        # canonical facility form tabs. Must load after the customer-access
+        # views (it inherits the dispatch_location base form from prema_dispatch).
+        "views/logistics_location_consolidation_views.xml",
         "views/dispatch_stop_integrity_views.xml",
         "views/logistics_booking_views.xml",
         "views/logistics_custom_quote_views.xml",

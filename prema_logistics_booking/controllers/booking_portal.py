@@ -170,11 +170,15 @@ def _build_stop_pricing(session):
             if stops:
                 target = min(leg_no, len(stops) - 1)
                 stops[target]["amount"] = round(stops[target]["amount"] + amount, 2)
-    # Route label: pickup city → stop cities (display only).
+    # Route label: pickup city → stop cities (display only). The
+    # canonical access row is the preferred pickup source.
     route_label = ""
     if route_transportation:
-        pickup_city = (session.pickup_saved_location_id.city
-                       if session.pickup_saved_location_id else "")
+        pickup_city = ""
+        if session.pickup_customer_access_id:
+            pickup_city = session.pickup_customer_access_id.city or ""
+        if not pickup_city and session.pickup_saved_location_id:
+            pickup_city = session.pickup_saved_location_id.city or ""
         cities = [s["city"] for s in stops if s["city"]]
         route_label = " → ".join([c for c in [pickup_city] + cities if c])
     # ── Frozen per-leg breakdown (spec sections: "Base Pallet
@@ -256,36 +260,13 @@ def _build_stop_pricing(session):
 
 def _saved_locations_builder_payload(partner):
     """JSON payload for the portal route builder: every saved location
-    owned by the customer with coordinates and operating hours, so stop
-    cards can offer location selection and show facility hours without
-    extra round-trips."""
-    SavedLocation = request.env["logistics.saved.location"].sudo()
-    Hours = request.env["logistics.saved.location.hours"].sudo()
-    locations = SavedLocation.search([
-        ("commercial_partner_id", "=", partner.id),
-        ("active", "=", True),
-    ], order="name")
+    owned by the customer (access rows canonical-first, legacy rows
+    during the transition window) with coordinates and operating hours,
+    so stop cards can offer location selection and show facility hours
+    without extra round-trips."""
     payload = []
-    for loc in locations:
+    for loc in _partner_locations(request.env, partner):
         eff = _portal_coord_pair(loc)
-        hours = {}
-        for day in range(7):
-            rows = Hours.search([
-                ("saved_location_id", "=", loc.id),
-                ("day_of_week", "=", str(day)),
-                ("active", "=", True),
-            ])
-            general = rows.filtered(lambda r: r.service_scope == "general") or rows[:1]
-            if not general:
-                hours[str(day)] = None
-                continue
-            row = general[0]
-            if row.status == "closed":
-                hours[str(day)] = None
-            elif row.status == "open_24h":
-                hours[str(day)] = [0.0, 24.0]
-            else:
-                hours[str(day)] = [float(row.open_time or 0.0), float(row.close_time or 24.0)]
         payload.append({
             "id": loc.id,
             "name": loc.name or "",
@@ -298,7 +279,7 @@ def _saved_locations_builder_payload(partner):
             "location_type": loc.location_type or "both",
             "liftgate_required": bool(loc.liftgate_required),
             "dock_info": bool(loc.dock_info),
-            "hours": hours,
+            "hours": _loc_hours_by_day(loc),
         })
     return payload
 
@@ -353,11 +334,123 @@ def _portal_coord_pair(loc):
     (validation, redirect URL, stops, JSON markers) resolves the SAME
     coordinates: linked Master Facility pin pair first, own lat/lng
     second. A copy whose duplicated fields are stale or 0/0 placeholders
-    still routes via its master."""
+    still routes via its master. Access rows implement the same contract
+    (physical pins from the canonical facility)."""
     if not loc:
         return (None, None)
     eff = loc._get_effective_coordinates()
     return (eff["latitude"], eff["longitude"])
+
+
+def _resolve_loc(env, partner, loc_id):
+    """Resolve a submitted location id to the canonical record — the
+    "location-like union" (SAVED LOCATION CONSOLIDATION §14).
+
+    New portal data is logistics.location.customer.access (access row,
+    whose id may also be referenced as `new_loc_id` / loc payload ids);
+    legacy logistics.saved.location ids still resolve during the
+    transition window. An access row always wins for a given partner; a
+    legacy row is the fallback. Ownership is enforced here — records that
+    do not belong to the partner resolve to an empty recordset."""
+    Access = env["logistics.location.customer.access"].sudo()
+    try:
+        raw_id = int(loc_id or 0)
+    except (TypeError, ValueError):
+        return env["logistics.saved.location"].browse()
+    if raw_id:
+        acc = Access.browse(raw_id)
+        if acc.exists() and acc.active and acc.commercial_partner_id.id == partner.id:
+            return acc
+    Saved = env["logistics.saved.location"].sudo()
+    saved = Saved.browse(raw_id)
+    if saved.exists() and saved.active and saved.commercial_partner_id.id == partner.id:
+        return saved
+    return Saved.browse()
+
+
+def _partner_locations(env, partner, loc_type=None):
+    """Every portal location of this customer, canonical-first: active
+    access rows (logistics.location.customer.access) unioned with active
+    legacy logistics.saved.location rows (transition window only —
+    consolidation never creates new legacy rows). Both record types
+    expose the same physical/private field names (access rows via
+    computed proxies), so templates and the sort below are type-agnostic.
+    Returns a Python list sorted default-first, last-used-first, then
+    name."""
+    Access = env["logistics.location.customer.access"].sudo()
+    Saved = env["logistics.saved.location"].sudo()
+    access_domain = [("commercial_partner_id", "=", partner.id), ("active", "=", True)]
+    saved_domain = [("commercial_partner_id", "=", partner.id), ("active", "=", True)]
+    if loc_type == "pickup":
+        access_domain.append(("can_pickup", "=", True))
+        saved_domain.append(("location_type", "in", ("pickup", "both")))
+    elif loc_type == "delivery":
+        access_domain.append(("can_delivery", "=", True))
+        saved_domain.append(("location_type", "in", ("delivery", "both")))
+
+    merged = list(Access.search(access_domain)) + list(Saved.search(saved_domain))
+
+    def _sort_key(r):
+        if loc_type == "pickup":
+            dflt = r.is_default_pickup
+        elif loc_type == "delivery":
+            dflt = r.is_default_delivery
+        else:
+            dflt = r.is_default_pickup or r.is_default_delivery
+        last = r.last_used_date
+        return (0 if dflt else 1,
+                -last.timestamp() if last else -float("inf"),
+                r.name or "")
+
+    merged.sort(key=_sort_key)
+    return merged
+
+
+def _loc_hours_by_day(loc):
+    """{day: [open, close] or None} operating hours for a location-like
+    record (SAVED LOCATION CONSOLIDATION): access rows read the CANONICAL
+    facility hours (prema.dispatch.location.hours, general scope);
+    legacy rows read their own logistics.saved.location.hours."""
+    Hours = request.env["logistics.saved.location.hours"].sudo()
+    if hasattr(loc, "facility_id") and loc.facility_id:
+        CanH = request.env["prema.dispatch.location.hours"].sudo()
+        rows = CanH.search([
+            ("facility_id", "=", loc.facility_id.id),
+            ("service_scope", "=", "general"),
+            ("active", "=", True),
+        ])
+    else:
+        rows = Hours.search([
+            ("saved_location_id", "=", loc.id),
+            ("active", "=", True),
+        ])
+    hours = {}
+    for day in range(7):
+        day_rows = rows.filtered(lambda r, d=str(day): r.day_of_week == d)
+        general = day_rows.filtered(lambda r: r.service_scope == "general") or day_rows[:1]
+        if not general:
+            hours[str(day)] = None
+            continue
+        row = general[0]
+        if row.status == "closed":
+            hours[str(day)] = None
+        elif row.status == "open_24h":
+            hours[str(day)] = [0.0, 24.0]
+        else:
+            hours[str(day)] = [float(row.open_time or 0.0), float(row.close_time or 24.0)]
+    return hours
+
+
+def _stop_loc_refs(loc):
+    """Canonical id keys for a stop dict: access rows carry
+    customer_access_id (+facility_id), legacy rows carry
+    saved_location_id. The orchestration service's _stop_saved_ids
+    prefers the canonical branch."""
+    if not loc:
+        return {}
+    if hasattr(loc, "facility_id") and loc.facility_id:
+        return {"customer_access_id": loc.id, "facility_id": loc.facility_id.id}
+    return {"saved_location_id": loc.id}
 
 def _portal_enabled():
     val = request.env["ir.config_parameter"].sudo().get_param("logistics_booking.portal_enabled")
@@ -424,19 +517,24 @@ class LogisticsBookingPortal(http.Controller):
                     except (ValueError, TypeError):
                         pass
 
-            # Route 1: Saved Location selected
+            # Route 1: Saved Location selected (access rows canonical,
+            # legacy rows during the transition window — _resolve_loc
+            # enforces ownership on both).
             if pickup_loc_id and delivery_loc_ids:
-                pickup_loc = SavedLocation.browse(int(pickup_loc_id))
-                delivery_locs = SavedLocation.browse(delivery_loc_ids)
-                # Effective coordinates: linked Master Facility pin pair
+                pickup_loc = _resolve_loc(request.env, partner, pickup_loc_id)
+                delivery_locs = [
+                    loc for loc_id in delivery_loc_ids
+                    if (loc := _resolve_loc(request.env, partner, loc_id))
+                ]
+                # Effective coordinates: canonical facility pin pair
                 # preferred, own lat/lng second — a copy with stale or 0/0
                 # placeholder coordinates still validates via its master.
                 pu_eff = _portal_coord_pair(pickup_loc)
-                de_effs = {dl.id: _portal_coord_pair(dl) for dl in delivery_locs if dl.exists()}
+                de_effs = {dl.id: _portal_coord_pair(dl) for dl in delivery_locs}
                 # Security: ensure all locations belong to this customer
-                if pickup_loc.commercial_partner_id.id != partner.id:
+                if not pickup_loc:
                     error = _("Invalid pickup location selection.")
-                elif any(dl.commercial_partner_id.id != partner.id for dl in delivery_locs if dl.exists()):
+                elif len(delivery_locs) != len(delivery_loc_ids):
                     error = _("Invalid delivery location selection.")
                 elif pu_eff[0] is None:
                     error = _("Pickup location must have valid coordinates.")
@@ -473,17 +571,10 @@ class LogisticsBookingPortal(http.Controller):
             else:
                 error = _("Please select both a pickup and delivery location, or enter postal codes.")
 
-        # Load customer's saved locations
-        pickup_locations = SavedLocation.search([
-            ("commercial_partner_id", "=", partner.id),
-            ("active", "=", True),
-            ("location_type", "in", ("pickup", "both")),
-        ], order="is_default_pickup DESC, last_used_date DESC, name")
-        delivery_locations = SavedLocation.search([
-            ("commercial_partner_id", "=", partner.id),
-            ("active", "=", True),
-            ("location_type", "in", ("delivery", "both")),
-        ], order="is_default_delivery DESC, last_used_date DESC, name")
+        # Load customer's saved locations — canonical access rows +
+        # legacy rows during the transition window (consolidation).
+        pickup_locations = _partner_locations(request.env, partner, "pickup")
+        delivery_locations = _partner_locations(request.env, partner, "delivery")
 
         # Handle return from Add New Location (auto-select newly created location)
         new_loc_id = kwargs.get("new_loc_id")
@@ -561,23 +652,21 @@ class LogisticsBookingPortal(http.Controller):
         stops = []
         pickup_loc_id = kwargs.get("pickup_loc_id")
         if pickup_loc_id and delivery_loc_ids:
-            pickup_loc = SavedLocation.browse(int(pickup_loc_id))
-            delivery_locs = SavedLocation.browse(delivery_loc_ids)
+            pickup_loc = _resolve_loc(request.env, partner, pickup_loc_id)
+            delivery_locs = [
+                loc for loc_id in delivery_loc_ids
+                if (loc := _resolve_loc(request.env, partner, loc_id))
+            ]
             pu_eff = _portal_coord_pair(pickup_loc)
-            if (pickup_loc.exists() and pickup_loc.commercial_partner_id.id == partner.id
-                    and pu_eff[0] is not None
-                    and all(
-                        dl.exists()
-                        and dl.commercial_partner_id.id == partner.id
-                        and _portal_coord_pair(dl)[0] is not None
-                        for dl in delivery_locs
-                    )):
+            if (pickup_loc and pu_eff[0] is not None
+                    and len(delivery_locs) == len(delivery_loc_ids)
+                    and all(_portal_coord_pair(dl)[0] is not None for dl in delivery_locs)):
                 stops.append({
                     "stop_type": "pickup",
                     "latitude": pu_eff[0],
                     "longitude": pu_eff[1],
-                    "saved_location_id": pickup_loc.id,
                     "postal_code": pickup_loc.postal_code or "",
+                    **_stop_loc_refs(pickup_loc),
                 })
                 for dl in delivery_locs:
                     de_eff = _portal_coord_pair(dl)
@@ -585,9 +674,9 @@ class LogisticsBookingPortal(http.Controller):
                         "stop_type": "delivery",
                         "latitude": de_eff[0],
                         "longitude": de_eff[1],
-                        "saved_location_id": dl.id,
                         "city": dl.city or "",
                         "postal_code": dl.postal_code or "",
+                        **_stop_loc_refs(dl),
                     })
 
         if not stops:
@@ -680,24 +769,25 @@ class LogisticsBookingPortal(http.Controller):
             pickup_fsa = None
             delivery_fsa = None
 
-            # Fetch pickup saved location
+            # Fetch pickup saved location (access row canonical, legacy
+            # row during the transition window — ownership enforced).
             if pickup_loc_id:
-                pickup_loc = SavedLocation.browse(int(pickup_loc_id))
-                if not pickup_loc.exists() or pickup_loc.commercial_partner_id.id != partner.id:
+                pickup_loc = _resolve_loc(request.env, partner, pickup_loc_id)
+                if not pickup_loc:
                     return request.redirect("/my/booking/new")
 
             # Fetch all delivery saved locations
             if delivery_loc_ids:
-                delivery_locs = SavedLocation.browse(delivery_loc_ids)
-            elif delivery_loc_id:
-                single = SavedLocation.browse(int(delivery_loc_id))
-                if single.exists():
-                    delivery_locs = [single]
-
-            # Validate ownership
-            for dl in delivery_locs:
-                if dl.commercial_partner_id.id != partner.id:
+                delivery_locs = [
+                    loc for loc_id in delivery_loc_ids
+                    if (loc := _resolve_loc(request.env, partner, loc_id))
+                ]
+                if len(delivery_locs) != len(delivery_loc_ids):
                     return request.redirect("/my/booking/new")
+            elif delivery_loc_id:
+                single = _resolve_loc(request.env, partner, delivery_loc_id)
+                if single:
+                    delivery_locs = [single]
 
             # Resolve FSA from pickup location
             if pickup_loc and pickup_loc.postal_code:
@@ -794,12 +884,14 @@ class LogisticsBookingPortal(http.Controller):
         SavedLocation = request.env["logistics.saved.location"].sudo()
         partner = request.env.user.partner_id.commercial_partner_id
 
-        # Resolve pickup FSA: prefer saved location, fall back to FSA code
+        # Resolve pickup FSA: prefer saved location (access row canonical,
+        # legacy fallback — _resolve_loc enforces ownership), fall back to
+        # FSA code.
         pickup_fsa = None
         pickup_loc_id = kwargs.get("pickup_loc_id")
         if pickup_loc_id:
-            pickup_loc = SavedLocation.browse(int(pickup_loc_id))
-            if pickup_loc.exists() and pickup_loc.commercial_partner_id.id == partner.id:
+            pickup_loc = _resolve_loc(request.env, partner, pickup_loc_id)
+            if pickup_loc:
                 if pickup_loc.postal_code:
                     pickup_fsa = Fsa.resolve_from_postal(pickup_loc.postal_code)
                 if not pickup_fsa and pickup_loc.postal_code:
@@ -811,8 +903,8 @@ class LogisticsBookingPortal(http.Controller):
         delivery_fsa = None
         delivery_loc_id = kwargs.get("delivery_loc_id")
         if delivery_loc_id:
-            delivery_loc = SavedLocation.browse(int(delivery_loc_id))
-            if delivery_loc.exists() and delivery_loc.commercial_partner_id.id == partner.id:
+            delivery_loc = _resolve_loc(request.env, partner, delivery_loc_id)
+            if delivery_loc:
                 if delivery_loc.postal_code:
                     delivery_fsa = Fsa.resolve_from_postal(delivery_loc.postal_code)
                 if not delivery_fsa and delivery_loc.postal_code:
@@ -865,8 +957,8 @@ class LogisticsBookingPortal(http.Controller):
                     physical_pallets = len(pallet_movements)
         except ValueError:
             # Build error context with all required template vars
-            pu_loc_for_err = SavedLocation.browse(int(pickup_loc_id)) if pickup_loc_id and SavedLocation.browse(int(pickup_loc_id)).exists() else None
-            de_loc_for_err = SavedLocation.browse(int(delivery_loc_id)) if delivery_loc_id and SavedLocation.browse(int(delivery_loc_id)).exists() else None
+            pu_loc_for_err = _resolve_loc(request.env, partner, pickup_loc_id) or None
+            de_loc_for_err = _resolve_loc(request.env, partner, delivery_loc_id) or None
             return request.render("prema_logistics_booking.portal_step2_shipment", {
                 "pickup_fsa": pickup_fsa, "delivery_fsa": delivery_fsa,
                 "pickup_loc": pu_loc_for_err, "delivery_loc": de_loc_for_err,
@@ -947,15 +1039,15 @@ class LogisticsBookingPortal(http.Controller):
         # service geocodes from latitude/longitude in that case)
         pickup_stops = [{"postal_code": pickup_fsa.fsa if pickup_fsa else ""}]
         if pickup_loc_id:
-            pu_loc = SavedLocation.browse(int(pickup_loc_id))
-            if pu_loc.exists() and pu_loc.commercial_partner_id.id == partner.id:
+            pu_loc = _resolve_loc(request.env, partner, pickup_loc_id)
+            if pu_loc:
                 pu_eff = _portal_coord_pair(pu_loc)
                 if pu_eff[0] is not None:
                     pickup_stops[0]["latitude"] = pu_eff[0]
                     pickup_stops[0]["longitude"] = pu_eff[1]
                 pickup_stops[0]["address"] = pu_loc.street or ""
                 pickup_stops[0]["city"] = pu_loc.city or ""
-                pickup_stops[0]["saved_location_id"] = pu_loc.id
+                pickup_stops[0].update(_stop_loc_refs(pu_loc))
         # Also try coordinates from hidden form fields
         pu_lat = kwargs.get("pickup_lat")
         pu_lng = kwargs.get("pickup_lng")
@@ -974,11 +1066,13 @@ class LogisticsBookingPortal(http.Controller):
         if not delivery_loc_ids and delivery_loc_id:
             delivery_loc_ids.append(int(delivery_loc_id))
 
-        # Build delivery stops with per-stop data
+        # Build delivery stops with per-stop data (access rows canonical,
+        # legacy rows during the transition window — _resolve_loc
+        # enforces ownership on both).
         delivery_stops = []
         for i, dl_id in enumerate(delivery_loc_ids):
-            dl = SavedLocation.browse(dl_id)
-            if not dl.exists() or dl.commercial_partner_id.id != partner.id:
+            dl = _resolve_loc(request.env, partner, dl_id)
+            if not dl:
                 continue
             # Single-stop: the global physical pallet count and total
             # shipment weight are authoritative SERVER-SIDE — stale hidden
@@ -1001,7 +1095,6 @@ class LogisticsBookingPortal(http.Controller):
                 "longitude": de_eff[1],
                 "address": dl.street or "",
                 "city": dl.city or "",
-                "saved_location_id": dl.id,
                 "pallets": stop_pallets,
                 "weight_lbs": stop_weight,
                 # Sharing a pallet across stops requires 2+ stops — a
@@ -1014,6 +1107,7 @@ class LogisticsBookingPortal(http.Controller):
                 "liftgate_delivery": _parse_bool(kwargs.get(f"delivery_liftgate_{i+1}")),
                 "appointment": _parse_bool(kwargs.get(f"delivery_appointment_{i+1}")),
                 "instructions": kwargs.get(f"delivery_instructions_{i+1}", "").strip() or "",
+                **_stop_loc_refs(dl),
             }
             delivery_stops.append(stop)
 
@@ -1039,8 +1133,8 @@ class LogisticsBookingPortal(http.Controller):
                 loc = None
                 loc_id = rs.get("saved_location_id")
                 if loc_id:
-                    loc = SavedLocation.browse(int(loc_id))
-                    if not loc.exists() or loc.commercial_partner_id.id != partner.id:
+                    loc = _resolve_loc(request.env, partner, loc_id)
+                    if not loc:
                         return request.redirect("/my/booking/new")
                 loc_eff = _portal_coord_pair(loc) if loc else (None, None)
                 entry = {
@@ -1052,7 +1146,7 @@ class LogisticsBookingPortal(http.Controller):
                     "longitude": (loc_eff[1] if loc else rs.get("longitude")) or 0.0,
                     "address": (loc.street if loc else rs.get("address")) or "",
                     "city": (loc.city if loc else rs.get("city")) or "",
-                    "saved_location_id": loc.id if loc else None,
+                    **(_stop_loc_refs(loc) if loc else {}),
                     "liftgate_required": bool(rs.get("liftgate_required")),
                     "dock_available": bool(rs.get("dock_available")),
                     "appointment_required": bool(rs.get("appointment_required")),
@@ -1141,8 +1235,16 @@ class LogisticsBookingPortal(http.Controller):
                 "reason": _("The price session could not be created. Please try again."),
             })
 
-        # Fetch saved locations for display
-        pickup_loc = session.pickup_saved_location_id if session.pickup_saved_location_id else None
+        # Fetch saved locations for display — canonical access row first,
+        # legacy saved location fallback (SAVED LOCATION CONSOLIDATION).
+        pickup_loc = None
+        if session.pickup_customer_access_id:
+            acc = request.env["logistics.location.customer.access"].sudo().browse(
+                session.pickup_customer_access_id.id)
+            if acc.exists():
+                pickup_loc = acc
+        if not pickup_loc and session.pickup_saved_location_id:
+            pickup_loc = session.pickup_saved_location_id
         delivery_stops = session.delivery_stop_ids if session.delivery_stop_ids else None
 
         return request.render("prema_logistics_booking.portal_step3_result", {
@@ -1191,8 +1293,8 @@ class LogisticsBookingPortal(http.Controller):
             raw = str(kwargs["pickup_loc_id"]).strip()
             if raw.lstrip("-").isdigit():
                 partner = request.env.user.partner_id.commercial_partner_id
-                loc = request.env["logistics.saved.location"].sudo().browse(int(raw))
-                if loc.exists() and loc.commercial_partner_id.id == partner.id and loc.postal_code:
+                loc = _resolve_loc(request.env, partner, int(raw))
+                if loc and loc.postal_code:
                     region = resolver.canonical_region(loc.postal_code)
 
         # The calendar binds the stepper to the EXACT departure the
@@ -1241,8 +1343,8 @@ class LogisticsBookingPortal(http.Controller):
                 raw_dl = str(kwargs["delivery_loc_ids"]).split(",")[0].strip()
             if raw_dl.lstrip("-").isdigit():
                 partner = request.env.user.partner_id.commercial_partner_id
-                dl_loc = request.env["logistics.saved.location"].sudo().browse(int(raw_dl))
-                if dl_loc.exists() and dl_loc.commercial_partner_id.id == partner.id and dl_loc.postal_code:
+                dl_loc = _resolve_loc(request.env, partner, int(raw_dl))
+                if dl_loc and dl_loc.postal_code:
                     delivery_region = resolver.canonical_region(dl_loc.postal_code)
 
         Departure = request.env["logistics.corridor.departure"].sudo()
@@ -1298,21 +1400,38 @@ class LogisticsBookingPortal(http.Controller):
             })
 
         # Pull address data from session's frozen saved locations first,
-        # fall back to form fields (for postal-code-only quotes)
-        pu_loc = session.pickup_saved_location_id
-        de_loc = session.delivery_saved_location_id
+        # fall back to form fields (for postal-code-only quotes). The
+        # canonical access row is preferred over the legacy saved
+        # location (SAVED LOCATION CONSOLIDATION).
+        Access = request.env["logistics.location.customer.access"].sudo()
+        pu_loc = None
+        if session.pickup_customer_access_id:
+            acc = Access.browse(session.pickup_customer_access_id.id)
+            if acc.exists():
+                pu_loc = acc
+        if not pu_loc and session.pickup_saved_location_id:
+            pu_loc = session.pickup_saved_location_id
+        de_loc = None
+        if session.delivery_customer_access_id:
+            acc = Access.browse(session.delivery_customer_access_id.id)
+            if acc.exists():
+                de_loc = acc
+        if not de_loc and session.delivery_saved_location_id:
+            de_loc = session.delivery_saved_location_id
 
-        # Per-stop contact/instructions (UAT-011)
+        # Per-stop contact/instructions (UAT-011) — access rows carry the
+        # private contact data; legacy saved locations the fallback.
         delivery_stops_data = []
         for stop in session.delivery_stop_ids:
             seq = stop.sequence
+            sl = stop.customer_access_id or stop.saved_location_id
             delivery_stops_data.append({
                 "sequence": seq,
-                "saved_location_id": stop.saved_location_id.id if stop.saved_location_id else None,
-                "contact_name": kwargs.get(f"delivery_contact_name_{seq}") or (stop.saved_location_id.contact_name if stop.saved_location_id else ""),
-                "phone": kwargs.get(f"delivery_phone_{seq}") or (stop.saved_location_id.contact_phone if stop.saved_location_id else ""),
-                "dock_info": kwargs.get(f"delivery_dock_info_{seq}") or (stop.saved_location_id.dock_info if stop.saved_location_id else ""),
-                "instructions": kwargs.get(f"delivery_instructions_{seq}") or (stop.saved_location_id.delivery_instructions if stop.saved_location_id else ""),
+                "saved_location_id": sl.id if sl else None,
+                "contact_name": kwargs.get(f"delivery_contact_name_{seq}") or (sl.contact_name if sl else ""),
+                "phone": kwargs.get(f"delivery_phone_{seq}") or (sl.contact_phone if sl else ""),
+                "dock_info": kwargs.get(f"delivery_dock_info_{seq}") or (sl.dock_info if sl else ""),
+                "instructions": kwargs.get(f"delivery_instructions_{seq}") or (sl.delivery_instructions if sl else ""),
             })
 
         address_vals = {

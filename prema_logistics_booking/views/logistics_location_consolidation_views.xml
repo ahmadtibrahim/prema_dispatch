@@ -1,0 +1,121 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- ═════════════════════════════════════════════════════════════════
+         SAVED LOCATION CONSOLIDATION — ONE backend menu:
+         Prema Dispatch → Bookings → Locations (prema.dispatch.location).
+         "Customer Locations" (logistics.saved.location) and "Master
+         Facilities" are hidden from navigation; their ACTIONS stay
+         historically intact (no deletes).
+         ═════════════════════════════════════════════════════════════════ -->
+    <record id="menu_v4_locations" model="ir.ui.menu">
+        <field name="name">Locations</field>
+        <field name="parent_id" ref="menu_v4_bookings"/>
+        <field name="action" ref="prema_dispatch.action_dispatch_locations"/>
+        <field name="sequence">60</field>
+    </record>
+    <record id="menu_saved_locations" model="ir.ui.menu">
+        <field name="active" eval="False"/>
+    </record>
+    <record id="menu_v4_saved_locations" model="ir.ui.menu">
+        <field name="active" eval="False"/>
+    </record>
+
+    <!-- ═════════════════════════════════════════════════════════════════
+         FACILITY FORM — canonical tab structure (spec §8):
+         FACILITY / HOURS / CUSTOMERS USING LOCATION / DRIVER-OPERATIONS /
+         PHOTOS / ANALYTICS. The base form's flat groups are moved into
+         the pages via the documented position="move" pattern (each inner
+         xpath is evaluated against the combined view and the matched
+         node lands at the end of the page).
+         ═════════════════════════════════════════════════════════════════ -->
+    <record id="dispatch_location_form_consolidation_tabs" model="ir.ui.view">
+        <field name="name">prema.dispatch.location.form.consolidation.tabs</field>
+        <field name="model">prema.dispatch.location</field>
+        <field name="inherit_id" ref="prema_dispatch.dispatch_location_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//form/sheet/*[1]" position="before">
+                <notebook>
+                    <page string="Facility"/>
+                    <page string="Hours">
+                        <div class="alert alert-danger" role="alert"
+                             invisible="not hours_review_required">
+                            <i class="fa fa-exclamation-triangle me-1"/>
+                            <b>Hours review required.</b> Conflicting legacy
+                            hours sources were preserved during consolidation —
+                            confirm the schedule below before it is trusted.
+                            <field name="legacy_hours_source" readonly="1"/>
+                        </div>
+                        <field name="facility_hours_summary" readonly="1"
+                               string="Hours Summary"/>
+                        <field name="facility_hours_ids" nolabel="1"
+                               context="{'default_facility_id': id}">
+                            <list string="Facility Hours" editable="bottom">
+                                <field name="day_of_week"/>
+                                <field name="service_scope"/>
+                                <field name="status"/>
+                                <field name="open_time"/>
+                                <field name="close_time"/>
+                                <field name="sequence"/>
+                                <field name="active"/>
+                            </list>
+                        </field>
+                    </page>
+                    <page string="Customers Using Location"
+                          groups="prema_dispatch.group_dispatch_manager">
+                        <field name="customer_access_ids" nolabel="1"
+                               context="{'default_facility_id': id}">
+                            <list string="Customers Using This Facility" editable="bottom">
+                                <field name="commercial_partner_id" string="Customer"/>
+                                <field name="portal_enabled" string="Portal Enabled"/>
+                                <field name="can_pickup" string="Can Pickup"/>
+                                <field name="can_delivery" string="Can Delivery"/>
+                                <field name="is_default_pickup" string="Default Pickup"/>
+                                <field name="is_default_delivery" string="Default Delivery"/>
+                                <field name="customer_alias" string="Alias"/>
+                                <field name="contact_name" string="Contact Name"/>
+                                <field name="contact_phone" string="Phone"/>
+                                <field name="contact_email" string="Email"/>
+                                <field name="active" string="Active"/>
+                            </list>
+                        </field>
+                    </page>
+                    <page string="Driver / Operations"/>
+                    <page string="Photos"/>
+                    <page string="Analytics"
+                          groups="prema_dispatch.group_dispatch_manager">
+                        <field name="customer_access_count" readonly="1"/>
+                    </page>
+                </notebook>
+            </xpath>
+
+            <!-- Move the base form's sheet content into its pages. The two
+                 attribute-less WRAPPER groups are matched structurally so the
+                 Address|Parking Pin and Entrances|Equipment two-column
+                 layouts come along intact (matching the inner groups instead
+                 would leave empty wrapper shells in the sheet).
+                 Odoo 18 rule: view inheritance may NOT use translated
+                 attributes (string/help/…) as xpath selectors, so pages are
+                 matched positionally (this notebook is created above and the
+                 base form has no other notebook) and groups by unique
+                 structural anchors (their distinguishing child fields). -->
+            <xpath expr="//notebook/page[1]" position="inside">
+                <xpath expr="//div[hasclass('oe_title')]" position="move"/>
+                <xpath expr="//div[hasclass('alert') and @invisible='not address_validation_warning']" position="move"/>
+                <xpath expr="//group[group[field[@name='chain_name']]]" position="move"/>
+            </xpath>
+            <xpath expr="//notebook/page[4]" position="inside">
+                <xpath expr="//group[group[field[@name='receiving_entrance']]]" position="move"/>
+                <xpath expr="//group[field[@name='parking_notes']]" position="move"/>
+                <xpath expr="//group[field[@name='driver_instructions']]" position="move"/>
+                <xpath expr="//group[field[@name='security_notes']]" position="move"/>
+            </xpath>
+            <xpath expr="//notebook/page[5]" position="inside">
+                <xpath expr="//group[group[field[@name='entrance_photo']]]" position="move"/>
+            </xpath>
+            <xpath expr="//notebook/page[6]" position="inside">
+                <xpath expr="//group[field[@name='use_count']]" position="move"/>
+                <xpath expr="//group[group[field[@name='average_wait_minutes']]]" position="move"/>
+            </xpath>
+        </field>
+    </record>
+</odoo>
