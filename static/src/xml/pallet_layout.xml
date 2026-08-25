@@ -18,7 +18,10 @@
             <div t-if="!state.data.layout_template.is_verified" class="pl-unverified-banner">
                 <div><b>⚠ UNVERIFIED VEHICLE LAYOUT</b></div>
                 <div>Dimensions and capacity have not yet been physically verified. This diagram is a planning aid, not a guarantee these pallets will fit. Legal payload/axle-weight limits are separate and not verified here.</div>
-                <div t-if="state.data.unverified_layout_acknowledged" class="pl-ack-confirmed">✓ Acknowledged</div>
+                <div t-if="state.data.unverified_layout_acknowledged" class="pl-ack-confirmed">✓ Layout warning acknowledged
+                    <t t-if="state.data.unverified_layout_acknowledged_by"> by <t t-esc="state.data.unverified_layout_acknowledged_by"/></t>
+                    <t t-if="state.data.unverified_layout_acknowledged_at"> at <t t-esc="state.data.unverified_layout_acknowledged_at"/></t>
+                </div>
                 <button t-else="" class="btn btn-sm btn-warning" t-on-click="acknowledgeUnverified">I Acknowledge — Proceed</button>
             </div>
             <div class="pl-counts">
@@ -51,6 +54,13 @@
                                         </div>
                                         <div t-if="pos.item.shared_skid" class="pl-pos-shared-label">SHARED</div>
                                     </t>
+                                    <t t-elif="pos.reservation">
+                                        <div class="pl-pos-item" t-esc="pos.reservation.item_names.join(', ') || pos.reservation.job_name"/>
+                                        <div class="pl-pos-reserved-label">RESERVED</div>
+                                        <div class="pl-pos-meta" t-esc="pos.reservation.job_name"/>
+                                        <div class="pl-pos-meta">Pickup: <t t-esc="pos.reservation.pickup_label"/></div>
+                                        <div class="pl-pos-meta">Delivery: <t t-esc="pos.reservation.delivery_label"/></div>
+                                    </t>
                                     <t t-else="">
                                         <div class="pl-pos-vacant-label">VACANT</div>
                                     </t>
@@ -69,6 +79,13 @@
                                         </div>
                                         <div t-if="pos.item.shared_skid" class="pl-pos-shared-label">SHARED</div>
                                     </t>
+                                    <t t-elif="pos.reservation">
+                                        <div class="pl-pos-item" t-esc="pos.reservation.item_names.join(', ') || pos.reservation.job_name"/>
+                                        <div class="pl-pos-reserved-label">RESERVED</div>
+                                        <div class="pl-pos-meta" t-esc="pos.reservation.job_name"/>
+                                        <div class="pl-pos-meta">Pickup: <t t-esc="pos.reservation.pickup_label"/></div>
+                                        <div class="pl-pos-meta">Delivery: <t t-esc="pos.reservation.delivery_label"/></div>
+                                    </t>
                                     <t t-else="">
                                         <div class="pl-pos-vacant-label">VACANT</div>
                                     </t>
@@ -80,6 +97,10 @@
                                 <div t-att-class="positionClass(pos)" t-on-click="() => this.onPositionClick(pos)">
                                     <div class="pl-pos-code" t-esc="pos.display_name"/>
                                     <t t-if="pos.item"><div class="pl-pos-item" t-esc="pos.item.name"/></t>
+                                    <t t-elif="pos.reservation">
+                                        <div class="pl-pos-reserved-label">RESERVED</div>
+                                        <div class="pl-pos-meta" t-esc="pos.reservation.job_name"/>
+                                    </t>
                                     <t t-else=""><div class="pl-pos-vacant-label">VACANT</div></t>
                                 </div>
                             </t>
@@ -108,6 +129,16 @@
                                 <button class="btn btn-xs btn-outline-danger" t-on-click="() => this.unassign(selectedPosition.item.id)">Unassign</button>
                             </div>
                         </t>
+                        <t t-elif="selectedPosition.reservation">
+                            <div class="pl-pos-reserved-label">RESERVED FOR FUTURE PICKUP</div>
+                            <div t-esc="selectedPosition.reservation.item_names.join(', ') || selectedPosition.reservation.job_name"/>
+                            <div t-esc="selectedPosition.reservation.job_name"/>
+                            <div>Pickup: <t t-esc="selectedPosition.reservation.pickup_label"/></div>
+                            <div>Delivery: <t t-esc="selectedPosition.reservation.delivery_label"/></div>
+                            <div class="pl-detail-actions">
+                                <button class="btn btn-xs btn-outline-danger" t-on-click="() => this.releaseReservation(selectedPosition.id)">Release Reservation</button>
+                            </div>
+                        </t>
                         <t t-else="">
                             <div class="pl-unassigned-list">
                                 <div t-if="!state.data.unassigned_items.length" class="text-muted">No unassigned pallets.</div>
@@ -126,6 +157,21 @@
                         </div>
                     </div>
 
+                    <div class="pl-section" t-if="state.data.future_pickup_items.length">
+                        <strong>Future Pickups / Unreserved (<t t-esc="state.data.future_pickup_items.length"/>)</strong>
+                        <div t-foreach="state.data.future_pickup_items" t-as="fp" t-key="fp.id" class="pl-unassigned-item">
+                            <span>
+                                <t t-esc="fp.name"/> — <t t-esc="fp.job_name"/>
+                                <div class="text-muted">
+                                    <t t-if="fp.pickup_label">Pickup: <t t-esc="fp.pickup_label"/> · </t>
+                                    Delivery: <t t-esc="fp.delivery_label"/>
+                                </div>
+                            </span>
+                            <span t-if="fp.reserved_position_code" class="pl-future-tag">RESERVED <t t-esc="fp.reserved_position_code"/></span>
+                            <span t-else="" class="pl-future-tag pl-future-tag-open">NOT RESERVED</span>
+                        </div>
+                    </div>
+
                     <div class="pl-section">
                         <strong>Included Jobs</strong>
                         <div t-foreach="state.data.jobs" t-as="j" t-key="j.job_id">
@@ -140,6 +186,21 @@
 
                     <div t-if="state.recommendation" class="pl-section pl-recommend-card">
                         <strong>Recommended Layout</strong>
+                        <div class="pl-recommend-summary" t-esc="state.recommendation.summary"/>
+                        <div t-foreach="state.recommendation.positions" t-as="p" t-key="p.item_id" class="pl-recommend-row">
+                            <t t-esc="p.item_name"/> → <b t-esc="p.position_label"/>
+                            <span t-if="p.future" class="pl-future-tag">RESERVED</span>
+                            <div class="text-muted">
+                                <t t-esc="p.job_name || ''"/>
+                                <t t-if="p.pickup_label"> · Pickup: <t t-esc="p.pickup_label"/></t>
+                                <t t-if="p.destination"> · Delivery: <t t-esc="p.destination"/></t>
+                            </div>
+                        </div>
+                        <div t-foreach="state.recommendation.moves" t-as="m" t-key="m.item_id" class="pl-recommend-row">
+                            <t t-esc="m.item_name"/> → <b t-esc="m.position_label"/>
+                            <span class="text-muted">(from <t t-esc="m.from_position_label"/>)</span>
+                        </div>
+                        <div t-if="!state.recommendation.positions.length &amp;&amp; !state.recommendation.moves.length" class="text-muted">Nothing to place or move.</div>
                         <div t-foreach="state.recommendation.warnings" t-as="rw" t-key="rw_index" class="pl-warning">⚠ <t t-esc="rw"/></div>
                         <button class="btn btn-xs btn-primary" t-on-click="acceptRecommendation">Accept</button>
                         <button class="btn btn-xs btn-outline-secondary" t-on-click="rejectRecommendation">Reject</button>

@@ -212,6 +212,51 @@ class PremaDispatchLoadPlan(models.Model):
         positions_by_code = {p.position_code: p for p in tpl.position_ids.filtered("active")}
         items = self.pallet_ids.filtered(lambda i: i.status != "cancelled" and not i.pending_future_pickup)
         items_by_position = {i.position_id.position_code: i for i in items if i.position_id}
+        future_items = self.pallet_ids.filtered(
+            lambda i: i.status != "cancelled" and i.pending_future_pickup)
+
+        # Position-level reservations for future pickups (pending
+        # reserve_position operations) — the planning commitment that lets a
+        # confirmed-but-not-yet-picked-up pallet occupy a slot on the diagram.
+        def _loc_label(stop):
+            if not stop:
+                return ""
+            return (stop.saved_location_id.name
+                    or (stop.saved_location_id.business_name if stop.saved_location_id else False)
+                    or stop.job_id.partner_id.name
+                    or stop.address
+                    or f"Stop {stop.sequence}")
+
+        def _reservation_payload(op):
+            job = op.related_pickup_stop_id.job_id if op.related_pickup_stop_id else False
+            job_future = future_items.filtered(lambda i, j=job: (i.job_id.id == j.id) if j else False)
+            delivery = False
+            if job_future:
+                delivery = job_future[0].delivery_stop_id
+            elif job:
+                delivery = job.stop_ids.filtered(
+                    lambda s: s.stop_type == "dropoff" and not s.planning_only)[:1]
+            return {
+                "operation_id": op.id,
+                "job_id": job.id if job else False,
+                "job_name": job.name if job else "Future pickup",
+                "item_ids": job_future.ids,
+                "item_names": job_future.mapped("name"),
+                "pickup_label": _loc_label(op.related_pickup_stop_id),
+                "delivery_label": _loc_label(delivery),
+            }
+
+        reservations = self.env["prema.dispatch.load.plan.operation"].search([
+            ("load_plan_id", "=", self.id), ("operation_type", "=", "reserve_position"),
+            ("state", "=", "pending"), ("active", "=", True),
+        ])
+        reservation_by_code = {
+            r.to_position_id.position_code: _reservation_payload(r) for r in reservations
+        }
+        reserved_code_by_job = {
+            r.related_pickup_stop_id.job_id.id: r.to_position_id.position_code
+            for r in reservations if r.related_pickup_stop_id
+        }
 
         def item_payload(item):
             allocs = self.env["prema.dispatch.pallet.stop.allocation"].search([
@@ -251,6 +296,12 @@ class PremaDispatchLoadPlan(models.Model):
             "is_locked": self.is_locked, "lock_reason": self.lock_reason,
             "is_stale": self.is_stale, "stale_reason": self.stale_reason,
             "unverified_layout_acknowledged": self.unverified_layout_acknowledged,
+            "unverified_layout_acknowledged_by": (
+                self.unverified_layout_acknowledged_by.name
+                if self.unverified_layout_acknowledged_by else False),
+            "unverified_layout_acknowledged_at": (
+                self.unverified_layout_acknowledged_at.isoformat()
+                if self.unverified_layout_acknowledged_at else False),
             "counts": {
                 "expected": self.expected_pallet_count, "actual_received": self.actual_received_pallet_count,
                 "confirmed": self.confirmed_pallet_count,
@@ -272,9 +323,16 @@ class PremaDispatchLoadPlan(models.Model):
                 "sequence": p.sequence, "x": p.x_coordinate, "y": p.y_coordinate,
                 "width": p.display_width, "height": p.display_height, "blocked": p.blocked,
                 "item": item_payload(items_by_position[code]) if code in items_by_position else False,
+                "reservation": reservation_by_code.get(code, False),
             } for code, p in positions_by_code.items()],
             "unassigned_items": [item_payload(i) for i in items if not i.position_id and i.consumes_floor_position],
             "non_floor_items": [item_payload(i) for i in items if not i.consumes_floor_position],
+            "future_pickup_items": [{
+                **item_payload(i),
+                "reserved_position_code": reserved_code_by_job.get(i.job_id.id, False),
+                "pickup_label": _loc_label(i.pickup_stop_id or i.available_after_stop_id),
+                "delivery_label": _loc_label(i.delivery_stop_id),
+            } for i in future_items],
             "available_stops": [{
                 "job_id": job.id,
                 "job_name": job.name,
@@ -451,6 +509,12 @@ class PremaDispatchLoadPlan(models.Model):
         occupant = self.pallet_ids.filtered(lambda i: i.position_id.id == pos.id and i.id != item.id and i.status != "cancelled")
         if occupant:
             raise UserError(f"Position {pos.position_code} is already occupied by {occupant[0].name}.")
+        reserved = self.env["prema.dispatch.load.plan.operation"].search([
+            ("load_plan_id", "=", self.id), ("operation_type", "=", "reserve_position"),
+            ("state", "=", "pending"), ("active", "=", True), ("to_position_id", "=", pos.id),
+        ], limit=1)
+        if reserved:
+            raise UserError(f"Position {pos.position_code} is reserved for a future pickup — un-reserve it before assigning freight there.")
         item.write({"position_id": pos.id})
         self._log_event("pallet_assigned", item=item, to_position=pos)
         self._bump_version()
@@ -477,6 +541,12 @@ class PremaDispatchLoadPlan(models.Model):
         occupant = self.pallet_ids.filtered(lambda i: i.position_id.id == pos.id and i.id != item.id and i.status != "cancelled")
         if occupant:
             raise UserError(f"Position {pos.position_code} is already occupied by {occupant[0].name}.")
+        reserved = self.env["prema.dispatch.load.plan.operation"].search([
+            ("load_plan_id", "=", self.id), ("operation_type", "=", "reserve_position"),
+            ("state", "=", "pending"), ("active", "=", True), ("to_position_id", "=", pos.id),
+        ], limit=1)
+        if reserved:
+            raise UserError(f"Position {pos.position_code} is reserved for a future pickup — un-reserve it before moving freight there.")
         item.write({"position_id": pos.id})
         self._log_event("pallet_moved", item=item, from_position=old_pos, to_position=pos)
         self._bump_version()
@@ -645,7 +715,18 @@ class PremaDispatchLoadPlan(models.Model):
         floor_items = self.pallet_ids.filtered(lambda i: i.status != "cancelled" and i.consumes_floor_position)
         if self.confirmed_pallet_count > tpl.max_positions:
             blocking.append(f"Confirmed pallet count ({self.confirmed_pallet_count}) exceeds layout capacity ({tpl.max_positions}).")
-        unassigned = floor_items.filtered(lambda i: not i.position_id)
+        # Future-pickup freight is not physically on the truck yet, so it
+        # has no position binding — but a job with a PENDING reservation has
+        # a planned slot and is fully planned. Only unreserved future
+        # pallets (or physical pallets with no position) block validation.
+        reserved_job_ids = self.env["prema.dispatch.load.plan.operation"].search([
+            ("load_plan_id", "=", self.id), ("operation_type", "=", "reserve_position"),
+            ("state", "=", "pending"), ("active", "=", True),
+            ("related_pickup_stop_id", "!=", False),
+        ]).mapped("related_pickup_stop_id.job_id.id")
+        unassigned = floor_items.filtered(
+            lambda i: not i.position_id and (
+                not i.pending_future_pickup or i.job_id.id not in reserved_job_ids))
         if unassigned:
             blocking.append(f"{len(unassigned)} pallet(s) have no assigned position.")
         if tpl.max_payload_lbs and self.payload_used > tpl.max_payload_lbs:
@@ -704,10 +785,19 @@ class PremaDispatchLoadPlan(models.Model):
         """Dispatcher-only (not driver/warehouse): explicit sign-off that
         they understand this template's dimensions/capacity are unverified.
         Required before confirm_loading() when the current template is
-        unverified — see validate_load_plan()'s warning text."""
+        unverified — see validate_load_plan()'s warning text.
+
+        The gate is the LAYOUT TEMPLATE's own verification flag — the exact
+        context the "UNVERIFIED VEHICLE LAYOUT" banner keys off. It must NOT
+        use _layout_is_vehicle_verified(): that vehicle-level check can be
+        True (vehicle config verified + capacity match) while the template
+        is still unverified, which made this button silently no-op. And
+        acknowledging NEVER flips the template's is_verified or the
+        vehicle's layout_configuration_verified — physical verification is
+        a separate, manager-only action."""
         self.ensure_one()
         self._check_dispatch_staff_or_raise()
-        if self._layout_is_vehicle_verified():
+        if self.layout_template_id.is_verified:
             return self.get_load_plan()  # nothing to acknowledge
         self.write({
             "unverified_layout_acknowledged": True,
@@ -729,15 +819,108 @@ class PremaDispatchLoadPlan(models.Model):
     def recommend_layout(self):
         return self.recommend_updated_layout()
 
+    def _set_job_reserved_count(self, job_id):
+        """Mirror the pending reserve-position operations for one job onto
+        the load-plan-job link's reserved_floor_positions — the canonical
+        knob feeding the Reserved / Committed / Available header counts.
+        Operations are the position-level truth; the link count is the
+        aggregate the counts read."""
+        self.ensure_one()
+        ops = self.env["prema.dispatch.load.plan.operation"].search([
+            ("load_plan_id", "=", self.id), ("operation_type", "=", "reserve_position"),
+            ("state", "=", "pending"), ("active", "=", True),
+            ("related_pickup_stop_id.job_id", "=", job_id),
+        ])
+        link = self.load_plan_job_ids.filtered(lambda l: l.active and l.job_id.id == job_id)[:1]
+        if link:
+            count = len(ops)
+            vals = {"reserved_floor_positions": count}
+            if count and not link.reservation_source:
+                vals["reservation_source"] = "dispatcher_override"
+            if link.reserved_floor_positions != count or not link.reservation_source:
+                link.write(vals)
+        return len(ops)
+
+    def _reserve_future_position(self, placement):
+        """Persist ONE pending reserve_position operation for freight that
+        is planned but not physically picked up yet. Idempotent per
+        position: a second accept of the same proposal reuses the existing
+        operation instead of duplicating it. The operation (not the item)
+        is the authority until confirm_future_pickup_operation binds the
+        real pallet at pickup time."""
+        self.ensure_one()
+        pos = self.env["prema.dispatch.vehicle.layout.position"].browse(placement["position_id"])
+        item = self.env["prema.dispatch.item"].browse(placement.get("item_id"))
+        job = self.env["prema.dispatch.job"].browse(placement.get("job_id")) if placement.get("job_id") else (item.job_id if item else False)
+        if not pos.exists() or pos.layout_template_id.id != self.layout_template_id.id:
+            raise UserError("Invalid position for this load plan's layout.")
+        if pos.blocked:
+            raise UserError(f"Position {pos.position_code} is blocked: {pos.blocked_reason or 'not available'}.")
+        occupant = self.pallet_ids.filtered(
+            lambda i: i.status != "cancelled" and not i.pending_future_pickup
+            and i.position_id.id == pos.id)
+        if occupant:
+            raise UserError(f"Position {pos.position_code} is already occupied by {occupant[0].name}.")
+        existing = self.env["prema.dispatch.load.plan.operation"].search([
+            ("load_plan_id", "=", self.id), ("operation_type", "=", "reserve_position"),
+            ("state", "=", "pending"), ("active", "=", True), ("to_position_id", "=", pos.id),
+        ], limit=1)
+        if existing:
+            other_job = existing.related_pickup_stop_id.job_id if existing.related_pickup_stop_id else False
+            if job and other_job and other_job.id != job.id:
+                raise UserError(f"Position {pos.position_code} is already reserved for another job.")
+            if not existing.related_pickup_stop_id and job:
+                pickup_stop = job.stop_ids.filtered(
+                    lambda s: s.stop_type == "pickup" and not s.planning_only)[:1]
+                if pickup_stop:
+                    existing.write({"related_pickup_stop_id": pickup_stop.id})
+            return existing
+        pickup_stop = False
+        if job:
+            pickup_stop = job.stop_ids.filtered(
+                lambda s: s.stop_type == "pickup" and not s.planning_only)[:1]
+        op = self.env["prema.dispatch.load.plan.operation"].create({
+            "load_plan_id": self.id, "operation_type": "reserve_position",
+            "to_position_id": pos.id,
+            "related_pickup_stop_id": pickup_stop.id if pickup_stop else False,
+            "reason": f"Reserved for future pickup: {job.name if job else 'unknown job'}",
+        })
+        if job:
+            self._set_job_reserved_count(job.id)
+        return op
+
+    def _clear_stale_if_no_blocking(self):
+        """Drop the stale flag after a planner action WHEN the plan now
+        validates — never blindly (a remaining blocking error keeps the
+        stale state so the planner still sees the plan needs attention)."""
+        self.ensure_one()
+        if not self.is_stale:
+            return
+        validation = self.validate_load_plan()
+        if validation["blocking"]:
+            return
+        self.write({
+            "is_stale": False, "stale_reason": False,
+            "stale_since": False, "stale_triggered_by": False,
+        })
+        self._log_event("stale_cleared")
+
     def accept_recommendation(self, recommendation, version=None):
         self.ensure_one()
         self._check_access(require_not_locked=True)
         self._check_version(version)
         for placement in recommendation.get("positions", []):
+            if placement.get("future"):
+                # Planning commitment for freight not yet picked up: reserve
+                # the proposed position (operation + link count). The item
+                # keeps position_id empty until the pickup actually happens.
+                self._reserve_future_position(placement)
+                continue
             item = self.env["prema.dispatch.item"].browse(placement["item_id"])
             if item.exists() and item.load_plan_id.id == self.id:
                 item.write({"position_id": placement["position_id"]})
         self._log_event("recommendation_accepted", new_value=recommendation)
+        self._clear_stale_if_no_blocking()
         self._bump_version()
         return self.get_load_plan()
 
@@ -765,7 +948,7 @@ class PremaDispatchLoadPlan(models.Model):
         self._check_version(version)
         item = self.env["prema.dispatch.item"].browse(item_id)
         item.write({"status": "delivered", "unloaded_at": fields.Datetime.now(), "unloaded_by": self.env.user.id})
-        self._log_event("pallet_unloaded", item=item)
+        item._release_position_on_delivery()
         self._bump_version()
         return self.get_load_plan()
 
@@ -777,6 +960,21 @@ class PremaDispatchLoadPlan(models.Model):
             raise UserError(
                 "UNVERIFIED VEHICLE LAYOUT — Dimensions and capacity have not yet been physically "
                 "verified. A dispatcher must acknowledge this before loading can be confirmed."
+            )
+        # A reserved position is a PLAN, not cargo on the truck: loading can
+        # only be confirmed after the freight was physically received at its
+        # pickup (available_after_stop gets actual_departure_time, which
+        # flips pending_future_pickup off). The planning UI must never skip
+        # the driver pickup.
+        future_items = self.pallet_ids.filtered(
+            lambda i: i.status != "cancelled" and i.pending_future_pickup)
+        if future_items:
+            names = ", ".join(future_items[:3].mapped("name")) + (
+                "…" if len(future_items) > 3 else "")
+            raise UserError(
+                f"Cannot confirm loading: {names} {'has' if len(future_items) == 1 else 'have'} not "
+                "been physically picked up yet. Complete the pickup/receiving workflow first — a "
+                "reserved position is a plan, not cargo on the truck."
             )
         validation = self.validate_load_plan()
         if validation["blocking"]:
@@ -968,6 +1166,7 @@ class PremaDispatchLoadPlan(models.Model):
                 "to_position_id": pos.id, "related_pickup_stop_id": pickup_stop.id if pickup_stop else False,
                 "reason": f"Reserved for future pickup: {job.name}",
             })
+        self._set_job_reserved_count(job.id)
         self._log_event("stop_allocation_changed", reason=f"Reserved {count} position(s) for future pickup on {job.name}")
         self._bump_version()
         return {"success": True, "reserved_position_ids": chosen.ids, "operation_ids": ops.ids}
@@ -1048,7 +1247,32 @@ class PremaDispatchLoadPlan(models.Model):
         item = self.env["prema.dispatch.item"].browse(item_id)
         item.write({"position_id": pos.id, "status": "loaded", "loaded_at": fields.Datetime.now(), "loaded_by": self.env.user.id})
         op.write({"item_id": item.id, "state": "completed", "completed_by": self.env.user.id, "completed_at": fields.Datetime.now()})
+        self._set_job_reserved_count(item.job_id.id)
         self._log_event("pallet_loaded", item=item, to_position=pos, reason="Future pickup confirmed")
+        self._bump_version()
+        return self.get_load_plan()
+
+    def release_future_reservation(self, position_id, version=None):
+        """Cancel a pending future-pickup reservation: the position returns
+        to vacant and the job link's reserved count is recomputed from the
+        remaining pending operations. No-op on unreserved positions."""
+        self.ensure_one()
+        self._check_access(require_not_locked=True)
+        self._check_version(version)
+        pos = self.env["prema.dispatch.vehicle.layout.position"].browse(position_id)
+        ops = self.env["prema.dispatch.load.plan.operation"].search([
+            ("load_plan_id", "=", self.id), ("operation_type", "=", "reserve_position"),
+            ("state", "=", "pending"), ("active", "=", True), ("to_position_id", "=", pos.id),
+        ])
+        if not ops:
+            raise UserError("No pending reservation on this position.")
+        job_ids = {o.related_pickup_stop_id.job_id.id for o in ops if o.related_pickup_stop_id}
+        ops.write({"state": "cancelled", "active": False})
+        for job_id in job_ids:
+            self._set_job_reserved_count(job_id)
+        self._log_event("stop_allocation_changed",
+                        reason=f"Released future-pickup reservation on {pos.position_code}")
+        self._clear_stale_if_no_blocking()
         self._bump_version()
         return self.get_load_plan()
 

@@ -191,6 +191,22 @@ class PremaDispatchItem(models.Model):
             label = f"{label} ({self.pallet_count} pallet{'s' if self.pallet_count != 1 else ''})"
         return label
 
+    def _release_position_on_delivery(self):
+        """A fully delivered pallet no longer occupies the truck: release
+        its position on the ACTIVE (unlocked) load plan so the diagram shows
+        the slot vacant again. Locked/completed plans are frozen execution
+        records — their final_snapshot_json is the audit authority, so their
+        diagram is left as-planned."""
+        for item in self:
+            if item.status != "delivered" or not item.position_id or not item.load_plan_id:
+                continue
+            plan = item.load_plan_id
+            if plan.is_locked:
+                continue
+            old_pos = item.position_id
+            item.write({"position_id": False})
+            plan._log_event("pallet_unloaded", item=item, from_position=old_pos)
+
     def _sync_booking_pallet_custody(self):
         """Mirror custody onto the canonical booking pallet (movement_v1).
         Shared pallets go to partially_delivered until their FINAL active

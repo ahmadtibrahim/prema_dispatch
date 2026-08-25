@@ -12,6 +12,12 @@ class PremaDispatchLoadPlanOptimizer(models.Model):
         recommendation may intentionally move pallet A into pallet B's current
         slot while B moves elsewhere, so all participating positions are first
         validated and cleared before the final unique target map is applied.
+
+        Future-pickup placements are NOT physical moves: they reserve a
+        position (pending reserve_position operation) for freight that has
+        not been picked up yet. They are delegated to the base helper and
+        never touch item.position_id — the pallet only binds to the slot
+        when confirm_future_pickup_operation runs at the real pickup.
         """
         self.ensure_one()
         self._check_access(require_not_locked=True)
@@ -22,11 +28,34 @@ class PremaDispatchLoadPlanOptimizer(models.Model):
         if not placements:
             return self.get_load_plan()
 
+        future_placements = [p for p in placements if p.get("future")]
+        physical = [p for p in placements if not p.get("future")]
+        for placement in future_placements:
+            self._reserve_future_position(placement)
+        if not physical:
+            self._log_event(
+                "recommendation_accepted",
+                new_value={
+                    "strategy": recommendation.get("strategy") or "future_pickup_reserve",
+                    "reserved_positions": [
+                        {
+                            "job_name": p.get("job_name"),
+                            "item_name": p.get("item_name"),
+                            "position_code": p.get("position_code"),
+                        } for p in future_placements
+                    ],
+                    "warnings": recommendation.get("warnings") or [],
+                },
+            )
+            self._clear_stale_if_no_blocking()
+            self._bump_version()
+            return self.get_load_plan()
+
         items_by_id = {}
         target_by_item = {}
         used_target_ids = set()
 
-        for placement in placements:
+        for placement in physical:
             item_id = int(placement.get("item_id") or 0)
             position_id = int(placement.get("position_id") or 0)
             if not item_id or not position_id:
@@ -88,5 +117,6 @@ class PremaDispatchLoadPlanOptimizer(models.Model):
                 "warnings": recommendation.get("warnings") or [],
             },
         )
+        self._clear_stale_if_no_blocking()
         self._bump_version()
         return self.get_load_plan()

@@ -53,7 +53,22 @@ class DispatchRecommendationService:
             return "Destination not assigned"
         loc = stop.saved_location_id
         return (
-            (loc.business_name if loc else False)
+            (loc.name if loc else False)
+            or (loc.business_name if loc else False)
+            or stop.job_id.partner_id.name
+            or stop.address
+            or f"Stop {stop.sequence}"
+        )
+
+    @staticmethod
+    def _pickup_label(item):
+        stop = item.pickup_stop_id or item.available_after_stop_id
+        if not stop:
+            return ""
+        loc = stop.saved_location_id
+        return (
+            (loc.name if loc else False)
+            or (loc.business_name if loc else False)
             or stop.job_id.partner_id.name
             or stop.address
             or f"Stop {stop.sequence}"
@@ -73,19 +88,25 @@ class DispatchRecommendationService:
             ),
         )
 
-        # Only freight physically available/onboard can receive a truck
-        # position.  Future-pickup placeholders are planning commitments, not
-        # freight the driver can position yet.  Delivered/cancelled freight is
-        # likewise out of the active layout.
-        items = load_plan.pallet_ids.filtered(
+        # Physically received freight: can be positioned now.
+        items = list(load_plan.pallet_ids.filtered(
             lambda i: i.status not in ("cancelled", "delivered")
             and i.consumes_floor_position
             and not i.pending_future_pickup
-        )
-        items = list(items)
+        ))
+        # Future pickups: NOT positionable yet — the driver has not received
+        # them — but they ARE plannable: the recommendation proposes one
+        # vacant position to RESERVE per future pallet, and Accept persists
+        # that as a pending reserve_position operation. The state stays
+        # RESERVED (never Assigned/Loaded) until the pickup happens.
+        future_items = list(load_plan.pallet_ids.filtered(
+            lambda i: i.status not in ("cancelled", "delivered")
+            and i.consumes_floor_position
+            and i.pending_future_pickup
+        ))
 
         warnings = []
-        if not items:
+        if not items and not future_items:
             return {
                 "strategy": "delivery_lifo",
                 "positions": [],
@@ -94,8 +115,22 @@ class DispatchRecommendationService:
                 "unresolved_item_ids": [],
                 "reserved_future_position_codes": [],
                 "warnings": [],
-                "summary": "No physical pallets are ready to position yet.",
+                "summary": "No pallets to plan yet.",
             }
+
+        # Positions already committed to a future pickup (pending
+        # reserve_position operations) are NOT available to the planner —
+        # the recommendation must respect existing reservations and never
+        # propose a double-booked slot.
+        reserved_position_ids = {
+            op.to_position_id.id
+            for op in load_plan.env["prema.dispatch.load.plan.operation"].search([
+                ("load_plan_id", "=", load_plan.id),
+                ("operation_type", "=", "reserve_position"),
+                ("state", "=", "pending"), ("active", "=", True),
+            ])
+        }
+        positions = [p for p in positions if p.id not in reserved_position_ids]
 
         # Unknown destinations are intentionally sorted last/deepest.  The
         # driver can still position them manually, but an optimizer cannot
@@ -154,6 +189,36 @@ class DispatchRecommendationService:
                 side_weight[pos.side or "center"] = side_weight.get(pos.side or "center", 0.0) + (item.weight_lbs or 0.0)
 
         unresolved = [item for item in items if item.id not in assigned]
+
+        # Future pickups get the remaining vacant positions nearest the rear
+        # door (a later pickup needs the fewest rehandles), in
+        # delivery-sequence order. These are reservation proposals only —
+        # nothing is persisted until Accept.
+        future_placements = []
+        free_after_physical = [p for p in positions if p.id not in used_position_ids]
+        for item in sorted(future_items, key=lambda i: (self._active_delivery_sequence(i), i.id)):
+            if not free_after_physical:
+                unresolved.append(item)
+                warnings.append(
+                    f"Future pickup {item.name} has no vacant position left — capacity is exhausted."
+                )
+                continue
+            pos = free_after_physical.pop(0)
+            seq = self._active_delivery_sequence(item)
+            future_placements.append({
+                "item_id": item.id,
+                "item_name": item.name,
+                "job_id": item.job_id.id,
+                "job_name": item.job_id.name,
+                "position_id": pos.id,
+                "position_code": pos.position_code,
+                "position_label": self._display_position_code(pos.position_code),
+                "delivery_sequence": None if seq >= 999999 else seq,
+                "destination": self._destination_label(item),
+                "pickup_label": self._pickup_label(item),
+                "future": True,
+            })
+            used_position_ids.add(pos.id)
         if unresolved:
             warnings.append(f"{len(unresolved)} pallet(s) do not fit in the active layout.")
 
@@ -231,7 +296,8 @@ class DispatchRecommendationService:
 
         move_count = len(moves)
         place_count = len(new_placements)
-        if not move_count and not place_count:
+        future_count = len(future_placements)
+        if not move_count and not place_count and not future_count:
             summary = "Current load layout already matches the delivery order."
         else:
             parts = []
@@ -239,13 +305,18 @@ class DispatchRecommendationService:
                 parts.append(f"place {place_count} pallet(s)")
             if move_count:
                 parts.append(f"move {move_count} pallet(s)")
-            summary = "Recommended: " + " and ".join(parts) + ". Earlier deliveries stay closer to the rear door."
+            if future_count:
+                parts.append(f"reserve {future_count} position(s) for future pickup(s)")
+            summary = "Recommended: " + " and ".join(parts) + "."
 
         return {
             "strategy": "delivery_lifo",
-            "positions": placements,
+            "positions": placements + future_placements,
             "moves": moves,
-            "new_placements": new_placements,
+            "new_placements": new_placements + [
+                {**fp, "reason": "Future pickup — reserved nearest the rear door for the fewest rehandles."}
+                for fp in future_placements
+            ],
             "unresolved_item_ids": [i.id for i in unresolved],
             "reserved_future_position_codes": [
                 self._display_position_code(p.position_code) for p in reserved_future

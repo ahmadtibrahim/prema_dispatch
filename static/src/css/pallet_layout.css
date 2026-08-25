@@ -34,6 +34,8 @@
 .pl-pos-item { font-weight: 700; }
 .pl-pos-stops { font-size: 10px; color: #555; }
 .pl-pos-shared-label { font-size: 9px; font-weight: 800; color: #7b1fa2; }
+.pl-pos-reserved-label { font-size: 9px; font-weight: 800; color: #b26a00; letter-spacing: .04em; }
+.pl-pos-meta { font-size: 9px; color: #6b4a00; max-width: 90px; line-height: 1.15; }
 .pl-side-panel { width: 320px; border-left: 1px solid #ddd; background: #fff; padding: 12px; overflow: auto; display: flex; flex-direction: column; gap: 12px; }
 .pl-section { border-top: 1px solid #eee; padding-top: 8px; font-size: 12px; }
 .pl-unassigned-item { display: flex; justify-content: space-between; align-items: center; padding: 4px 0; }
@@ -44,6 +46,10 @@
 .pl-stop-chip.selected { background: #1565C0; color: #fff; border-color: #1565C0; }
 .pl-warning { color: #b8860b; font-size: 11px; margin: 2px 0; }
 .pl-recommend-card { border: 1px solid #34a853; border-radius: 8px; padding: 10px; }
+.pl-recommend-summary { font-weight: 700; margin: 4px 0; }
+.pl-recommend-row { padding: 3px 0; border-bottom: 1px dashed #eee; font-size: 12px; }
+.pl-future-tag { display: inline-block; background: #fff4e0; color: #b26a00; border: 1px solid #f9a825; border-radius: 999px; padding: 1px 7px; font-size: 10px; font-weight: 800; }
+.pl-future-tag-open { background: #fef3f2; color: #b42318; border-color: #f04438; }
 .pl-actions { display: flex; flex-direction: column; gap: 6px; margin-top: auto; }
 
 @media (max-width: 700px) {

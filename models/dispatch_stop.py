@@ -942,6 +942,8 @@ class PremaDispatchStop(models.Model):
                 item_vals["status"] = "delivered"
                 item_vals["current_custody_type"] = "delivered"
             item.write(item_vals)
+            if item_vals.get("status") == "delivered":
+                item._release_position_on_delivery()
             item._sync_booking_pallet_custody()
 
     def _check_completion_requirements(self):
@@ -1332,6 +1334,14 @@ class PremaDispatchStop(models.Model):
                     vehicle=vehicle, driver=driver,
                     notes=f"Delivered at {self.address or 'destination stop'}.",
                 )
+            # A fully delivered pallet no longer occupies the truck: free
+            # its diagram position on the ACTIVE (unlocked) load plan. This
+            # is the canonical delivery path — every stop completion sets
+            # status=completed through the stop write hook (and the driver
+            # app calls this transition directly), so releasing here covers
+            # form actions, dispatcher buttons and app RPCs alike. Locked
+            # plans keep their frozen execution snapshot.
+            items._release_position_on_delivery()
         return items
 
     def _advance_item_status(self):

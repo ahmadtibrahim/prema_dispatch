@@ -75,6 +75,7 @@ export class PalletLayoutPanel extends Component {
         // text label (VACANT / SHARED / position code / stop numbers).
         if (pos.blocked) return "pl-pos pl-pos-blocked";
         if (this.state.selectedPositionCode === pos.position_code) return "pl-pos pl-pos-selected";
+        if (pos.reservation) return "pl-pos pl-pos-reserved";
         if (!pos.item) return "pl-pos pl-pos-vacant";
         if (pos.item.shared_skid) return "pl-pos pl-pos-shared";
         if (["loaded", "in_transit", "delivered"].includes(pos.item.status)) return "pl-pos pl-pos-loaded";
@@ -134,6 +135,11 @@ export class PalletLayoutPanel extends Component {
     async acknowledgeUnverified() {
         const r = await this._call("acknowledge_unverified_layout");
         if (r) this.state.data = r;
+    }
+
+    async releaseReservation(positionId) {
+        const r = await this._call("release_future_reservation", [positionId, this.state.data.version]);
+        if (r) { this.state.data = r; this.state.selectedPositionCode = null; }
     }
 
     async validate() {
