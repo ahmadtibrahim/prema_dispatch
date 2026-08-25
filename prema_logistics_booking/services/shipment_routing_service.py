@@ -618,7 +618,25 @@ class ShipmentRoutingService:
         # ── Step 4: Validate pickup day against corridor schedule ──
         valid_day = self._is_valid_pickup_day(origin_region, pickup_day)
         if not valid_day:
-            next_day = self._next_valid_pickup_day(origin_region, pickup_date)
+            # Route-aware advice (FSA reconciliation follow-up — the old
+            # origin-only day scan plus its blind "+7 days" fallback kept
+            # suggesting pickup dates for lanes no corridor can ever
+            # serve (e.g. Kawarthas → Northumberland), chaining the
+            # "next eligible pickup" forever). Distinguish:
+            #   A) ROUTE EXISTS, DATE UNAVAILABLE — the lane has an ACTUAL
+            #      scheduled departure (the same authority the calendar
+            #      uses); advise the nearest one.
+            #   B) NO ROUTE AT ALL — no corridor/departure can ever carry
+            #      this lane under the current topology; stop suggesting
+            #      dates and route the customer to a manual quote.
+            next_day = self._default_pickup_date(origin_region, dest_region)
+            if next_day is None:
+                return ShipmentRoute(
+                    False,
+                    "No scheduled corridor currently serves this route. "
+                    "Please request a manual quote.",
+                    "NO_SCHEDULED_ROUTE", [], pallets, weight_lbs, None,
+                    snapshot)
             return ShipmentRoute(
                 False,
                 f"Pickup day '{pickup_day}' is not served for {origin_region.code}. "
@@ -757,6 +775,34 @@ class ShipmentRoutingService:
                                 legs.append(leg2)
 
         if not legs:
+            # Route-aware advice — the same authority as the calendar.
+            # The requested date can be a valid pickup day for the origin
+            # region yet have NO actual departure for THIS lane (e.g.
+            # GTA → Niagara on a Wednesday — corridor 12 runs Mon/Thu),
+            # which used to surface as a bare NO_LEGS. Distinguish:
+            #   A) the lane has a real future departure — advise it;
+            #   B) no corridor can ever carry the lane — stop suggesting
+            #      dates, route to a manual quote.
+            # A next_day equal to the requested date itself means the
+            # failure is capacity/equipment on a served date — the bare
+            # NO_LEGS message stays honest there.
+            next_day = self._default_pickup_date(origin_region, dest_region)
+            if next_day is not None and next_day != pickup_date:
+                return ShipmentRoute(
+                    False,
+                    f"No scheduled departure serves {origin_region.code} → "
+                    f"{dest_region.code} on {pickup_day} {pickup_date.strftime('%Y-%m-%d')}. "
+                    f"Next eligible pickup: {next_day.strftime('%A')} "
+                    f"{next_day.strftime('%Y-%m-%d')}.",
+                    "REQUESTED_PICKUP_DATE_NOT_SERVED", [], pallets, weight_lbs,
+                    None,
+                    {**snapshot, "next_eligible_pickup": next_day.strftime("%Y-%m-%d")})
+            if next_day is None:
+                return ShipmentRoute(
+                    False,
+                    "No scheduled corridor currently serves this route. "
+                    "Please request a manual quote.",
+                    "NO_SCHEDULED_ROUTE", [], pallets, weight_lbs, None, snapshot)
             return ShipmentRoute(False, "Could not build shipment legs.",
                                  "NO_LEGS", [], pallets, weight_lbs, None, snapshot)
 
