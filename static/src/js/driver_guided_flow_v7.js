@@ -352,22 +352,70 @@
         }
     }
 
+    // Step-1 re-entrancy guard: the save+reload round-trip is async, so two
+    // rapid Continue taps must collapse into one save (the button is also
+    // disabled below — this catches same-tick re-entry).
+    let savingStep1 = false;
+
     async function saveActualAndContinue(stop) {
+        if (savingStep1) return false;
         const input = $("#v7Actual");
         const notes = $("#v7Variance");
         const actual = Math.max(0, Number(input?.value || 0));
-        if (typeof pickupSetDraftActual === "function") pickupSetDraftActual(stop.id, actual);
-        if (typeof pickupFlowState === "function" && typeof savePickupActuals === "function") {
-            S.pickupIntake = pickupFlowState(stop, 1);
-            S.pickupIntake.actual = actual;
-            S.pickupIntake.varianceNotes = notes?.value || "";
-            await savePickupActuals(0);
-            S.pickupIntake = null;
-            S.stop = (S.stops || []).find(s => s.id === stop.id) || S.stop;
-            await ensurePlan();
-            return !!pickupState(S.stop).summary.confirmed;
+        const expected = Number(pickupSummary(stop).expected || 0);
+        // §5 variance rule: a changed count is never silently accepted — the
+        // driver must tell Dispatch why BEFORE the save is attempted. The
+        // default displayed value (actual == expected) needs no reason.
+        if (actual !== expected && !(notes?.value || "").trim()) {
+            tell("Tell Dispatch why the pallet count changed.");
+            return false;
         }
-        return false;
+        const cont = $('[data-v7="continue"]');
+        const savedLabel = cont?.textContent || "Continue";
+        if (cont) {
+            cont.disabled = true;
+            cont.textContent = "Saving...";
+        }
+        savingStep1 = true;
+        try {
+            if (typeof pickupSetDraftActual === "function") pickupSetDraftActual(stop.id, actual);
+            if (typeof pickupFlowState === "function" && typeof savePickupActuals === "function") {
+                S.pickupIntake = pickupFlowState(stop, 1);
+                S.pickupIntake.actual = actual;
+                S.pickupIntake.varianceNotes = notes?.value || "";
+                const ok = await savePickupActuals(0);
+                if (!ok) {
+                    tell("Could not save pallet count. Please try again.");
+                    return false;
+                }
+                S.pickupIntake = null;
+                S.stop = (S.stops || []).find(s => s.id === stop.id) || S.stop;
+                await ensurePlan();
+                const summary = pickupState(S.stop).summary;
+                if (!summary.confirmed) {
+                    // The server accepted the save but the canonical
+                    // confirmation flag did not come back — surface it, never
+                    // leave the driver staring at a dead Continue button.
+                    console.warn("Step-1 save succeeded but pickup summary not confirmed", {
+                        stopId: S.stop?.id,
+                        summary,
+                        job_summary: S.stop?.job_summary,
+                        step_state: S.stop?.pickup_step_state,
+                    });
+                    tell("Pallet count was not confirmed. Please try again or contact Dispatch.");
+                    return false;
+                }
+                return true;
+            }
+            return false;
+        } finally {
+            savingStep1 = false;
+            const btn = $('[data-v7="continue"]');
+            if (btn) {
+                btn.disabled = false;
+                btn.textContent = savedLabel;
+            }
+        }
     }
 
     async function completeStop(stop) {

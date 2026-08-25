@@ -1,6 +1,6 @@
 {
     "name": "Prema Dispatch",
-    "version": "18.0.3.25.0",
+    "version": "18.0.3.26.0",
     "summary": "Booking, planning, live GPS tracking, driver mobile app, interactive truck Load Plans, warehouse loading mode, AI document extraction, VoIP calling and reporting for PremaFirm dispatch operations",
     "category": "Logistics",
     "description": """

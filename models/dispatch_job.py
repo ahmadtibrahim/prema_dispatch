@@ -3878,10 +3878,14 @@ class PremaDispatchJob(models.Model):
         pickup_expected = len(stop._items_picked_here())
         # Idempotent re-confirm: an identical retry (double tap / network
         # replay) must not re-stamp the confirmation times, duplicate the
-        # chatter, or post a second pickup_confirmed timeline event. The
-        # stop's persisted actuals are the guard — same stop, same count
-        # already recorded is the same business action replayed.
-        prior_confirmed = bool(stop.pickup_actuals_confirmed_at)
+        # chatter, or post a second pickup_confirmed timeline event. A retry
+        # is identical only when BOTH the job (the authority the driver app
+        # reads) and the stop mirror already carry the confirmation — the
+        # stop mirror alone can be left stale by an earlier partial/rolled
+        # state, and keying on it alone permanently suppressed the job stamp
+        # (Step-1 Continue could never confirm — live UAT 2026-08-25).
+        prior_confirmed = bool(stop.pickup_actuals_confirmed_at) \
+            and bool(job.pickup_actuals_confirmed_at)
         prior_actual = int(stop.actual_pallets_in or 0) if prior_confirmed else None
         identical_retry = prior_confirmed and prior_actual == actual_count
         floor_items = job._sync_actual_pallet_items(actual_count, pickup_stop=stop)
