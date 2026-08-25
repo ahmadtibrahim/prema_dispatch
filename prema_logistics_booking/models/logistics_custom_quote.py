@@ -1,3 +1,5 @@
+import datetime
+
 from odoo import _, api, fields, models
 
 QUOTE_STATE = [
@@ -76,6 +78,18 @@ class LogisticsCustomQuote(models.Model):
     ], default="website")
 
     company_id = fields.Many2one("res.company", default=lambda self: self.env.company)
+    currency_id = fields.Many2one("res.currency", related="company_id.currency_id", readonly=True)
+    quotation_valid_until = fields.Date(
+        string="Quotation Valid Until",
+        compute="_compute_quotation_valid_until",
+        help="30 days after the quote was created — shown on the printed quotation.",
+    )
+
+    @api.depends("create_date")
+    def _compute_quotation_valid_until(self):
+        for record in self:
+            base = record.create_date or fields.Datetime.now()
+            record.quotation_valid_until = (base + datetime.timedelta(days=30)).date()
 
     @api.model_create_multi
     def create(self, vals_list):
@@ -163,3 +177,10 @@ class LogisticsCustomQuote(models.Model):
                 "default_partner_id": self.partner_id.id,
             },
         }
+
+    def action_print_quotation(self):
+        """Print the PDF quotation document for this quote."""
+        self.ensure_one()
+        return self.env.ref(
+            "prema_logistics_booking.action_report_logistics_quotation"
+        ).report_action(self)

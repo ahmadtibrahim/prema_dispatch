@@ -33,6 +33,8 @@
                             invisible="state != 'quoted'"/>
                     <button name="action_convert_to_booking" string="Convert to Booking" type="object"
                             class="btn-success" invisible="state != 'accepted'"/>
+                    <button name="action_print_quotation" string="Print Quotation" type="object"
+                            class="btn-primary" invisible="not quoted_price"/>
                     <button name="action_open_estimator" string="Prema AI Estimator" type="object"
                             class="btn-secondary"/>
                     <field name="state" widget="statusbar"/>

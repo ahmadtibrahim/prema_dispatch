@@ -1,0 +1,228 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <!-- Prema Logistics — Quotation document (logistics.custom.quote) -->
+
+    <record id="paperformat_logistics_quotation" model="report.paperformat">
+        <field name="name">Prema Logistics Quotation</field>
+        <field name="default" eval="True"/>
+        <field name="format">US Letter</field>
+        <field name="orientation">Portrait</field>
+        <field name="margin_top" eval="14"/>
+        <field name="margin_bottom" eval="14"/>
+        <field name="margin_left" eval="12"/>
+        <field name="margin_right" eval="12"/>
+    </record>
+
+    <record id="action_report_logistics_quotation" model="ir.actions.report">
+        <field name="name">Quotation</field>
+        <field name="model">logistics.custom.quote</field>
+        <field name="report_type">qweb-pdf</field>
+        <field name="report_name">prema_logistics_booking.quotation_document</field>
+        <field name="report_file">prema_logistics_booking.quotation_document</field>
+        <field name="binding_model_id" ref="model_logistics_custom_quote"/>
+        <field name="paperformat_id" ref="paperformat_logistics_quotation"/>
+        <field name="print_report_name">"'%s - Quotation' % (object.name or 'QUO')"</field>
+    </record>
+
+    <template id="quotation_document">
+        <t t-call="web.html_container">
+            <t t-foreach="docs" t-as="o">
+                <t t-call="prema_logistics_booking.quotation_document_content">
+                    <t t-set="o" t-value="o"/>
+                </t>
+            </t>
+        </t>
+    </template>
+
+    <template id="quotation_document_content">
+        <t t-set="company" t-value="o.company_id or o.env.company"/>
+        <t t-set="customer_name" t-value="o.partner_id.name or o.company_name or '—'"/>
+        <t t-set="customer_email" t-value="o.partner_id.email or o.contact_email"/>
+        <t t-set="customer_phone" t-value="o.partner_id.phone or o.contact_phone"/>
+        <t t-set="customer_contact" t-value="o.contact_name or o.partner_id.name or False"/>
+        <t t-set="issued_on" t-value="o.create_date and o.create_date.date()"/>
+        <div class="page">
+            <!-- Letterhead -->
+            <div class="letterhead" style="border-bottom: 3px solid #1a3a6b; padding-bottom: 10px; margin-bottom: 16px;">
+                <table style="width: 100%; border-collapse: collapse;">
+                    <tr>
+                        <td style="width: 60%; vertical-align: middle;">
+                            <img t-if="company.logo" t-att-src="'data:image/png;base64,%s' % company.logo.decode('utf-8')"
+                                 style="max-height: 56px; max-width: 240px;"/>
+                            <div t-if="not company.logo" style="font-size: 20px; font-weight: bold; color: #1a3a6b;">
+                                <t t-esc="company.name or 'PremaFirm Logistics'"/>
+                            </div>
+                        </td>
+                        <td style="width: 40%; text-align: right; vertical-align: middle;">
+                            <div style="font-size: 24px; font-weight: bold; color: #1a3a6b; letter-spacing: 1px;">QUOTATION</div>
+                            <div style="font-size: 15px; margin-top: 2px;"><t t-esc="o.name or 'QUO-0001'"/></div>
+                        </td>
+                    </tr>
+                </table>
+            </div>
+
+            <!-- Meta row -->
+            <table style="width: 100%; border-collapse: collapse; margin-bottom: 14px;">
+                <tr>
+                    <td style="width: 50%; vertical-align: top; padding-right: 16px;">
+                        <div style="font-size: 10px; color: #666; text-transform: uppercase; letter-spacing: 0.6px;">Issued by</div>
+                        <div style="font-size: 13px; margin-top: 2px;">
+                            <div t-if="company.name" t-esc="company.name"/>
+                            <div t-if="company.street" t-esc="company.street"/>
+                            <div t-if="company.city or company.zip">
+                                <t t-esc="company.zip or ''"/> <t t-esc="company.city or ''"/>
+                            </div>
+                            <div t-if="company.phone">Phone: <t t-esc="company.phone"/></div>
+                            <div t-if="company.email">Email: <t t-esc="company.email"/></div>
+                        </div>
+                    </td>
+                    <td style="width: 50%; vertical-align: top;">
+                        <table style="width: 100%; border-collapse: collapse; font-size: 12px;">
+                            <tr>
+                                <td style="padding: 2px 6px; width: 45%; color: #666;">Date Issued</td>
+                                <td style="padding: 2px 6px;">
+                                    <t t-if="issued_on"><span t-esc="issued_on.strftime('%B %d, %Y')"/></t>
+                                    <t t-else=""><span t-esc="o.create_date"/></t>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td style="padding: 2px 6px; color: #666;">Valid Until</td>
+                                <td style="padding: 2px 6px;">
+                                    <t t-if="issued_on"><span t-esc="o.quotation_valid_until.strftime('%B %d, %Y')"/></t>
+                                    <t t-else=""><span t-esc="o.quotation_valid_until"/></t>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td style="padding: 2px 6px; color: #666;">Status</td>
+                                <td style="padding: 2px 6px; text-transform: capitalize;"><t t-esc="o.state"/></td>
+                            </tr>
+                            <tr>
+                                <td style="padding: 2px 6px; color: #666;">Source</td>
+                                <td style="padding: 2px 6px; text-transform: capitalize;"><t t-esc="o.source or '—'"/></td>
+                            </tr>
+                        </table>
+                    </td>
+                </tr>
+            </table>
+
+            <!-- Customer -->
+            <table style="width: 100%; border-collapse: collapse; border: 1px solid #d0d0d0; margin-bottom: 14px;">
+                <tr>
+                    <td style="padding: 8px 10px; background: #f2f5fa; font-size: 10px; color: #1a3a6b;
+                               text-transform: uppercase; letter-spacing: 0.6px; border-right: 1px solid #d0d0d0; width: 50%;">
+                        Bill To
+                    </td>
+                    <td style="padding: 8px 10px; background: #f2f5fa; font-size: 10px; color: #1a3a6b;
+                               text-transform: uppercase; letter-spacing: 0.6px; width: 50%;">
+                        Shipment
+                    </td>
+                </tr>
+                <tr>
+                    <td style="padding: 8px 10px; vertical-align: top; border-right: 1px solid #d0d0d0; font-size: 12px;">
+                        <div style="font-weight: bold;" t-esc="customer_name"/>
+                        <div t-if="customer_contact" t-esc="customer_contact"/>
+                        <div t-if="customer_email">Email: <t t-esc="customer_email"/></div>
+                        <div t-if="customer_phone">Phone: <t t-esc="customer_phone"/></div>
+                    </td>
+                    <td style="padding: 8px 10px; vertical-align: top; font-size: 12px;">
+                        <table style="width: 100%; border-collapse: collapse; font-size: 12px;">
+                            <tr>
+                                <td style="padding: 1px 0; color: #666; width: 42%;">Load Type</td>
+                                <td style="padding: 1px 0; text-transform: uppercase;"><t t-esc="o.load_type or '—'"/></td>
+                            </tr>
+                            <tr>
+                                <td style="padding: 1px 0; color: #666;">Pallets</td>
+                                <td style="padding: 1px 0;"><t t-esc="o.pallets or 0"/></td>
+                            </tr>
+                            <tr>
+                                <td style="padding: 1px 0; color: #666;">Weight</td>
+                                <td style="padding: 1px 0;"><t t-esc="o.weight_lbs or 0"/> lbs</td>
+                            </tr>
+                            <tr>
+                                <td style="padding: 1px 0; color: #666;">Temperature</td>
+                                <td style="padding: 1px 0; text-transform: capitalize;">
+                                    <t t-esc="o.temperature_mode or 'dry'"/>
+                                    <t t-if="o.temperature_mode == 'reefer' and o.required_temperature_c is not None">
+                                        (<t t-esc="o.required_temperature_c"/>°C)
+                                    </t>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td style="padding: 1px 0; color: #666;">Requested Pickup</td>
+                                <td style="padding: 1px 0;"><t t-esc="o.requested_pickup_date or '—'"/></td>
+                            </tr>
+                        </table>
+                    </td>
+                </tr>
+            </table>
+
+            <!-- Route -->
+            <table style="width: 100%; border-collapse: collapse; border: 1px solid #d0d0d0; margin-bottom: 14px;">
+                <tr>
+                    <td style="padding: 8px 10px; background: #f2f5fa; font-size: 10px; color: #1a3a6b;
+                               text-transform: uppercase; letter-spacing: 0.6px; border-right: 1px solid #d0d0d0; width: 50%;">
+                        Pickup
+                    </td>
+                    <td style="padding: 8px 10px; background: #f2f5fa; font-size: 10px; color: #1a3a6b;
+                               text-transform: uppercase; letter-spacing: 0.6px; width: 50%;">
+                        Delivery
+                    </td>
+                </tr>
+                <tr>
+                    <td style="padding: 8px 10px; vertical-align: top; border-right: 1px solid #d0d0d0; font-size: 12px;">
+                        <div t-esc="o.pickup_address or '—'"/>
+                        <div style="margin-top: 4px; color: #444;"><t t-esc="o.pickup_postal_code or '—'"/></div>
+                    </td>
+                    <td style="padding: 8px 10px; vertical-align: top; font-size: 12px;">
+                        <div t-esc="o.delivery_address or '—'"/>
+                        <div style="margin-top: 4px; color: #444;"><t t-esc="o.delivery_postal_code or '—'"/></div>
+                    </td>
+                </tr>
+            </table>
+
+            <!-- Pricing -->
+            <table style="width: 100%; border-collapse: collapse; margin-bottom: 14px;">
+                <tr>
+                    <td style="padding: 10px 12px; border: 2px solid #1a3a6b; font-size: 12px; color: #1a3a6b; width: 70%;">
+                        <div style="font-size: 10px; text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 3px;">
+                            Quoted Freight Charge
+                        </div>
+                        <div t-esc="o.commodity or 'Freight transportation service'"/>
+                        <div style="margin-top: 3px; color: #555; font-size: 11px;">
+                            Assigned departure:
+                            <t t-if="o.departure_id" t-esc="o.departure_id.name or o.departure_id.departure_date"/>
+                            <t t-else="">To be scheduled</t>
+                        </div>
+                    </td>
+                    <td style="padding: 10px 12px; border: 2px solid #1a3a6b; border-left: none; text-align: right;
+                               vertical-align: middle; font-size: 22px; font-weight: bold; color: #1a3a6b; width: 30%;">
+                        <t t-set="quote_currency" t-value="o.currency_id or o.company_id.currency_id or o.env.company.currency_id"/>
+                        <span t-esc="quote_currency.symbol or ''"/> <t t-esc="'%0.2f' % (o.quoted_price or 0.0)"/>
+                    </td>
+                </tr>
+            </table>
+
+            <!-- Notes -->
+            <table t-if="o.notes" style="width: 100%; border-collapse: collapse; border: 1px solid #d0d0d0; margin-bottom: 14px;">
+                <tr>
+                    <td style="padding: 8px 10px; background: #f2f5fa; font-size: 10px; color: #1a3a6b;
+                               text-transform: uppercase; letter-spacing: 0.6px;">
+                        Notes
+                    </td>
+                </tr>
+                <tr>
+                    <td style="padding: 8px 10px; font-size: 12px; white-space: pre-wrap;"><t t-esc="o.notes"/></td>
+                </tr>
+            </table>
+
+            <!-- Terms footer -->
+            <div style="margin-top: 8px; border-top: 1px solid #d0d0d0; padding-top: 8px; font-size: 10px; color: #666;">
+                <div>This quotation is valid for 30 days from the date issued. Rates are exclusive of applicable taxes.
+                    Full Truckload (FTL) quotations are billed on the actual door-to-door road distance at the quoted per-km rate.
+                    Shipments are subject to our standard terms and conditions.</div>
+            </div>
+        </div>
+    </template>
+
+</odoo>
