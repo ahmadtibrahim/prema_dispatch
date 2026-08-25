@@ -2722,3 +2722,20 @@ A ack persists + user/timestamp + refresh retains + template.is_verified/vehicle
 +### VERIFICATION (live forged-session HTTP as real users; rollback-only; booking/job/plan untouched)
 +A dates include 2026-08-27 job_count=1 (PASS) · B /jobs Aug 27 = exactly DISP/2026/00471 (PASS) · C /stops = 2 (pickup + dropoff) (PASS) · D payload job_pallets=1 per stop → unique-job sum 1 (PASS — the fixed card math) · E /dispatch/driver page HTTP 200 (PASS) · F Aug 25 = 0 jobs (PASS) · G dispatcher user 73 sees 0 jobs / 0 stops live; with_user(73) returns [] (PASS) · H forward reassignment: Ahmad → 0 jobs, replacement driver gained the job + 2 stops (plan driver flipped to match — the load-plan ir.rule scopes reads to the plan's driver); H-backward restored job 500 + plan 24 to driver 107 and deleted temp user 339/partner 1544; Ahmad sees 1 job / 2 stops again (PASS) · I no operational mutation: job stage Assigned / stops pending / booking PF-260825-000031 confirmed with NO invoice / plan 24 draft+unlocked / reserve op 29 pending / item Pallet-1 pending, future_pickup=True, custody pending — matches pre-deploy baseline exactly (PASS). Job 500 / booking / plan 24 / reservation algorithm / portal / pricing NOT modified.
 +- Deploy: 18.0.3.16.0 → 18.0.3.17.0, crons restored exactly 68/68 (snapshot /opt/odoo/scripts/active_crons_1740_driver_vis.txt), service restarted (Python-touching).
++
++## 2026-08-25 — MANUAL UAT BLOCKER: DRIVER APP ERR_TOO_MANY_REDIRECTS (18.0.3.18.0) — DEPLOYED TO PROD 14:31, A–E PASS
++
++### SYMPTOM
++https://logistics.premafirm.com/dispatch/driver → ERR_TOO_MANY_REDIRECTS in the browser after a refresh. Live test case (booking PF-260825-000031 / job DISP/2026/00471 / plan 24 / Ahmad / 2026-08-27) untouched.
++
++### EXACT REDIRECT CHAIN (traced with real HTTP through nginx)
++Authenticated user NOT in {driver, manager, dispatcher, group_system}: GET /dispatch/driver → 303 /web/login?redirect=/dispatch/driver → web_login (addons/web/controllers/home.py:101-102: `if method == 'GET' and redirect and session.uid: return request.redirect(redirect)`) → 303 /dispatch/driver → … FOREVER. Public user (no session): single 303 → login 200 (no loop). Proxy/cookies clean: web.base.url=https://logistics.premafirm.com, proxy_mode=True, session cookie Path=/ HttpOnly host-only — infrastructure NOT involved, no config changes made.
++
++### ROOT CAUSE
++controllers/driver_app.py used the SAME login-redirect for "not authenticated" and "authenticated but unauthorized" — the second case bounces off /web/login (which auto-redirects any authenticated session back to the redirect target) into an infinite loop. Ahmad was properly authorized the whole time (user 76, partner 107, group_dispatch_driver=True) — he was NOT the looping user; any valid ERP session of users 75/77/78 (internal, no allowed group) loops.
++
++### FIX
++Authenticated-but-unauthorized now returns a real HTTP 403 "Access Denied" page (with a link back to /web) instead of the login redirect. Public → login redirect unchanged. Groups unchanged — security not weakened. JSON endpoints untouched (they are auth="user" but data-scoped to env.user.partner_id, so no loop and no cross-user data).
++
++### VERIFICATION (real HTTP against https://logistics.premafirm.com, forged sessions as odoo18 with populated _trace)
++A public: 303 → /web/login?redirect= → 200, single hop (PASS) · B authenticated unauthorized (user 77 dispatch@premafirm.com): HTTP 403, no Location, "Access Denied" body (PASS) · C Ahmad: HTTP 200, shell rendered with driver_app + driver_flow_v6.js (PASS) · D Aug 27 via proxy: dates job_count=1, jobs=1 DISP/2026/00471 pallets=1, stops=2 pickups=1 deliveries=1 pallets=1 (PASS) · E live UAT data: job Assigned/driver 107, stops pending, booking confirmed no invoice, plan 24 draft unlocked driver 107, reserve op 29 pending → L1, item Pallet-1 pending/future/custody pending (PASS). Forged sessions removed. Crons restored exactly 68/68 (snapshot /tmp/active_crons_snapshot_1829_redirect.txt), service restarted.

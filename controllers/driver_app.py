@@ -28,7 +28,22 @@ class DriverAppController(http.Controller):
             "base.group_system",
         ]
         if not any(user.has_group(g) for g in allowed_groups):
-            return request.redirect("/web/login?redirect=/dispatch/driver")
+            # Authenticated but not authorized: NEVER bounce back to
+            # /web/login with the same redirect target — Odoo's login
+            # route redirects an already-authenticated session straight
+            # back here (web/controllers/home.py), which loops forever
+            # (ERR_TOO_MANY_REDIRECTS). Return a real 403 instead.
+            return http.Response(
+                "<!doctype html><html><head><title>Access Denied</title>"
+                "<meta charset='utf-8'></head>"
+                "<body style='font-family: Arial, sans-serif; text-align: center;"
+                " margin-top: 90px; color: #333;'>"
+                "<h1 style='font-weight: 600;'>403 — Access Denied</h1>"
+                "<p>The Driver App is restricted to drivers and dispatch staff.</p>"
+                "<p><a href='/web' style='color: #017e84;'>Continue to Odoo</a></p>"
+                "</body></html>",
+                status=403,
+                mimetype="text/html")
 
         api_key    = request.env["ir.config_parameter"].sudo().get_param("google_maps_api_key", "")
         dispatch_phone = request.env["ir.config_parameter"].sudo().get_param("dispatch_phone_number", "")
