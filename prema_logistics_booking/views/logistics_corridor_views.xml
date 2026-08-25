@@ -109,6 +109,7 @@
                                     <field name="departure_time" widget="float_time"/>
                                     <field name="vehicle_id" string="Truck"/>
                                     <field name="vehicle_assignment_source"/>
+                                    <field name="driver_id" string="Driver"/>
                                     <field name="status"/>
                                     <field name="max_capacity" string="Truck Capacity" readonly="1"/>
                                     <field name="computed_peak_pallets" readonly="1"/>
@@ -229,6 +230,7 @@
                             <field name="departure_date" readonly="status != 'scheduled'"/>
                             <field name="vehicle_id" string="Truck" readonly="status != 'scheduled'"/>
                             <field name="vehicle_assignment_source" readonly="1"/>
+                            <field name="driver_id" string="Driver" options="{'no_create': True}"/>
                             <field name="active"/>
                         </group>
                         <group>

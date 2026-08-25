@@ -372,15 +372,56 @@ class LogisticsCorridorDeparture(models.Model):
     _inherit = "logistics.corridor.departure"
 
     def write(self, vals):
+        pre = {
+            d.id: (d.vehicle_id.id, d.driver_id.id)
+            for d in self
+        }
         result = super().write(vals)
-        if "vehicle_id" in vals:
+        if "vehicle_id" in vals or "driver_id" in vals:
             for departure in self:
-                departure_jobs = self.env["prema.dispatch.job"].sudo().search([
+                old_vehicle_id, _old_driver_id = pre.get(
+                    departure.id, (None, None))
+                # Phase 3: propagate the new truck/driver to the departure's
+                # UNFINISHED work only. Completed and cancelled jobs keep
+                # their historical assignment — never rewrite captured
+                # history (completed stops, POD/POPP, timestamps).
+                unfinished_jobs = self.env["prema.dispatch.job"].sudo().search([
                     ("corridor_departure_id", "=", departure.id),
-                    ("auto_scheduled_ltl", "=", True),
+                    ("stage_id.stage_type", "not in", ("cancelled", "completed")),
                 ])
-                departure_jobs.with_context(departure_vehicle_sync=True).write({
-                    "vehicle_id": departure.vehicle_id.id or False,
-                    "assignment_locked": bool(departure.vehicle_id),
-                })
+                job_vals = {}
+                if "vehicle_id" in vals:
+                    job_vals["vehicle_id"] = departure.vehicle_id.id or False
+                    job_vals["assignment_locked"] = bool(departure.vehicle_id)
+                if "driver_id" in vals:
+                    job_vals["driver_id"] = departure.driver_id.id or False
+                if job_vals:
+                    unfinished_jobs.with_context(
+                        departure_vehicle_sync=True).write(job_vals)
+                # Phase 3: the departure's load plan rides on the truck —
+                # move any unfinished plan for (old truck, date) to the
+                # replacement truck. Never touch completed/cancelled plans.
+                if "vehicle_id" in vals and departure.vehicle_id.id != old_vehicle_id:
+                    plans = self.env["prema.dispatch.load.plan"].sudo().search([
+                        ("vehicle_id", "=", old_vehicle_id or 0),
+                        ("operating_date", "=", departure.departure_date),
+                        ("state", "not in", ("completed", "cancelled")),
+                    ])
+                    if plans:
+                        plan_vals = {
+                            "vehicle_id": departure.vehicle_id.id or False,
+                        }
+                        if "driver_id" in vals:
+                            plan_vals["driver_id"] = departure.driver_id.id or False
+                        try:
+                            plans.write(plan_vals)
+                        except ValidationError:
+                            raise ValidationError(_(
+                                "Truck reassigned, but the load plan for "
+                                "%(date)s could not move to %(truck)s: "
+                                "another plan already exists for that truck "
+                                "and date. Move or complete it first.",
+                                date=departure.departure_date,
+                                truck=departure.vehicle_id.display_name,
+                            ))
         return result

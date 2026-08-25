@@ -12,7 +12,7 @@ ordered stop sequence, recurrence rules, and scheduled departures in ONE place.
 import logging as _logging
 import datetime
 from odoo import _, api, fields, models
-from odoo.exceptions import ValidationError
+from odoo.exceptions import AccessError, ValidationError
 
 # Per-stop service allowance used by the suggested-timing calculator. No
 # configurable dwell setting exists on corridors today; 15 minutes matches the
@@ -899,7 +899,7 @@ class LogisticsCorridor(models.Model):
             available_default = self._default_vehicle_for_date(
                 departure.departure_date, exclude_departure=departure,
             )
-            if departure.vehicle_assignment_source != "manual_override" and departure.vehicle_id != available_default:
+            if departure.vehicle_assignment_source != "departure_override" and departure.vehicle_id != available_default:
                 vals.update({
                     "vehicle_id": available_default.id or False,
                     "vehicle_assignment_source": "corridor_default",
@@ -995,6 +995,7 @@ class LogisticsCorridorStop(models.Model):
 class LogisticsCorridorDeparture(models.Model):
     _name = "logistics.corridor.departure"
     _description = "Scheduled Corridor Departure"
+    _inherit = ["mail.thread"]
     _order = "departure_date, departure_time"
 
     @api.model
@@ -1054,7 +1055,7 @@ class LogisticsCorridorDeparture(models.Model):
     vehicle_id = fields.Many2one("fleet.vehicle", string="Truck")
     vehicle_assignment_source = fields.Selection([
         ("corridor_default", "Corridor Default"),
-        ("manual_override", "Manual Override"),
+        ("departure_override", "Departure Override"),
     ], default="corridor_default", required=True, copy=False)
     driver_id = fields.Many2one("res.partner", string="Driver")
 
@@ -1219,7 +1220,7 @@ class LogisticsCorridorDeparture(models.Model):
                 if "vehicle_assignment_source" not in vals:
                     vals["vehicle_assignment_source"] = (
                         "corridor_default" if self.env.context.get("corridor_default_sync")
-                        else "manual_override" if vals.get("vehicle_id") else "corridor_default"
+                        else "departure_override" if vals.get("vehicle_id") else "corridor_default"
                     )
                 selected_vehicle = (
                     self.env["fleet.vehicle"].browse(vals["vehicle_id"]).exists()
@@ -1236,11 +1237,50 @@ class LogisticsCorridorDeparture(models.Model):
 
     def write(self, vals):
         vals = dict(vals)
+        pre_assign = {}
+        if ("vehicle_id" in vals or "driver_id" in vals) \
+                and not self.env.context.get("corridor_default_sync"):
+            # Phase 3: audit snapshot of the assignment BEFORE the write.
+            pre_assign = {
+                d.id: (d.vehicle_id, d.driver_id) for d in self
+            }
         if "vehicle_id" in vals and not self.env.context.get("corridor_default_sync"):
-            vals["vehicle_assignment_source"] = "manual_override"
+            # Phase 3: truck reassignment is dispatch/operations management only.
+            user = self.env.user
+            if not (
+                user.has_group("prema_dispatch.group_dispatch_manager")
+                or user.has_group("prema_dispatch.group_dispatcher")
+                or user.has_group("prema_logistics_booking.group_logistics_pricing_manager")
+                or user.has_group("prema_logistics_booking.group_logistics_pricing_administrator")
+            ):
+                raise AccessError(_(
+                    "Only dispatch/operations management may reassign a "
+                    "departure's truck."))
             vehicle = self.env["fleet.vehicle"].browse(vals.get("vehicle_id"))
             corridor = self[:1].corridor_id if self else self.env["logistics.corridor"]
+            # Back on the corridor's configured default truck → Corridor
+            # Default; any other truck → Departure Override.
+            vals["vehicle_assignment_source"] = (
+                "corridor_default"
+                if corridor.default_vehicle_id and vehicle == corridor.default_vehicle_id
+                else "departure_override"
+            )
             vals["max_capacity"] = corridor._vehicle_capacity(vehicle) if corridor else 0
+            # Phase 3: the replacement truck's configured/default driver
+            # becomes the assigned driver. A truck with no driver needs an
+            # explicit driver assignment — never leave the departure driver-less.
+            if "driver_id" not in vals:
+                if vehicle:
+                    driver = vehicle.driver_id or vehicle.x_current_driver_contact_id
+                    if not driver:
+                        raise ValidationError(_(
+                            "Truck %(truck)s has no assigned driver. Select a "
+                            "driver for this departure before reassigning the truck.",
+                            truck=vehicle.display_name,
+                        ))
+                    vals["driver_id"] = driver.id
+                else:
+                    vals["driver_id"] = False
             # Truck reassignment guard: the new truck must be able to carry
             # the pallets already reserved on this departure.
             from ..services.vehicle_capacity_service import VehicleCapacityService
@@ -1258,6 +1298,33 @@ class LogisticsCorridorDeparture(models.Model):
         result = super().write(vals)
         if {"vehicle_id", "departure_date", "active", "status"}.intersection(vals):
             self._check_vehicle_day_conflicts()
+        # Phase 3: audit chatter — "Truck reassigned A → B / Driver
+        # reassigned A → B / Changed by user on date/time".
+        if pre_assign:
+            for departure in self:
+                old_vehicle, old_driver = pre_assign.get(departure.id, (None, None))
+                lines = []
+                if old_vehicle is not None and departure.vehicle_id != old_vehicle:
+                    lines.append(
+                        "Truck reassigned %s → %s"
+                        % (old_vehicle.display_name or _("(none)"),
+                           departure.vehicle_id.display_name or _("(none)"))
+                    )
+                if old_driver is not None and departure.driver_id != old_driver:
+                    lines.append(
+                        "Driver reassigned %s → %s"
+                        % (old_driver.display_name or _("(none)"),
+                           departure.driver_id.display_name or _("(none)"))
+                    )
+                if lines:
+                    departure.message_post(
+                        subject=_("Truck / Driver Reassignment"),
+                        body=_("%(lines)s — Changed by %(user)s on %(when)s",
+                               lines=" / ".join(lines),
+                               user=self.env.user.display_name,
+                               when=fields.Datetime.now().strftime(
+                                   "%Y-%m-%d %H:%M")),
+                    )
         return result
 
     def _check_vehicle_day_conflicts(self):
