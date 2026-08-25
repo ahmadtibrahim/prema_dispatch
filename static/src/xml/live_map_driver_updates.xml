@@ -10,7 +10,7 @@
     <xpath expr="//div[@class='px-3 py-1 border-bottom bg-light d-flex align-items-center justify-content-between flex-shrink-0']" position="after">
         <div class="o_driver_updates_tabs d-flex border-bottom flex-shrink-0">
             <button type="button"
-                    t-attf-class="o_driver_updates_tab #{state.sidebarTab === 'fleet' ? 'active' : ''}"
+                    t-attf-class="o_driver_updates_tab #{!state.sidebarTab || state.sidebarTab === 'fleet' ? 'active' : ''}"
                     t-on-click="() => this.showSidebarTab('fleet')">
                 Fleet
             </button>
@@ -26,7 +26,7 @@
     </xpath>
 
     <xpath expr="//div[@class='overflow-auto flex-grow-1']" position="attributes">
-        <attribute name="t-if">state.sidebarTab === 'fleet'</attribute>
+        <attribute name="t-if">!state.sidebarTab || state.sidebarTab === 'fleet'</attribute>
     </xpath>
 
     <xpath expr="//div[@class='overflow-auto flex-grow-1']" position="after">
@@ -124,7 +124,7 @@
     </xpath>
 
     <xpath expr="//div[@class='px-3 py-2 border-top bg-light flex-shrink-0']" position="attributes">
-        <attribute name="t-if">state.sidebarTab === 'fleet'</attribute>
+        <attribute name="t-if">!state.sidebarTab || state.sidebarTab === 'fleet'</attribute>
     </xpath>
 
 </t>
