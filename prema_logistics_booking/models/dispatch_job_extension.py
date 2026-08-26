@@ -29,6 +29,12 @@ class PremaDispatchJob(models.Model):
         ("custom", "Custom / Expedited"),
     ], default="custom", required=True, copy=False)
     auto_scheduled_ltl = fields.Boolean(default=False, readonly=True, copy=False)
+    has_subcontracted_legs = fields.Boolean(
+        related="logistics_booking_id.has_subcontracted_legs", readonly=True,
+        string="Subcontracted Execution",
+        help="The linked booking executes at least one leg through a "
+             "subcontract carrier — PREMAFIRM truck/driver NOT required "
+             "for those legs.")
 
     _sql_constraints = [
         (

@@ -1,0 +1,156 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- ════════════════════════════════════════════════════════════════
+     Phase 14 — Carrier Rate Confirmation.
+     A PRESENTATION of the native purchase order for freight
+     subcontract POs only (is_freight_subcontract). Ordinary PO PDFs
+     are unchanged — this action never binds to them.
+     ════════════════════════════════════════════════════════════════ -->
+<odoo>
+    <record id="action_report_carrier_rate_confirmation" model="ir.actions.report">
+        <field name="name">Carrier Rate Confirmation</field>
+        <field name="model">purchase.order</field>
+        <field name="report_type">qweb-pdf</field>
+        <field name="report_name">prema_logistics_booking.carrier_rate_confirmation</field>
+        <field name="report_file">prema_logistics_booking.carrier_rate_confirmation</field>
+        <field name="binding_model_id" ref="model_purchase_order"/>
+        <field name="binding_type">report</field>
+    </record>
+
+    <template id="carrier_rate_confirmation">
+        <t t-call="web.html_container">
+            <t t-foreach="docs" t-as="po">
+                <t t-call="web.external_layout">
+                    <t t-if="not po.is_freight_subcontract">
+                        <div class="page">
+                            <h3>Not a freight subcontract purchase order.</h3>
+                            <p>This document is only available for freight
+                            subcontract POs (Carrier Rate Confirmations).</p>
+                        </div>
+                    </t>
+                    <t t-else="">
+                        <div class="page">
+                            <div class="row">
+                                <div class="col-6">
+                                    <h2>CARRIER RATE CONFIRMATION</h2>
+                                    <div t-if="po.partner_id">
+                                        <strong>Carrier:</strong>
+                                        <span t-field="po.partner_id.name"/><br/>
+                                        <span t-field="po.partner_id"
+                                              t-options="{'widget': 'contact'}"/>
+                                    </div>
+                                </div>
+                                <div class="col-6 text-end">
+                                    <strong>Rate Confirmation #:</strong>
+                                    <span t-field="po.name"/><br/>
+                                    <strong>Date:</strong>
+                                    <span t-field="po.date_order"/><br/>
+                                    <span t-field="po.company_id.partner_id"/>
+                                </div>
+                            </div>
+                            <div class="mt-4">
+                                <table class="table table-sm table-bordered">
+                                    <tr>
+                                        <th>Load #</th>
+                                        <td t-if="po.freight_details">
+                                            <span t-esc="po.freight_details.get('load_number') or ''"/></td>
+                                        <td t-else=""/>
+                                    </tr>
+                                    <tr>
+                                        <th>Pickup</th>
+                                        <td t-if="po.freight_details">
+                                            <span t-esc="po.freight_details.get('pickup') or ''"/><br/>
+                                            <span t-esc="po.freight_details.get('pickup_window') or ''"/></td>
+                                        <td t-else=""/>
+                                    </tr>
+                                    <tr>
+                                        <th>Delivery</th>
+                                        <td t-if="po.freight_details">
+                                            <span t-esc="po.freight_details.get('delivery') or ''"/><br/>
+                                            <span t-esc="po.freight_details.get('delivery_window') or ''"/></td>
+                                        <td t-else=""/>
+                                    </tr>
+                                    <tr>
+                                        <th>Commodity</th>
+                                        <td t-if="po.freight_details">
+                                            <span t-esc="po.freight_details.get('commodity') or ''"/></td>
+                                        <td t-else=""/>
+                                    </tr>
+                                    <tr>
+                                        <th>Pallets / Weight</th>
+                                        <td t-if="po.freight_details">
+                                            <span t-esc="po.freight_details.get('pallets') or 0"/>
+                                            pallets /
+                                            <span t-esc="po.freight_details.get('weight_lbs') or 0"/> lb</td>
+                                        <td t-else=""/>
+                                    </tr>
+                                    <tr>
+                                        <th>Equipment / Temp</th>
+                                        <td t-if="po.freight_details">
+                                            <span t-esc="po.freight_details.get('equipment') or ''"/>
+                                            <span t-if="po.freight_details.get('temperature')">
+                                                @ <span t-esc="po.freight_details.get('temperature')"/></span></td>
+                                        <td t-else=""/>
+                                    </tr>
+                                    <tr>
+                                        <th>Carrier Detention</th>
+                                        <td t-if="po.freight_details">
+                                            <span t-esc="po.freight_details.get('carrier_detention_free_min') or 0"/>
+                                            min free, then
+                                            <span t-esc="po.freight_details.get('carrier_detention_rate') or 'per agreement'"/></td>
+                                        <td t-else=""/>
+                                    </tr>
+                                    <tr>
+                                        <th>POD</th>
+                                        <td t-if="po.freight_details">
+                                            <span t-esc="'Required' if po.freight_details.get('pod_required') else 'Not required'"/></td>
+                                        <td t-else=""/>
+                                    </tr>
+                                </table>
+                            </div>
+                            <div class="mt-4">
+                                <table class="table table-sm">
+                                    <thead>
+                                        <tr>
+                                            <th>Description</th>
+                                            <th class="text-end">Amount</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <tr t-foreach="po.order_line" t-as="line">
+                                            <td>
+                                                <span t-field="line.name"/>
+                                            </td>
+                                            <td class="text-end">
+                                                <span t-field="line.price_unit"
+                                                      t-options="{'widget': 'monetary', 'display_currency': po.currency_id}"/>
+                                            </td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                                <div class="text-end">
+                                    <strong>Total Agreed Rate:</strong>
+                                    <span t-field="po.amount_untaxed"
+                                          t-options="{'widget': 'monetary', 'display_currency': po.currency_id}"/>
+                                </div>
+                            </div>
+                            <div class="mt-4" t-if="po.freight_details and po.freight_details.get('instructions')">
+                                <strong>Instructions:</strong>
+                                <div t-esc="po.freight_details.get('instructions')"/>
+                            </div>
+                            <div class="mt-5 row">
+                                <div class="col-6">
+                                    <strong>PREMAFIRM Logistics</strong><br/>
+                                    Signature / Date
+                                </div>
+                                <div class="col-6 text-end">
+                                    <strong>Carrier</strong><br/>
+                                    Signature / Date
+                                </div>
+                            </div>
+                        </div>
+                    </t>
+                </t>
+            </t>
+        </t>
+    </template>
+</odoo>

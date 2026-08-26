@@ -1,6 +1,6 @@
 {
     "name": "Prema Logistics Booking",
-    "version": "18.0.13.38.0",
+    "version": "18.0.13.39.0",
     "summary": "Private customer LTL/FTL pricing, scheduling, and booking engine "
                "for PremaFirm Logistics — integrates with Prema Dispatch.",
     "category": "Logistics",
@@ -17,7 +17,7 @@ phase is internal-staff configuration only. See CLAUDE.md in the module
 root for architecture notes, decisions, and phase status.
 """,
     "author": "PremaFirm Logistics",
-    "depends": ["base", "base_setup", "mail", "portal", "website", "fleet", "account", "sale_management", "prema_dispatch", "agent_wa"],
+    "depends": ["base", "base_setup", "mail", "portal", "website", "fleet", "account", "sale_management", "purchase", "prema_dispatch", "agent_wa"],
     "data": [
         "security/logistics_security.xml",
         "security/ir.model.access.csv",
@@ -57,6 +57,9 @@ root for architecture notes, decisions, and phase status.
         "views/menus.xml",
         "views/logistics_direct_delivery_views.xml",
         "views/logistics_weekly_plan_views.xml",
+        # Phases 11-16 — execution/scenario/subcontracting UI. Must load
+        # after menus.xml (references menu_v4_network).
+        "views/logistics_execution_views.xml",
         "views/res_partner_logistics_views.xml",
         "views/res_config_settings_views.xml",
         "views/res_country_views.xml",
@@ -66,6 +69,7 @@ root for architecture notes, decisions, and phase status.
         "views/portal_cleanup_v6.xml",
         "views/request_quote_templates.xml",
         "reports/logistics_quotation_report.xml",
+        "reports/carrier_rate_confirmation.xml",
     ],
     "assets": {
         "web.assets_backend": [

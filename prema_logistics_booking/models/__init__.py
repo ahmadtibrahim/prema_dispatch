@@ -46,3 +46,10 @@ from . import res_partner_logistics
 from . import res_config_settings
 from . import logistics_hub
 from . import logistics_weekly_plan
+from . import logistics_booking_execution
+from . import logistics_booking_leg_execution
+from . import logistics_execution_scenario
+from . import logistics_carrier_lane_rate
+from . import logistics_booking_leg_carrier_offer
+from . import purchase_order_freight
+from . import res_partner_carrier

@@ -1,0 +1,411 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- ════════════════════════════════════════════════════════════════
+     Phases 11-16 — Execution Scenario / Subcontracting UI.
+     INTERNAL STAFF ONLY. Buy rates, carrier costs, vendor bills and
+     margins NEVER appear on any customer-facing surface (portal,
+     tracking, driver app).
+     ════════════════════════════════════════════════════════════════ -->
+<odoo>
+
+    <!-- ── Booking form: Execution & Subcontracting page ─────────── -->
+    <record id="view_logistics_booking_form_execution" model="ir.ui.view">
+        <field name="name">logistics.booking.form.execution</field>
+        <field name="model">logistics.booking</field>
+        <field name="inherit_id" ref="view_logistics_booking_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//page[@name='route_planner']" position="after">
+                <page string="Execution &amp; Subcontracting">
+                    <div class="alert alert-danger" role="alert"
+                         invisible="not margin_warning">
+                        <strong>⚠ Margin Below Target</strong><br/>
+                        Estimated execution margin is below the configured
+                        minimum (<field name="execution_estimated_margin_pct" readonly="1"/>
+                        %). Dispatcher decision required — this is a warning,
+                        never a hard block.
+                    </div>
+                    <div class="alert alert-success" role="alert"
+                         invisible="margin_warning or not execution_scenario_id">
+                        Execution scenario chosen: <field name="execution_scenario_id" readonly="1"/>.
+                    </div>
+                    <group>
+                        <group>
+                            <field name="execution_confirmation_required" readonly="1"/>
+                            <field name="has_subcontracted_legs" readonly="1"/>
+                        </group>
+                        <group>
+                            <button name="action_generate_execution_scenarios"
+                                    type="object" string="Generate Scenarios"
+                                    class="btn-primary" icon="fa-cogs"/>
+                            <button name="action_recompute_margin" type="object"
+                                    string="Recompute Margin" icon="fa-calculator"/>
+                            <button name="action_detect_missed_connections"
+                                    type="object" string="Detect Missed Connections"
+                                    icon="fa-exclamation-triangle"/>
+                        </group>
+                    </group>
+                    <group string="Execution Costs (BUY)">
+                        <group>
+                            <field name="own_fleet_cost_total" readonly="1"/>
+                            <field name="subcontract_cost_total" readonly="1"/>
+                            <field name="hub_cost_total" readonly="1"/>
+                            <field name="carrier_detention_cost_total" readonly="1"/>
+                        </group>
+                        <group>
+                            <field name="customer_detention_revenue" readonly="1"/>
+                            <field name="execution_estimated_cost" readonly="1"/>
+                            <field name="execution_estimated_margin" readonly="1"/>
+                            <field name="execution_estimated_margin_pct" readonly="1"/>
+                        </group>
+                    </group>
+                    <group string="Actuals (never silently rewritten)">
+                        <group>
+                            <field name="actual_total_cost" readonly="1"/>
+                        </group>
+                        <group>
+                            <field name="actual_margin" readonly="1"/>
+                            <field name="actual_margin_pct" readonly="1"/>
+                        </group>
+                    </group>
+                    <field name="execution_snapshot" readonly="1" string="Execution Snapshot"/>
+                    <field name="execution_scenario_ids" readonly="1">
+                        <list>
+                            <field name="name"/>
+                            <field name="rank"/>
+                            <field name="state"/>
+                            <field name="customer_revenue"/>
+                            <field name="estimated_total_cost"/>
+                            <field name="estimated_margin"/>
+                            <field name="estimated_margin_pct"/>
+                            <field name="compliance_review"/>
+                        </list>
+                    </field>
+                </page>
+            </xpath>
+            <xpath expr="//field[@name='leg_ids']//field[@name='frozen_leg_price']" position="after">
+                <field name="execution_mode"/>
+                <field name="executing_carrier_id" optional="show"/>
+                <field name="accepted_buy_rate" optional="show"/>
+                <field name="execution_status" optional="show"/>
+                <field name="pod_received" optional="hide"/>
+                <field name="carrier_invoice_variance" optional="hide"/>
+                <field name="purchase_order_id" optional="show"/>
+                <field name="connection_exception" optional="hide"/>
+            </xpath>
+        </field>
+    </record>
+
+    <!-- ── Execution Scenario ─────────────────────────────────────── -->
+    <record id="view_logistics_execution_scenario_tree" model="ir.ui.view">
+        <field name="name">logistics.execution.scenario.tree</field>
+        <field name="model">logistics.execution.scenario</field>
+        <field name="arch" type="xml">
+            <list>
+                <field name="name"/>
+                <field name="booking_id"/>
+                <field name="rank"/>
+                <field name="state"/>
+                <field name="chosen"/>
+                <field name="customer_revenue"/>
+                <field name="estimated_total_cost"/>
+                <field name="estimated_margin"/>
+                <field name="estimated_margin_pct"/>
+                <field name="compliance_review"/>
+            </list>
+        </field>
+    </record>
+    <record id="view_logistics_execution_scenario_form" model="ir.ui.view">
+        <field name="name">logistics.execution.scenario.form</field>
+        <field name="model">logistics.execution.scenario</field>
+        <field name="arch" type="xml">
+            <form>
+                <header>
+                    <button name="action_choose" type="object"
+                            string="Choose This Scenario" class="btn-primary"
+                            invisible="chosen"/>
+                </header>
+                <sheet>
+                    <group>
+                        <group>
+                            <field name="name" readonly="1"/>
+                            <field name="booking_id" readonly="1"/>
+                            <field name="rank" readonly="1"/>
+                            <field name="state" readonly="1"/>
+                            <field name="chosen" readonly="1"/>
+                        </group>
+                        <group>
+                            <field name="customer_revenue" readonly="1"/>
+                            <field name="estimated_total_cost" readonly="1"/>
+                            <field name="estimated_margin" readonly="1"/>
+                            <field name="estimated_margin_pct" readonly="1"/>
+                            <field name="compliance_review" readonly="1"/>
+                        </group>
+                    </group>
+                    <field name="scenario_summary"/>
+                    <field name="execution_plan" readonly="1" string="Execution Plan (frozen)"/>
+                </sheet>
+            </form>
+        </field>
+    </record>
+    <record id="action_logistics_execution_scenario" model="ir.actions.act_window">
+        <field name="name">Execution Scenarios</field>
+        <field name="res_model">logistics.execution.scenario</field>
+        <field name="view_mode">tree,form</field>
+        <field name="domain">[]</field>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">Execution scenarios generated for bookings.</p>
+        </field>
+    </record>
+
+    <!-- ── Carrier Lane Rates (BUY rate card) ─────────────────────── -->
+    <record id="view_logistics_carrier_lane_rate_tree" model="ir.ui.view">
+        <field name="name">logistics.carrier.lane.rate.tree</field>
+        <field name="model">logistics.carrier.lane.rate</field>
+        <field name="arch" type="xml">
+            <list>
+                <field name="carrier_id"/>
+                <field name="origin_region_id"/>
+                <field name="destination_region_id"/>
+                <field name="equipment_type"/>
+                <field name="pricing_method"/>
+                <field name="rate"/>
+                <field name="minimum_charge"/>
+                <field name="effective_from"/>
+                <field name="effective_to"/>
+                <field name="active"/>
+            </list>
+        </field>
+    </record>
+    <record id="view_logistics_carrier_lane_rate_form" model="ir.ui.view">
+        <field name="name">logistics.carrier.lane.rate.form</field>
+        <field name="model">logistics.carrier.lane.rate</field>
+        <field name="arch" type="xml">
+            <form>
+                <sheet>
+                    <group>
+                        <group>
+                            <field name="carrier_id" required="1"
+                                   domain="[('is_transport_carrier', '=', True)]"/>
+                            <field name="origin_region_id" required="1"/>
+                            <field name="destination_region_id" required="1"/>
+                            <field name="equipment_type" required="1"/>
+                        </group>
+                        <group>
+                            <field name="pricing_method"/>
+                            <field name="rate" required="1"/>
+                            <field name="minimum_charge"/>
+                            <field name="detention_free_minutes"/>
+                            <field name="detention_rate_per_increment"/>
+                            <field name="extra_stop_charge"/>
+                            <field name="currency_id"/>
+                        </group>
+                    </group>
+                    <group>
+                        <field name="effective_from"/>
+                        <field name="effective_to"/>
+                        <field name="active"/>
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+    <record id="action_logistics_carrier_lane_rate" model="ir.actions.act_window">
+        <field name="name">Carrier Lane Rates</field>
+        <field name="res_model">logistics.carrier.lane.rate</field>
+        <field name="view_mode">tree,form</field>
+    </record>
+
+    <!-- ── Carrier Offer (negotiation per leg) ────────────────────── -->
+    <record id="view_logistics_carrier_offer_tree" model="ir.ui.view">
+        <field name="name">logistics.booking.leg.carrier.offer.tree</field>
+        <field name="model">logistics.booking.leg.carrier.offer</field>
+        <field name="arch" type="xml">
+            <list>
+                <field name="name"/>
+                <field name="booking_leg_id"/>
+                <field name="carrier_id"/>
+                <field name="state"/>
+                <field name="target_buy_rate"/>
+                <field name="carrier_counter_rate"/>
+                <field name="agreed_rate"/>
+                <field name="expiry"/>
+                <field name="accepted_at"/>
+            </list>
+        </field>
+    </record>
+    <record id="view_logistics_carrier_offer_form" model="ir.ui.view">
+        <field name="name">logistics.booking.leg.carrier.offer.form</field>
+        <field name="model">logistics.booking.leg.carrier.offer</field>
+        <field name="arch" type="xml">
+            <form>
+                <header>
+                    <button name="action_request_availability" type="object"
+                            string="Request Availability"
+                            invisible="state in ('accepted','availability_requested','expired')"/>
+                    <button name="action_negotiate" type="object"
+                            string="Enter Negotiation"
+                            invisible="state in ('accepted','negotiating','expired')"/>
+                    <button name="action_accept" type="object"
+                            string="Accept Offer" class="btn-primary"
+                            invisible="state == 'accepted'"/>
+                    <button name="action_decline" type="object" string="Decline"
+                            invisible="state == 'accepted'"/>
+                    <button name="action_no_response" type="object" string="No Response"
+                            invisible="state == 'accepted'"/>
+                    <button name="action_expire" type="object" string="Expire"
+                            invisible="state in ('accepted','expired')"/>
+                    <button name="action_cancel" type="object" string="Cancel"
+                            invisible="state == 'accepted'"/>
+                </header>
+                <sheet>
+                    <group>
+                        <group>
+                            <field name="name" readonly="1"/>
+                            <field name="booking_leg_id" readonly="1"/>
+                            <field name="booking_id" readonly="1"/>
+                            <field name="carrier_id" required="1"
+                                   domain="[('is_transport_carrier', '=', True)]"/>
+                            <field name="state" readonly="1"/>
+                        </group>
+                        <group>
+                            <field name="target_buy_rate"/>
+                            <field name="carrier_counter_rate"/>
+                            <field name="agreed_rate"/>
+                            <field name="currency_id"/>
+                            <field name="expiry"/>
+                            <field name="acceptance_method"/>
+                            <field name="accepted_at" readonly="1"/>
+                            <field name="recorded_by" readonly="1"/>
+                        </group>
+                    </group>
+                    <group>
+                        <field name="requested_at" readonly="1"/>
+                        <field name="requested_by" readonly="1"/>
+                        <field name="response_at" readonly="1"/>
+                        <field name="notes"/>
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+    <record id="action_logistics_carrier_offer" model="ir.actions.act_window">
+        <field name="name">Carrier Offers</field>
+        <field name="res_model">logistics.booking.leg.carrier.offer</field>
+        <field name="view_mode">tree,form</field>
+    </record>
+
+    <!-- ── Carrier partners (res.partner authority) ───────────────── -->
+    <record id="action_carrier_partners" model="ir.actions.act_window">
+        <field name="name">Carriers</field>
+        <field name="res_model">res.partner</field>
+        <field name="view_mode">list,form</field>
+        <field name="domain">[('is_transport_carrier', '=', True)]</field>
+        <field name="context">{'default_is_transport_carrier': True}</field>
+    </record>
+
+    <!-- ── Partner form: carrier section ──────────────────────────── -->
+    <record id="view_partner_form_carrier" model="ir.ui.view">
+        <field name="name">res.partner.form.carrier</field>
+        <field name="model">res.partner</field>
+        <field name="inherit_id" ref="base.view_partner_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//sheet" position="inside">
+                <group string="Transport Carrier (Subcontracting)"
+                       invisible="not is_transport_carrier">
+                    <group>
+                        <field name="carrier_status"/>
+                        <field name="carrier_home_region_id"/>
+                        <field name="carrier_equipment_ids" widget="many2many_tags"/>
+                        <field name="carrier_service_region_ids" widget="many2many_tags"/>
+                    </group>
+                    <group>
+                        <field name="carrier_max_pallets"/>
+                        <field name="carrier_max_weight_lbs"/>
+                        <field name="cross_border_capable"/>
+                        <field name="carrier_insurance_expiry"/>
+                        <field name="carrier_notes"/>
+                    </group>
+                </group>
+                <group string="Carrier Performance (derived)"
+                       invisible="not is_transport_carrier">
+                    <group>
+                        <field name="carrier_loads_completed" readonly="1"/>
+                        <field name="carrier_on_time_pct" readonly="1"/>
+                    </group>
+                    <group>
+                        <field name="carrier_invoice_variance_count" readonly="1"/>
+                        <field name="carrier_avg_buy_rate" readonly="1"/>
+                    </group>
+                </group>
+            </xpath>
+        </field>
+    </record>
+
+    <!-- ── Purchase Order: freight Rate Confirmation section ──────── -->
+    <record id="view_purchase_order_form_freight" model="ir.ui.view">
+        <field name="name">purchase.order.form.freight</field>
+        <field name="model">purchase.order</field>
+        <field name="inherit_id" ref="purchase.purchase_order_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//sheet" position="inside">
+                <div class="alert alert-primary" role="alert"
+                     invisible="not is_freight_subcontract">
+                    <strong>🧾 Subcontracted Freight — Carrier Rate Confirmation</strong>
+                    <span class="ms-2">
+                        <button name="action_send_rate_confirmation" type="object"
+                                string="Send Rate Confirmation" class="btn-link p-0"/>
+                        <button name="action_print_rate_confirmation" type="object"
+                                string="Print Rate Confirmation" class="btn-link p-0"/>
+                        <button name="action_record_carrier_acceptance_form" type="object"
+                                string="Record Carrier Acceptance" class="btn-link p-0"/>
+                        <button name="action_review_vendor_bill" type="object"
+                                string="Review Vendor Bill vs Accepted Rate" class="btn-link p-0"/>
+                    </span>
+                </div>
+                <group string="Freight Subcontract"
+                       invisible="not is_freight_subcontract">
+                    <group>
+                        <field name="logistics_booking_id" readonly="1"/>
+                        <field name="booking_leg_id" readonly="1"/>
+                        <field name="dispatch_job_id" readonly="1"/>
+                        <field name="carrier_acceptance_method"/>
+                        <field name="carrier_accepted_at" readonly="1"/>
+                        <field name="carrier_accepted_by" readonly="1"/>
+                    </group>
+                    <group>
+                        <field name="freight_variance" readonly="1"/>
+                        <field name="freight_details" readonly="1"/>
+                    </group>
+                </group>
+            </xpath>
+        </field>
+    </record>
+
+    <!-- ── Dispatch job: subcontract indicator ────────────────────── -->
+    <record id="view_dispatch_job_form_subcontract_badge" model="ir.ui.view">
+        <field name="name">prema.dispatch.job.form.subcontract</field>
+        <field name="model">prema.dispatch.job</field>
+        <field name="inherit_id" ref="prema_dispatch.view_dispatch_job_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//sheet" position="inside">
+                <div class="alert alert-warning" role="alert"
+                     invisible="not has_subcontracted_legs">
+                    <strong>🔄 Subcontracted execution</strong> — this booking
+                    has subcontracted leg(s). Carrier status is tracked on the
+                    booking Execution page; PREMAFIRM truck/driver are NOT
+                    required for those legs.
+                </div>
+            </xpath>
+        </field>
+    </record>
+
+    <!-- ── Menus: Carrier Network under Network ───────────────────── -->
+    <menuitem id="menu_v4_carriers" name="Carriers"
+              parent="menu_v4_network" action="action_carrier_partners" sequence="35"/>
+    <menuitem id="menu_v4_carrier_lane_rates" name="Carrier Lane Rates"
+              parent="menu_v4_network" action="action_logistics_carrier_lane_rate" sequence="36"/>
+    <menuitem id="menu_v4_carrier_offers" name="Carrier Offers"
+              parent="menu_v4_network" action="action_logistics_carrier_offer" sequence="37"/>
+    <menuitem id="menu_v4_execution_scenarios" name="Execution Scenarios"
+              parent="menu_v4_network" action="action_logistics_execution_scenario" sequence="38"/>
+
+</odoo>
