@@ -65,6 +65,13 @@ class LogisticsBookingExecution(models.Model):
     execution_estimated_margin_pct = fields.Float(
         string="Execution Estimated Margin %", digits=(5, 2),
         compute="_compute_execution_totals", store=True, readonly=True)
+    execution_cost_available = fields.Boolean(
+        string="Execution Cost Available", compute="_compute_execution_totals",
+        store=True, readonly=True,
+        help="True only when a genuine estimated execution cost exists. "
+             "A missing estimate must never read as a $0 cost or a "
+             "100% margin — the UI hides margin figures and warns when "
+             "this is False.")
     actual_total_cost = fields.Float(
         string="Actual Total Cost", digits=(12, 2),
         compute="_compute_execution_totals", store=True, readonly=True)
@@ -100,7 +107,14 @@ class LogisticsBookingExecution(models.Model):
                     own += leg.estimated_leg_cost or 0.0
                 hub += leg.hub_transfer_cost or 0.0
                 det += leg.carrier_detention_amount or 0.0
-                est_total += leg.estimated_leg_cost or 0.0
+                # Estimated total: own-fleet legs use their frozen
+                # estimator result; subcontracted legs use the frozen
+                # accepted carrier rate when no own estimate was ever
+                # written (that rate IS their estimate authority). A leg
+                # with neither stays out — never invented as $0.
+                est_total += leg.estimated_leg_cost or (
+                    leg.accepted_buy_rate
+                    if leg.execution_mode == "subcontracted" else 0.0)
                 if leg.actual_leg_cost:
                     act_total += leg.actual_leg_cost
             est_total += hub + det
@@ -134,8 +148,59 @@ class LogisticsBookingExecution(models.Model):
                 (revenue - act_total) / revenue * 100.0, 2) \
                 if revenue > 0 and act_total else 0.0
             booking.has_subcontracted_legs = has_sub
+            # Cost is "available" when a genuine estimate exists — or when
+            # there is nothing to estimate yet (no legs). The UI hides the
+            # margin figures and warns while it is False.
+            booking.execution_cost_available = bool(est_total) \
+                or not booking.leg_ids
             booking.margin_warning = bool(est_total) and \
                 booking.execution_estimated_margin_pct < min_margin
+
+    def _populate_own_fleet_cost_estimates(self, legs=None):
+        """Deterministic own-fleet estimated cost for confirmed corridor
+        legs — frozen authorities only, never live pricing tables, never
+        a division of the booking total:
+          * a per-leg allocation from the frozen cost_snapshot when the
+            estimator emits one (no current channel does — guarded for
+            future per-leg estimators): keys "legs"/"per_leg" indexed by
+            leg sequence;
+          * a single-leg booking may take the booking's frozen
+            confirmation-time estimator result (estimated_cost, written
+            by BookingOrchestrationService from the Prema AI estimator
+            before leg creation);
+          * anything else is left unset — a missing cost must surface as
+            "requires estimate", never as $0 (execution_cost_available
+            stays False and the UI warns instead of showing 100% margin).
+        Idempotent: existing estimated_leg_cost values are never
+        rewritten (the field is itself 'never rewritten after
+        acceptance')."""
+        for booking in self:
+            targets = (legs or booking.leg_ids).filtered(
+                lambda l: l.execution_mode == "own_fleet"
+                and not l.estimated_leg_cost)
+            if not targets:
+                continue
+            cost_snap = booking.cost_snapshot or {}
+            if not isinstance(cost_snap, dict):
+                cost_snap = {}
+            per_leg = cost_snap.get("legs") or cost_snap.get("per_leg") or {}
+            for leg in targets:
+                entry = per_leg.get(str(leg.sequence))
+                if entry is None:
+                    entry = per_leg.get(leg.sequence)
+                if isinstance(entry, dict) and entry.get("total_cost"):
+                    leg.write({
+                        "estimated_leg_cost": round(
+                            float(entry["total_cost"]), 2),
+                        "cost_source": "own_cost_estimate",
+                    })
+                    continue
+                if len(booking.leg_ids) == 1 and booking.estimated_cost:
+                    leg.write({
+                        "estimated_leg_cost": round(
+                            float(booking.estimated_cost), 2),
+                        "cost_source": "own_cost_estimate",
+                    })
 
     def action_recompute_margin(self):
         """Recompute the execution profitability view after an offer is

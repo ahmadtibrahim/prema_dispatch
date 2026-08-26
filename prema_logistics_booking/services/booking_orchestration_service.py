@@ -1804,6 +1804,24 @@ class BookingOrchestrationService:
 
         return vehicles_by_departure
 
+    def _frozen_customer_leg_amount(self, booking, leg_index):
+        """Deterministic last-resort mapping of the immutable customer
+        price_snapshot physical leg lines ("Leg N: ..." labels) to the leg
+        at leg_index — used only when the route-snapshot leg carries no
+        price key. Booking-level adjustments (minimum charge, volume
+        discount, accessorials) are never spread onto physical legs."""
+        snap_lines = booking.price_snapshot or []
+        if not isinstance(snap_lines, list):
+            return 0.0
+        leg_lines = [
+            ln.get("amount") or 0.0 for ln in snap_lines
+            if isinstance(ln, dict)
+            and str(ln.get("label") or "").startswith("Leg ")
+        ]
+        if leg_index < len(leg_lines):
+            return float(leg_lines[leg_index])
+        return 0.0
+
     def _create_legs_from_snapshot(self, booking, snap, leg_snaps):
         from ..services.region_resolver import RegionResolver
 
@@ -1925,7 +1943,19 @@ class BookingOrchestrationService:
                     "which": "origin" if not origin else "destination",
                 })
 
-            frozen_price = ls.get("price", 0.0)
+            # Frozen customer-leg price: the route snapshot's own per-leg
+            # pricing line is the deterministic authority — key "price" on
+            # legacy/FTL channels (where the pricing service folds the
+            # booking minimum INTO the last leg's price), key "leg_price"
+            # on corridor-per-km channels. Never re-reads live pricing
+            # tables after confirmation. Only when the snapshot leg
+            # carries neither key, fall back to the immutable customer
+            # price_snapshot physical leg lines ("Leg N: ...") — booking
+            # level adjustments (minimum charge, volume discount,
+            # accessorials) are never redistributed onto physical legs.
+            frozen_price = ls.get("price") or ls.get("leg_price")
+            if not frozen_price:
+                frozen_price = self._frozen_customer_leg_amount(booking, i)
             if currency:
                 frozen_price = currency.round(frozen_price)
 
@@ -1950,6 +1980,25 @@ class BookingOrchestrationService:
                 lanes = region_bridge.matching_lanes(origin_region, dest_region)
                 if lanes:
                     lane_id = lanes[0].id
+
+            # Execution initialization: a confirmed leg on a PREMAFIRM
+            # corridor departure executed by the canonical internal
+            # vehicle is OWN FLEET from birth — never 'unassigned' (the
+            # field default stays for manual/unresolved entries). The
+            # vehicle comes from the same capacity-validation lock that
+            # reserved this leg's positions; the driver only when the
+            # departure already has an internal driver assigned (dispatch
+            # may assign or change the driver later — vehicle is
+            # authoritative, driver is informational).
+            vehicle = vehicles_by_departure[ls["departure_id"]]
+            departure_rec = self.env["logistics.corridor.departure"].sudo().browse(
+                ls["departure_id"])
+            execution_vals = {
+                "execution_mode": "own_fleet",
+                "vehicle_id": vehicle.id,
+                "driver_id": departure_rec.driver_id.id if departure_rec.driver_id else False,
+                "cost_source": "own_cost_estimate",
+            } if vehicle else {}
 
             leg = Leg.create({
                 "booking_id": booking.id,
@@ -1976,8 +2025,16 @@ class BookingOrchestrationService:
                 "status": "scheduled",
                 "reservation_state": "reserved",
                 "customer_visible": True,
+                **execution_vals,
             })
             created_legs += leg
+
+        if created_legs:
+            # Deterministic own-fleet estimated cost from the frozen
+            # authorities (cost_snapshot per-leg allocation, else the
+            # booking's confirmation-time estimator result for a
+            # single-leg booking) — never a division of the total.
+            booking._populate_own_fleet_cost_estimates(created_legs)
 
         if len(created_legs) > 1:
             booking.write({"is_multi_leg": True})
@@ -2020,6 +2077,17 @@ class BookingOrchestrationService:
             booking_id=booking.id,
         )
 
+        # Same execution initialization as the snapshot path: a manual
+        # leg on a PREMAFIRM departure with the canonical internal
+        # vehicle is OWN FLEET from birth — never 'unassigned'.
+        vehicle = vehicles_by_departure[departure.id]
+        execution_vals = {
+            "execution_mode": "own_fleet",
+            "vehicle_id": vehicle.id,
+            "driver_id": departure.driver_id.id if departure.driver_id else False,
+            "cost_source": "own_cost_estimate",
+        } if vehicle else {}
+
         leg = self.env["logistics.booking.leg"].sudo().create({
             "booking_id": booking.id,
             "sequence": 10,
@@ -2034,7 +2102,9 @@ class BookingOrchestrationService:
             "status": "scheduled",
             "reservation_state": "reserved",
             "customer_visible": True,
+            **execution_vals,
         })
+        booking._populate_own_fleet_cost_estimates(leg)
         self._refresh_departure_peaks(vehicles_by_departure.keys())
         return leg
 

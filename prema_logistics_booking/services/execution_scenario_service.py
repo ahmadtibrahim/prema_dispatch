@@ -79,8 +79,8 @@ class ExecutionScenarioService:
         """Own-fleet BUY authority: the booking's frozen per-leg estimates
         when they exist (they came from the pricing engine / Prema AI
         estimator), else the live estimator call. Never invents a figure —
-        a 0.0 result means the estimator degraded (200 km default + no
-        vehicle) and the dispatcher sees it as a low-cost scenario."""
+        a degraded/unavailable estimator returns (False, ...) so the
+        dispatcher sees "requires estimate", never a $0-cost scenario."""
         legs = booking.leg_ids.filtered(
             lambda l: l.execution_mode in ("own_fleet", "unassigned"))
         leg_costs = [l.estimated_leg_cost for l in legs
@@ -94,7 +94,7 @@ class ExecutionScenarioService:
                 return float(est["total_cost"]), "own_cost_estimate"
         except Exception:
             pass
-        return 0.0, "own_cost_estimate"
+        return False, "own_cost_estimate"
 
     # ── Scenario generation ─────────────────────────────────────────
 
@@ -123,7 +123,13 @@ class ExecutionScenarioService:
                       if l.execution_mode in ("own_fleet", "unassigned"))
             sub = sum(l.accepted_buy_rate or 0.0 for l in legs
                       if l.execution_mode == "subcontracted")
-            cost = own + sub
+            # Cost is known only when at least one leg carries a genuine
+            # estimate/accepted rate — otherwise it stays False and the
+            # scenario reads "requires estimate", never "$0 cost, 100%
+            # margin".
+            cost = (own + sub) if any(
+                l.estimated_leg_cost or l.accepted_buy_rate for l in legs
+            ) else False
             state = "auto_bookable"
             if any(l.execution_mode == "subcontracted" for l in legs):
                 state = "carrier_acceptance_required"
@@ -137,7 +143,8 @@ class ExecutionScenarioService:
                     "execution_mode": l.execution_mode,
                     "carrier_id": l.executing_carrier_id.id
                     if l.executing_carrier_id else False,
-                    "buy_rate": l.accepted_buy_rate or l.estimated_leg_cost,
+                    "buy_rate": l.accepted_buy_rate
+                    or l.estimated_leg_cost or False,
                     "cost_source": l.cost_source,
                 } for l in legs],
             })
@@ -148,7 +155,8 @@ class ExecutionScenarioService:
         scenarios.append({
             "rank": 2,
             "title": "Own fleet dedicated direct",
-            "state": "auto_bookable" if own_cost or not distance_km
+            "state": "auto_bookable"
+            if (own_cost is not False) or not distance_km
             else "dispatch_confirmation",
             "cost": own_cost,
             "plan": [{
@@ -227,6 +235,7 @@ class ExecutionScenarioService:
                 "rank": sc["rank"],
                 "state": state,
                 "customer_revenue": revenue,
+                "cost_available": sc["cost"] is not False,
                 "estimated_total_cost": round(cost, 2)
                 if sc["cost"] is not False else 0.0,
                 "estimated_margin": round(margin, 2)

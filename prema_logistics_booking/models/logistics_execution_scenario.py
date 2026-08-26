@@ -31,6 +31,11 @@ class LogisticsExecutionScenario(models.Model):
         string="Summary", compute="_compute_name", store=True)
     customer_revenue = fields.Float(
         string="Customer Revenue (pre-tax)", digits=(12, 2), readonly=True)
+    cost_available = fields.Boolean(
+        string="Cost Available", readonly=True,
+        help="False when no genuine cost authority exists for this "
+             "scenario — the $0/0% figures then mean 'requires estimate', "
+             "never an actual cost or 100% margin.")
     estimated_total_cost = fields.Float(
         string="Estimated Total Cost", digits=(12, 2), readonly=True)
     estimated_margin = fields.Float(
