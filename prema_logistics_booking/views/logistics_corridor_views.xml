@@ -55,6 +55,12 @@
                             <field name="overnight"/>
                             <field name="departure_horizon_weeks"/>
                         </group>
+                        <group string="Prior-Day Pickup">
+                            <field name="allow_prior_day_pickup"/>
+                            <field name="prior_day_pickup_max_days" invisible="not allow_prior_day_pickup"/>
+                            <field name="prior_day_pickup_hub_id" options="{'no_create': True}"
+                                   invisible="not allow_prior_day_pickup"/>
+                        </group>
                     </group>
                     <notebook>
                         <page string="Route">

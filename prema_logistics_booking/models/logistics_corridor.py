@@ -88,6 +88,32 @@ class LogisticsCorridor(models.Model):
         help="Human-readable weekly position: earliest operating day plus "
              "sequence, e.g. 'Mon · 10'.",
     )
+    # ── Prior-Day Pickup (Phase 2: Sunday pickup for Monday service) ──
+    # OPT-IN per corridor — default OFF means behavior exactly as before.
+    # When enabled, freight may be physically collected up to
+    # prior_day_pickup_max_days before this corridor's scheduled linehaul
+    # departure while capacity is still reserved against that EXACT
+    # departure. No additional departure record is ever created; the
+    # Sunday pickup is an earlier pickup DATE for the same Monday
+    # departure (leg pickup_date vs departure_id split).
+    allow_prior_day_pickup = fields.Boolean(
+        string="Allow Prior-Day Pickup",
+        help="Allows freight to be physically collected before this "
+             "corridor's scheduled departure while reserving capacity on "
+             "the scheduled departure. Example: Sunday pickup for a Monday "
+             "linehaul. This does not create an additional corridor "
+             "departure.")
+    prior_day_pickup_max_days = fields.Integer(
+        string="Prior-Day Pickup Max Days", default=1,
+        help="Maximum number of days before the scheduled departure that "
+             "freight may be physically collected. Example: 1 allows "
+             "pickup on the day before the linehaul (Sunday for a Monday "
+             "departure).")
+    prior_day_pickup_hub_id = fields.Many2one(
+        "logistics.hub", string="Prior-Day Pickup Staging Hub",
+        help="Hub where prior-day-picked freight is staged until the "
+             "scheduled departure. Empty = the corridor's origin hub "
+             "(or on-board with the corridor's truck) is used.")
     departure_horizon_weeks = fields.Integer(
         string="Customer Booking Horizon (weeks)", default=8,
         help="Exactly this many weekly occurrences are maintained. The maximum is eight weeks.",

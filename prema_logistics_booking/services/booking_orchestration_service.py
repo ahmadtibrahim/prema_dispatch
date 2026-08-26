@@ -691,7 +691,13 @@ class BookingOrchestrationService:
                 "appointment": normalized_request.appointment,
                 "residential": normalized_request.residential,
                 "same_day_requested": normalized_request.same_day_requested,
-                "pickup_date": first_leg.departure_date if first_leg else None,
+                # Physical pickup date — for prior-day pickups (Sunday
+                # pickup → Monday linehaul) this is the leg's pickup
+                # datetime day, which precedes the corridor departure date.
+                "pickup_date": (
+                    str(first_leg.pickup_datetime)[:10]
+                    if first_leg and first_leg.pickup_datetime
+                    else (first_leg.departure_date if first_leg else None)),
                 # The calendar-selected departure — the quote binds to this
                 # exact scheduled departure; confirmation re-validates it.
                 "departure_id": first_leg.departure_id if first_leg else None,
@@ -832,7 +838,13 @@ class BookingOrchestrationService:
 
             return {
                 "quote_token": session.token,
-                "pickup_date": first_leg.departure_date if first_leg else None,
+                # Physical pickup date — prior-day pickups show the actual
+                # collection day, distinct from the corridor departure date
+                # (Sunday pickup → Monday linehaul).
+                "pickup_date": (
+                    str(first_leg.pickup_datetime)[:10]
+                    if first_leg and first_leg.pickup_datetime
+                    else (first_leg.departure_date if first_leg else None)),
                 "pickup_time": _iso_part(first_leg.pickup_datetime, "time") if first_leg else "",
                 "delivery_date": est_delivery,
                 "delivery_time": _iso_part(last_leg.delivery_datetime, "time") if last_leg else "",

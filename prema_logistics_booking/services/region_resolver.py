@@ -877,16 +877,18 @@ class RegionResolver:
             if region:
                 return region
         # 1b. Region code — canonical official-LTL codes ("ON-GTA",
-        #     "QC-MONTREAL", "ON-HALIBURTON-OTTAWA-VALLEY"). Route-snapshot
-        #     legs store these codes, and the confirm-time departure-span
-        #     revalidation turns them back into region records. Surfaced by
-        #     the demo route matrix 2026-08-25: every canonical-region
-        #     quote failed at confirm with ROUTE_DEPARTURE_MISMATCH /
-        #     "not available on the selected departure" because the code
-        #     could not be parsed. A city name like "ST-JÉRÔME" also matches
-        #     the shape — the code search simply misses and we fall through
-        #     to the city lookup, so the branch is safe.
-        if re.match(r"^[A-Z]{2}-[A-Z][A-Z-]*$", upper):
+        #     "QC-MONTREAL", "ON-HALIBURTON-OTTAWA-VALLEY", and bare
+        #     uppercase codes like "SWON"). Route-snapshot legs store these
+        #     codes, and the confirm-time departure-span revalidation turns
+        #     them back into region records. Surfaced by the demo route
+        #     matrix 2026-08-25 (every canonical-region quote failed at
+        #     confirm with ROUTE_DEPARTURE_MISMATCH / "not available on the
+        #     selected departure") and by the SWON lane 2026-08-26 (code
+        #     "SWON" has no province prefix — the dash-required pattern
+        #     never matched it). A city name like "ST-JÉRÔME" or "LONDON"
+        #     also matches the shape — the code search simply misses and we
+        #     fall through to the city lookup, so the branch is safe.
+        if re.match(r"^[A-Z]{2}[A-Z-]*$", upper):
             region = self.env["logistics.region"].sudo().with_context(
                 active_test=False,
             ).search([("code", "=ilike", upper)], limit=1)

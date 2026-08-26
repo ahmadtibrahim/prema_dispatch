@@ -57,7 +57,12 @@ ProposedLeg = namedtuple("ProposedLeg", [
     "timing_source",            # str — 'configured' | 'corridor_departure_time' | 'travel_calc_fallback'
     # Weight-aware pricing breakdown (canonical calculator output):
     "pricing_formula",          # dict — calculate_leg_per_km breakdown
-], defaults=[None, None, None, "", None])
+    # Prior-day pickup (Phase 2): pickup_date is the day freight is
+    # physically collected; departure_date stays the LINEHAUL day
+    # (Sunday pickup → Monday departure). prior_day_pickup marks it.
+    "pickup_date",              # str — physical pickup day (ISO date)
+    "prior_day_pickup",         # bool — collected before the linehaul date
+], defaults=[None, None, None, "", None, "", False])
 
 
 class ShipmentRoutingService:
@@ -347,7 +352,7 @@ class ShipmentRoutingService:
 
     def _leg_timings(self, corridor, departure, origin_region, dest_region,
                      distance_km, pickup_date, pickup_stop=None,
-                     delivery_stop=None):
+                     delivery_stop=None, linehaul_date=None):
         """Real pickup / delivery datetimes for one scheduled corridor leg.
 
         Authority order:
@@ -374,16 +379,30 @@ class ShipmentRoutingService:
         window_end / appointment_time / service_time_minutes (the portal
         stop shape).
 
+        linehaul_date: when supplied (prior-day pickup), `pickup_date` is
+        the day freight is physically collected while the corridor
+        departure and the delivery estimate anchor on the LINEHAUL day
+        (Sunday pickup → Monday departure). Same-day service passes
+        linehaul_date=None and both anchors collapse to one — timing
+        behavior is identical to before.
+
         Returns dict with datetime objects + per-side timing_source.
         """
         base = pickup_date
         if isinstance(base, str):
             base = datetime.strptime(base[:10], "%Y-%m-%d")
 
+        dep_base = linehaul_date
+        if dep_base:
+            if isinstance(dep_base, str):
+                dep_base = datetime.strptime(dep_base[:10], "%Y-%m-%d")
+        else:
+            dep_base = base
+
         dep_hour = departure.departure_time if departure else 0.0
         if not dep_hour and corridor:
             dep_hour = corridor.start_time or 0.0
-        corridor_departure_dt = base + timedelta(hours=dep_hour or 0.0)
+        corridor_departure_dt = dep_base + timedelta(hours=dep_hour or 0.0)
 
         segment = corridor.resolve_region_segment(origin_region, dest_region) if corridor else False
         origin_day = (segment.get("pickup_day_offset") or 0) if segment else 0
@@ -394,6 +413,13 @@ class ShipmentRoutingService:
         if origin_hour:
             pickup_dt = base + timedelta(days=origin_day, hours=origin_hour)
             pickup_source = "configured"
+        elif linehaul_date:
+            # Prior-day pickup: the local pickup run starts at the
+            # corridor's scheduled start time ON the pickup day — the
+            # corridor stop times describe the linehaul run, not the
+            # earlier local collection.
+            pickup_dt = base + timedelta(hours=dep_hour or 0.0)
+            pickup_source = "corridor_departure_time"
         else:
             pickup_dt = corridor_departure_dt + timedelta(days=origin_day)
             pickup_source = "corridor_departure_time"
@@ -412,11 +438,15 @@ class ShipmentRoutingService:
                     pickup_source = source
 
         if dest_hour:
-            delivery_dt = base + timedelta(days=dest_day, hours=dest_hour)
+            delivery_dt = dep_base + timedelta(days=dest_day, hours=dest_hour)
             delivery_source = "configured"
         else:
             km = distance_km or ((segment.get("distance_km") or 0.0) if segment else 0.0) or 0.0
-            delivery_dt = pickup_dt + timedelta(hours=km / self._AVG_TRUCK_SPEED_KPH)
+            # Prior-day pickup: delivery happens AFTER the linehaul
+            # departure — anchor the travel estimate on the departure,
+            # never on the earlier physical pickup day.
+            delivery_anchor = corridor_departure_dt if linehaul_date else pickup_dt
+            delivery_dt = delivery_anchor + timedelta(hours=km / self._AVG_TRUCK_SPEED_KPH)
             delivery_source = "travel_calc_fallback"
             # Facility-aware ETA on the delivery side too — the delivery
             # window/appointment and receiving hours govern the estimate.
@@ -475,6 +505,8 @@ class ShipmentRoutingService:
             "corridor_name": leg.corridor_name,
             "departure_id": leg.departure_id,
             "departure_date": leg.departure_date,
+            "pickup_date": leg.pickup_date,
+            "prior_day_pickup": leg.prior_day_pickup,
             "pickup_datetime": leg.pickup_datetime,
             "delivery_datetime": leg.delivery_datetime,
             "corridor_departure_datetime": leg.corridor_departure_datetime,
@@ -616,7 +648,16 @@ class ShipmentRoutingService:
         pickup_day = pickup_date.strftime("%A").lower()
 
         # ── Step 4: Validate pickup day against corridor schedule ──
-        valid_day = self._is_valid_pickup_day(origin_region, pickup_day)
+        # Prior-day pickup: the physical pickup date may precede the
+        # linehaul departure (Sunday pickup → Monday linehaul). The offset
+        # comes from the bound departure when the portal supplied one (the
+        # EXACT departure the calendar advertised), else from corridor
+        # configuration. Offset 0 = same-day service (existing behavior).
+        prior_day_offset = self._resolve_prior_day_offset(
+            origin_region, pickup_date, requested_departure_id=requested_departure_id)
+        valid_day = self._is_valid_pickup_day(
+            origin_region, pickup_day,
+            pickup_date=pickup_date if prior_day_offset else None)
         if not valid_day:
             # Route-aware advice (FSA reconciliation follow-up — the old
             # origin-only day scan plus its blind "+7 days" fallback kept
@@ -646,9 +687,13 @@ class ShipmentRoutingService:
             )
 
         # ── Step 5: Direct vs Hub decision ─────────────────────────
+        # The direct/hub decision keys on the LINEHAUL day for prior-day
+        # pickups — never the physical pickup day.
+        linehaul_day = (pickup_date + timedelta(days=prior_day_offset)).strftime("%A").lower() \
+            if prior_day_offset else pickup_day
         routing = direct_svc.decide(
             origin_region.id, dest_region.id,
-            pickup_day=pickup_day,
+            pickup_day=linehaul_day,
         )
         snapshot["steps"].append({
             "step": "routing_decision",
@@ -677,6 +722,7 @@ class ShipmentRoutingService:
                 delivery_lat=delivery_lat, delivery_lng=delivery_lng,
                 requested_departure_id=requested_departure_id,
                 pickup_stop=pickup_stop, delivery_stop=delivery_stop,
+                prior_day_offset=prior_day_offset,
             )
             if leg:
                 legs.append(leg)
@@ -696,6 +742,7 @@ class ShipmentRoutingService:
                     delivery_lat=delivery_lat, delivery_lng=delivery_lng,
                     requested_departure_id=requested_departure_id,
                     pickup_stop=pickup_stop, delivery_stop=None,
+                    prior_day_offset=prior_day_offset,
                 )
                 if leg:
                     legs.append(leg)
@@ -712,6 +759,7 @@ class ShipmentRoutingService:
                     delivery_lat=delivery_lat, delivery_lng=delivery_lng,
                     requested_departure_id=requested_departure_id,
                     pickup_stop=None, delivery_stop=delivery_stop,
+                    prior_day_offset=prior_day_offset,
                 )
                 if leg:
                     legs.append(leg)
@@ -729,6 +777,7 @@ class ShipmentRoutingService:
                     delivery_lng=hub.longitude or -79.644,
                     requested_departure_id=requested_departure_id,
                     pickup_stop=pickup_stop, delivery_stop=None,
+                    prior_day_offset=prior_day_offset,
                 )
                 if leg1:
                     # Leg 2: Hub → delivery. The onward leg departs on the
@@ -1519,210 +1568,244 @@ class ShipmentRoutingService:
             day_name = current.strftime("%A").lower()
             date_str = current.strftime("%Y-%m-%d")
 
-            # Pickup day must be served for the origin region.
-            if not self._is_valid_pickup_day(origin_region, day_name):
-                current += timedelta(days=1)
-                continue
-
-            # Evaluate EVERY delivery stop on this pickup date. The date is
-            # eligible only when the whole route can move.
-            per_stop = []
-            route_feasible = True
-            feeder_names = []
-            onward_names = []
-            leg_count = 0
-            estimated_delivery = ""
-            latest_delivery_iso = ""
-            transfer_hub_name = ""
-            all_legs = []  # every leg dict across every delivery stop
-            direct_svc = DirectDeliveryService(self.env)
-            # FTL rate-gate cache keyed by (corridor, origin, dest) — the
-            # corridor's FTL pricing configuration is static per segment.
-            ftl_rate_ok = {}
-            for plan in delivery_plans:
-                # Re-decide per pickup DAY — the direct/hub decision can
-                # differ by day (rule allowed_service_days), and the quote
-                # path decides with the same pickup_day.
-                routing = direct_svc.decide(
-                    origin_region.id, plan["dest"].id, pickup_day=day_name)
-                legs_info = self._probe_legs(
-                    origin_region, plan["dest"], hub, routing,
-                    current, day_name,
-                    float(origin["latitude"]), float(origin["longitude"]),
-                    float(plan["stop"]["latitude"]), float(plan["stop"]["longitude"]),
-                    physical_pallets, weight_lbs, equipment,
-                    pickup_stop=origin, delivery_stop=plan["stop"],
-                )
-                if not legs_info or not legs_info.get("feasible"):
-                    route_feasible = False
-                    per_stop.append({
-                        "stop_key": plan["stop"].get("stop_key", ""),
-                        "city": plan["stop"].get("city", ""),
-                        "feasible": False,
-                    })
+            # Pickup day must be servable for the origin region — same-day
+            # corridor service first (offset 0 = existing behavior), then
+            # prior-day pickup offsets (Sunday pickup → Monday linehaul)
+            # up to the corridor's configured max; first feasible wins.
+            max_off = self._max_prior_day_offset(origin_region)
+            entry = None
+            for offset in range(0, max_off + 1):
+                if not self._is_valid_pickup_day(
+                        origin_region, day_name,
+                        pickup_date=current if offset else None):
                     continue
-                if shipment_type == "ftl" and legs_info.get("leg_count", 1) != 1:
-                    # FTL is a dedicated direct movement — EXACTLY the
-                    # single-leg rule Get Price enforces via
-                    # FTL_REQUIRES_DIRECT (len(legs) != 1). leg_count == 2
-                    # means feeder + onward transfer; leg_count == 1
-                    # includes the origin-is-the-hub single-corridor case
-                    # (e.g. GTA -> Niagara on one corridor), which Get
-                    # Price prices as FTL. No calendar date may advertise
-                    # a transfer for FTL.
-                    route_feasible = False
-                    per_stop.append({
-                        "stop_key": plan["stop"].get("stop_key", ""),
-                        "city": plan["stop"].get("city", ""),
-                        "feasible": False,
-                    })
-                    continue
-                if shipment_type == "ftl" and legs_info.get("corridor_id"):
-                    # FTL rate gate: mirror plan_route's
-                    # FTL_RATE_NOT_CONFIGURED verdict — a direct FTL date
-                    # must be PRICEABLE at Get Price, otherwise calendar
-                    # and quote disagree. Read-only configuration check;
-                    # never a price calculation.
-                    key = (legs_info["corridor_id"], origin_region.id,
-                           plan["dest"].id)
-                    if key not in ftl_rate_ok:
-                        corridor = self.env["logistics.corridor"].browse(
-                            legs_info["corridor_id"])
-                        if corridor.enable_ftl:
-                            ftl = corridor.compute_ftl_price(
-                                origin_region, plan["dest"], 0.0)
-                            if ftl["pricing_type"] == "flat_rate":
-                                ftl_rate_ok[key] = bool(ftl["regional_rule"]) and (
-                                    ftl["regional_rule"].flat_rate or 0.0) > 0
-                            else:
-                                ftl_rate_ok[key] = (ftl.get("rate_per_km") or 0.0) > 0
-                        else:
-                            # Corridor does not enable FTL — Get Price
-                            # prices the shipment as LTL (existing
-                            # behavior) and succeeds.
-                            ftl_rate_ok[key] = True
-                    if not ftl_rate_ok[key]:
-                        route_feasible = False
-                        per_stop.append({
-                            "stop_key": plan["stop"].get("stop_key", ""),
-                            "city": plan["stop"].get("city", ""),
-                            "feasible": False,
-                        })
-                        continue
-                per_stop.append({
-                    "stop_key": plan["stop"].get("stop_key", ""),
-                    "city": plan["stop"].get("city", ""),
-                    "feasible": True,
-                    "corridor": legs_info.get("feeder_corridor") or legs_info.get("onward_corridor", ""),
-                    "departure_date": legs_info.get("departure_date", date_str),
-                    "departure_id": legs_info.get("departure_id"),
-                    "corridor_id": legs_info.get("corridor_id"),
-                    "delivery_datetime": legs_info.get("delivery_datetime"),
-                })
-                if legs_info.get("feeder_corridor"):
-                    feeder_names.append(legs_info["feeder_corridor"])
-                if legs_info.get("onward_corridor"):
-                    onward_names.append(legs_info["onward_corridor"])
-                leg_count = max(leg_count, legs_info.get("leg_count", 1))
-                # The latest expected delivery across the route.
-                if legs_info.get("estimated_delivery", "") > estimated_delivery:
-                    estimated_delivery = legs_info["estimated_delivery"]
-                if legs_info.get("delivery_datetime") and (
-                        not latest_delivery_iso
-                        or legs_info["delivery_datetime"] > latest_delivery_iso):
-                    latest_delivery_iso = legs_info["delivery_datetime"]
-                if legs_info.get("transfer_hub_name"):
-                    transfer_hub_name = legs_info["transfer_hub_name"]
-                all_legs += legs_info.get("legs") or []
-
-            if not route_feasible:
-                current += timedelta(days=1)
-                continue
-
-            # ── Exact-departure eligibility + capacity ─────────────────
-            # Capacity is evaluated against the EXACT departures the route
-            # legs selected — never an independently-searched departure for
-            # the origin region. Every leg's departure must be eligible
-            # (vehicle assigned + operational, equipment-compatible,
-            # payload OK, pallets fit) via the same DepartureResolver
-            # rules the confirmation path enforces.
-            unique_dep_ids = sorted({
-                leg["departure_id"] for leg in all_legs if leg.get("departure_id")
-            })
-            if not unique_dep_ids:
-                # _probe_legs already required a real departure per leg;
-                # this is a safety net, not a substitute.
-                current += timedelta(days=1)
-                continue
-            all_departures_eligible = True
-            for dep_id in unique_dep_ids:
-                dep = Departure.sudo().browse(dep_id)
-                matching_legs = [
-                    leg for leg in all_legs if leg.get("departure_id") == dep_id
-                ]
-                leg = matching_legs[0] if matching_legs else {}
-                # Leg-scoped names — must NOT shadow the outer pickup-stop
-                # dict `origin` used by the probe loop above (shadowing
-                # crashed the next iteration with KeyError 'latitude').
-                leg_origin_region = self._canonical_region(
-                    leg.get("origin_region_id") or leg.get("origin_region"))
-                leg_destination_region = self._canonical_region(
-                    leg.get("dest_region_id") or leg.get("dest_region")
-                )
-                ok, _reason, _vehicle = departure_svc.evaluate_departure(
-                    dep, equipment, physical_pallets, weight_lbs,
-                    service_type=shipment_type,
-                    origin_region=leg_origin_region,
-                    dest_region=leg_destination_region,
-                )
-                if not ok:
-                    all_departures_eligible = False
+                entry = self._route_entry_at_offset(
+                    origin_region, delivery_plans, hub, origin,
+                    current, day_name, date_str, offset,
+                    physical_pallets, weight_lbs, equipment, shipment_type)
+                if entry:
                     break
-            if not all_departures_eligible:
-                current += timedelta(days=1)
-                continue
-
-            # NOTE: exact pallet capacity is deliberately NOT exposed here.
-            # Every returned date already fits the requested quantity (the
-            # eligibility loop above filters on capacity server-side), so the
-            # payload carries only generic state — never max/reserved/
-            # remaining positions or layout details. Server-side validation
-            # at Get Price / confirm remains the authority.
-            first_leg = all_legs[0]
-            eligible.append({
-                "date": date_str,
-                "day_name": day_name.capitalize(),
-                # The exact service option this date sells:
-                "departure_id": first_leg.get("departure_id"),
-                "departure_date": first_leg.get("departure_date") or date_str,
-                "departure_time": self._time_part(first_leg.get("corridor_departure_datetime")),
-                # Real service timing (corridor stop config + travel-calc
-                # fallback) — estimated_delivery is NEVER the departure date.
-                "pickup_date": self._date_part(first_leg.get("pickup_datetime")) or date_str,
-                "pickup_time": self._time_part(first_leg.get("pickup_datetime")),
-                "pickup_datetime": first_leg.get("pickup_datetime"),
-                "delivery_date": self._date_part(latest_delivery_iso) or estimated_delivery,
-                "delivery_time": self._time_part(latest_delivery_iso),
-                "delivery_datetime": latest_delivery_iso,
-                "estimated_delivery": estimated_delivery,
-                "corridor_departure_date": first_leg.get("departure_date") or date_str,
-                "corridor_departure_time": self._time_part(first_leg.get("corridor_departure_datetime")),
-                "corridor_departure_datetime": first_leg.get("corridor_departure_datetime"),
-                # Hub transfer: only the hub's PUBLIC name (customer-safe by
-                # design) — never internal corridor/leg language.
-                "transfer": bool(leg_count == 2),
-                "transfer_hub_name": transfer_hub_name,
-                "capacity_state": "available",
-            })
+            if entry:
+                eligible.append(entry)
 
             current += timedelta(days=1)
 
         return eligible
 
+    def _route_entry_at_offset(self, origin_region, delivery_plans, hub, origin,
+                               current, day_name, date_str, offset,
+                               physical_pallets, weight_lbs, equipment,
+                               shipment_type):
+        """Evaluate the FULL route on one pickup date at one prior-day
+        offset. Returns the eligible calendar entry dict, or None when the
+        route cannot move (any stop infeasible, exact departures ineligible
+        or over capacity). offset 0 = same-day service (existing behavior);
+        offset N = freight physically picked up N days before the linehaul
+        departure (Sunday pickup → Monday linehaul, capacity still
+        evaluated against the EXACT Monday departure)."""
+        from ..services.departure_resolver import DepartureResolver
+        from ..services.direct_delivery_service import DirectDeliveryService
+
+        departure_svc = DepartureResolver(self.env)
+        Departure = self.env["logistics.corridor.departure"]
+        # The direct/hub decision keys on the LINEHAUL day for prior-day
+        # pickups — never the physical pickup day.
+        linehaul_day = (current + timedelta(days=offset)).strftime("%A").lower() \
+            if offset else day_name
+        # Evaluate EVERY delivery stop on this pickup date. The date is
+        # eligible only when the whole route can move.
+        per_stop = []
+        route_feasible = True
+        feeder_names = []
+        onward_names = []
+        leg_count = 0
+        estimated_delivery = ""
+        latest_delivery_iso = ""
+        transfer_hub_name = ""
+        all_legs = []  # every leg dict across every delivery stop
+        direct_svc = DirectDeliveryService(self.env)
+        # FTL rate-gate cache keyed by (corridor, origin, dest) — the
+        # corridor's FTL pricing configuration is static per segment.
+        ftl_rate_ok = {}
+        for plan in delivery_plans:
+            # Re-decide per pickup DAY — the direct/hub decision can
+            # differ by day (rule allowed_service_days), and the quote
+            # path decides with the same pickup_day.
+            routing = direct_svc.decide(
+                origin_region.id, plan["dest"].id, pickup_day=linehaul_day)
+            legs_info = self._probe_legs(
+                origin_region, plan["dest"], hub, routing,
+                current, day_name,
+                float(origin["latitude"]), float(origin["longitude"]),
+                float(plan["stop"]["latitude"]), float(plan["stop"]["longitude"]),
+                physical_pallets, weight_lbs, equipment,
+                pickup_stop=origin, delivery_stop=plan["stop"],
+                prior_day_offset=offset,
+            )
+            if not legs_info or not legs_info.get("feasible"):
+                route_feasible = False
+                per_stop.append({
+                    "stop_key": plan["stop"].get("stop_key", ""),
+                    "city": plan["stop"].get("city", ""),
+                    "feasible": False,
+                })
+                continue
+            if shipment_type == "ftl" and legs_info.get("leg_count", 1) != 1:
+                # FTL is a dedicated direct movement — EXACTLY the
+                # single-leg rule Get Price enforces via
+                # FTL_REQUIRES_DIRECT (len(legs) != 1). leg_count == 2
+                # means feeder + onward transfer; leg_count == 1
+                # includes the origin-is-the-hub single-corridor case
+                # (e.g. GTA -> Niagara on one corridor), which Get
+                # Price prices as FTL. No calendar date may advertise
+                # a transfer for FTL.
+                route_feasible = False
+                per_stop.append({
+                    "stop_key": plan["stop"].get("stop_key", ""),
+                    "city": plan["stop"].get("city", ""),
+                    "feasible": False,
+                })
+                continue
+            if shipment_type == "ftl" and legs_info.get("corridor_id"):
+                # FTL rate gate: mirror plan_route's
+                # FTL_RATE_NOT_CONFIGURED verdict — a direct FTL date
+                # must be PRICEABLE at Get Price, otherwise calendar
+                # and quote disagree. Read-only configuration check;
+                # never a price calculation.
+                key = (legs_info["corridor_id"], origin_region.id,
+                       plan["dest"].id)
+                if key not in ftl_rate_ok:
+                    corridor = self.env["logistics.corridor"].browse(
+                        legs_info["corridor_id"])
+                    if corridor.enable_ftl:
+                        ftl = corridor.compute_ftl_price(
+                            origin_region, plan["dest"], 0.0)
+                        if ftl["pricing_type"] == "flat_rate":
+                            ftl_rate_ok[key] = bool(ftl["regional_rule"]) and (
+                                ftl["regional_rule"].flat_rate or 0.0) > 0
+                        else:
+                            ftl_rate_ok[key] = (ftl.get("rate_per_km") or 0.0) > 0
+                    else:
+                        # Corridor does not enable FTL — Get Price
+                        # prices the shipment as LTL (existing
+                        # behavior) and succeeds.
+                        ftl_rate_ok[key] = True
+                if not ftl_rate_ok[key]:
+                    route_feasible = False
+                    per_stop.append({
+                        "stop_key": plan["stop"].get("stop_key", ""),
+                        "city": plan["stop"].get("city", ""),
+                        "feasible": False,
+                    })
+                    continue
+            per_stop.append({
+                "stop_key": plan["stop"].get("stop_key", ""),
+                "city": plan["stop"].get("city", ""),
+                "feasible": True,
+                "corridor": legs_info.get("feeder_corridor") or legs_info.get("onward_corridor", ""),
+                "departure_date": legs_info.get("departure_date", date_str),
+                "departure_id": legs_info.get("departure_id"),
+                "corridor_id": legs_info.get("corridor_id"),
+                "delivery_datetime": legs_info.get("delivery_datetime"),
+            })
+            if legs_info.get("feeder_corridor"):
+                feeder_names.append(legs_info["feeder_corridor"])
+            if legs_info.get("onward_corridor"):
+                onward_names.append(legs_info["onward_corridor"])
+            leg_count = max(leg_count, legs_info.get("leg_count", 1))
+            # The latest expected delivery across the route.
+            if legs_info.get("estimated_delivery", "") > estimated_delivery:
+                estimated_delivery = legs_info["estimated_delivery"]
+            if legs_info.get("delivery_datetime") and (
+                    not latest_delivery_iso
+                    or legs_info["delivery_datetime"] > latest_delivery_iso):
+                latest_delivery_iso = legs_info["delivery_datetime"]
+            if legs_info.get("transfer_hub_name"):
+                transfer_hub_name = legs_info["transfer_hub_name"]
+            all_legs += legs_info.get("legs") or []
+
+        if not route_feasible:
+            return None
+
+        # ── Exact-departure eligibility + capacity ─────────────────
+        # Capacity is evaluated against the EXACT departures the route
+        # legs selected — never an independently-searched departure for
+        # the origin region. Every leg's departure must be eligible
+        # (vehicle assigned + operational, equipment-compatible,
+        # payload OK, pallets fit) via the same DepartureResolver
+        # rules the confirmation path enforces.
+        unique_dep_ids = sorted({
+            leg["departure_id"] for leg in all_legs if leg.get("departure_id")
+        })
+        if not unique_dep_ids:
+            # _probe_legs already required a real departure per leg;
+            # this is a safety net, not a substitute.
+            return None
+        all_departures_eligible = True
+        for dep_id in unique_dep_ids:
+            dep = Departure.sudo().browse(dep_id)
+            matching_legs = [
+                leg for leg in all_legs if leg.get("departure_id") == dep_id
+            ]
+            leg = matching_legs[0] if matching_legs else {}
+            # Leg-scoped names — must NOT shadow the outer pickup-stop
+            # dict `origin` used by the probe loop above (shadowing
+            # crashed the next iteration with KeyError 'latitude').
+            leg_origin_region = self._canonical_region(
+                leg.get("origin_region_id") or leg.get("origin_region"))
+            leg_destination_region = self._canonical_region(
+                leg.get("dest_region_id") or leg.get("dest_region")
+            )
+            ok, _reason, _vehicle = departure_svc.evaluate_departure(
+                dep, equipment, physical_pallets, weight_lbs,
+                service_type=shipment_type,
+                origin_region=leg_origin_region,
+                dest_region=leg_destination_region,
+            )
+            if not ok:
+                all_departures_eligible = False
+                break
+        if not all_departures_eligible:
+            return None
+
+        # NOTE: exact pallet capacity is deliberately NOT exposed here.
+        # Every returned date already fits the requested quantity (the
+        # eligibility loop above filters on capacity server-side), so the
+        # payload carries only generic state — never max/reserved/
+        # remaining positions or layout details. Server-side validation
+        # at Get Price / confirm remains the authority.
+        first_leg = all_legs[0]
+        return {
+            "date": date_str,
+            "day_name": day_name.capitalize(),
+            "prior_day_pickup": bool(offset),
+            # The exact service option this date sells:
+            "departure_id": first_leg.get("departure_id"),
+            "departure_date": first_leg.get("departure_date") or date_str,
+            "departure_time": self._time_part(first_leg.get("corridor_departure_datetime")),
+            # Real service timing (corridor stop config + travel-calc
+            # fallback) — estimated_delivery is NEVER the departure date.
+            "pickup_date": self._date_part(first_leg.get("pickup_datetime")) or date_str,
+            "pickup_time": self._time_part(first_leg.get("pickup_datetime")),
+            "pickup_datetime": first_leg.get("pickup_datetime"),
+            "delivery_date": self._date_part(latest_delivery_iso) or estimated_delivery,
+            "delivery_time": self._time_part(latest_delivery_iso),
+            "delivery_datetime": latest_delivery_iso,
+            "estimated_delivery": estimated_delivery,
+            "corridor_departure_date": first_leg.get("departure_date") or date_str,
+            "corridor_departure_time": self._time_part(first_leg.get("corridor_departure_datetime")),
+            "corridor_departure_datetime": first_leg.get("corridor_departure_datetime"),
+            # Hub transfer: only the hub's PUBLIC name (customer-safe by
+            # design) — never internal corridor/leg language.
+            "transfer": bool(leg_count == 2),
+            "transfer_hub_name": transfer_hub_name,
+            "capacity_state": "available",
+        }
+
     def _probe_legs(self, origin, dest, hub, routing, pickup_date, pickup_day,
                     pickup_lat, pickup_lng, delivery_lat, delivery_lng,
                     pallets, weight_lbs, equipment, pickup_stop=None,
-                    delivery_stop=None):
+                    delivery_stop=None, prior_day_offset=0):
         """Quick-probe leg feasibility for a candidate pickup date. Returns
         dict with corridor/departure info if feasible, or empty dict.
 
@@ -1730,6 +1813,10 @@ class ShipmentRoutingService:
         corridor's operating-day checkbox alone is never sufficient.
         Every returned leg carries its exact departure_id; the caller
         evaluates capacity against those exact departures.
+
+        prior_day_offset: days between the physical pickup and the linehaul
+        departure — applied to the FIRST (pickup) leg only; the onward
+        transfer leg keeps its own next-departure pickup date.
 
         pickup_stop / delivery_stop: customer-facility dicts threaded to
         _build_leg so calendar ETAs use the SAME facility-hours authority
@@ -1750,6 +1837,7 @@ class ShipmentRoutingService:
                 pickup_lat=pickup_lat, pickup_lng=pickup_lng,
                 delivery_lat=delivery_lat, delivery_lng=delivery_lng,
                 pickup_stop=pickup_stop, delivery_stop=delivery_stop,
+                prior_day_offset=prior_day_offset,
             )
             if leg and leg.departure_id:
                 result.update({
@@ -1782,6 +1870,7 @@ class ShipmentRoutingService:
                     pickup_lat=pickup_lat, pickup_lng=pickup_lng,
                     delivery_lat=delivery_lat, delivery_lng=delivery_lng,
                     pickup_stop=pickup_stop, delivery_stop=None,
+                    prior_day_offset=prior_day_offset,
                 )
                 if leg1 and leg1.departure_id:
                     result.update({
@@ -1814,6 +1903,7 @@ class ShipmentRoutingService:
                     pickup_lat=pickup_lat, pickup_lng=pickup_lng,
                     delivery_lat=delivery_lat, delivery_lng=delivery_lng,
                     pickup_stop=None, delivery_stop=delivery_stop,
+                    prior_day_offset=prior_day_offset,
                 )
                 if leg1 and leg1.departure_id:
                     result.update({
@@ -1845,6 +1935,7 @@ class ShipmentRoutingService:
                     delivery_lat=hub.latitude or 43.589,
                     delivery_lng=hub.longitude or -79.644,
                     pickup_stop=pickup_stop, delivery_stop=None,
+                    prior_day_offset=prior_day_offset,
                 )
                 if not leg1 or not leg1.departure_id:
                     return {}
@@ -1936,8 +2027,14 @@ class ShipmentRoutingService:
         )
         return origin_index is not None and dest_index is not None and origin_index < dest_index
 
-    def _is_valid_pickup_day(self, region, day_name):
-        """Check if any corridor serving this region operates on the given day."""
+    def _is_valid_pickup_day(self, region, day_name, pickup_date=None):
+        """Check if any corridor serving this region operates on the given day.
+
+        pickup_date: when supplied, the day is ALSO valid when some
+        corridor serving this region allows prior-day pickup and operates
+        within prior_day_pickup_max_days AFTER this date (Sunday pickup →
+        Monday linehaul). Without it (or with the feature off) the check
+        is exactly the original same-day scan — behavior unchanged."""
         # Corridor stops are keyed by official-LTL region (142-159);
         # normalize old lane regions (1-20) before searching.
         region = self._canonical_region(region)
@@ -1961,7 +2058,114 @@ class ShipmentRoutingService:
             ("active", "=", True),
             (day_field, "=", True),
         ])
-        return bool(corridors)
+        if corridors:
+            return True
+
+        # Prior-day pickup: some corridor serving this region allows
+        # collecting freight before its scheduled linehaul departure.
+        if pickup_date:
+            if isinstance(pickup_date, str):
+                pickup_date = datetime.strptime(pickup_date[:10], "%Y-%m-%d")
+            prior = Corridor.search([
+                ("id", "in", corridor_ids),
+                ("active", "=", True),
+                ("allow_prior_day_pickup", "=", True),
+            ])
+            for corridor in prior:
+                max_off = corridor.prior_day_pickup_max_days or 0
+                for off in range(1, max_off + 1):
+                    linehaul = pickup_date + timedelta(days=off)
+                    if getattr(corridor, f"operate_{linehaul.strftime('%A').lower()}"):
+                        return True
+        return False
+
+    def _max_prior_day_offset(self, region):
+        """Highest prior-day-pickup offset any corridor serving this region
+        allows (0 = feature off everywhere). Drives the calendar's offset
+        scan: offsets 1..max are tried only when the same-day entry is
+        infeasible, so enabling prior-day pickup never masks a normal
+        same-day service day."""
+        region = self._canonical_region(region)
+        if not region:
+            return 0
+        Corridor = self.env["logistics.corridor"]
+        Stop = self.env["logistics.corridor.stop"]
+        stops = Stop.search([
+            ("region_id", "=", region.id),
+            ("active", "=", True),
+            ("pickup_allowed", "=", True),
+        ])
+        corridor_ids = stops.mapped("corridor_id").ids
+        if not corridor_ids:
+            return 0
+        prior = Corridor.search([
+            ("id", "in", corridor_ids),
+            ("active", "=", True),
+            ("allow_prior_day_pickup", "=", True),
+        ])
+        return max((c.prior_day_pickup_max_days or 0) for c in prior) if prior else 0
+
+    def _resolve_prior_day_offset(self, origin_region, pickup_date,
+                                  requested_departure_id=None):
+        """Prior-day offset (days the physical pickup precedes the linehaul
+        departure) for a pickup date, or 0 = same-day service.
+
+        With requested_departure_id the offset is DERIVED from that
+        departure's linehaul date — the portal binds the EXACT departure
+        the calendar advertised — and the departure's own corridor must
+        allow the offset. Without it, the smallest offset whose linehaul
+        day is actually operated by a prior-day-enabled corridor serving
+        the origin region wins. Never exceeds any corridor's configured
+        max; returns 0 when the date is not a prior-day pickup date."""
+        if requested_departure_id:
+            dep = self.env["logistics.corridor.departure"].sudo().browse(
+                requested_departure_id)
+            if dep and dep.departure_date:
+                linehaul = dep.departure_date
+                # Same-type comparison: date - datetime raises TypeError.
+                if isinstance(pickup_date, datetime):
+                    pickup_date = pickup_date.date()
+                offset = (linehaul - pickup_date).days
+                corridor = dep.corridor_id
+                if (offset >= 1 and corridor.allow_prior_day_pickup
+                        and offset <= (corridor.prior_day_pickup_max_days or 0)):
+                    return offset
+            return 0
+        max_off = self._max_prior_day_offset(origin_region)
+        for off in range(1, max_off + 1):
+            linehaul = pickup_date + timedelta(days=off)
+            if self._prior_day_corridor_for(origin_region, linehaul, off):
+                return off
+        return 0
+
+    def _prior_day_corridor_for(self, region, linehaul_date, offset):
+        """True when some active corridor serving this region allows
+        prior-day pickup and operates on the linehaul date at the given
+        offset. Same-day (offset 0) is NEVER matched here — offset-0
+        service is the original same-day scan's job."""
+        region = self._canonical_region(region)
+        if not region:
+            return False
+        if isinstance(linehaul_date, str):
+            linehaul_date = datetime.strptime(linehaul_date[:10], "%Y-%m-%d")
+        day_field = f"operate_{linehaul_date.strftime('%A').lower()}"
+        Corridor = self.env["logistics.corridor"]
+        Stop = self.env["logistics.corridor.stop"]
+        stops = Stop.search([
+            ("region_id", "=", region.id),
+            ("active", "=", True),
+            ("pickup_allowed", "=", True),
+        ])
+        corridor_ids = stops.mapped("corridor_id").ids
+        if not corridor_ids:
+            return False
+        return bool(Corridor.search([
+            ("id", "in", corridor_ids),
+            ("active", "=", True),
+            ("allow_prior_day_pickup", "=", True),
+            ("prior_day_pickup_max_days", ">=", offset),
+            (day_field, "=", True),
+        ]))
 
     def _next_valid_pickup_day(self, region, from_date):
         """Find next date when this region is served for pickup."""
@@ -2111,7 +2315,7 @@ class ShipmentRoutingService:
                    pallets, weight_lbs, pickup_date, pickup_day, equipment,
                    transfer_hub, pickup_lat, pickup_lng, delivery_lat, delivery_lng,
                    requested_departure_id=None, pickup_stop=None,
-                   delivery_stop=None):
+                   delivery_stop=None, prior_day_offset=0):
         """Build a ProposedLeg with corridor, departure, distance, and price.
 
         A leg is feasible ONLY with an actual scheduled departure row
@@ -2121,8 +2325,17 @@ class ShipmentRoutingService:
         When the calendar sent a requested_departure_id (so the quote binds
         to the exact departure the customer selected), it is server-
         re-validated here: it must exist, belong to this corridor, be on the
-        requested pickup date, and be active/viable. Any mismatch → None —
-        an arbitrary portal-supplied departure id is never trusted."""
+        LINEHAUL date (the departure's own date — for prior-day pickup this
+        is the day AFTER the physical pickup), and be active/viable. Any
+        mismatch → None — an arbitrary portal-supplied departure id is
+        never trusted.
+
+        prior_day_offset: days between the physical pickup and the linehaul
+        departure (0 = same-day service, existing behavior). The corridor
+        and departure are selected on the LINEHAUL day/date; pickup_date /
+        pickup_day stay the physical collection day. The corridor must
+        allow prior-day pickup at this offset (allow_prior_day_pickup +
+        prior_day_pickup_max_days) — never silently substituted."""
         from ..services.region_resolver import RegionResolver
 
         # Normalize both endpoints through the region bridge: corridor
@@ -2139,11 +2352,22 @@ class ShipmentRoutingService:
         Stop = self.env["logistics.corridor.stop"]
         Departure = self.env["logistics.corridor.departure"]
 
+        # Prior-day pickup: the corridor + departure are selected on the
+        # LINEHAUL day/date; pickup_date stays the physical collection day.
+        if not hasattr(pickup_date, "strftime"):
+            pickup_date = datetime.strptime(str(pickup_date)[:10], "%Y-%m-%d")
+        linehaul_date = pickup_date
+        linehaul_day = pickup_day
+        if prior_day_offset:
+            linehaul_date = pickup_date + timedelta(days=prior_day_offset)
+            linehaul_day = linehaul_date.strftime("%A").lower()
+
         # Find corridor serving this origin→dest. Direction compatibility is
         # checked BEFORE day availability: a reverse-direction corridor must
         # never be substituted merely because it operates on the requested
-        # day.
-        day_field = f"operate_{pickup_day.lower()}"
+        # day. The operating-day field is the LINEHAUL day when the pickup
+        # happens earlier (Sunday pickup → corridor must operate Monday).
+        day_field = f"operate_{linehaul_day.lower()}"
         stops = Stop.search([
             ("region_id", "in", [origin_region.id, dest_region.id]),
             ("active", "=", True),
@@ -2164,16 +2388,22 @@ class ShipmentRoutingService:
             # Never fall back to a reverse-direction corridor or a
             # corridor-less synthetic leg.
             return None
+        if prior_day_offset and not (
+                corridor.allow_prior_day_pickup
+                and prior_day_offset <= (corridor.prior_day_pickup_max_days or 0)):
+            # The corridor does not permit prior-day pickup at this
+            # offset — refuse rather than silently move the pickup.
+            return None
 
-        # Find departure — exact match on corridor + date, and ONLY a real
-        # scheduled departure (active, not cancelled/completed, vehicle
-        # assigned) makes this leg feasible.
-        date_str = pickup_date.strftime("%Y-%m-%d") if hasattr(pickup_date, 'strftime') else str(pickup_date)[:10]
+        # Find departure — exact match on corridor + LINEHAUL date, and
+        # ONLY a real scheduled departure (active, not cancelled/completed,
+        # vehicle assigned) makes this leg feasible.
+        date_str = linehaul_date.strftime("%Y-%m-%d")
         departure = False
         if requested_departure_id:
             # Server-side re-validation of the departure the customer
             # selected on the calendar: must EXIST, belong to THIS corridor,
-            # be on THIS pickup date, and be active/viable. An arbitrary or
+            # be on the LINEHAUL date, and be active/viable. An arbitrary or
             # stale portal-supplied id falls through to the corridor's own
             # exact-date departure — never a different date or corridor.
             requested = Departure.browse(int(requested_departure_id)).exists()
@@ -2256,9 +2486,15 @@ class ShipmentRoutingService:
         # When the corridor stop has no planned time, the customer-facing
         # ETA comes from the facility's own hours (ItineraryPlanner) — the
         # SAME authority the calendar probes through this same method.
+        # Real pickup / delivery times: the pickup anchors on the PHYSICAL
+        # pickup day (Sunday), the corridor departure + delivery on the
+        # linehaul day (Monday) — same-day service collapses both.
         timings = self._leg_timings(
-            corridor, departure, origin_region, dest_region, est_km, date_str,
-            pickup_stop=pickup_stop, delivery_stop=delivery_stop)
+            corridor, departure, origin_region, dest_region, est_km,
+            pickup_date,
+            pickup_stop=pickup_stop, delivery_stop=delivery_stop,
+            linehaul_date=linehaul_date if prior_day_offset else None,
+        )
 
         return ProposedLeg(
             sequence=sequence,
@@ -2282,6 +2518,8 @@ class ShipmentRoutingService:
             corridor_departure_datetime=self._iso_dt(timings["corridor_departure_datetime"]),
             timing_source=timings["timing_source"],
             pricing_formula=pricing,
+            pickup_date=self._date_part(timings["pickup_datetime"]) or date_str,
+            prior_day_pickup=bool(prior_day_offset),
         )
 
     def confirm_route(self, booking):
