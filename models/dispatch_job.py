@@ -2,8 +2,10 @@ import logging
 import math
 import re
 import secrets
+from datetime import datetime
 
 from odoo import _, api, exceptions, fields, models
+from pytz import timezone as tz
 
 _logger = logging.getLogger(__name__)
 
@@ -388,6 +390,92 @@ class PremaDispatchJob(models.Model):
         help="Derived from the Delivery Window fields (Exact Appointment / Deadline / "
              "Time Window) so there's no separate date to keep in sync by hand.",
     )
+
+    # ── Phase 6: Recommended operational departure ──────────────────
+    # Advice, never an auto-write: the corridor's start_time stays the
+    # recurring/default schedule; this pair is the per-job operational
+    # start. recommended_operational_start is computed backward from the
+    # earliest hard constraint (never "automatically midnight");
+    # planned_operational_start is the dispatcher's authoritative
+    # override. When the truck's live GPS is fresh, the recommendation
+    # accounts for the actual start position.
+    recommended_operational_start = fields.Datetime(
+        string="Recommended Operational Start", readonly=True,
+        compute="_compute_recommended_operational_start",
+        help="Backward-calculated practical start for this job's freight: "
+             "from the earliest hard appointment/service requirement (window "
+             "or exact appointment), minus drive time and a small buffer — "
+             "never automatically midnight. Distinct from the corridor's "
+             "scheduled start. Staff-only advice; set Planned Operational "
+             "Start to override.",
+    )
+    planned_operational_start = fields.Datetime(
+        string="Planned Operational Start", tracking=True, copy=False,
+        help="Dispatcher override for the actual planned start. When set, "
+             "this is the authoritative start used for scheduling; otherwise "
+             "the Recommended Operational Start stands.",
+    )
+
+    @api.depends("stop_ids.earliest_time", "stop_ids.latest_time",
+                 "stop_ids.exact_time", "stop_ids.deadline_time",
+                 "stop_ids.scheduled_time", "stop_ids.latitude",
+                 "stop_ids.longitude", "stop_ids.tz_name", "stop_ids.sequence",
+                 "vehicle_last_lat", "vehicle_last_lng", "vehicle_last_gps_at")
+    def _compute_recommended_operational_start(self):
+        for job in self:
+            job.recommended_operational_start = job._recommended_operational_start()
+
+    def _recommended_operational_start(self):
+        """Phase 6 adviser via ItineraryPlanner.recommended_departure() —
+        the ONE backward-calculator shared with the booking module.
+        Anchored on the first stop's scheduled time (departure-derived);
+        the truck's live GPS position is the start origin when fresh.
+        Never writes anything; returns a Datetime or False."""
+        self.ensure_one()
+        stops = self.stop_ids.sorted("sequence")
+        if not stops:
+            return False
+        anchor = stops[0].scheduled_time or self.scheduled_pickup
+        if not anchor:
+            return False
+        plan_stops = []
+        for stop in stops:
+            tz_name = stop.tz_name or "America/Toronto"
+            def _hour(dt):
+                if not dt:
+                    return None
+                local = dt.astimezone(tz(tz_name))
+                return round(local.hour + local.minute / 60.0, 4)
+            loc = stop.saved_location_id
+            plan_stops.append({
+                "stop_key": "job_stop_%d" % stop.id,
+                "location_name": stop.address or (loc.name if loc else ""),
+                "latitude": stop.latitude or (loc.pin_lat if loc else 0.0),
+                "longitude": stop.longitude or (loc.pin_lng if loc else 0.0),
+                "timezone": tz_name,
+                "operating_hours_snapshot": stop.operating_hours_snapshot,
+                "timing_type": stop.timing_type or "flexible",
+                "window_start": _hour(stop.earliest_time),
+                "window_end": _hour(stop.latest_time),
+                "appointment_time": _hour(stop.exact_time),
+            })
+        start_position = None
+        if self.vehicle_last_lat and self.vehicle_last_lng and self.vehicle_last_gps_at:
+            start_position = (self.vehicle_last_lat, self.vehicle_last_lng)
+        try:
+            from odoo.addons.prema_logistics_booking.services.itinerary_planner import (
+                ItineraryPlanner,
+            )
+            result = ItineraryPlanner(self.env).recommended_departure(
+                plan_stops, [], anchor, start_position=start_position)
+        except Exception:
+            return False
+        if not result.get("feasible"):
+            return False
+        try:
+            return datetime.fromisoformat(result["recommended_start"])
+        except (TypeError, ValueError):
+            return False
 
     @api.depends("delivery_window_type", "delivery_exact_time", "delivery_deadline",
                  "delivery_latest", "delivery_earliest")

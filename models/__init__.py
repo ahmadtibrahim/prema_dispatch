@@ -15,6 +15,7 @@ from . import dispatch_consolidation
 from . import dispatch_crossdock
 from . import dispatch_timeline
 from . import dispatch_location
+from . import dispatch_detention
 from . import res_partner_dispatch
 from . import dispatch_reports
 from . import dispatch_vehicle_layout

@@ -154,6 +154,25 @@ class PremaDispatchLocation(models.Model):
         ("other",      "Other"),
     ], string="Location Type", default="customer")
 
+    # ── Phase 8: operational classification ──────────────────────────
+    # Deliberately SEPARATE from location_type (driver-place semantics
+    # above). This is the facility's operational profile used for planning
+    # service-time defaults: Retail 15–30 min, Warehouse 30, Distribution
+    # Centre 60, Grocery DC 60 — the defaults live in ONE authority
+    # (ir.config_parameter prema_dispatch.service_time_defaults, seeded by
+    # migration). Empty = unclassified → history/manual/15-min fallback.
+    operational_classification = fields.Selection([
+        ("retail",             "Retail"),
+        ("warehouse",          "Warehouse"),
+        ("distribution_center", "Distribution Centre"),
+        ("grocery_dc",         "Grocery Distribution Centre"),
+        ("other",              "Other"),
+    ], string="Operational Classification",
+        help="Operational profile of this facility, used as the service-time "
+             "default when no manual override or history exists yet. Retail "
+             "15–30 min, Warehouse 30 min, Distribution Centre 60 min, Grocery "
+             "Distribution Centre 60 min. Staff-only — never customer-facing.")
+
     stop_type = fields.Selection([
         ("pickup", "Pickup"),
         ("delivery", "Delivery"),
@@ -284,6 +303,58 @@ class PremaDispatchLocation(models.Model):
         help="Reflects how many visits the stats above are based on — low with few "
              "visits, higher after many. Not a measure of accuracy, just sample size.",
     )
+
+    # ── Phase 9: recommended service duration ────────────────────────
+    # ONE hierarchy for planning purposes: manual override → historical
+    # dwell (sample-based, gated on sample size) → operational-class type
+    # default (ir.config_parameter JSON, one authority) → 15-min baseline.
+    # Staff-visible only; the customer-facing ETA path consumes it via
+    # prema_logistics_booking._facility_eta.
+    manual_service_time_minutes = fields.Integer(
+        string="Manual Service Time (min)",
+        help="Dispatcher-set override for the recommended service duration. "
+             "Wins over history and the operational-class default. "
+             "Staff-only — never customer-facing.",
+    )
+
+    def planning_service_time_minutes(self):
+        """Recommended service duration for this facility (one hierarchy).
+
+        manual override → median dwell / recommended service time (history,
+        gated to at least 5 samples) → operational-class type default from
+        the single ir.config_parameter authority → 15-minute baseline.
+        Returns an int; never raises, never returns 0/None.
+        """
+        self.ensure_one()
+        if self.manual_service_time_minutes:
+            return max(1, int(self.manual_service_time_minutes))
+        if self.use_count >= 5:
+            hist = self.recommended_service_time_minutes or self.median_dwell_minutes
+            if hist and hist > 0:
+                return max(1, int(round(hist)))
+        defaults_raw = self.env["ir.config_parameter"].sudo().get_param(
+            "prema_dispatch.service_time_defaults", "{}")
+        try:
+            import json
+            defaults = json.loads(defaults_raw or "{}")
+        except ValueError:
+            defaults = {}
+        if self.operational_classification:
+            type_default = defaults.get(self.operational_classification)
+            if type_default:
+                return max(1, int(type_default))
+        return 15
+
+    effective_service_time_minutes = fields.Integer(
+        string="Effective Service Time (min)", readonly=True,
+        compute="_compute_effective_service_time", store=False,
+        help="The service duration currently used for planning this facility — "
+             "manual override, else history, else operational-class default, "
+             "else 15 min. Staff-only — never customer-facing.")
+
+    def _compute_effective_service_time(self):
+        for loc in self:
+            loc.effective_service_time_minutes = loc.planning_service_time_minutes()
 
     # Linked stops (computed count)
     stop_ids = fields.One2many(

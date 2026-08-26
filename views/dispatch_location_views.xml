@@ -69,6 +69,9 @@
                             <field name="country_id" invisible="1"/>
                             <field name="partner_id" string="Customer / Warehouse"/>
                             <field name="location_type"/>
+                            <field name="operational_classification"/>
+                            <field name="manual_service_time_minutes"/>
+                            <field name="effective_service_time_minutes" readonly="1"/>
                             <field name="stop_type"/>
                             <field name="usage_type" widget="badge" decoration-success="usage_type == 'both'" decoration-info="usage_type == 'pickup'" decoration-warning="usage_type == 'delivery'" decoration-muted="usage_type == 'unknown'"/>
                             <field name="portal_reusable" widget="boolean_toggle"
@@ -211,6 +214,8 @@
                 <field name="address"/>
                 <field name="partner_id" string="Customer"/>
                 <field name="location_type" string="Type"/>
+                <field name="operational_classification" string="Ops Class" optional="show"/>
+                <field name="effective_service_time_minutes" string="Service (min)" optional="show"/>
                 <field name="stop_type" string="Stop Type"/>
                 <field name="usage_type" string="Historical Usage" decoration-success="usage_type == 'both'" decoration-info="usage_type == 'pickup'" decoration-warning="usage_type == 'delivery'" decoration-muted="usage_type == 'unknown'"/>
                 <field name="allow_cross_dock" string="Cross-Dock"/>

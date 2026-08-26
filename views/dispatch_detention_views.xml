@@ -1,0 +1,134 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_dispatch_detention_item_list" model="ir.ui.view">
+        <field name="name">prema.dispatch.detention.item.list</field>
+        <field name="model">prema.dispatch.detention.item</field>
+        <field name="arch" type="xml">
+            <list default_order="id desc" string="Customer Detention">
+                <field name="name"/>
+                <field name="state" widget="badge" optional="show"/>
+                <field name="partner_id" optional="show"/>
+                <field name="facility_id" optional="show"/>
+                <field name="job_id" optional="hide"/>
+                <field name="booking_id" optional="show"/>
+                <field name="actual_dwell_minutes" string="Dwell (min)"/>
+                <field name="free_minutes" string="Free (min)"/>
+                <field name="billable_minutes" string="Billable (min)"/>
+                <field name="units" string="Units"/>
+                <field name="suggested_amount" widget="monetary" string="Suggested"/>
+                <field name="approved_amount" widget="monetary" string="Approved" optional="show"/>
+                <field name="invoiced"/>
+                <field name="review_user_id" optional="show"/>
+                <field name="actual_arrival_time" optional="hide"/>
+                <field name="actual_departure_time" optional="hide"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="view_dispatch_detention_item_form" model="ir.ui.view">
+        <field name="name">prema.dispatch.detention.item.form</field>
+        <field name="model">prema.dispatch.detention.item</field>
+        <field name="arch" type="xml">
+            <form string="Detention">
+                <header>
+                    <button name="action_approve" type="object"
+                            string="Approve" class="btn-primary"
+                            invisible="state in ('approved','modified','waived')"/>
+                    <button name="action_modify" type="object"
+                            string="Modify &amp; Approve"
+                            invisible="state in ('approved','modified','waived')"/>
+                    <button name="action_waive" type="object" string="Waive"
+                            class="btn-secondary"
+                            invisible="state in ('approved','modified','waived')"/>
+                    <button name="action_add_to_invoice" type="object"
+                            string="Add to Invoice" class="btn-primary"
+                            invisible="state not in ('approved','modified') or invoiced"/>
+                </header>
+                <sheet>
+                    <div class="oe_title">
+                        <h1><field name="name"/></h1>
+                        <field name="state" widget="badge"/>
+                    </div>
+                    <group>
+                        <group string="Shipment">
+                            <field name="job_id" readonly="1"/>
+                            <field name="booking_id" readonly="1"/>
+                            <field name="partner_id" readonly="1"/>
+                            <field name="facility_id" readonly="1"/>
+                            <field name="stop_id" readonly="1"/>
+                        </group>
+                        <group string="Actual Dwell (authority: actual timestamps)">
+                            <field name="actual_arrival_time" readonly="1"/>
+                            <field name="actual_departure_time" readonly="1"/>
+                            <field name="actual_dwell_minutes" readonly="1"/>
+                            <field name="free_minutes" readonly="1" string="Free Time (min)"/>
+                        </group>
+                        <group string="Charges">
+                            <field name="billable_minutes" readonly="1"/>
+                            <field name="increment_minutes" readonly="1"/>
+                            <field name="units" readonly="1"/>
+                            <field name="rate_per_increment" readonly="1"/>
+                            <field name="suggested_amount" readonly="1"/>
+                            <field name="approved_amount"
+                                   readonly="state in ('approved','modified','waived')"/>
+                            <field name="currency_id" readonly="1"/>
+                        </group>
+                        <group string="Review">
+                            <field name="reason_notes"
+                                   placeholder="Why was this modified or waived? (recorded for the review trail)"/>
+                            <field name="review_user_id" readonly="1"/>
+                            <field name="review_time" readonly="1"/>
+                            <field name="invoiced" readonly="1"/>
+                            <field name="invoice_line_id" readonly="1"/>
+                        </group>
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <record id="view_dispatch_detention_rule_list" model="ir.ui.view">
+        <field name="name">prema.dispatch.detention.rule.list</field>
+        <field name="model">prema.dispatch.detention.rule</field>
+        <field name="arch" type="xml">
+            <list string="Detention Rules" editable="bottom">
+                <field name="name"/>
+                <field name="partner_id" options="{'no_create': True}"/>
+                <field name="facility_id" options="{'no_create': True}"/>
+                <field name="enabled"/>
+                <field name="free_minutes" string="Free (min)"/>
+                <field name="increment_minutes" string="Increment (min)"/>
+                <field name="rate_per_increment" string="Rate / Increment"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="action_dispatch_detention_item" model="ir.actions.act_window">
+        <field name="name">Customer Detention</field>
+        <field name="res_model">prema.dispatch.detention.item</field>
+        <field name="view_mode">list,form</field>
+        <field name="context">{"search_default_group_state": 1}</field>
+    </record>
+
+    <record id="action_dispatch_detention_rule" model="ir.actions.act_window">
+        <field name="name">Detention Rules</field>
+        <field name="res_model">prema.dispatch.detention.rule</field>
+        <field name="view_mode">list</field>
+    </record>
+
+    <menuitem id="menu_dispatch_detention"
+              name="Customer Detention"
+              parent="menu_prema_dispatch_root"
+              sequence="95"
+              groups="prema_dispatch.group_dispatch_manager,prema_dispatch.group_dispatcher,prema_dispatch.group_dispatch_readonly"/>
+    <menuitem id="menu_dispatch_detention_item"
+              name="Detention Items"
+              parent="menu_dispatch_detention"
+              action="action_dispatch_detention_item"
+              groups="prema_dispatch.group_dispatch_manager,prema_dispatch.group_dispatcher,prema_dispatch.group_dispatch_readonly"/>
+    <menuitem id="menu_dispatch_detention_rule"
+              name="Detention Rules"
+              parent="menu_dispatch_detention"
+              action="action_dispatch_detention_rule"
+              groups="prema_dispatch.group_dispatch_manager,prema_dispatch.group_dispatcher"/>
+</odoo>

@@ -45,8 +45,12 @@ class LogisticsCorridor(models.Model):
                                                "Copied to new departures on generation.")
     start_time = fields.Float(string="Start Time", default=7.0, help="24h float, e.g. 7.0 = 7:00 AM")
     destination_hub_arrival_time = fields.Float(
-        string="Hub Arrival Time",
-        help="Expected arrival back at the Hub or at the Destination Hub. Used to validate same-day transfers.",
+        string="Hub Arrival / Return Time",
+        help="Expected arrival back at the Hub (same-day return) or at the "
+             "Destination Hub (one-way). The indicator beside the field shows "
+             "Suggested (recalculated by Calculate Route Times / Calculate "
+             "Route Distance from Google durations) or Manual Override "
+             "(entered by hand and preserved by recalculation).",
     )
     hub_arrival_time_source = fields.Selection([
         ("suggested", "Suggested"),

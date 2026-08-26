@@ -885,6 +885,14 @@ class PremaDispatchStop(models.Model):
         if self.saved_location_id:
             self.saved_location_id.record_visit()
             self.saved_location_id.record_visit_stats(self)
+        # Phase 10: suggest customer detention from the ACTUAL dwell —
+        # staff-reviewed only, never auto-invoiced. A failure here must
+        # never block the stop completion itself.
+        try:
+            self.env["prema.dispatch.detention.item"]._suggest_for_stop(self)
+        except Exception:
+            _logger.exception(
+                "Detention suggestion failed for stop %s", self.id)
         # Timeline event based on stop type
         if self.stop_type == "pickup":
             self.job_id._post_timeline(

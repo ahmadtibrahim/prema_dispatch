@@ -356,6 +356,21 @@
                             <field name="hard_deadline" widget="boolean_toggle"
                                    invisible="delivery_window_type == 'flexible'"/>
                         </group>
+                        <group string="Operational Start">
+                            <div class="alert alert-info" role="alert">
+                                Backward-calculated practical start from the
+                                earliest hard constraint — the corridor's
+                                scheduled start is a separate recurring time.
+                            </div>
+                            <field name="recommended_operational_start" readonly="1"
+                                   widget="datetime"
+                                   help="Calculated from the first hard window /
+                                        appointment, minus drive time and a
+                                        small buffer. Uses the truck's live GPS
+                                        when fresh."/>
+                            <field name="planned_operational_start" widget="datetime"
+                                   placeholder="Override the recommended start…"/>
+                        </group>
                     </group>
 
                     <group string="Route (computed from stops)">

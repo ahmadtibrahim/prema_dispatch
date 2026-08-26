@@ -23,18 +23,20 @@ REASON_CAPACITY = "peak_capacity"
 WEEKDAY_KEYS = [str(day) for day in range(7)]
 
 
-def _snapshot_from_rows(rows, day, scope):
+def _snapshot_from_rows(rows, day, scope_chain):
     """Per-day window from structured hours rows: scope-specific rows
     (pickup scope for pickup stops, receiving scope for delivery stops) →
     general rows → first row. Closed/no row → None."""
     day_rows = rows.filtered(lambda r, d=day: r.day_of_week == d)
     if not day_rows:
         return None
-    chosen = (
-        day_rows.filtered(lambda r, s=scope: r.service_scope == s)
-        or day_rows.filtered(lambda r: r.service_scope == "general")
-        or day_rows[:1]
-    )
+    chosen = False
+    for scope in scope_chain or ():
+        chosen = day_rows.filtered(lambda r, s=scope: r.service_scope == s)
+        if chosen:
+            break
+    chosen = chosen or day_rows.filtered(lambda r: r.service_scope == "general")
+    chosen = chosen or day_rows[:1]
     row = chosen[0]
     if row.status == "closed":
         return None
@@ -47,9 +49,9 @@ def snapshot_facility_hours(env, facility, stop_type="pickup"):
     """Snapshot a canonical facility's OWN hours into a planning snapshot
     {weekday: [open, close] or None}.
 
-    Preference order per day: scope-specific rows (pickup hours for pickup
-    stops, receiving hours for delivery stops) → general rows → first row.
-    A day with no rows or status=closed maps to None (closed day).
+    Preference order per day: scope-specific rows (pickup+shipping hours
+    for pickup stops, receiving hours for delivery stops) → general rows →
+    first row. A day with no rows or status=closed maps to None (closed day).
     Once snapshotted, later facility-hour edits never change historical
     booking planning. (SAVED LOCATION CONSOLIDATION 18.0.13.25.0: the
     legacy snapshot_saved_location_hours bridge was retired — the
@@ -58,11 +60,11 @@ def snapshot_facility_hours(env, facility, stop_type="pickup"):
     snapshot = {key: None for key in WEEKDAY_KEYS}
     if not facility:
         return snapshot
-    scope = "pickup" if stop_type == "pickup" else "receiving"
+    scope_chain = ("pickup", "shipping") if stop_type == "pickup" else ("receiving",)
     canonical = facility.facility_hours_ids.filtered(lambda r: r.active)
     if canonical:
         for day in WEEKDAY_KEYS:
-            snapshot[day] = _snapshot_from_rows(canonical, day, scope)
+            snapshot[day] = _snapshot_from_rows(canonical, day, scope_chain)
     return snapshot
 
 
@@ -375,4 +377,129 @@ class ItineraryPlanner:
             "peak": simulation["peak"],
             "onboard_after": simulation["onboard_after"],
             "finish_eta": steps[-1]["departure"] if steps else start_dt.isoformat(),
+        }
+
+    # ── Recommended operational departure (Phase 6) ──────────────────
+
+    DEFAULT_START_BUFFER_MINUTES = 15
+
+    def recommended_departure(self, stops, pallet_movements, corridor_start_dt,
+                              start_position=None, travel_fn=None,
+                              buffer_minutes=None):
+        """Recommended OPERATIONAL start for the actual confirmed freight.
+
+        corridor.start_time stays the recurring/default scheduled time —
+        this helper never rewrites it. It works backward from the
+        earliest binding constraint:
+
+          * hard stops (exact appointment / time-window start) bound the
+            start: the truck must reach them by their window start, so
+            start = window_start − cumulative travel − buffer
+          * otherwise the first stop's opening time bounds the start: the
+            driver should not sit for hours at a closed facility, so
+            start ≈ opening − travel − buffer
+          * the start never violates any stop's window CLOSE (the route
+            must stay feasible), and never goes absurdly earlier than the
+            scheduled corridor start (floor = start − 24h)
+          * an optional start_position (lat/lng) replaces the first stop
+            as the travel origin — e.g. the truck's actual overnight
+            position from the previous day's run
+
+        Deterministic, no AI, no hardcoded HOS. Returns
+        {recommended_start, feasible, reason, binding_stop,
+         start_position_used} — feasible=False only when the route itself
+        is infeasible (caller keeps the corridor default then).
+        """
+        buffer = buffer_minutes if buffer_minutes is not None \
+            else self.DEFAULT_START_BUFFER_MINUTES
+        # start_position must be a stop-like dict — callers may hand us a
+        # raw (lat, lng) tuple (e.g. a truck's live GPS position).
+        if start_position and not isinstance(start_position, dict):
+            start_position = {
+                "latitude": float(start_position[0]),
+                "longitude": float(start_position[1]),
+            }
+        # Odoo Datetimes are naive UTC — normalize so every window
+        # comparison below is aware-vs-aware (naive+aware min() raises).
+        if corridor_start_dt.tzinfo is None:
+            corridor_start_dt = corridor_start_dt.replace(tzinfo=tz("UTC"))
+        base = self.recommend_route(
+            stops, pallet_movements, corridor_start_dt,
+            start_position=start_position, travel_fn=travel_fn,
+        )
+        if not base.get("feasible"):
+            return {
+                "recommended_start": corridor_start_dt.isoformat(),
+                "feasible": False,
+                "reason": base.get("reason") or "route_infeasible",
+                "binding_stop": None,
+                "start_position_used": start_position is not None,
+            }
+        by_key = {}
+        for stop in stops:
+            key = stop["stop_key"] if isinstance(stop, dict) else stop.stop_key
+            by_key[key] = stop
+        position = start_position
+        cum = 0.0
+        # Latest start that still reaches every stop before its close.
+        latest_start = corridor_start_dt
+        # Hard-window start bound (exact appointment / time-window start).
+        hard_start = None
+        # Ideal start: first stop opened, minus travel and a small buffer.
+        ideal_start = None
+        ideal_stop = None
+        for key in base["recommended"]:
+            stop = by_key[key]
+            travel = self._travel_minutes(position, stop, travel_fn) \
+                if position is not None else 0.0
+            cum += travel
+            position = stop
+            probe = corridor_start_dt + timedelta(minutes=cum)
+            window = self.effective_window(stop, probe)
+            if window is None:
+                continue  # no usable window — not a constraint
+            name = stop.get("location_name") or stop.get("name", "") \
+                if isinstance(stop, dict) else (stop.location_name or stop.name or "")
+            timezone = stop.get("timezone") if isinstance(stop, dict) \
+                else (stop.timezone or "America/Toronto")
+            tz_obj = tz(timezone or "America/Toronto")
+            local_day = probe.astimezone(tz_obj).date()
+            def _window_to_utc(hour_float):
+                local_dt = datetime(
+                    local_day.year, local_day.month, local_day.day,
+                    int(hour_float), int((hour_float % 1) * 60),
+                )
+                return tz_obj.localize(local_dt).astimezone(tz("UTC"))
+            open_utc = _window_to_utc(window[0])
+            close_utc = _window_to_utc(window[1])
+            latest_start = min(latest_start, close_utc - timedelta(minutes=cum))
+            timing = stop.get("timing_type") if isinstance(stop, dict) else stop.timing_type
+            if timing in ("time_window", "exact_appointment"):
+                bound = open_utc - timedelta(minutes=cum + buffer)
+                if hard_start is None or bound < hard_start:
+                    hard_start = bound
+                    hard_binding = name
+            if ideal_start is None:
+                ideal_start = open_utc - timedelta(minutes=cum + buffer)
+                ideal_stop = name
+        candidate = hard_start if hard_start is not None else ideal_start
+        if candidate is None:
+            # No hours/windows at all — nothing to optimize.
+            return {
+                "recommended_start": corridor_start_dt.isoformat(),
+                "feasible": True,
+                "reason": "no_constraints",
+                "binding_stop": None,
+                "start_position_used": start_position is not None,
+            }
+        floor = corridor_start_dt - timedelta(hours=24)
+        recommended = min(candidate, latest_start)
+        recommended = max(recommended, floor)
+        binding = (hard_binding if hard_start is not None else ideal_stop)
+        return {
+            "recommended_start": recommended.isoformat(),
+            "feasible": True,
+            "reason": "hard_constraint" if hard_start is not None else "facility_hours",
+            "binding_stop": binding,
+            "start_position_used": start_position is not None,
         }

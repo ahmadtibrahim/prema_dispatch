@@ -312,6 +312,14 @@ class ShipmentRoutingService:
                 return arrival_dt, None, False
             hours = snapshot_facility_hours(self.env, fac, stop_type)
             planner = ItineraryPlanner(self.env)
+            # Recommended service time: an explicit booking request wins,
+            # then the facility's planning authority (manual override →
+            # historical median dwell → operational-class type default),
+            # then the 15-minute baseline. ONE hierarchy — never a
+            # hardcoded service time.
+            service_min = 15
+            if hasattr(fac, "planning_service_time_minutes"):
+                service_min = fac.planning_service_time_minutes() or 15
             plan_stop = {
                 "latitude": stop.get("latitude") or fac.pin_lat or 0.0,
                 "longitude": stop.get("longitude") or fac.pin_lng or 0.0,
@@ -321,7 +329,7 @@ class ShipmentRoutingService:
                 "window_start": stop.get("window_start"),
                 "window_end": stop.get("window_end"),
                 "appointment_time": stop.get("appointment_time"),
-                "service_time_minutes": stop.get("service_time_minutes") or 15,
+                "service_time_minutes": stop.get("service_time_minutes") or service_min,
             }
             feasible, _waiting, service_start, _departure = planner.arrival_plan(
                 plan_stop, arrival_dt)
@@ -943,6 +951,59 @@ class ShipmentRoutingService:
                 "regional_rule_id": ftl["regional_rule"].id if ftl["regional_rule"] else False,
             }
         else:
+            # Single-leg LTL: when both facilities have real coordinates,
+            # bill the ACTUAL point-to-point road distance — the same
+            # Google-first authority the FTL branch uses above. A
+            # door-to-door LTL shipment on a multi-stop corridor is not
+            # measured by the corridor's full segment span (London and
+            # Windsor share the SWON segment at 228.8 km today). The
+            # corridor's segment distance remains the estimate for
+            # coordinate-less (FSA-only) requests, and multi-leg
+            # hub-transfer routes stay segment-priced per leg — only a
+            # direct single-leg move gets actual distance. The price
+            # freezes into the route snapshot, so quote and confirm
+            # always agree.
+            if len(legs) == 1 and pickup_lat and pickup_lng \
+                    and delivery_lat and delivery_lng:
+                actual_km = 0.0
+                try:
+                    from odoo.addons.prema_dispatch.services.route_service import DispatchRouteService
+                    actual_legs = DispatchRouteService(self.env).get_sequential_travel([
+                        (float(pickup_lat), float(pickup_lng)),
+                        (float(delivery_lat), float(delivery_lng)),
+                    ])
+                    if actual_legs:
+                        actual_km = float(actual_legs[0].get("distance_km") or 0.0)
+                except (TypeError, ValueError):
+                    actual_km = 0.0
+                if actual_km:
+                    from ..services.pricing_service import PricingService
+                    rate_per_km = corridor.rate_per_km if corridor else 4.0
+                    planned_pallets = corridor.planned_pallets if corridor else 8
+                    included_weight = corridor.included_weight_per_pallet \
+                        if corridor else 500.0
+                    excess_rate = corridor.excess_weight_rate_per_lb \
+                        if corridor else 0.0
+                    if not excess_rate:
+                        excess_rate = float(
+                            self.env["ir.config_parameter"].sudo().get_param(
+                                "logistics.default_excess_weight_rate", "0.0") or 0.0
+                        )
+                    pricing = PricingService.calculate_leg_per_km(
+                        actual_km, rate_per_km, max(planned_pallets, 1), pallets,
+                        max(included_weight, 1.0), weight_lbs,
+                        currency=corridor.currency_id if corridor else None,
+                        excess_weight_rate_per_lb=excess_rate or None,
+                    )
+                    legs[0] = legs[0]._replace(
+                        estimated_distance_km=round(actual_km, 1),
+                        estimated_drive_hrs=round(actual_km / 80, 1),
+                        rate_per_km=rate_per_km,
+                        pallet_rate_per_km=round(pricing["pallet_rate_per_km"], 4),
+                        leg_price=round(pricing["subtotal"], 2),
+                    )
+                    snapshot["actual_distance_km"] = round(actual_km, 1)
+                    leg_total_raw = sum(leg.leg_price for leg in legs)
             total_price = leg_total_raw
             # Pallet-volume discount: applied ONCE on the booking's LTL
             # freight total, never per leg and never to FTL. The anchor
@@ -2378,61 +2439,77 @@ class ShipmentRoutingService:
             ("active", "=", True),
             (day_field, "=", True),
         ], order="id")
-        corridor = False
-        for candidate in candidates:
-            if self._directionally_compatible(candidate, origin_region, dest_region):
-                corridor = candidate
-                break
-        if not corridor:
-            # No directionally-compatible corridor operates on this day.
-            # Never fall back to a reverse-direction corridor or a
-            # corridor-less synthetic leg.
-            return None
-        if prior_day_offset and not (
-                corridor.allow_prior_day_pickup
-                and prior_day_offset <= (corridor.prior_day_pickup_max_days or 0)):
-            # The corridor does not permit prior-day pickup at this
-            # offset — refuse rather than silently move the pickup.
-            return None
-
-        # Find departure — exact match on corridor + LINEHAUL date, and
-        # ONLY a real scheduled departure (active, not cancelled/completed,
-        # vehicle assigned) makes this leg feasible.
-        date_str = linehaul_date.strftime("%Y-%m-%d")
-        departure = False
-        if requested_departure_id:
-            # Server-side re-validation of the departure the customer
-            # selected on the calendar: must EXIST, belong to THIS corridor,
-            # be on the LINEHAUL date, and be active/viable. An arbitrary or
-            # stale portal-supplied id falls through to the corridor's own
-            # exact-date departure — never a different date or corridor.
-            requested = Departure.browse(int(requested_departure_id)).exists()
-            if (requested
-                    and requested.corridor_id.id == corridor.id
-                    and str(requested.departure_date)[:10] == date_str
-                    and requested.active
-                    and requested.status not in ("cancelled", "completed")
-                    and requested.vehicle_id):
-                departure = requested
-        if not departure:
-            departure = Departure.search([
-                ("corridor_id", "=", corridor.id),
-                ("departure_date", "=", date_str),
-                ("active", "=", True),
-                ("status", "not in", ("cancelled", "completed")),
-                ("vehicle_id", "!=", False),
-            ], limit=1)
-        if not departure:
-            # No actual scheduled departure on this date — the leg is not
-            # feasible even if the corridor operates today. The calendar
-            # must never show a date the truck is not scheduled.
-            return None
-
+        # Pick the FIRST corridor that can actually carry the lane end to
+        # end: direction compatibility, prior-day allowance, an exact
+        # scheduled departure on the linehaul date, and a valid span must
+        # ALL hold. A corridor that passes direction/day but fails the
+        # departure or span check is skipped — never a hard failure (a
+        # later, higher-id corridor may be the true service). Candidates
+        # are ordered by id; the lowest-id fully-valid corridor wins, so
+        # precedence is deterministic across calendar, Get Price, and the
+        # booking engine.
         from .departure_span_validator import DepartureSpanValidator
-        span = DepartureSpanValidator(self.env).validate(
-            departure, origin_region, dest_region,
-        )
-        if not span["valid"]:
+        date_str = linehaul_date.strftime("%Y-%m-%d")
+        corridor = False
+        departure = False
+        for candidate in candidates:
+            if not self._directionally_compatible(
+                    candidate, origin_region, dest_region):
+                continue
+            if prior_day_offset and not (
+                    candidate.allow_prior_day_pickup
+                    and prior_day_offset <= (candidate.prior_day_pickup_max_days or 0)):
+                # This corridor does not permit prior-day pickup at the
+                # offset — try the next candidate rather than silently
+                # moving the pickup.
+                continue
+            # Find departure — exact match on corridor + LINEHAUL date,
+            # and ONLY a real scheduled departure (active, not
+            # cancelled/completed, vehicle assigned) makes the leg
+            # feasible.
+            dep = False
+            if requested_departure_id:
+                # Server-side re-validation of the departure the customer
+                # selected on the calendar: must EXIST, belong to THIS
+                # corridor, be on the LINEHAUL date, and be active/viable.
+                # An arbitrary or stale portal-supplied id falls through
+                # to the corridor's own exact-date departure — never a
+                # different date or corridor.
+                requested = Departure.browse(int(requested_departure_id)).exists()
+                if (requested
+                        and requested.corridor_id.id == candidate.id
+                        and str(requested.departure_date)[:10] == date_str
+                        and requested.active
+                        and requested.status not in ("cancelled", "completed")
+                        and requested.vehicle_id):
+                    dep = requested
+            if not dep:
+                dep = Departure.search([
+                    ("corridor_id", "=", candidate.id),
+                    ("departure_date", "=", date_str),
+                    ("active", "=", True),
+                    ("status", "not in", ("cancelled", "completed")),
+                    ("vehicle_id", "!=", False),
+                ], limit=1)
+            if not dep:
+                # No actual scheduled departure on this date — the
+                # candidate is not feasible even if it operates today.
+                # The calendar must never show a date the truck is not
+                # scheduled.
+                continue
+            span = DepartureSpanValidator(self.env).validate(
+                dep, origin_region, dest_region,
+            )
+            if not span["valid"]:
+                continue
+            corridor = candidate
+            departure = dep
+            break
+        if not corridor:
+            # No directionally-compatible corridor with an actual
+            # scheduled departure can carry this lane on the linehaul
+            # day. Never fall back to a reverse-direction corridor or a
+            # corridor-less synthetic leg.
             return None
 
         # Distance priority: the corridor's canonical ordered segment
