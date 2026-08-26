@@ -87,7 +87,7 @@
                                 <field name="appointment" readonly="1"/>
                             </group>
                         </page>
-                        <page string="Route &amp; Dispatch Planner">
+                        <page string="Route &amp; Dispatch Planner" name="route_planner">
                             <group>
                                 <field name="is_multi_leg" readonly="1"/>
                                 <field name="corridor_id" readonly="1"/>

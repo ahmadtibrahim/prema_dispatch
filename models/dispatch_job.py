@@ -379,6 +379,31 @@ class PremaDispatchJob(models.Model):
         "prema.dispatch.assignment.log", "job_id", string="Assignment History"
     )
 
+    # ── Phase 11: Actual-route start position + dispatcher authority ──
+    start_position_override = fields.Selection([
+        ("auto", "Auto (Depot → Hub → Prior-Day End)"),
+        ("depot", "Depot"),
+        ("hub", "Hub"),
+        ("gps", "GPS / Manual Coordinates"),
+        ("prior_day_end", "Prior Day End (Last Completed Stop)"),
+    ], string="Route Start Position", default="auto", tracking=True,
+       help="Where the truck actually starts the day. 'auto' resolves "
+            "depot → hub → prior-day end; explicit selection wins.")
+    start_position_override_lat = fields.Float(
+        string="Start Lat", digits=(10, 6),
+        help="Used when Route Start Position = GPS / Manual Coordinates.")
+    start_position_override_lng = fields.Float(
+        string="Start Lng", digits=(10, 6))
+    ignore_route_recommendation = fields.Boolean(
+        string="Override Route Recommendation", tracking=True,
+        help="Dispatcher explicitly decides against the engine's route "
+             "recommendation. Audited — the engine never blocks, the "
+             "dispatcher controls (RULE 5).")
+    route_recommendation_log = fields.Json(
+        string="Route Recommendation Log", readonly=True,
+        help="Engine recommendations + dispatcher overrides, timestamped. "
+             "Audit trail for actual-route decisions.")
+
     # ── Schedule ─────────────────────────────────────────────────
 
     scheduled_pickup = fields.Datetime(

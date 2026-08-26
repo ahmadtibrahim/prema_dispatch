@@ -264,6 +264,24 @@ class PremaDispatchStop(models.Model):
         string="Route Locked",
         help="Prevent auto-optimization from changing this stop's position.",
     )
+
+    # ── Phase 11: Live ETA (dynamic actual route) ────────────────────
+    eta_live = fields.Datetime(
+        string="Live ETA", readonly=True,
+        help="Recomputed by the live-route service: anchor + drive + "
+             "service, delay propagated stop-by-stop.")
+    eta_delay_minutes = fields.Float(
+        string="ETA Delay (min)", readonly=True,
+        help="Live ETA minus scheduled time. Positive = running late.")
+    eta_override = fields.Datetime(
+        string="ETA Override",
+        help="Dispatcher manual override — wins over any computed ETA for "
+             "this stop (audited via eta_source).")
+    eta_source = fields.Selection([
+        ("scheduled", "Scheduled"),
+        ("live", "Live"),
+        ("override", "Dispatcher Override"),
+    ], string="ETA Source", default="scheduled", readonly=True)
     planning_only = fields.Boolean(
         string="Planning Anchor Placeholder",
         default=False,
