@@ -97,6 +97,14 @@
                                    help="Groups this stop with its matching pickup/drop-offs in a multi-round route. 0=ungrouped."/>
                             <field name="route_locked" widget="boolean_toggle"/>
                         </group>
+                        <group string="Live ETA">
+                            <field name="eta_override" string="ETA Override"
+                                   help="Dispatcher override — wins over live ETA propagation for this stop."/>
+                            <field name="eta_live" readonly="1" string="Live ETA"/>
+                            <field name="eta_delay_minutes" readonly="1"
+                                   string="Delay (min)"/>
+                            <field name="eta_source" readonly="1" string="ETA Source"/>
+                        </group>
                     </group>
                     <group>
                         <group string="Load">

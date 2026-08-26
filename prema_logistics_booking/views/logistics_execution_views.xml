@@ -149,11 +149,14 @@
     <record id="action_logistics_execution_scenario" model="ir.actions.act_window">
         <field name="name">Execution Scenarios</field>
         <field name="res_model">logistics.execution.scenario</field>
-        <field name="view_mode">tree,form</field>
+        <field name="view_mode">list,form</field>
         <field name="domain">[]</field>
         <field name="help" type="html">
             <p class="o_view_nocontent_smiling_face">Execution scenarios generated for bookings.</p>
         </field>
+        <field name="view_ids" eval="[(5, 0, 0),
+            (0, 0, {'view_mode': 'list', 'view_id': ref('view_logistics_execution_scenario_tree')}),
+            (0, 0, {'view_mode': 'form', 'view_id': ref('view_logistics_execution_scenario_form')})]"/>
     </record>
 
     <!-- ── Carrier Lane Rates (BUY rate card) ─────────────────────── -->
@@ -211,7 +214,10 @@
     <record id="action_logistics_carrier_lane_rate" model="ir.actions.act_window">
         <field name="name">Carrier Lane Rates</field>
         <field name="res_model">logistics.carrier.lane.rate</field>
-        <field name="view_mode">tree,form</field>
+        <field name="view_mode">list,form</field>
+        <field name="view_ids" eval="[(5, 0, 0),
+            (0, 0, {'view_mode': 'list', 'view_id': ref('view_logistics_carrier_lane_rate_tree')}),
+            (0, 0, {'view_mode': 'form', 'view_id': ref('view_logistics_carrier_lane_rate_form')})]"/>
     </record>
 
     <!-- ── Carrier Offer (negotiation per leg) ────────────────────── -->
@@ -290,16 +296,39 @@
     <record id="action_logistics_carrier_offer" model="ir.actions.act_window">
         <field name="name">Carrier Offers</field>
         <field name="res_model">logistics.booking.leg.carrier.offer</field>
-        <field name="view_mode">tree,form</field>
+        <field name="view_mode">list,form</field>
+        <field name="view_ids" eval="[(5, 0, 0),
+            (0, 0, {'view_mode': 'list', 'view_id': ref('view_logistics_carrier_offer_tree')}),
+            (0, 0, {'view_mode': 'form', 'view_id': ref('view_logistics_carrier_offer_form')})]"/>
     </record>
 
     <!-- ── Carrier partners (res.partner authority) ───────────────── -->
+    <record id="view_partner_carrier_tree" model="ir.ui.view">
+        <field name="name">res.partner.carrier.tree</field>
+        <field name="model">res.partner</field>
+        <field name="arch" type="xml">
+            <list>
+                <field name="name"/>
+                <field name="carrier_status"/>
+                <field name="carrier_home_region_id" optional="show"/>
+                <field name="carrier_equipment_ids" widget="many2many_tags" optional="hide"/>
+                <field name="carrier_max_pallets" optional="hide"/>
+                <field name="carrier_loads_completed" optional="hide"/>
+                <field name="carrier_on_time_pct" optional="hide"/>
+                <field name="phone" optional="show"/>
+                <field name="email" optional="hide"/>
+            </list>
+        </field>
+    </record>
     <record id="action_carrier_partners" model="ir.actions.act_window">
         <field name="name">Carriers</field>
         <field name="res_model">res.partner</field>
         <field name="view_mode">list,form</field>
         <field name="domain">[('is_transport_carrier', '=', True)]</field>
         <field name="context">{'default_is_transport_carrier': True}</field>
+        <field name="view_ids" eval="[(5, 0, 0),
+            (0, 0, {'view_mode': 'list', 'view_id': ref('view_partner_carrier_tree')}),
+            (0, 0, {'view_mode': 'form', 'view_id': ref('base.view_partner_form')})]"/>
     </record>
 
     <!-- ── Partner form: carrier section ──────────────────────────── -->

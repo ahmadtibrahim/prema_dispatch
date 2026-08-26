@@ -513,6 +513,22 @@
                                    invisible="not auto_post_error"
                                    widget="text"/>
                         </group>
+                        <group string="Live Execution">
+                            <field name="start_position_override"
+                                   string="Start Position"
+                                   help="Where the actual route starts. Auto: prior-day end → depot → hub. GPS: enter coordinates manually."/>
+                            <field name="start_position_override_lat"
+                                   invisible="start_position_override != 'gps'"
+                                   string="Start Lat"/>
+                            <field name="start_position_override_lng"
+                                   invisible="start_position_override != 'gps'"
+                                   string="Start Lng"/>
+                            <field name="ignore_route_recommendation"
+                                   help="Early next-day pickups are recommendations only — never forced travel. Check to dismiss the recommendation."/>
+                            <field name="route_recommendation_log" readonly="1"
+                                   widget="jsonb" string="Route Recommendation Log"
+                                   invisible="not route_recommendation_log"/>
+                        </group>
                     </group>
 
                     <notebook>
@@ -543,6 +559,15 @@
                                     <field name="estimated_departure" readonly="1"
                                            optional="hide" string="Est. Depart"/>
                                     <field name="scheduled_time" optional="show"/>
+                                    <field name="eta_override" optional="show"
+                                           string="ETA Override"
+                                           help="Dispatcher override — wins over live ETA propagation for this stop."/>
+                                    <field name="eta_live" readonly="1"
+                                           optional="show" string="Live ETA"/>
+                                    <field name="eta_delay_minutes" readonly="1"
+                                           optional="hide" string="Delay (min)"/>
+                                    <field name="eta_source" readonly="1"
+                                           optional="hide" string="ETA Source"/>
                                     <field name="actual_arrival_time" optional="hide"/>
                                     <field name="pallets_in" optional="show"
                                            string="In"
