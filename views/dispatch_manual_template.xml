@@ -528,7 +528,7 @@
     <p>A pickup on the <b>day before</b> a linehaul departure (e.g. Sunday pickup for Monday's run) is executed as <b>one departure + one capacity pool</b>: the freight is picked up on the prior day, held overnight, and rides the scheduled linehaul the next morning. Capacity counts once — the pickup and the linehaul never double-book the truck.</p>
     <ul>
         <li>Prior-day pickups are a <b>corridor-level capability</b>, enabled per corridor</li>
-        <li>Currently <b>no corridor has it enabled</b> — behaviour today is unchanged; when enabled, Sunday pickups appear on the Monday departure's card in the Planner</li>
+        <li>Prior-day pickup is enabled per corridor. When enabled, a customer may select a prior-day physical pickup (for example Sunday) for the corridor's next scheduled departure (for example Monday). Sunday is not a linehaul operating day and no Sunday departure is created.</li>
         <li>During live execution, an early next-day pickup is a <b>recommendation only</b>, never forced travel (see §26b)</li>
     </ul>
     <div class="dm-info">The same departure row carries both the prior-day pickup and the linehaul — one reservation, one capacity check.</div>
