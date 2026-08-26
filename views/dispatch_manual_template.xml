@@ -41,7 +41,7 @@
 <div class="dm-wrap">
 
 <h1 class="dm-title">Prema Dispatch — User Manual</h1>
-<p class="dm-subtitle">Version 5.2 - Updated August 24, 2026 - PremaFirm Logistics</p>
+<p class="dm-subtitle">Version 6.0 - Updated August 26, 2026 - PremaFirm Logistics</p>
 
 <div class="dm-toc">
     <h2>Table of Contents</h2>
@@ -53,6 +53,7 @@
         <li><a href="#geography">Geography: FSAs, Regions, Cities</a></li>
         <li><a href="#network">Network: Corridors &amp; Departures</a></li>
         <li><a href="#network-map">Where We Go</a></li>
+        <li><a href="#weekly-sequence">6c. Weekly Truck &amp; Corridor Sequence</a></li>
         <li><a href="#pricing">Corridor Pricing</a></li>
         <li><a href="#booking-flows">Booking Flows (All 7 Channels)</a></li>
         <li><a href="#portal">Portal Booking</a></li>
@@ -66,6 +67,7 @@
         <li><a href="#tax">Freight Tax</a></li>
         <li><a href="#booking-board">Booking Board</a></li>
         <li><a href="#weekly-schedule">Departure Schedule</a></li>
+        <li><a href="#prior-day">19b. Prior-Day Pickup (Sunday → Monday)</a></li>
         <li><a href="#dispatch-planner">Dispatch Planner</a></li>
         <li><a href="#live-map">Live Fleet Map</a></li>
         <li><a href="#load-plans">Load Plans</a></li>
@@ -74,6 +76,12 @@
         <li><a href="#trucks-drivers">Trucks &amp; Drivers</a></li>
         <li><a href="#pickup-delivery">Pickup, Transfer &amp; Delivery</a></li>
         <li><a href="#pod">Proof of Delivery</a></li>
+        <li><a href="#live-execution">26b. Dynamic Actual Route &amp; Live ETA</a></li>
+        <li><a href="#execution-scenarios">26c. Execution Scenarios &amp; Cost Engine</a></li>
+        <li><a href="#carrier-network">26d. Carrier Network (Lane Rates &amp; Offers)</a></li>
+        <li><a href="#rate-confirmation">26e. Freight Rate Confirmation (Purchase Order)</a></li>
+        <li><a href="#subcontract-execution">26f. Subcontract Execution &amp; Vendor Bills</a></li>
+        <li><a href="#missed-connections">26g. Missed Connections &amp; Carrier Decline</a></li>
         <li><a href="#invoicing">Invoice Review &amp; Accounting</a></li>
         <li><a href="#tracking">Customer Tracking</a></li>
         <li><a href="#settings">Settings</a></li>
@@ -116,7 +124,7 @@
     <ul>
         <li><b>Dispatch Operations</b> — Live Map, Booking Board, Dispatch Planner, Load Plans, Driver Worksheets, Find Available Truck</li>
         <li><b>Bookings</b> — All Bookings, Phone Booking, Internal Booking, Recurring Agreements, Custom Quotes, WhatsApp Negotiations</li>
-        <li><b>Network</b> — Where We Go, Service Routes (Corridors), Departures, Regions, FSAs, Cities, Saved Locations</li>
+        <li><b>Network</b> — Where We Go, Service Routes (Corridors), Departures, Regions, FSAs, Cities, Saved Locations, Carriers, Carrier Lane Rates, Carrier Offers, Execution Scenarios</li>
         <li><b>Fleet</b> — Trucks, Drivers, Equipment Profiles, GeoTab Settings</li>
         <li><b>Reports</b> — All Jobs, Completed, Stops, Freight Items, LTL Consolidations, On-Time %, Lane Profitability, Fuel Efficiency, POD Aging</li>
         <li><b>User Manual</b> — This page</li>
@@ -242,6 +250,18 @@
     <h3>One Route, Everywhere (Hub-Transfer Consistency)</h3>
     <p>The calendar, Get Price, and the booking confirmation resolve the route with the <b>same strict logic</b>: pickup → hub-transfer → delivery legs with direction-aware transfer stops. A transfer shown in Where We Go is exactly the transfer priced in the quote and created on the booking — the portal can never show one route and book another. Corridors reachable only via a hub are correctly marked as transfer (never sold as direct), and exact departures are bound to each leg end-to-end.</p>
     <div class="dm-info">Map reachability, booking route resolution, pricing, and departure selection use the same Corridor topology.</div>
+</div>
+
+<!-- ================================================================ -->
+<div class="dm-section" id="weekly-sequence">
+    <h2>6c. Weekly Truck &amp; Corridor Sequence</h2>
+    <p>Navigate: <b>Fleet → Trucks</b> (list)</p>
+    <p>Each truck's list row shows its <b>weekly day sequence (Monday → Sunday)</b> with the corridor service configured for each day. This is a <b>planning display only</b> — it mirrors the weekly plan (e.g. Monday Southwestern Ontario, Tuesday eastbound, Wednesday westbound, Thursday HHB–Niagara, Friday southeastern) and has <b>zero scheduling impact</b>.</p>
+    <ul>
+        <li>The list is ordered Monday → Sunday so the week's plan reads top to bottom</li>
+        <li>Actual assignments are always made on the <b>Dispatch Planner</b> / exact Departures — the sequence view never books, reserves, or moves anything</li>
+        <li>A corridor archived or retired simply disappears from the sequence; the display never re-creates it</li>
+    </ul>
 </div>
 
 <!-- ================================================================ -->
@@ -503,6 +523,18 @@
 </div>
 
 <!-- ================================================================ -->
+<div class="dm-section" id="prior-day">
+    <h2>19b. Prior-Day Pickup (Sunday → Monday)</h2>
+    <p>A pickup on the <b>day before</b> a linehaul departure (e.g. Sunday pickup for Monday's run) is executed as <b>one departure + one capacity pool</b>: the freight is picked up on the prior day, held overnight, and rides the scheduled linehaul the next morning. Capacity counts once — the pickup and the linehaul never double-book the truck.</p>
+    <ul>
+        <li>Prior-day pickups are a <b>corridor-level capability</b>, enabled per corridor</li>
+        <li>Currently <b>no corridor has it enabled</b> — behaviour today is unchanged; when enabled, Sunday pickups appear on the Monday departure's card in the Planner</li>
+        <li>During live execution, an early next-day pickup is a <b>recommendation only</b>, never forced travel (see §26b)</li>
+    </ul>
+    <div class="dm-info">The same departure row carries both the prior-day pickup and the linehaul — one reservation, one capacity check.</div>
+</div>
+
+<!-- ================================================================ -->
 <div class="dm-section" id="dispatch-planner">
     <h2>20. Dispatch Planner</h2>
     <p>Navigate: <b>Dispatch Operations → Dispatch Planner</b></p>
@@ -658,6 +690,110 @@
 </div>
 
 <!-- ================================================================ -->
+<div class="dm-section" id="live-execution">
+    <h2>26b. Dynamic Actual Route &amp; Live ETA</h2>
+    <p>The corridor is the <b>framework</b>; the <b>confirmed stops are the actual route</b>. When a truck executes, the system builds the real route from the confirmed dispatch stops only — corridor endpoints nobody confirmed are never forced onto the truck (corridor extent trim).</p>
+    <h3>What Never Moves During Live Reoptimization</h3>
+    <ul>
+        <li>Stops already <b>completed</b>, <b>arrived</b>, <b>en route</b>, or manually <b>route-locked</b> keep their relative order</li>
+        <li>Only unlocked pending stops are reordered — by scheduled time, with <b>delivery first</b> when a pickup and a delivery share the same window (unloading reduces onboard load)</li>
+        <li>Stop sequences are renumbered (10/20/30…) to the actual order</li>
+    </ul>
+    <h3>Start Position (Job → Live Execution)</h3>
+    <p>Set <b>Start Position</b> on the dispatch job: <b>Auto</b> (prior-day end → depot → hub), <b>Depot</b>, <b>Hub</b>, <b>GPS</b> (enter latitude/longitude manually), or <b>Prior-Day End</b> (last completed stop of this truck's previous day).</p>
+    <h3>Early Next-Day Pickups = Recommendations Only</h3>
+    <p>A pickup scheduled early the <b>next</b> day is a pre-positioning <b>recommendation</b>, logged on the job's <b>Route Recommendation Log</b> — it is never inserted as forced travel. Check <b>Ignore Route Recommendation</b> to dismiss.</p>
+    <h3>Live ETA &amp; Dispatcher Override</h3>
+    <ul>
+        <li>Completed/arrived stops use actual times; <b>en-route stops hold their ETA</b> and pass the delay forward; pending stops advance by drive + service minutes</li>
+        <li>Each stop shows <b>Live ETA</b>, <b>Delay (min)</b> (live ETA − scheduled), and <b>ETA Source</b> (scheduled / live / override)</li>
+        <li>Set <b>ETA Override</b> on a stop (job Stops list or stop form) — the override <b>wins for that stop</b> and delays propagate from there</li>
+    </ul>
+    <h3>Customer-Visible Milestones</h3>
+    <p>Customers only ever see: <b>Estimated Arrival → Updated ETA → In Transit → Out for Delivery → Delivered</b>. Internal details (truck, driver, carrier, stops) are never part of customer status.</p>
+</div>
+
+<!-- ================================================================ -->
+<div class="dm-section" id="execution-scenarios">
+    <h2>26c. Execution Scenarios &amp; Cost Engine</h2>
+    <p>Open a booking → <b>Execution &amp; Subcontracting</b> page → <span class="dm-btn">Generate Scenarios</span>. The engine builds a bounded set (max 8 alternatives) and <b>recommends</b>; the dispatcher decides (choose one or ignore). The frozen customer price is never changed by execution costs.</p>
+    <h3>The Scenario Set</h3>
+    <table class="dm-table">
+        <tr><th>Rank</th><th>Scenario</th><th>State</th></tr>
+        <tr><td>1</td><td>Scheduled PREMAFIRM network</td><td>Auto bookable (or Carrier Acceptance Required when it uses a subcontractor)</td></tr>
+        <tr><td>2</td><td>Own fleet dedicated direct (frozen leg estimates / Prema AI estimator)</td><td>Auto bookable / Dispatch Confirmation</td></tr>
+        <tr><td>3+</td><td>Subcontract per active carrier (≤3)</td><td>Carrier Acceptance Required or <b>Carrier Rate Required</b></td></tr>
+        <tr><td>last</td><td>Manual Dispatch Review</td><td>Manual Review — always the honest fallback</td></tr>
+    </table>
+    <h3>Cost Authorities</h3>
+    <ul>
+        <li><b>Own fleet</b> = the booking's frozen leg estimates (from pricing / Prema AI) — never invented</li>
+        <li><b>Subcontract BUY</b> hierarchy: accepted offer → carrier lane rate card → configured market authority → <b>CARRIER RATE REQUIRED</b> (no invented profitability)</li>
+        <li><b>Hub/transfer cost</b> is the configured flat amount per hub split</li>
+    </ul>
+    <h3>Margin</h3>
+    <p>Estimated margin = customer revenue − execution cost. Below the configured minimum, the booking shows a <b>Margin Below Target</b> banner — a warning for dispatcher decision, <b>never a hard block</b>. <span class="dm-btn">Choose This Scenario</span> freezes the <b>Execution Snapshot</b> (audit); later cost or carrier changes never rewrite it.</p>
+</div>
+
+<!-- ================================================================ -->
+<div class="dm-section" id="carrier-network">
+    <h2>26d. Carrier Network (Lane Rates &amp; Offers)</h2>
+    <h3>Carriers</h3>
+    <p>Navigate: <b>Network → Carriers</b>. A carrier is a <b>Contact</b> with <b>Transport Carrier</b> checked — no separate master file. Profile: status (Active / Inactive / Pending Compliance / Blocked), home region, equipment capabilities, service regions, max pallets/weight, cross-border capability, insurance expiry, notes, and derived performance (loads completed, on-time %, invoice variances, avg buy rate).</p>
+    <h3>Carrier Lane Rates (BUY rate card)</h3>
+    <p>Navigate: <b>Network → Carrier Lane Rates</b>. One card per carrier + origin/destination region + equipment: flat rate or rate-per-km (with minimum charge), effective dates (open-ended = always effective), <b>BUY detention terms</b> (free minutes, rate per increment), and extra stop charge.</p>
+    <h3>Carrier Offers (negotiation per leg)</h3>
+    <p>Navigate: <b>Network → Carrier Offers</b>. One negotiation per booking leg: <b>Request Availability → Enter Negotiation → Accept / Decline / No Response / Expire / Cancel</b>. Rules:</p>
+    <ul>
+        <li><b>ONE accepted offer per leg</b> — accepting a second for the same leg is refused</li>
+        <li>Accepting sets the leg's execution mode, carrier and buy rate, <b>creates the freight Purchase Order</b> (§26e) and recomputes the booking margin</li>
+        <li>Declining <b>un-chooses any scenario</b> that depended on that carrier</li>
+    </ul>
+    <div class="dm-danger">Lane rates, offers, buy rates and margins are INTERNAL. They never appear on the customer portal, public tracking, or the driver app.</div>
+</div>
+
+<!-- ================================================================ -->
+<div class="dm-section" id="rate-confirmation">
+    <h2>26e. Freight Rate Confirmation (Purchase Order)</h2>
+    <p>Accepting an offer creates a native <b>Purchase Order</b> marked <b>Freight Subcontract</b> — one PO per leg (idempotent; the same leg can never produce a second PO). The Rate Confirmation is the <b>same document</b> as the PO: no parallel financial system.</p>
+    <p>On the PO form, the freight banner offers:</p>
+    <ul>
+        <li><span class="dm-btn">Send Rate Confirmation</span> — native Odoo email flow</li>
+        <li><span class="dm-btn">Print Rate Confirmation</span> — the PDF renders <b>for freight POs only</b>; ordinary POs are untouched</li>
+        <li><span class="dm-btn">Record Carrier Acceptance</span> — method (phone/email/signed/portal), recorded by/at</li>
+        <li><span class="dm-btn">Review Vendor Bill vs Accepted Rate</span> — see §26f</li>
+    </ul>
+    <p>The PO carries the frozen freight details (load number, pickup/delivery, windows, pallets, weight, equipment, temperature, agreed rate, detention terms, POD requirement) used by the Rate Confirmation PDF.</p>
+</div>
+
+<!-- ================================================================ -->
+<div class="dm-section" id="subcontract-execution">
+    <h2>26f. Subcontract Execution &amp; Vendor Bills</h2>
+    <p>Subcontracted legs track their own external status (confirmed → en route → delivered → …) and collect POD through the same attachment flow as own-fleet legs. The PREMAFIRM truck/driver are not involved — the dispatch job shows a <b>Subcontracted execution</b> badge.</p>
+    <h3>Carrier Invoice → Vendor Bill → Variance</h3>
+    <ol>
+        <li>The carrier performs and invoices the load</li>
+        <li>Record the <b>vendor bill against the freight PO</b> (native flow) — this is the <b>one payable</b>; nothing is duplicated</li>
+        <li><span class="dm-btn">Review Vendor Bill vs Accepted Rate</span> compares the <b>posted bill amount</b> against the accepted buy rate and writes the actual cost + <b>invoice variance</b> on the leg — flagged, never silently applied, never rewriting the accepted rate</li>
+        <li>The booking's Actuals show real cost/margin only once billed (estimated hub/detention costs never masquerade as actuals)</li>
+    </ol>
+    <h3>Detention</h3>
+    <p>Carrier <b>BUY</b> detention (from lane-rate/offer terms) and customer <b>SELL</b> detention (approved detention items) are separate totals — never netted, never exposed across sides.</p>
+    <div class="dm-danger">The customer invoice never shows carrier data, buy rates, or vendor bills.</div>
+</div>
+
+<!-- ================================================================ -->
+<div class="dm-section" id="missed-connections">
+    <h2>26g. Missed Connections &amp; Carrier Decline</h2>
+    <h3>Missed Hub Connection</h3>
+    <p>If a hub departure is cancelled/completed while freight is still waiting on it: <span class="dm-btn">Detect Missed Connections</span> flags the leg (<b>connection exception</b>). Custody is preserved — the shipment is <b>never falsely marked delivered</b>. The dispatcher reviews and either releases the exception or recommends the next departure for that freight (recommendation only; the dispatcher decides).</p>
+    <h3>Carrier Decline After Acceptance</h3>
+    <p>If a carrier declines after the fact, the dependent scenario is un-chosen and the booking's execution decision returns to the dispatcher.</p>
+    <h3>Cross-Border Subcontract</h3>
+    <p>Subcontracting a Canada → USA leg requires the configured authority (<b>Settings → Technical → System Parameters → logistics.allow_cross_border_subcontract</b>). Without it, cross-border subcontract scenarios show <b>COMPLIANCE REVIEW REQUIRED</b> and fall to Manual Review.</p>
+</div>
+
+<!-- ================================================================ -->
 <div class="dm-section" id="invoicing">
     <h2>27. Invoice Review &amp; Accounting</h2>
     <h3>Invoice Creation</h3>
@@ -684,7 +820,8 @@
     <p>Route: <code>/track</code></p>
     <p>Customers track shipments using <b>Booking Number + Tracking Token</b> (both required).</p>
     <p>Visible to customer: status, pickup/delivery cities, estimated delivery date.</p>
-    <p><b>Never visible:</b> internal cost, NET PROFIT, margin, GPS coordinates, driver personal details, internal hub addresses, other customers' records.</p>
+    <p>Status vocabulary (single authority, §26b): <b>Estimated Arrival → Updated ETA → In Transit → Out for Delivery → Delivered</b>.</p>
+    <p><b>Never visible:</b> internal cost, NET PROFIT, margin, GPS coordinates, driver personal details, internal hub addresses, carrier/subcontract details, vendor bills, other customers' records.</p>
     <div class="dm-danger">The tracking token is a high-entropy random string. A booking number alone reveals nothing. This prevents anyone from guessing sequential booking numbers to see other shipments.</div>
 </div>
 
@@ -698,6 +835,15 @@
     <p>Navigate: <b>Settings → Technical → System Parameters</b> or <b>Settings → Prema Logistics → Freight Tax Configuration</b>. Map account.tax records for each province.</p>
     <h3>Vehicle Layout Templates</h3>
     <p>Under Fleet → Equipment Profiles → Vehicle Layout Templates. Define pallet positions for each truck layout.</p>
+    <h3>Execution Configuration</h3>
+    <p>Navigate: <b>Settings → Technical → System Parameters</b></p>
+    <table class="dm-table">
+        <tr><th>Parameter</th><th>Default</th><th>Meaning</th></tr>
+        <tr><td><code>logistics.hub_transfer_cost</code></td><td>50.0</td><td>Hub/transfer BUY cost per split (§26c)</td></tr>
+        <tr><td><code>logistics.minimum_margin_pct</code></td><td>10.0</td><td>Margin warning threshold % — warning only, never a block</td></tr>
+        <tr><td><code>logistics.market_buy_rate_per_km</code></td><td>0.0</td><td>Market BUY authority per km. 0.0 = none → scenarios say <b>CARRIER RATE REQUIRED</b> until a lane rate/offer exists</td></tr>
+        <tr><td><code>logistics.allow_cross_border_subcontract</code></td><td>False</td><td>Must be True to subcontract Canada → USA legs (§26g)</td></tr>
+    </table>
 </div>
 
 <!-- ================================================================ -->
@@ -731,6 +877,11 @@
         <tr><td>Menu items missing</td><td>Check user has Dispatcher or Dispatch Manager group. Ctrl+F5 to refresh.</td></tr>
         <tr><td>Recurring cron not creating bookings</td><td>Check agreement/job is active, due date is within range, both locations are Google verified, and no booking already exists.</td></tr>
         <tr><td>Departure has no truck</td><td>The Corridor default truck is already occupied that day. Reassign the conflicting job or choose another truck on Open: Departure.</td></tr>
+        <tr><td>Carriers / Carrier Lane Rates menus error "View types not defined"</td><td>Fixed in 18.0.13.39.1 — hard refresh (Ctrl+F5). If it persists, confirm the upgrade version on Settings → Modules.</td></tr>
+        <tr><td>Scenario shows CARRIER RATE REQUIRED</td><td>No accepted offer or lane rate for that carrier/lane, and no market authority configured. Create the lane rate (Network → Carrier Lane Rates) or negotiate an offer, then Generate Scenarios again.</td></tr>
+        <tr><td>Margin warning banner on booking</td><td>Execution cost is close to / above revenue. Review costs, choose a different scenario, or accept the margin — the banner is a warning, never a block.</td></tr>
+        <tr><td>Booking shows "Subcontracted execution"</td><td>At least one leg is subcontracted — track the carrier on the booking's Execution page and the freight PO. The PREMAFIRM truck/driver are not involved.</td></tr>
+        <tr><td>Leg flagged connection exception</td><td>A hub departure was cancelled/completed with freight waiting. Review on the booking, then release or recommend the next departure (§26g).</td></tr>
     </table>
 </div>
 
@@ -749,6 +900,10 @@
         <li>Check <b>tax-review bookings</b> — resolve any with missing tax configurations</li>
         <li>Review <b>exception-stage bookings</b> — resolve issues, contact customers if needed</li>
         <li>Verify <b>Saturday/Sunday carryover</b> work if the week requires it</li>
+        <li>Review bookings with <b>margin warnings</b> and <b>CARRIER RATE REQUIRED</b> scenarios — add lane rates or negotiate offers (§26c/26d)</li>
+        <li>Follow up on <b>accepted offers</b>: send the Rate Confirmation PO and record the carrier acceptance (§26e)</li>
+        <li>Run <b>Detect Missed Connections</b> on hub-transfer bookings after each hub departure (§26g)</li>
+        <li>Review <b>vendor-bill variances</b> on subcontracted legs once carrier invoices arrive (§26f)</li>
     </ol>
 </div>
 
@@ -775,6 +930,14 @@
         <tr><td>16</td><td>Where We Go: select a pickup and destination</td><td>Reachable lines and nearest departure; no price shown</td></tr>
         <tr><td>17</td><td>Two-day LTL booking</td><td>Separate pickup-day and delivery-day cards on the same Departure truck</td></tr>
         <tr><td>18</td><td>Try assigning another job to an occupied truck/day</td><td>Blocked with the conflicting route/job identified</td></tr>
+        <tr><td>19</td><td>Generate Scenarios on a booking</td><td>Bounded set (≤8): Scheduled network rank 1, own-fleet direct, subcontract options, Manual Review last</td></tr>
+        <tr><td>20</td><td>Lane rate card matching a booking's regions/equipment</td><td>Subcontract scenario carries the card cost — not CARRIER RATE REQUIRED</td></tr>
+        <tr><td>21</td><td>Accept a carrier offer</td><td>Leg → subcontracted, buy rate set, freight PO created, margin recomputed; a second accept is refused</td></tr>
+        <tr><td>22</td><td>Post a vendor bill higher than the accepted rate, then Review Vendor Bill</td><td>Actual cost + variance flagged on the leg; accepted rate unchanged</td></tr>
+        <tr><td>23</td><td>Decline an accepted carrier's scenario carrier</td><td>Dependent scenario un-chosen; booking execution decision returns to dispatcher</td></tr>
+        <tr><td>24</td><td>Cross-border subcontract without authority</td><td>Scenario = COMPLIANCE REVIEW REQUIRED → Manual Review</td></tr>
+        <tr><td>25</td><td>Set ETA Override on a stop</td><td>Live ETA wins for that stop; downstream delays propagate from the override</td></tr>
+        <tr><td>26</td><td>Run Detect Missed Connections after cancelling a hub departure with freight</td><td>Leg flagged connection exception; never marked delivered; recommend next departure</td></tr>
     </table>
 </div>
 
