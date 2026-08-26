@@ -138,7 +138,7 @@
                             </group>
                         </page>
                         <page string="Price Snapshot (immutable)">
-                            <field name="price_snapshot" readonly="1" widget="text"/>
+                            <field name="price_snapshot_display" readonly="1" widget="text"/>
                         </page>
                     </notebook>
                 </sheet>

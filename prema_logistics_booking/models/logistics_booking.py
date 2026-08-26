@@ -1,4 +1,5 @@
 import datetime
+import json
 import logging
 import secrets
 
@@ -129,6 +130,11 @@ class LogisticsBooking(models.Model):
 
     calculated_price = fields.Float(readonly=True)
     price_snapshot = fields.Json(readonly=True)
+    price_snapshot_display = fields.Text(
+        readonly=True, compute="_compute_price_snapshot_display",
+        string="Price Snapshot (immutable)",
+        help="Pretty-printed price snapshot for admin review. price_snapshot remains the immutable JSON authority."
+    )
     route_snapshot = fields.Json(readonly=True, string="Route Snapshot",
         help="Immutable route details frozen at confirmation: corridors, departures, trucks, distances, and prices.")
     cost_snapshot = fields.Json(readonly=True, help="Frozen cost breakdown from Prema AI Estimator at confirmation time.")
@@ -314,6 +320,20 @@ class LogisticsBooking(models.Model):
                 "exception": "Exception",
             }
             rec.customer_status = status_map.get(rec.state, rec.state)
+
+    @api.depends("price_snapshot")
+    def _compute_price_snapshot_display(self):
+        """Pretty-print the frozen price snapshot for admin review.
+
+        price_snapshot stays the immutable JSON authority; this field only
+        formats it (indented JSON, fallback str for exotic values). Admin-only:
+        it is rendered solely in the internal booking form, never in portal
+        templates.
+        """
+        for rec in self:
+            rec.price_snapshot_display = json.dumps(
+                rec.price_snapshot or [], indent=2, default=str
+            )
 
     @api.depends("calculated_price", "estimated_cost")
     def _compute_margin(self):
