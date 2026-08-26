@@ -4,10 +4,12 @@
         <field name="name">logistics.corridor.list</field>
         <field name="model">logistics.corridor</field>
         <field name="arch" type="xml">
-            <list>
+            <list default_order="default_vehicle_id, schedule_weekday_index, weekly_sequence, start_time, name">
                 <field name="name"/>
                 <field name="direction"/>
                 <field name="operating_days_display" string="Every Week"/>
+                <field name="schedule_sort_label" string="Weekly Position" optional="show"/>
+                <field name="weekly_sequence" string="Weekly Sequence"/>
                 <field name="start_time" widget="float_time"/>
                 <field name="default_vehicle_id"/>
                 <field name="equipment_type"/>
@@ -45,6 +47,7 @@
                         <group string="Weekly Departure">
                             <field name="operating_days_display" readonly="1"/>
                             <field name="start_time" widget="float_time"/>
+                            <field name="weekly_sequence" string="Weekly Sequence"/>
                             <div class="o_row" invisible="not same_day_return and not destination_hub_id">
                                 <field name="destination_hub_arrival_time" widget="float_time"/>
                                 <field name="hub_arrival_time_source" readonly="1" nolabel="1"/>

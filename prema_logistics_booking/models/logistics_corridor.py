@@ -66,6 +66,28 @@ class LogisticsCorridor(models.Model):
         string="Every Week", compute="_compute_operating_days_display",
         help="The weekly days used to generate exact departures.",
     )
+    # ── Weekly schedule display/planning order (Phase 1: weekly sequence) ──
+    # weekly_sequence is a pure DISPLAY/planning key for the corridor's
+    # assigned truck. It never affects departure generation, operating
+    # days, pricing, capacity or booking logic — _operating_weekdays()
+    # and _reconcile_departure_horizon() remain the sole scheduling
+    # authorities (see the write() schedule-fields guard).
+    weekly_sequence = fields.Integer(
+        string="Weekly Sequence", default=10,
+        help="Controls this corridor's display/planning order for its "
+             "assigned truck. It does not change operating days or "
+             "departure times.")
+    schedule_weekday_index = fields.Integer(
+        string="Schedule Weekday Index", store=True, readonly=True,
+        compute="_compute_schedule_weekday_index",
+        help="Earliest operating weekday (0=Monday .. 6=Sunday; 7 when the "
+             "corridor has no operating days) — sorts a truck's corridors "
+             "Monday → Sunday.")
+    schedule_sort_label = fields.Char(
+        string="Schedule Sort", compute="_compute_schedule_sort_label",
+        help="Human-readable weekly position: earliest operating day plus "
+             "sequence, e.g. 'Mon · 10'.",
+    )
     departure_horizon_weeks = fields.Integer(
         string="Customer Booking Horizon (weeks)", default=8,
         help="Exactly this many weekly occurrences are maintained. The maximum is eight weeks.",
@@ -253,6 +275,24 @@ class LogisticsCorridor(models.Model):
             rec.operating_days_display = ", ".join(
                 label for label, field_name in zip(labels, fields_by_day) if rec[field_name]
             ) or "Not scheduled"
+
+    @api.depends(
+        "operate_monday", "operate_tuesday", "operate_wednesday",
+        "operate_thursday", "operate_friday", "operate_saturday", "operate_sunday",
+    )
+    def _compute_schedule_weekday_index(self):
+        for rec in self:
+            rec.schedule_weekday_index = min(rec._operating_weekdays(), default=7)
+
+    @api.depends("schedule_weekday_index", "weekly_sequence")
+    def _compute_schedule_sort_label(self):
+        day_labels = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+        for rec in self:
+            rec.schedule_sort_label = "%s · %s" % (
+                day_labels[rec.schedule_weekday_index]
+                if rec.schedule_weekday_index < 7 else "—",
+                rec.weekly_sequence or 0,
+            )
 
     @api.depends("departure_horizon_weeks")
     def _compute_departure_refresh_label(self):

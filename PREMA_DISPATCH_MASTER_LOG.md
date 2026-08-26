@@ -2879,3 +2879,25 @@ A live Step 2: read-only "✓ ASSIGNED DESTINATION | Costco Wholesale | Niagara 
 - Post-change state: corridor 14 (id 14) = no operating days, active, 0 future departures (kept alive; archiving is a one-click follow-up if wanted). Corridor 15 = Mon 06:00, all 8 departures vehicle 15/corridor_default. Vehicle 15 occupancy next 14 days: Wed c11 / Thu c12 / Fri c13 / Mon c15 / Tue c9 — one run per day, NO conflicts. Duplicate-departure check across all corridors: NONE.
 - Portal calendar (calendar_availability, 4 pallets/1000 lb/reefer): SWON London delivery → manual_quote=False, dates = Mondays only (2026-08-31, 09-07, 09-14) PASS · Niagara St. Catharines delivery → manual_quote=False, dates = Thursdays only (2026-08-27, 09-03, 09-10) PASS · neither lane shows Manual Quote Required. Weekly network now matches desired plan exactly: Mon c15 SWON / Tue c9 Eastbound / Wed c11 Westbound / Thu c12 HHB→Niagara / Fri c13 Southeastern.
 - No code changes, no module upgrade, no service restart (data-only). DEMO-01 (vehicle 16) untouched; Perth/Huron untouched.
+
+## 37. Roadmap Phase 1: Weekly Truck/Corridor Sequence (18.0.13.36.0) — 2026-08-26
+
+- Task: give each corridor a pure DISPLAY/planning order for its assigned truck — Mon→Sun by earliest operating weekday, same-day corridors manually sequenced, corridor without a truck renders safely. MUST NOT alter departure generation, operating days, pricing, capacity or booking logic.
+- Architecture found: `logistics.corridor._order = "name"` — the corridor list sorted ALPHABETICALLY ("GTA -> ..." before "Québec City -> ..."), unrelated to the truck's actual weekly rhythm. No sequence/order authority existed for display.
+- Implementation (display-only authority, zero scheduling impact):
+  - `weekly_sequence` Integer (default 10) — the manual same-day sequencing key; helper text exactly: "Controls this corridor's display/planning order for its assigned truck. It does not change operating days or departure times."
+  - `schedule_weekday_index` Integer (stored, readonly, computed) — earliest operating weekday 0=Mon..6=Sun, 7 when none; sorts Mon→Sun in SQL.
+  - `schedule_sort_label` Char (computed) — human-readable "Mon · 10" for the list column (— · 10 for no-day corridors).
+  - List view `default_order="default_vehicle_id, schedule_weekday_index, weekly_sequence, start_time, name"` + two new optional columns ("Weekly Position", "Weekly Sequence"); form field in the Weekly Departure group.
+  - Departure generation/`_operating_weekdays()`/`_reconcile_departure_horizon` untouched — the fields are inert to every scheduling path (commented as such in the model).
+- Migration 18.0.13.36.0: idempotent NULL-safety net seeding `weekly_sequence=10` (`api.Environment(cr, SUPERUSER_ID, {})` — the recurring `cr.env` gotcha). Logged no-op because the SQL `ADD COLUMN ... DEFAULT 10` backfilled existing rows; migration guards NULLs for any future direct-SQL inserts.
+- Targeted verification (read-only shell probe + skip_departure_reconcile fixture, rolled back, zero commit):
+  - Active list ordering = Mon→Fri: c15 SWON (idx 0) → c9 Eastbound (1) → c11 Westbound (2) → c12 HHB→Niagara (3) → c13 Southeastern (4) on PB38446 — PASS.
+  - Same-day manual sequencing: fixture activated c14 (Mon, seq=1) → sorts BEFORE c15 (Mon, seq=10); rolled back to inactive/no-days/seq=10 — PASS.
+  - Corridor without truck renders safely: fixture NULLed c13's vehicle → no crash, corridor present, sorts LAST (Postgres NULLS LAST in ASC) — PASS.
+  - Weekday indices: c15=0, c9=1, c11=2, c12=3, c13=4, c14=7 — PASS.
+  - Invariance: all-corridor departure counts identical before/after (c12=8, c15=8, c13=8, c9=9, c11=9, c14=0); frozen leg prices unchanged (0 legs) — PASS.
+  - Truck 15 occupancy next 14 days: Wed c11 / Thu c12 / Fri c13 / Mon c15 / Tue c9 — one run/day, no conflicts; duplicate (corridor,date) rows NONE — PASS.
+  - Portal: SWON London delivery → manual_quote=False, Mondays only (08-31, 09-07, 09-14); Niagara St. Catharines → manual_quote=False, Thursdays only — PASS. (Observation: SWON pickup→GTA delivery also returns Mondays — c15's SWON stop is pickup_allowed=True, i.e. eastbound return loads are schedulable per the existing engine contract; pre-existing behavior, aligns with Roadmap Phase 3 "eastbound return".)
+- Observed (pre-existing, NOT from this phase): corridor id 14 is ARCHIVED (active=False, no weekdays, 0 departures; write_date 2026-08-26 05:00 matches the daily cron/upgrade window). No code path archives corridors — migration wrote nothing, generation script skips no-weekday corridors. Consistent with the §36 "one-click archiving follow-up" having been done; immaterial to ordering (inactive corridors don't render in the active list).
+- Deploy: crons paused (snapshot 68) → `-u prema_logistics_booking` 18.0.13.35.1→18.0.13.36.0 (EXIT 0) → crons restored 68/68 → `systemctl restart odoo18.service` (Python changed). Log tracebacks during upgrade = pre-existing noise (geoip/fetchmail/vehicle-layout), none from the migration.
