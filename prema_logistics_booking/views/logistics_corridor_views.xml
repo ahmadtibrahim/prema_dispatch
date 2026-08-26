@@ -50,10 +50,13 @@
                             <field name="weekly_sequence" string="Weekly Sequence"/>
                             <label for="destination_hub_arrival_time"
                                    invisible="not same_day_return and not destination_hub_id"/>
-                            <div class="o_row" invisible="not same_day_return and not destination_hub_id">
-                                <field name="destination_hub_arrival_time" widget="float_time"/>
+                            <div class="d-flex align-items-center gap-2"
+                                 invisible="not same_day_return and not destination_hub_id">
+                                <field name="destination_hub_arrival_time" widget="float_time"
+                                       class="oe_inline flex-grow-0"/>
                                 <field name="hub_arrival_time_source" readonly="1" nolabel="1"
                                        widget="badge"
+                                       class="oe_inline flex-grow-0"
                                        decoration-info="hub_arrival_time_source == 'suggested'"
                                        decoration-warning="hub_arrival_time_source == 'manual'"/>
                             </div>
