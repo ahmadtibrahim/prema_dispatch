@@ -87,6 +87,84 @@ def _allocated_stop_weights(session, delivery_stops):
     return stops
 
 
+def _movement_review_data(session):
+    """Build the customer review data from the frozen movement snapshot.
+
+    ``logistics.pricing.session.stop`` is one ordered relation for both stop
+    types.  Movement-v1 review data must therefore split it by the canonical
+    ``stop_type`` and resolve pallet destinations by stable stop key, never
+    by the display sequence (10, 20, 30, ...).
+    """
+    stops = session.stop_ids.sorted("sequence")
+    by_key = {stop.stop_key: stop for stop in stops if stop.stop_key}
+    movements = session.env["logistics.booking"]._extract_pallet_movements_from_snapshot(
+        session.price_snapshot,
+    )
+    movements = [movement for movement in movements if isinstance(movement, dict)]
+    pickup_counts = {}
+    pickup_weights = {}
+    delivery_counts = {}
+    delivery_weights = {}
+    review_movements = []
+
+    for index, movement in enumerate(movements, 1):
+        pickup_key = str(movement.get("pickup_stop_key") or "").strip()
+        destinations = [str(key or "").strip()
+                        for key in (movement.get("delivery_stop_keys") or [])]
+        weight = float(movement.get("weight_lbs") or 0.0)
+        pickup = by_key.get(pickup_key)
+        destination_records = [by_key[key] for key in destinations if key in by_key]
+        pickup_counts[pickup_key] = pickup_counts.get(pickup_key, 0) + 1
+        pickup_weights[pickup_key] = pickup_weights.get(pickup_key, 0.0) + weight
+        explicit_portions = movement.get("delivery_weights") or []
+        portions = []
+        for destination_index, delivery_key in enumerate(destinations):
+            delivery = by_key.get(delivery_key)
+            if not delivery:
+                continue
+            delivery_counts[delivery_key] = delivery_counts.get(delivery_key, 0) + 1
+            if len(destinations) == 1:
+                portion = weight
+            elif destination_index < len(explicit_portions):
+                portion = float(explicit_portions[destination_index] or 0.0)
+            else:
+                portion = weight / float(len(destinations) or 1)
+            delivery_weights[delivery_key] = delivery_weights.get(delivery_key, 0.0) + portion
+            portions.append({"stop": delivery, "weight_lbs": round(portion, 1)})
+        review_movements.append({
+            "number": index,
+            "label": movement.get("label") or "Pallet %d" % index,
+            "weight_lbs": round(weight, 1),
+            "pickup": pickup,
+            "destinations": destination_records,
+            "portions": portions,
+            "shared": len(destination_records) > 1,
+        })
+
+    def review_stop(stop, counts, weights):
+        return {
+            "record": stop,
+            "stop_key": stop.stop_key,
+            "name": stop.location_name or stop.city or stop.stop_key,
+            "street": stop.street or "",
+            "city": stop.city or "",
+            "state_code": stop.state_code or "",
+            "postal_code": stop.postal_code or "",
+            "pallets": counts.get(stop.stop_key, 0),
+            "weight_lbs": round(weights.get(stop.stop_key, 0.0), 1),
+        }
+
+    pickup_stops = [stop for stop in stops if stop.stop_type == "pickup"]
+    delivery_stops = [stop for stop in stops if stop.stop_type == "delivery"]
+    return {
+        "pickups": [review_stop(stop, pickup_counts, pickup_weights)
+                    for stop in pickup_stops],
+        "deliveries": [review_stop(stop, delivery_counts, delivery_weights)
+                       for stop in delivery_stops],
+        "movements": review_movements,
+    }
+
+
 def _build_stop_pricing(session):
     """Customer-facing pricing breakdown built ONLY from the session's
     existing price_snapshot lines. No pricing is computed here; the
@@ -105,7 +183,10 @@ def _build_stop_pricing(session):
       Transportation" line and mark every stop "Included in Route"
       (never assign the whole route price to one arbitrary stop)."""
     stops = []
-    for index, stop in enumerate(session.delivery_stop_ids.sorted("sequence")):
+    delivery_stop_records = session.stop_ids.filtered(
+        lambda stop: stop.stop_type == "delivery",
+    ).sorted("sequence")
+    for index, stop in enumerate(delivery_stop_records):
         stops.append({
             "index": index + 1,
             "name": stop.location_name or stop.city or ("Stop %d" % (index + 1)),
@@ -144,7 +225,7 @@ def _build_stop_pricing(session):
             cumulative = []
             onboard = []
             allocations = session.pallet_allocations or []
-            for stop in session.delivery_stop_ids.sorted("sequence"):
+            for stop in delivery_stop_records:
                 region = False
                 if stop.latitude and stop.longitude:
                     match = resolver.resolve(stop.latitude, stop.longitude)
@@ -1637,13 +1718,36 @@ class LogisticsBookingPortal(http.Controller):
                 session.pickup_customer_access_id.id)
             if acc.exists():
                 pickup_loc = acc
-        delivery_stops = session.delivery_stop_ids if session.delivery_stop_ids else None
+        session_stops = session.stop_ids.sorted("sequence")
+        pickup_stop_records = session_stops.filtered(
+            lambda stop: stop.stop_type == "pickup",
+        )
+        delivery_stop_records = session_stops.filtered(
+            lambda stop: stop.stop_type == "delivery",
+        )
+        delivery_stops = delivery_stop_records if delivery_stop_records else None
+        movement_v1 = bool(
+            session.route_snapshot and
+            session.route_snapshot.get("route_model_version") == "movement_v1"
+        ) or bool(
+            request.env["logistics.booking"]._extract_pallet_movements_from_snapshot(
+                session.price_snapshot,
+            )
+        )
+        movement_review = _movement_review_data(session) if movement_v1 else {
+            "pickups": [], "deliveries": [], "movements": [],
+        }
 
         return request.render("prema_logistics_booking.portal_step3_result", {
             "session": session,
             "pickup_fsa": pickup_fsa, "delivery_fsa": delivery_fsa,
             "pickup_loc": pickup_loc,
             "delivery_stops": _allocated_stop_weights(session, delivery_stops),
+            "pickup_stop_records": pickup_stop_records,
+            "review_pickups": movement_review["pickups"],
+            "review_deliveries": movement_review["deliveries"],
+            "review_movements": movement_review["movements"],
+            "movement_v1": movement_v1,
             "stop_pricing": _build_stop_pricing(session),
             "quote": quote,
         })
@@ -1875,7 +1979,8 @@ class LogisticsBookingPortal(http.Controller):
         # Per-stop contact/instructions (UAT-011) — access rows carry the
         # private contact data.
         delivery_stops_data = []
-        for stop in session.delivery_stop_ids:
+        for stop in session.stop_ids.filtered(
+                lambda item: item.stop_type == "delivery").sorted("sequence"):
             seq = stop.sequence
             sl = stop.customer_access_id or stop.saved_location_id
             delivery_stops_data.append({

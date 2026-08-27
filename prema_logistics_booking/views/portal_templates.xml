@@ -1707,7 +1707,7 @@
                 document.querySelectorAll('.pallet-alloc-row').forEach(function(row) {
                     var p = row.dataset.pallet;
                     if (!allocationState[p]) allocationState[p] = {pickup: '', stops: [], weight: '', manualWeight: false, reference: ''};
-                    var pickup = row.querySelector('.pallet-pickup-radio:checked');
+                    var pickup = row.querySelector('.pallet-pickup-select');
                     var weight = row.querySelector('.pallet-weight');
                     var reference = row.querySelector('.pallet-reference');
                     if (pickup) allocationState[p].pickup = pickup.value;
@@ -1819,15 +1819,12 @@
                     html += '<div class="d-flex align-items-center py-2 border-bottom pallet-alloc-row" data-pallet="' + p + '">';
                     html += '<strong class="me-2" style="min-width:75px">PALLET ' + p + '</strong>';
                     if (pickupStopsForAllocation.length > 1) {
-                        html += '<div class="me-2"><small class="text-muted">Pickup From</small><br/><div class="d-flex flex-wrap gap-1" style="max-width:330px">';
+                        html += '<div class="me-2"><small class="text-muted">Pickup From</small><br/><select class="form-select form-select-sm pallet-pickup-select" data-pallet="' + p + '" onchange="updateAllocations()" style="min-width:175px">';
+                        html += '<option value="">— Select pickup —</option>';
                         pickupStopsForAllocation.forEach(function(stop, i) {
-                            var radioId = 'pallet_' + p + '_pickup_' + i;
-                            html += '<label for="' + radioId + '" class="btn btn-outline-secondary btn-sm py-1 px-2" style="white-space:nowrap">';
-                            html += '<input id="' + radioId + '" type="radio" class="pallet-pickup-radio me-1" name="pallet_pickup_' + p + '" data-pallet="' + p + '" value="' + stop.stop_key + '"' + (pickupKey === stop.stop_key ? ' checked="checked"' : '') + ' onchange="updateAllocations()"/>';
-                            html += allocationLocationName(stop, 'Pickup ' + (i + 1));
-                            html += '</label>';
+                            html += '<option value="' + stop.stop_key + '"' + (pickupKey === stop.stop_key ? ' selected' : '') + '>' + allocationLocationName(stop, 'Pickup ' + (i + 1)) + '</option>';
                         });
-                        html += '</div></div>';
+                        html += '</select></div>';
                     } else {
                         html += '<div class="me-2"><small class="text-muted">Pickup</small><br/><span class="small">' + allocationLocationName(pickupStopsForAllocation[0], 'Pickup 1') + '</span></div>';
                     }
@@ -2455,8 +2452,8 @@
                     }
                     for (var rowIndex = 0; rowIndex < physical; rowIndex++) {
                         var allocationRow = allocationRows[rowIndex];
-                        var pickupRadio = allocationRow.querySelector('.pallet-pickup-radio:checked');
-                        var selectedPickup = pickupRadio ? pickupRadio.value : (pickupKeys.length === 1 ? pickupKeys[0] : '');
+                        var pickupSelect = allocationRow.querySelector('.pallet-pickup-select');
+                        var selectedPickup = pickupSelect ? pickupSelect.value : (pickupKeys.length === 1 ? pickupKeys[0] : '');
                         var selectedDeliveries = allocationRow.querySelectorAll('.pallet-stop-check:checked');
                         var rowWeight = parseFloat((allocationRow.querySelector('.pallet-weight') || {}).value || 0) || 0;
                         if (pickupKeys.indexOf(selectedPickup) < 0 || !selectedDeliveries.length || rowWeight <= 0) {
@@ -2507,7 +2504,7 @@
                         } else {
                             var pickupCount = 0, pickupWeight = 0;
                             for (var pp = 1; pp <= physical; pp++) {
-                                var pickup = document.querySelector('.pallet-pickup-radio:checked[data-pallet="' + pp + '"]');
+                                var pickup = document.querySelector('.pallet-pickup-select[data-pallet="' + pp + '"]');
                                 var pickupValue = pickup ? pickup.value : (pickupKeys.length === 1 ? pickupKeys[0] : '');
                                 if (pickupValue === s.key) {
                                     pickupCount += 1;
@@ -2522,8 +2519,8 @@
                     var movements = [];
                     var legacyAllocs = [];
                     for (var p = 1; p <= physical; p++) {
-                        var puRadio = document.querySelector('.pallet-pickup-radio:checked[data-pallet="' + p + '"]');
-                        var pickupKey = puRadio ? puRadio.value : (pickupKeys.length === 1 ? pickupKeys[0] : '');
+                        var puSelect = document.querySelector('.pallet-pickup-select[data-pallet="' + p + '"]');
+                        var pickupKey = puSelect ? puSelect.value : (pickupKeys.length === 1 ? pickupKeys[0] : '');
                         var deliveryKeys = selByPallet[p].map(function(m) { return m.stopKey; });
                         var deliveryIdx = selByPallet[p].map(function(m) { return m.idx; });
                         var weightInput = document.querySelector('.pallet-weight[data-pallet="' + p + '"]');
@@ -2621,7 +2618,7 @@
                 var movements = [];
                 document.querySelectorAll('.pallet-alloc-row').forEach(function(mrow) {
                     var p = mrow.dataset.pallet;
-                    var pu = mrow.querySelector('.pallet-pickup-radio:checked');
+                    var pu = mrow.querySelector('.pallet-pickup-select');
                     var wt = mrow.querySelector('.pallet-weight');
                     var ref = mrow.querySelector('.pallet-reference');
                     movements.push({pallet: p, pickup: pu ? pu.value : (document.querySelector('.pickup-stop-summary-row') || {}).dataset?.stopKey || 'PU1',
@@ -2704,7 +2701,7 @@
                 (saved.movements || []).forEach(function(item) {
                     var row = document.querySelector('.pallet-alloc-row[data-pallet="' + item.pallet + '"]');
                     if (!row) return;
-                    var pu = row.querySelector('.pallet-pickup-radio:checked');
+                    var pu = row.querySelector('.pallet-pickup-select');
                     var wt = row.querySelector('.pallet-weight');
                     var ref = row.querySelector('.pallet-reference');
                     if (pu) pu.value = item.pickup || pu.value;
@@ -2795,11 +2792,36 @@
                         <div class="col-4"><small class="text-muted">Total Weight</small><br/><strong><t t-esc="'%g' % session.weight_lbs"/> lb</strong></div>
                         <div class="col-4"><small class="text-muted">Type</small><br/><strong><t t-esc="session.shipment_type.upper()"/></strong></div>
                     </div>
-                    <!-- Pallet Allocation Summary -->
-                    <t t-if="delivery_stops and len(delivery_stops) > 1">
+                    <!-- Frozen movement-v1 pallet review. Destinations are
+                         resolved by stable stop key, never by the internal
+                         session sequence (10, 20, 30, ...). -->
+                    <t t-if="movement_v1">
                         <hr/>
                         <small class="text-muted">PALLET ALLOCATION</small>
                         <div class="mt-2" id="review_pallet_allocs">
+                            <t t-foreach="review_movements" t-as="mv">
+                                <div class="mb-2">
+                                    <strong>Pallet <t t-esc="mv['number']"/></strong>
+                                    <t t-if="mv['shared']"><span class="badge ms-1" style="background:#7b1fa2;color:#fff">SHARED — <t t-esc="len(mv['destinations'])"/> STOPS</span></t>
+                                    <t t-if="not mv['shared']"><span class="badge ms-1" style="background:#6c757d;color:#fff">DEDICATED</span></t>
+                                    <br/><small class="text-muted">
+                                        <t t-esc="mv['pickup'] and (mv['pickup'].location_name or mv['pickup'].city) or 'Pickup'"/> →
+                                        <t t-foreach="mv['destinations']" t-as="destination">
+                                            <t t-esc="destination.location_name or destination.city"/>
+                                            <t t-if="destination != mv['destinations'][-1]">, </t>
+                                        </t>
+                                        · <t t-esc="'%g' % mv['weight_lbs']"/> lb
+                                    </small>
+                                </div>
+                            </t>
+                        </div>
+                    </t>
+                    <!-- Legacy allocation display remains unchanged for
+                         sessions without a frozen movement-v1 snapshot. -->
+                    <t t-if="not movement_v1 and delivery_stops and len(delivery_stops) > 1">
+                        <hr/>
+                        <small class="text-muted">PALLET ALLOCATION</small>
+                        <div class="mt-2" id="review_pallet_allocs_legacy">
                             <t t-set="allocs" t-value="session.pallet_allocations or []"/>
                             <t t-if="allocs">
                                 <t t-foreach="allocs" t-as="pa">
@@ -2810,7 +2832,7 @@
                                         <br/><small class="text-muted">→
                                             <t t-if="pa.get('stops')">
                                                 <t t-foreach="pa.get('stops')" t-as="si">
-                                                    <t t-foreach="session.delivery_stop_ids" t-as="st">
+                                                    <t t-foreach="delivery_stops" t-as="st">
                                                         <t t-if="st.sequence == si">
                                                             <t t-esc="st.location_name or st.city"/>
                                                             <t t-if="si != pa.get('stops')[len(pa.get('stops')) - 1]">, </t>
@@ -2822,9 +2844,6 @@
                                         </small>
                                     </div>
                                 </t>
-                            </t>
-                            <t t-if="not allocs and session.shared_pallet_mode">
-                                <div><span class="badge" style="background:#7b1fa2;color:#fff">Shared Across <t t-esc="len(delivery_stops)"/> Stops</span></div>
                             </t>
                         </div>
                     </t>
@@ -2840,8 +2859,53 @@
             <div class="card mb-4">
                 <div class="card-header bg-light"><strong>WHAT YOU ARE BOOKING</strong></div>
                 <div class="card-body">
-                    <!-- Pickup Location -->
-                    <div class="mb-3">
+                    <!-- Generalized movement-v1 route: classify and
+                         number customer-facing stops independently from the
+                         internal session sequence. -->
+                    <t t-if="movement_v1">
+                        <div class="mb-3">
+                            <small class="text-muted">📦 PICKUPS · <t t-esc="len(review_pickups)"/></small>
+                            <t t-foreach="review_pickups" t-as="stop">
+                                <div class="border rounded p-3 mb-2 bg-light">
+                                    <strong><t t-esc="stop['name']"/></strong><br/>
+                                    <t t-if="stop['street']"><t t-esc="stop['street']"/><br/></t>
+                                    <t t-esc="stop['city']"/><t t-if="stop['city'] and stop['state_code']">, </t><t t-esc="stop['state_code']"/>
+                                    <t t-if="stop['postal_code']"> <t t-esc="stop['postal_code']"/></t>
+                                    <div class="mt-2"><strong><t t-esc="stop['pallets']"/> pallet<t t-if="stop['pallets'] != 1">s</t> · <t t-esc="'%g' % stop['weight_lbs']"/> lb</strong></div>
+                                </div>
+                            </t>
+                        </div>
+                        <div>
+                            <small class="text-muted">📍 DELIVERIES · <t t-esc="len(review_deliveries)"/></small>
+                            <t t-foreach="review_deliveries" t-as="stop">
+                                <t t-set="record" t-value="stop['record']"/>
+                                <div class="border rounded p-2 mb-2 bg-light">
+                                    <div class="d-flex justify-content-between">
+                                        <div>
+                                            <strong><t t-esc="stop_index + 1"/>.</strong>
+                                            <strong><t t-esc="stop['name']"/></strong><br/>
+                                            <small class="text-muted"><t t-if="stop['street']"><t t-esc="stop['street']"/> · </t><t t-esc="stop['city']"/><t t-if="stop['state_code']">, <t t-esc="stop['state_code']"/></t><t t-if="stop['postal_code']"> <t t-esc="stop['postal_code']"/></t></small>
+                                        </div>
+                                        <div class="text-end"><strong><t t-esc="stop['pallets']"/> pallet<t t-if="stop['pallets'] != 1">s</t></strong><br/><small class="text-muted"><t t-esc="'%g' % stop['weight_lbs']"/> lb</small></div>
+                                    </div>
+                                    <t t-set="sl" t-value="record.customer_access_id or record.facility_id"/>
+                                    <div class="mt-2 pt-2 border-top">
+                                        <a href="#" class="text-decoration-none small fw-bold contact-toggle" t-att-data-target="'de_contact_' + str(record.sequence)">CONTACT &amp; INSTRUCTIONS ▾</a>
+                                        <div class="contact-panel mt-2" t-att-id="'de_contact_' + str(record.sequence)" style="display:none">
+                                            <div class="row g-2">
+                                                <div class="col-sm-6"><label class="form-label small mb-0">Contact Name</label><input type="text" t-att-name="'delivery_contact_name_' + str(record.sequence)" class="form-control form-control-sm" t-att-value="sl.contact_name or ''" placeholder="Delivery contact"/></div>
+                                                <div class="col-sm-6"><label class="form-label small mb-0">Phone</label><input type="text" t-att-name="'delivery_phone_' + str(record.sequence)" class="form-control form-control-sm" t-att-value="sl.contact_phone or ''" placeholder="Delivery phone"/></div>
+                                                <div class="col-12"><label class="form-label small mb-0">Dock Info</label><input type="text" t-att-name="'delivery_dock_info_' + str(record.sequence)" class="form-control form-control-sm" t-att-value="sl.dock_info or ''" placeholder="Dock door, bay, etc."/></div>
+                                                <div class="col-12"><label class="form-label small mb-0">Delivery Instructions</label><input type="text" t-att-name="'delivery_instructions_' + str(record.sequence)" class="form-control form-control-sm" t-att-value="sl.delivery_instructions or ''" placeholder="e.g. Ring buzzer #3"/></div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </t>
+                        </div>
+                    </t>
+                    <!-- Legacy one-pickup review remains unchanged. -->
+                    <div class="mb-3" t-if="not movement_v1">
                         <small class="text-muted">📦 PICKUP</small>
                         <t t-if="pickup_loc">
                             <div class="border rounded p-3 bg-light">
@@ -2889,7 +2953,7 @@
                         </t>
                     </div>
                     <!-- Delivery Stops -->
-                    <div>
+                    <div t-if="not movement_v1">
                         <t t-if="delivery_stops">
                             <!-- "Shared" is only meaningful with 2+ stops —
                                  a single stop is never shown as shared. -->

@@ -171,13 +171,17 @@ def _movement_counts(movements):
             # rather than inventing a split here.
             if len(destinations) == 1:
                 portion = pallet_weight
-            elif index < len(portions):
+            elif index < len(portions) and portions[index] is not None:
                 try:
                     portion = float(portions[index] or 0.0)
                 except (TypeError, ValueError):
                     portion = 0.0
             else:
-                portion = 0.0
+                # The portal movement snapshot may omit explicit portions
+                # for a shared physical pallet. Keep the canonical stop
+                # aggregate reconciled with the visible allocation by using
+                # an equal explanatory split in that case.
+                portion = pallet_weight / float(len(destinations) or 1)
             delivery_weights[delivery_key] = (
                 delivery_weights.get(delivery_key, 0.0) + portion
             )
