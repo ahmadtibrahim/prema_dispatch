@@ -137,10 +137,11 @@ class PremaDispatchLocation(models.Model):
 
     active = fields.Boolean(default=True)
     portal_reusable = fields.Boolean(
-        string="Portal Reusable", default=False,
+        string="Portal Reusable", default=True,
         help="When enabled, this location appears in portal Saved Location "
-             "autocomplete for all authenticated customers. Use for shared "
-             "facilities (chain stores, public warehouses, cross-docks).",
+             "autocomplete for all authenticated customers. Newly created "
+             "locations default to enabled; uncheck to keep a facility "
+             "internal (e.g. relay points, depots).",
     )
 
     location_type = fields.Selection([
