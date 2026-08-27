@@ -869,12 +869,14 @@
                     <label class="form-label">Total Weight (lbs)</label>
                     <input type="number" id="weight_input" step="0.1" name="weight_lbs" class="form-control" t-att-value="weight_lbs or 500" required="required"/>
                     <div class="form-text" id="weight_hint" style="display:none">
-                        <a href="#" id="reset_weight_link" class="text-decoration-none small">Reset to 500 lb/pallet</a>
+                        <a href="#" id="reset_weight_link" class="text-decoration-none small">Reset pallet weights to equal split</a>
                     </div>
                 </div>
                 <!-- Hidden: legacy pallets field for backward compatibility -->
                 <input type="hidden" name="pallets" id="legacy_pallets" value="1"/>
                 <input type="hidden" name="shared_pallet_mode" id="shared_pallet_mode_input" value="0"/>
+                <input type="hidden" name="pallet_weight_mode" id="pallet_weight_mode"
+                       t-att-value="pallet_weight_mode or 'auto'"/>
                 <input type="hidden" name="pallet_allocations_json" id="pallet_allocations_json"
                        t-att-value="pallet_allocations_json or '[]'"/>
                 <!-- One customer-facing pallet editor for every generalized
@@ -1026,24 +1028,24 @@
         </div>
     </t>
 
-    <!-- Smart date cards + calendar + weight auto-calc JS -->
+    <!-- Smart date cards + calendar + live pallet-weight JS -->
     <script><![CDATA[
         document.addEventListener('DOMContentLoaded', function() {
             // ════════════════════════════════════════════════════════════
-            // Weight auto-calc: pallets × 500 lb, manual override
+            // Total shipment weight is customer input. Pallet cards derive
+            // their default weights from total weight / physical pallets;
+            // changing the pallet count must not rewrite the total weight.
             // ════════════════════════════════════════════════════════════
             var palletsEl = document.getElementById('pallets_input');
             var weightEl = document.getElementById('weight_input');
             var weightHint = document.getElementById('weight_hint');
             var resetLink = document.getElementById('reset_weight_link');
-            var weightManual = false;
             var WEIGHT_PER_PALLET = 500;  // initial fallback; updated from the corridor config via the capacity endpoint
 
             function autoWeight() {
-                if (weightManual) return;
-                var p = parseInt(palletsEl.value) || 1;
-                weightEl.value = p * WEIGHT_PER_PALLET;
-                weightHint.style.display = 'none';
+                if (typeof syncPalletAllocationWeights === 'function') {
+                    syncPalletAllocationWeights();
+                }
             }
             // Exposed for the stepper and capacity-refresh paths so the
             // weight always tracks pallet changes (programmatic writes do
@@ -1052,9 +1054,18 @@
             if (palletsEl && weightEl) { syncCalculatedWeight(); }  // initial load
             if (palletsEl && weightEl) {
                 palletsEl.addEventListener('input', function() { autoWeight(); fetchEligibleDates(); });
-                weightEl.addEventListener('input', function() { if (document.activeElement === weightEl) { weightManual = true; weightHint.style.display = ''; } });
-                weightEl.addEventListener('focus', function() { weightManual = true; weightHint.style.display = ''; });
-                if (resetLink) { resetLink.addEventListener('click', function(e) { e.preventDefault(); weightManual = false; autoWeight(); }); }
+                weightEl.addEventListener('input', function() {
+                    if (document.activeElement === weightEl) { weightHint.style.display = ''; }
+                    if (typeof syncPalletAllocationWeights === 'function') {
+                        syncPalletAllocationWeights();
+                    }
+                });
+                if (resetLink) {
+                    resetLink.addEventListener('click', function(e) {
+                        e.preventDefault();
+                        if (typeof resetPalletWeights === 'function') { resetPalletWeights(); }
+                    });
+                }
             }
 
             // ════════════════════════════════════════════════════════════
@@ -1136,6 +1147,19 @@
                 capacityError.style.display = msg ? '' : 'none';
             }
 
+            function generalizedRouteStopsParam() {
+                var routeEl = document.getElementById('initial_route_stops_data');
+                var raw = routeEl ? routeEl.textContent || '' : '';
+                try {
+                    var stops = JSON.parse(raw);
+                    return Array.isArray(stops) && stops.length
+                        ? '&route_stops_json=' + encodeURIComponent(JSON.stringify(stops))
+                        : '';
+                } catch (e) {
+                    return '';
+                }
+            }
+
             function setPlusDisabled() {
                 var plus = document.getElementById('pallets_plus');
                 if (plus) {
@@ -1192,6 +1216,7 @@
                 var params = 'pickup_date=' + encodeURIComponent(date) +
                     '&pickup_lat=' + puLat + '&pickup_lng=' + puLng +
                     '&pallets=' + (parseInt(palletsInput?.value || '1', 10) || 1);
+                params += generalizedRouteStopsParam();
                 var pickupLocIds = [];
                 document.querySelectorAll('input[name^="pickup_loc_id_"]').forEach(function(inp) {
                     if (inp.value && pickupLocIds.indexOf(inp.value) === -1) pickupLocIds.push(inp.value);
@@ -1234,7 +1259,6 @@
                         }
                         if (data && data.per_pallet_weight) {
                             WEIGHT_PER_PALLET = data.per_pallet_weight;
-                            if (resetLink) { resetLink.textContent = 'Reset to ' + WEIGHT_PER_PALLET + ' lb/pallet'; }
                         }
                         var clamped = applyPalletMax();
                         syncCalculatedWeight();
@@ -1363,6 +1387,7 @@
                     '&weight_lbs=' + (parseFloat(weightEl?.value) || 500) +
                     '&equipment=' + equip +
                     '&shipment_type=' + st;
+                params += generalizedRouteStopsParam();
                 if (puLocId && deliveryLocIds.length) {
                     params += '&pickup_loc_id=' + encodeURIComponent(puLocId) +
                         '&pickup_loc_ids=' + encodeURIComponent(pickupLocIds.join(',')) +
@@ -1620,6 +1645,23 @@
             var palletAllocBody = document.getElementById('pallet_allocation_body');
             var palletAllocSummary = document.getElementById('pallet_allocation_summary');
             var allocsJsonField = document.getElementById('pallet_allocations_json');
+            var weightModeInput = document.getElementById('pallet_weight_mode');
+            var allocationWeightMode = weightModeInput && weightModeInput.value === 'manual' ? 'manual' : 'auto';
+
+            function roundPalletWeight(value) {
+                return Math.round((Number(value) || 0) * 10) / 10;
+            }
+            function defaultPalletWeight(pallet, physical, totalWeight) {
+                if (pallet < physical) {
+                    return roundPalletWeight(totalWeight / physical);
+                }
+                var prior = roundPalletWeight(totalWeight / physical) * (physical - 1);
+                return roundPalletWeight(totalWeight - prior);
+            }
+            function updateWeightMode(mode) {
+                allocationWeightMode = mode === 'manual' ? 'manual' : 'auto';
+                if (weightModeInput) { weightModeInput.value = allocationWeightMode; }
+            }
 
             function allocationPickupStops() {
                 var stops = (initialRouteStops || []).filter(function(s) { return s.stop_type === 'pickup'; });
@@ -1693,6 +1735,24 @@
                 syncAllocationState();
                 var physInput = document.getElementById('pallets_input');
                 var physical = parseInt(physInput ? physInput.value : '1') || 1;
+                var totalWeight = parseFloat(weightEl ? weightEl.value : '0') || 0;
+                var existingManual = allocationWeightMode === 'manual';
+                for (var weightPallet = 1; weightPallet <= physical; weightPallet++) {
+                    var weightState = allocationState[String(weightPallet)];
+                    if (!weightState) {
+                        weightState = allocationState[String(weightPallet)] = {
+                            pickup: '', stops: [], weight: '', reference: ''
+                        };
+                    }
+                    // Auto mode always reconciles the complete physical set,
+                    // placing any tenth-pound residual on the final pallet.
+                    // Manual mode never overwrites an existing value; a new
+                    // card gets the current default until edited.
+                    if (!existingManual || !weightState.weight) {
+                        weightState.weight = defaultPalletWeight(
+                            weightPallet, physical, totalWeight);
+                    }
+                }
                 var html = '';
                 for (var p = 1; p <= physical; p++) {
                     var state = allocationState[String(p)] || {pickup: '', stops: [], weight: '', reference: ''};
@@ -1791,6 +1851,26 @@
                     if (hiddenInput) hiddenInput.value = sp.length || 1;
                 }
             };
+
+            window.syncPalletAllocationWeights = function() {
+                if (!palletAllocBody) return;
+                buildPalletAllocations();
+            };
+            window.resetPalletWeights = function() {
+                updateWeightMode('auto');
+                if (weightHint) { weightHint.style.display = 'none'; }
+                buildPalletAllocations();
+            };
+
+            if (palletAllocBody) {
+                palletAllocBody.addEventListener('input', function(ev) {
+                    if (!ev.target.matches('.pallet-weight')) return;
+                    updateWeightMode('manual');
+                    var p = ev.target.dataset.pallet;
+                    if (!allocationState[p]) allocationState[p] = {pickup: '', stops: [], weight: '', reference: ''};
+                    allocationState[p].weight = ev.target.value;
+                });
+            }
 
             var physPalletInput = document.getElementById('pallets_input');
             if (physPalletInput) {
@@ -2312,6 +2392,19 @@
                         if (pickupKeys.indexOf(selectedPickup) < 0 || !selectedDeliveries.length) {
                             allocationRow.classList.add('border-danger');
                             showMovementError('Select a pickup and delivery for each pallet.');
+                            return;
+                        }
+                    }
+                    var weightMode = (document.getElementById('pallet_weight_mode') || {}).value || 'auto';
+                    if (weightMode === 'manual') {
+                        var totalPalletWeight = 0;
+                        allocationRows.forEach(function(row) {
+                            var weightInput = row.querySelector('.pallet-weight');
+                            totalPalletWeight += parseFloat(weightInput && weightInput.value || 0) || 0;
+                        });
+                        var totalShipmentWeight = parseFloat(weightEl.value || 0) || 0;
+                        if (Math.abs(totalPalletWeight - totalShipmentWeight) > 0.05) {
+                            showMovementError('Manual pallet weights must equal the total shipment weight.');
                             return;
                         }
                     }

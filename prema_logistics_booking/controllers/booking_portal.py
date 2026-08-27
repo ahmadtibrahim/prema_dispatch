@@ -434,6 +434,7 @@ def _quote_error_context(kwargs, partner, pickup_fsa, delivery_fsa, error):
         "weight_lbs": weight_lbs, "shipment_type": kwargs.get("shipment_type") or "ltl",
         "temperature_mode": kwargs.get("temperature_mode") or "dry",
         "required_temperature_c": kwargs.get("required_temperature_c") or "",
+        "pallet_weight_mode": kwargs.get("pallet_weight_mode") or "auto",
         "error": error,
     }
 
@@ -901,7 +902,60 @@ class LogisticsBookingPortal(http.Controller):
                 pickup_loc_ids = [int(kwargs.get("pickup_loc_id"))]
             except (TypeError, ValueError):
                 pickup_loc_ids = []
-        if pickup_loc_ids and delivery_loc_ids:
+        # When Step 2 has a generalized route, it is the availability
+        # authority too. Resolve every submitted stop through the customer's
+        # canonical access rows; do not silently downgrade to the first
+        # scalar pickup/delivery pair.
+        route_stops_json = str(kwargs.get("route_stops_json") or "").strip()
+        route_payload = None
+        if route_stops_json:
+            try:
+                route_payload = json.loads(route_stops_json)
+            except (json.JSONDecodeError, TypeError):
+                route_payload = None
+            if not isinstance(route_payload, list) or not route_payload:
+                return request.make_response(
+                    json.dumps({"dates": [], "manual_quote": True,
+                                "reason": "Could not resolve the selected route stops."}),
+                    headers=[("Content-Type", "application/json")],
+                )
+            route_stops = []
+            seen_keys = set()
+            for rs in route_payload:
+                if not isinstance(rs, dict) or rs.get("stop_type") not in ("pickup", "delivery"):
+                    route_stops = []
+                    break
+                stop_key = str(rs.get("stop_key") or "").strip()
+                loc = _resolve_loc(request.env, partner, rs.get("saved_location_id"))
+                if not stop_key or stop_key in seen_keys or not loc:
+                    route_stops = []
+                    break
+                if (rs["stop_type"] == "pickup" and not loc.can_pickup) or (
+                        rs["stop_type"] == "delivery" and not loc.can_delivery):
+                    route_stops = []
+                    break
+                eff = _portal_coord_pair(loc)
+                if eff[0] is None or eff[1] is None:
+                    route_stops = []
+                    break
+                seen_keys.add(stop_key)
+                route_stops.append({
+                    "stop_key": stop_key,
+                    "stop_type": rs["stop_type"],
+                    "latitude": eff[0], "longitude": eff[1],
+                    "postal_code": loc.postal_code or "",
+                    **_stop_loc_refs(loc),
+                })
+            if not route_stops or not any(s["stop_type"] == "pickup" for s in route_stops) \
+                    or not any(s["stop_type"] == "delivery" for s in route_stops):
+                return request.make_response(
+                    json.dumps({"dates": [], "manual_quote": True,
+                                "reason": "Could not resolve the selected route stops."}),
+                    headers=[("Content-Type", "application/json")],
+                )
+            stops = route_stops
+
+        if route_payload is None and pickup_loc_ids and delivery_loc_ids:
             pickup_locs = [_resolve_loc(request.env, partner, loc_id)
                            for loc_id in pickup_loc_ids]
             delivery_locs = [
@@ -1016,6 +1070,13 @@ class LogisticsBookingPortal(http.Controller):
         pickup_stop_keys = _indexed_keys(kwargs, "pickup_stop_key_")
         delivery_stop_keys = _indexed_keys(kwargs, "delivery_stop_key_")
 
+        # The first ordered pickup is the compatibility origin for the
+        # availability API, but it is derived from the generalized stop list
+        # rather than allowing a missing scalar field to erase a multi-stop
+        # route.
+        if not pickup_loc_id and pickup_loc_ids:
+            pickup_loc_id = pickup_loc_ids[0]
+
         Fsa = request.env["logistics.fsa"].sudo()
         partner = request.env.user.partner_id.commercial_partner_id
 
@@ -1110,18 +1171,26 @@ class LogisticsBookingPortal(http.Controller):
                 if not loc:
                     return request.redirect("/my/booking/new")
                 pickup_locs.append(loc)
+                pu_eff = _portal_coord_pair(loc)
                 initial_route_stops.append({
                     "stop_key": _safe_stop_key(
                         pickup_stop_keys[i - 1] if i <= len(pickup_stop_keys) else "",
                         "pickup", i),
                     "stop_type": "pickup", "saved_location_id": loc.id,
+                    "latitude": pu_eff[0], "longitude": pu_eff[1],
+                    "postal_code": loc.postal_code or "",
+                    **_stop_loc_refs(loc),
                 })
             for i, loc in enumerate(delivery_locs, 1):
+                de_eff = _portal_coord_pair(loc)
                 initial_route_stops.append({
                     "stop_key": _safe_stop_key(
                         delivery_stop_keys[i - 1] if i <= len(delivery_stop_keys) else "",
                         "delivery", i),
                     "stop_type": "delivery", "saved_location_id": loc.id,
+                    "latitude": de_eff[0], "longitude": de_eff[1],
+                    "postal_code": loc.postal_code or "",
+                    **_stop_loc_refs(loc),
                 })
             return request.render("prema_logistics_booking.portal_step2_shipment", {
                 "pickup_fsa": pickup_fsa, "delivery_fsa": delivery_fsa,
@@ -1238,6 +1307,14 @@ class LogisticsBookingPortal(http.Controller):
                     raise UserError(_("The route stops or pallet movements are invalid."))
                 _validate_movement_payload(
                     route_stops, pallet_movements, physical_pallets)
+                if str(kwargs.get("pallet_weight_mode") or "auto").strip().lower() == "manual":
+                    movement_weight_total = sum(
+                        float(movement.get("weight_lbs") or 0.0)
+                        for movement in pallet_movements
+                    )
+                    if abs(movement_weight_total - weight_lbs) > 0.05:
+                        raise UserError(_(
+                            "Manual pallet weights must equal the total shipment weight."))
                 posted_pickup_ids = set(_indexed_ints(
                     kwargs, "pickup_loc_id_"))
                 posted_delivery_ids = set(_indexed_ints(
@@ -1426,6 +1503,7 @@ class LogisticsBookingPortal(http.Controller):
         # selected saved location is re-validated server-side.
         if route_stops and pallet_movements:
             gen_pickup_stops, gen_delivery_stops = [], []
+            resolved_route_stops = []
             for rs in route_stops:
                 loc = None
                 loc_id = rs.get("saved_location_id")
@@ -1456,12 +1534,29 @@ class LogisticsBookingPortal(http.Controller):
                     "instructions": rs.get("instructions") or "",
                     "timezone": rs.get("timezone") or (loc.timezone if loc else "America/Toronto"),
                 }
+                # Route planning must consume the same canonical, verified
+                # stop data as the pickup/delivery lists. The browser payload
+                # carries stable keys and saved-location references; passing
+                # that raw list downstream drops coordinates and yields
+                # NO_PICKUP_REGION for access-row locations.
+                resolved_route_stops.append({
+                    "stop_key": entry["stop_key"],
+                    "stop_type": rs.get("stop_type"),
+                    "saved_location_id": loc.id,
+                    "latitude": entry["latitude"],
+                    "longitude": entry["longitude"],
+                    "postal_code": entry["postal_code"],
+                    "address": entry["address"],
+                    "city": entry["city"],
+                    **_stop_loc_refs(loc),
+                })
                 if rs.get("stop_type") == "pickup":
                     gen_pickup_stops.append(entry)
                 else:
                     gen_delivery_stops.append(entry)
             pickup_stops = gen_pickup_stops
             delivery_stops = gen_delivery_stops
+            route_stops = resolved_route_stops
 
         # A shared-pallet shipment requires at least two delivery stops —
         # "Shared Across 1 Stop" is never priced or displayed. Re-derived
@@ -1572,21 +1667,71 @@ class LogisticsBookingPortal(http.Controller):
         from ..services.vehicle_capacity_service import VehicleCapacityService
 
         resolver = RegionResolver(request.env)
+        # Generalized routes use the first ordered canonical pickup as the
+        # availability origin and the last ordered canonical delivery as the
+        # route end. The complete stop list is still sent by the portal and
+        # is resolved here before any legacy scalar fallback is considered.
+        generalized_stops = []
+        raw_route_stops = str(kwargs.get("route_stops_json") or "").strip()
+        if raw_route_stops:
+            try:
+                submitted_stops = json.loads(raw_route_stops)
+            except (json.JSONDecodeError, TypeError):
+                submitted_stops = []
+            if isinstance(submitted_stops, list):
+                partner = request.env.user.partner_id.commercial_partner_id
+                for submitted_stop in submitted_stops:
+                    if not isinstance(submitted_stop, dict):
+                        generalized_stops = []
+                        break
+                    loc = _resolve_loc(
+                        request.env, partner,
+                        submitted_stop.get("saved_location_id"))
+                    if not loc:
+                        generalized_stops = []
+                        break
+                    eff = _portal_coord_pair(loc)
+                    if eff[0] is None or eff[1] is None:
+                        generalized_stops = []
+                        break
+                    generalized_stops.append({
+                        "stop_type": submitted_stop.get("stop_type"),
+                        "latitude": eff[0], "longitude": eff[1],
+                        "postal_code": loc.postal_code or "",
+                    })
+
+        def canonical_stop_region(stop):
+            if not stop:
+                return False
+            try:
+                match = resolver.resolve(
+                    float(stop["latitude"]), float(stop["longitude"]))
+                if match.matched_region:
+                    return match.matched_region
+            except (KeyError, TypeError, ValueError):
+                pass
+            return resolver.canonical_region(stop.get("postal_code", ""))
+
         region = False
-        if kwargs.get("pickup_lat") and kwargs.get("pickup_lng"):
+        if generalized_stops:
+            first_pickup = next(
+                (stop for stop in generalized_stops
+                 if stop.get("stop_type") == "pickup"), None)
+            region = canonical_stop_region(first_pickup)
+        if not raw_route_stops and kwargs.get("pickup_lat") and kwargs.get("pickup_lng"):
             try:
                 match = resolver.resolve(
                     float(kwargs["pickup_lat"]), float(kwargs["pickup_lng"]))
                 region = match.matched_region
             except (ValueError, TypeError):
                 region = False
-        if not region and kwargs.get("pickup_fsa"):
+        if not raw_route_stops and not region and kwargs.get("pickup_fsa"):
             # Coordinates outside every polygon (Mascouche J7K …): bridge
             # the FSA through the canonical mapping — never the raw
             # logistics.fsa.region_id (those rows still carry OLD region
             # ids, which no corridor stop references).
             region = resolver.canonical_region(str(kwargs["pickup_fsa"]).strip().upper())
-        if not region and kwargs.get("pickup_loc_id"):
+        if not raw_route_stops and not region and kwargs.get("pickup_loc_id"):
             raw = str(kwargs["pickup_loc_id"]).strip()
             if raw.lstrip("-").isdigit():
                 partner = request.env.user.partner_id.commercial_partner_id
@@ -1623,7 +1768,11 @@ class LogisticsBookingPortal(http.Controller):
         # Delivery region — segment-aware occupancy needs BOTH route ends.
         # Same canonical resolution chain as the pickup side.
         delivery_region = False
-        if kwargs.get("delivery_lat") and kwargs.get("delivery_lng"):
+        if generalized_stops:
+            deliveries = [stop for stop in generalized_stops
+                          if stop.get("stop_type") == "delivery"]
+            delivery_region = canonical_stop_region(deliveries[-1] if deliveries else None)
+        if not raw_route_stops and kwargs.get("delivery_lat") and kwargs.get("delivery_lng"):
             try:
                 delivery_region = resolver.resolve(
                     float(kwargs["delivery_lat"]),
@@ -1631,10 +1780,10 @@ class LogisticsBookingPortal(http.Controller):
                 ).matched_region
             except (ValueError, TypeError):
                 delivery_region = False
-        if not delivery_region and kwargs.get("delivery_fsa"):
+        if not raw_route_stops and not delivery_region and kwargs.get("delivery_fsa"):
             delivery_region = resolver.canonical_region(
                 str(kwargs["delivery_fsa"]).strip().upper())
-        if not delivery_region:
+        if not raw_route_stops and not delivery_region:
             raw_dl = str(kwargs.get("delivery_loc_id") or "").strip()
             if not raw_dl and kwargs.get("delivery_loc_ids"):
                 raw_dl = str(kwargs["delivery_loc_ids"]).split(",")[0].strip()
