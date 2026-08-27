@@ -1,10 +1,10 @@
 """Portal-only bridge for generalized multi-stop booking orchestration.
 
 The portal controller validates customer-owned ``logistics.location.customer.access``
-rows before building a movement_v1 request.  Downstream orchestration is an
-internal service, however, and some of its canonical-facility reads historically
-ran under the portal user's ACLs.  That caused a valid customer quote to fail
-with an access error on ``prema.dispatch.location``.
+rows before building a movement_v1 request. Downstream orchestration is an
+internal service, however, and some canonical-facility reads historically ran
+under the portal user's ACLs. That caused a valid customer quote to fail with
+an access error on ``prema.dispatch.location``.
 
 This adapter keeps the security boundary explicit:
 
@@ -14,7 +14,7 @@ This adapter keeps the security boundary explicit:
 * only the already-validated internal orchestration portion is executed with
   a sudo environment;
 * non-portal channels are untouched;
-* route stops are never duplicated.  Two pallets from different pickup stops
+* route stops are never duplicated. Two pallets from different pickup stops
   may therefore share one delivery stop (for example PU1 -> DL1 and PU2 -> DL1).
 
 It is deliberately additive so production portal/template changes can evolve
@@ -38,7 +38,7 @@ def _sudo_env(env):
         return env(su=True)
     except TypeError:
         # Compatibility with test/dummy environments that do not implement
-        # Environment.__call__.  Real Odoo environments take the first path.
+        # Environment.__call__. Real Odoo environments take the first path.
         return env
 
 
@@ -61,7 +61,7 @@ def _resolve_customer_access(env, commercial_partner, stop):
 
     ``saved_location_id`` was used by early movement_v1 portal payloads for
     the CUSTOMER ACCESS id, while internal routing uses that legacy key as a
-    PHYSICAL FACILITY id.  Resolve that ambiguity only at this trusted portal
+    PHYSICAL FACILITY id. Resolve that ambiguity only at this trusted portal
     boundary, then emit both explicit canonical ids so downstream code never
     has to guess.
     """
@@ -88,11 +88,13 @@ def _resolve_customer_access(env, commercial_partner, stop):
         else:
             raise AccessError(_("This saved location does not belong to your account."))
 
-    # Early portal movement payloads stored the access id in
-    # saved_location_id.  Try that interpretation before treating it as a
-    # facility id so an accidental numeric id collision can never select a
-    # different physical location.
-    if not access and legacy_id and not facility_id:
+    # Early quote-time portal payloads stored the CUSTOMER ACCESS id in
+    # saved_location_id. If an explicit facility_id is also present and is
+    # different, validate that both references identify the same facility.
+    # At confirm time the compatibility pair is facility_id ==
+    # saved_location_id; in that case saved_location_id is intentionally a
+    # physical facility alias and must not be reinterpreted as an access id.
+    if not access and legacy_id and (not facility_id or legacy_id != facility_id):
         candidate = Access.browse(legacy_id).exists()
         if (candidate and candidate.active
                 and candidate.commercial_partner_id.id == commercial_partner.id):
@@ -134,7 +136,7 @@ def _movement_counts(movements):
     """Return physical-pallet counts and weights per stable stop key.
 
     A movement contributes once to its pickup and once to each delivery it
-    serves.  The delivery key itself is never duplicated, so two origins can
+    serves. The delivery key itself is never duplicated, so two origins can
     feed one Healthy Planet/Belleville stop while it remains a single stop.
     """
     pickup_counts = {}
@@ -164,7 +166,7 @@ def _movement_counts(movements):
                 continue
             delivery_counts[delivery_key] = delivery_counts.get(delivery_key, 0) + 1
             # Dedicated pallets carry their whole physical weight to the one
-            # destination.  Shared pallets use an explicit portion when the
+            # destination. Shared pallets use an explicit portion when the
             # UI supplied one; otherwise leave the explanatory weight at 0
             # rather than inventing a split here.
             if len(destinations) == 1:
@@ -201,8 +203,6 @@ def _canonicalize_portal_route_stops(env, normalized_request):
 
     seen_keys = set()
     canonical = []
-    pickup_by_key = {}
-    delivery_by_key = {}
 
     for original in route_stops:
         if not isinstance(original, dict):
@@ -221,7 +221,7 @@ def _canonicalize_portal_route_stops(env, normalized_request):
             env, commercial, stop,
         )
 
-        # Emit the unambiguous canonical pair.  saved_location_id remains as
+        # Emit the unambiguous canonical pair. saved_location_id remains as
         # a compatibility alias for internal consumers that define it as the
         # physical prema.dispatch.location id.
         stop["customer_access_id"] = access.id
@@ -256,16 +256,14 @@ def _canonicalize_portal_route_stops(env, normalized_request):
         if stop_type == "pickup":
             stop["pallets"] = pickup_counts.get(stop_key, 0)
             stop["weight_lbs"] = round(pickup_weights.get(stop_key, 0.0), 1)
-            pickup_by_key[stop_key] = stop
         else:
             stop["pallets"] = delivery_counts.get(stop_key, 0)
             if delivery_weights.get(stop_key, 0.0):
                 stop["weight_lbs"] = round(delivery_weights[stop_key], 1)
-            delivery_by_key[stop_key] = stop
         canonical.append(stop)
 
     # The normalized pickup/delivery lists are used by pricing, FSA anchors,
-    # session persistence and confirmation.  Rebuild them from the SAME stop
+    # session persistence and confirmation. Rebuild them from the SAME stop
     # objects so there is one route authority and no one-to-one collapse.
     normalized_request.route_stops = canonical
     normalized_request.pickup_stops = [
@@ -280,7 +278,7 @@ def _canonicalize_portal_route_stops(env, normalized_request):
 def _portal_normalize_request(self, values, source_channel):
     """Backfill route_stops on movement confirmation before validation.
 
-    Quote-time movement_v1 already sends route_stops.  Confirm-time rebuilds
+    Quote-time movement_v1 already sends route_stops. Confirm-time rebuilds
     pickup/delivery stops from the frozen pricing-session stop list; older
     code did not copy that ordered list into ``route_stops`` before creating
     NormalizedBookingRequest, which made a valid movement quote fail its own
@@ -292,14 +290,21 @@ def _portal_normalize_request(self, values, source_channel):
                 and values.get("pallet_movements")
                 and not values.get("route_stops")):
             route_stops = []
-            for stop in values.get("pickup_stops") or []:
-                row = dict(stop)
-                row["stop_type"] = "pickup"
-                route_stops.append(row)
-            for stop in values.get("delivery_stops") or []:
-                row = dict(stop)
-                row["stop_type"] = "delivery"
-                route_stops.append(row)
+            for stop_type, rows in (
+                    ("pickup", values.get("pickup_stops") or []),
+                    ("delivery", values.get("delivery_stops") or [])):
+                for stop in rows:
+                    row = dict(stop)
+                    row["stop_type"] = stop_type
+                    # confirm_from_session's stop snapshots intentionally use
+                    # saved_location_id as the PHYSICAL facility id. Mark it
+                    # explicitly so an equal-numbered customer-access row can
+                    # never be mistaken for the facility during canonicalization.
+                    if (row.get("saved_location_id")
+                            and not row.get("customer_access_id")
+                            and not row.get("facility_id")):
+                        row["facility_id"] = row["saved_location_id"]
+                    route_stops.append(row)
             values["route_stops"] = route_stops
     return _ORIGINAL_NORMALIZE_REQUEST(self, values, source_channel)
 
@@ -310,7 +315,7 @@ def _portal_prepare_quote(self, normalized_request, *args, **kwargs):
 
     sudo_env = _sudo_env(self.env)
     _canonicalize_portal_route_stops(sudo_env, normalized_request)
-    # The controller/bridge already established customer ownership.  From
+    # The controller/bridge already established customer ownership. From
     # this point the service performs internal facility-hours, corridor,
     # departure, pricing-session and snapshot work; run that trusted segment
     # with the permissions it requires instead of granting portal users read
