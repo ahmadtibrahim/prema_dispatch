@@ -19,6 +19,7 @@ the customer's OWN access rows.
 """
 
 import json
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from odoo import _, fields, http
 from odoo.http import request
@@ -34,6 +35,28 @@ from odoo.addons.prema_logistics_booking.services.location_resolver_service impo
 _GOOGLE_INSTRUCTION = _(
     "Please select the address from the Google address suggestions so we can "
     "verify the location.")
+
+
+def _booking_return_url(value):
+    """Accept only an internal booking page as a temporary UX return target."""
+    value = str(value or "").strip()
+    if not value:
+        return "/my/booking/new"
+    parsed = urlsplit(value)
+    if parsed.scheme or parsed.netloc or parsed.fragment:
+        return "/my/booking/new"
+    if parsed.path not in ("/my/booking/new", "/my/booking/details"):
+        return "/my/booking/new"
+    return urlunsplit(("", "", parsed.path, parsed.query, ""))
+
+
+def _booking_restore_url(value, **params):
+    """Add temporary draft-return parameters without accepting open redirects."""
+    parsed = urlsplit(_booking_return_url(value))
+    query = [(key, val) for key, val in parse_qsl(parsed.query, keep_blank_values=True)
+             if key not in params]
+    query.extend((key, str(val)) for key, val in params.items() if val not in (None, ""))
+    return urlunsplit(("", "", parsed.path, urlencode(query), ""))
 
 
 class _Ref:
@@ -504,6 +527,18 @@ class LogisticsSavedLocationsPortal(http.Controller):
         if default_type not in ("pickup", "delivery", "both"):
             default_type = "pickup"
         return_to = kwargs.get("return", "")  # "booking" or empty
+        from_booking = return_to == "booking"
+        booking_return_url = _booking_return_url(kwargs.get("return_url")) if from_booking else ""
+        return_stop_key = str(kwargs.get("return_stop_key") or "").strip()
+
+        def form_context(**extra):
+            return {
+                "return_to": return_to,
+                "from_booking": from_booking,
+                "booking_return_url": booking_return_url,
+                "return_stop_key": return_stop_key,
+                **extra,
+            }
 
         if request.httprequest.method == "POST":
             google_place_id = kwargs.get("google_place_id", "").strip()
@@ -526,6 +561,7 @@ class LogisticsSavedLocationsPortal(http.Controller):
                         "google_api_key": request.env["ir.config_parameter"].sudo()
                         .get_param("google_maps_api_key", ""),
                         "hours_by_day": _submitted_hours_by_day(kwargs),
+                        **form_context(),
                     })
 
             name = kwargs.get("name", "").strip()
@@ -593,7 +629,13 @@ class LogisticsSavedLocationsPortal(http.Controller):
 
                     if return_to == "booking":
                         return request.redirect(
-                            f"/my/booking/new?new_loc_id={access.id}&new_loc_type={location_type}"
+                            _booking_restore_url(
+                                booking_return_url,
+                                restore_booking="1",
+                                new_loc_id=access.id,
+                                new_loc_type=location_type,
+                                return_stop_key=return_stop_key,
+                            )
                         )
                     return request.redirect("/my/saved-locations")
                 except Exception as e:
@@ -620,6 +662,7 @@ class LogisticsSavedLocationsPortal(http.Controller):
                       "open": "08:00", "close": "17:00"}
                 for day in range(7)
             },
+            **form_context(),
         })
 
     # ── Edit (§12) ─────────────────────────────────────────────────────

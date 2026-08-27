@@ -240,13 +240,22 @@
 <!-- Enhanced Add/Edit Location Form with smart autocomplete (UAT-003) -->
 <template id="portal_saved_location_form_enhanced" name="Portal: Saved Location Form (Enhanced)">
     <t t-call="portal.portal_layout">
-        <t t-set="title">Saved Location</t>
+        <t t-set="title"><t t-if="from_booking">Add <t t-esc="'Pickup' if default_type == 'pickup' else 'Delivery'"/> Location</t><t t-else="">Saved Location</t></t>
         <div class="container">
             <div class="mx-auto" style="max-width:750px">
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <h2 class="mb-0"><t t-if="from_booking">Add <t t-esc="'Pickup' if default_type == 'pickup' else 'Delivery'"/> Location</t><t t-else="">Saved Location</t></h2>
+                    <a t-att-href="booking_return_url if from_booking else '/my/saved-locations'" class="text-decoration-none">
+                        <t t-if="from_booking">← Back to Shipment</t><t t-else="">← Saved Locations</t>
+                    </a>
+                </div>
                 <div t-if="error" class="alert alert-warning" t-esc="error"/>
 
                 <form method="POST" id="savedLocationForm">
                     <input type="hidden" name="csrf_token" t-att-value="request.csrf_token()"/>
+                    <input t-if="from_booking" type="hidden" name="return" value="booking"/>
+                    <input t-if="from_booking" type="hidden" name="return_url" t-att-value="booking_return_url"/>
+                    <input t-if="from_booking" type="hidden" name="return_stop_key" t-att-value="return_stop_key"/>
                     <input type="hidden" name="branch_name_manual" id="branch_name_manual"
                            t-att-value="(location and location.branch_name_manual) and '1' or '0'"/>
 
@@ -525,7 +534,7 @@
                     </div>
 
                     <div class="d-flex justify-content-between">
-                        <a href="/my/saved-locations" class="btn btn-secondary">Cancel</a>
+                        <a t-att-href="booking_return_url if from_booking else '/my/saved-locations'" class="btn btn-secondary">Cancel</a>
                         <button type="submit" class="btn btn-primary">Save Location</button>
                     </div>
                 </form>

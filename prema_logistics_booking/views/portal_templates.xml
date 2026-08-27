@@ -165,7 +165,7 @@
                                 <div class="mt-2 d-flex gap-2">
                                     <button type="button" class="btn btn-sm btn-outline-secondary move-up-btn" style="display:none">↑</button>
                                     <button type="button" class="btn btn-sm btn-outline-secondary move-down-btn" style="display:none">↓</button>
-                                    <a href="/my/saved-locations/add?type=pickup&amp;return=booking&amp;stop_index=1" class="btn btn-sm btn-outline-secondary add-loc-link">+ New Location</a>
+                                    <a href="/my/saved-locations/add?type=pickup&amp;return=booking" class="btn btn-sm btn-outline-secondary add-loc-link">+ New Location</a>
                                     <button type="button" class="btn btn-sm btn-outline-danger remove-stop-btn" style="display:none">✕</button>
                                 </div>
                             </div>
@@ -181,7 +181,7 @@
                                         </select>
                                         <input type="hidden" class="pickup-stop-key" t-att-name="'pickup_stop_key_' + str(row_data['idx'])" t-att-value="row_data.get('stop_key') or ('PU' + str(row_data['idx']))"/>
                                         <div class="stop-detail-text text-muted small mt-1"/>
-                                        <div class="mt-2 d-flex gap-2"><button type="button" class="btn btn-sm btn-outline-secondary move-up-btn">↑</button><button type="button" class="btn btn-sm btn-outline-secondary move-down-btn">↓</button><a t-att-href="'/my/saved-locations/add?type=pickup&amp;return=booking&amp;stop_index=' + str(row_data['idx'])" class="btn btn-sm btn-outline-secondary add-loc-link">+ New Location</a><button type="button" class="btn btn-sm btn-outline-danger remove-stop-btn">✕</button></div>
+                                        <div class="mt-2 d-flex gap-2"><button type="button" class="btn btn-sm btn-outline-secondary move-up-btn">↑</button><button type="button" class="btn btn-sm btn-outline-secondary move-down-btn">↓</button><a href="/my/saved-locations/add?type=pickup&amp;return=booking" class="btn btn-sm btn-outline-secondary add-loc-link">+ New Location</a><button type="button" class="btn btn-sm btn-outline-danger remove-stop-btn">✕</button></div>
                                     </div>
                                 </t>
                             </t>
@@ -197,7 +197,7 @@
                         </div>
                         <div class="card-body" id="delivery_stops_container">
                             <!-- Delivery Stop 1 (always present) -->
-                            <div class="delivery-stop-row border rounded p-3 mb-2" data-stop-index="0">
+                            <div class="delivery-stop-row border rounded p-3 mb-2" data-stop-index="0" data-stop-key="DL1">
                                 <div class="d-flex justify-content-between align-items-center mb-2">
                                     <strong class="stop-label">Delivery Stop 1</strong>
                                     <span/>
@@ -221,7 +221,7 @@
                                 <div class="mt-2 d-flex gap-2">
                                     <button type="button" class="btn btn-sm btn-outline-secondary move-up-btn" style="display:none">↑</button>
                                     <button type="button" class="btn btn-sm btn-outline-secondary move-down-btn" style="display:none">↓</button>
-                                    <a href="/my/saved-locations/add?type=delivery&amp;return=booking&amp;stop_index=1" class="btn btn-sm btn-outline-secondary add-loc-link">+ New Location</a>
+                                    <a href="/my/saved-locations/add?type=delivery&amp;return=booking" class="btn btn-sm btn-outline-secondary add-loc-link">+ New Location</a>
                                     <button type="button" class="btn btn-sm btn-outline-danger remove-stop-btn" style="display:none">✕</button>
                                 </div>
                             </div>
@@ -256,7 +256,7 @@
                                         <div class="mt-2 d-flex gap-2">
                                             <button type="button" class="btn btn-sm btn-outline-secondary move-up-btn" style="display:none">↑</button>
                                             <button type="button" class="btn btn-sm btn-outline-secondary move-down-btn" style="display:none">↓</button>
-                                            <a t-att-href="'/my/saved-locations/add?type=delivery&amp;return=booking&amp;stop_index=' + str(row_data['idx'])"
+                                            <a href="/my/saved-locations/add?type=delivery&amp;return=booking"
                                                class="btn btn-sm btn-outline-secondary add-loc-link">+ New Location</a>
                                             <button type="button" class="btn btn-sm btn-outline-danger remove-stop-btn" style="display:none">✕</button>
                                         </div>
@@ -299,7 +299,7 @@
                             row.querySelector('.stop-detail-text').textContent = '';
                             // Update add-loc link
                             var addLoc = row.querySelector('.add-loc-link');
-                            if (addLoc) addLoc.href = '/my/saved-locations/add?type=delivery&return=booking&stop_index=' + (index + 1);
+                            if (addLoc) addLoc.href = '/my/saved-locations/add?type=delivery&return=booking';
                             // Show all buttons (hidden on template)
                             row.querySelector('.move-up-btn').style.display = '';
                             row.querySelector('.move-down-btn').style.display = '';
@@ -314,10 +314,14 @@
                             var sel = row.querySelector('select');
                             sel.name = 'delivery_saved_location_id_' + (index + 1);
                             var keyInput = row.querySelector('.delivery-stop-key');
-                            if (keyInput) keyInput.name = 'delivery_stop_key_' + (index + 1);
+                            if (keyInput) {
+                                if (!row.dataset.stopKey) row.dataset.stopKey = keyInput.value || ('DL' + (index + 1));
+                                keyInput.name = 'delivery_stop_key_' + (index + 1);
+                                keyInput.value = row.dataset.stopKey;
+                            }
                             // Add-loc link
                             var addLoc = row.querySelector('.add-loc-link');
-                            if (addLoc) addLoc.href = '/my/saved-locations/add?type=delivery&return=booking&stop_index=' + (index + 1);
+                            if (addLoc) addLoc.href = '/my/saved-locations/add?type=delivery&return=booking';
                             // Move up: hide for first
                             row.querySelector('.move-up-btn').style.display = (index > 0) ? '' : 'none';
                             // Move down: hide for last
@@ -538,21 +542,113 @@
 
                 <!-- Auto-select newly created location if returning from Add New -->
                 <t t-if="new_loc_id">
-                    <script>
+                    <script><![CDATA[
                         document.addEventListener('DOMContentLoaded', function() {
                             var newId = '<t t-esc="new_loc_id"/>';
                             var newType = '<t t-esc="new_loc_type"/>';
-                            if (newType === 'pickup' || newType === 'both') {
-                                var pu = document.querySelector('select[name="pickup_saved_location_id_1"]');
-                                if (pu) { pu.value = newId; }
-                            }
-                            if (newType === 'delivery' || newType === 'both') {
-                                var de = document.querySelector('select[name="delivery_saved_location_id"]');
-                                if (de) { de.value = newId; }
-                            }
+                            var targetKey = new URLSearchParams(window.location.search).get('return_stop_key') || '';
+                            document.querySelectorAll('.pickup-stop-row, .delivery-stop-row').forEach(function(row) {
+                                var key = (row.dataset.stopKey || (row.querySelector('.pickup-stop-key, .delivery-stop-key') || {}).value || '');
+                                var isPickup = row.classList.contains('pickup-stop-row');
+                                if (key !== targetKey || (isPickup && newType !== 'pickup' && newType !== 'both') ||
+                                    (!isPickup && newType !== 'delivery' && newType !== 'both')) return;
+                                var select = row.querySelector('select');
+                                if (select) { select.value = newId; select.dispatchEvent(new Event('change')); }
+                            });
                         });
-                    </script>
+                    ]]></script>
                 </t>
+                <!-- The booking is a temporary client-side draft while the
+                     customer visits the location form. It is never a
+                     booking authority; Step 1 revalidates all IDs on submit. -->
+                <script><![CDATA[
+                    document.addEventListener('DOMContentLoaded', function() {
+                        var form = document.querySelector('form[action="/my/booking/new"]');
+                        if (!form) return;
+                        var storageKey = 'prema_booking_location_draft';
+                        function readFields() {
+                            var fields = {};
+                            form.querySelectorAll('[name]').forEach(function(el) {
+                                if (el.name === 'csrf_token') return;
+                                if (el.type === 'checkbox') fields[el.name] = el.checked ? '1' : '0';
+                                else fields[el.name] = el.value;
+                            });
+                            return fields;
+                        }
+                        function rowCount(prefix) {
+                            return form.querySelectorAll(prefix + '-stop-row').length;
+                        }
+                        function restoreRows(prefix, addButtonId, fieldPrefix, keyPrefix) {
+                            var fields = (window.draft && window.draft.fields) || {};
+                            var count = 0;
+                            Object.keys(fields).forEach(function(name) {
+                                var m = name.match(new RegExp('^' + fieldPrefix + '_(\\d+)$'));
+                                if (m) count = Math.max(count, parseInt(m[1], 10));
+                            });
+                            var add = document.getElementById(addButtonId);
+                            while (rowCount(prefix) < count && add) add.click();
+                            form.querySelectorAll(prefix + '-stop-row').forEach(function(row, i) {
+                                var n = i + 1;
+                                var sel = row.querySelector('select');
+                                var keyEl = row.querySelector('.' + (prefix === '.pickup' ? 'pickup' : 'delivery') + '-stop-key');
+                                if (sel && fields[fieldPrefix + '_' + n] !== undefined) sel.value = fields[fieldPrefix + '_' + n];
+                                if (keyEl && fields[keyPrefix + '_' + n]) {
+                                    keyEl.value = fields[keyPrefix + '_' + n];
+                                    row.dataset.stopKey = keyEl.value;
+                                }
+                                if (sel) sel.dispatchEvent(new Event('change'));
+                            });
+                        }
+                        function restoreDraft() {
+                            var raw;
+                            try { raw = sessionStorage.getItem(storageKey); } catch (e) { return; }
+                            if (!raw) return;
+                            try { window.draft = JSON.parse(raw); } catch (e) { return; }
+                            if (!window.draft || window.draft.stage !== 'step1') return;
+                            if (Date.now() - (window.draft.saved_at || 0) > 30 * 60 * 1000) return;
+                            var fields = window.draft.fields || {};
+                            restoreRows('.pickup', 'add_pickup_stop_btn', 'pickup_saved_location_id', 'pickup_stop_key');
+                            restoreRows('.delivery', 'add_delivery_stop_btn', 'delivery_saved_location_id', 'delivery_stop_key');
+                            form.querySelectorAll('[name]').forEach(function(el) {
+                                if (el.name === 'csrf_token' || fields[el.name] === undefined) return;
+                                if (el.type === 'checkbox') el.checked = fields[el.name] === '1';
+                                else if (!/^((pickup|delivery)_saved_location_id_|(pickup|delivery)_stop_key_)/.test(el.name)) el.value = fields[el.name];
+                            });
+                            var params = new URLSearchParams(window.location.search);
+                            var newId = params.get('new_loc_id');
+                            var newType = params.get('new_loc_type') || '';
+                            var target = params.get('return_stop_key') || window.draft.return_stop_key || '';
+                            if (newId) form.querySelectorAll('.pickup-stop-row, .delivery-stop-row').forEach(function(row) {
+                                var key = (row.dataset.stopKey || (row.querySelector('.pickup-stop-key, .delivery-stop-key') || {}).value || '');
+                                var isPickup = row.classList.contains('pickup-stop-row');
+                                if (key === target && ((isPickup && (newType === 'pickup' || newType === 'both')) ||
+                                    (!isPickup && (newType === 'delivery' || newType === 'both')))) row.querySelector('select').value = newId;
+                            });
+                            try { sessionStorage.removeItem(storageKey); } catch (e) {}
+                        }
+                        function leaveForLocation(link, event) {
+                            event.preventDefault();
+                            var row = link.closest('.pickup-stop-row, .delivery-stop-row');
+                            var keyEl = row && row.querySelector('.pickup-stop-key, .delivery-stop-key');
+                            var type = row && row.classList.contains('pickup-stop-row') ? 'pickup' : 'delivery';
+                            var draft = {stage: 'step1', saved_at: Date.now(),
+                                origin_url: window.location.pathname + window.location.search,
+                                return_stop_key: keyEl ? keyEl.value : '', fields: readFields()};
+                            try { sessionStorage.setItem(storageKey, JSON.stringify(draft)); } catch (e) {}
+                            var target = new URL(link.href, window.location.href);
+                            target.searchParams.set('type', type);
+                            target.searchParams.set('return', 'booking');
+                            target.searchParams.set('return_stop_key', draft.return_stop_key);
+                            target.searchParams.set('return_url', draft.origin_url);
+                            window.location.assign(target.href);
+                        }
+                        form.addEventListener('click', function(event) {
+                            var link = event.target.closest('.add-loc-link');
+                            if (link) leaveForLocation(link, event);
+                        });
+                        restoreDraft();
+                    });
+                ]]></script>
             </div>
         </div>
         </div>
@@ -802,6 +898,8 @@
                                                t-att-name="'delivery_window_end_' + str(dl_index + 1)"
                                                style="width:85px" step="1800"/>
                                     </div>
+                                    <a href="/my/saved-locations/add?type=delivery&amp;return=booking"
+                                       class="btn btn-sm btn-outline-secondary add-loc-link">+ New Location</a>
                                     <input type="hidden" t-att-name="'delivery_loc_id_' + str(dl_index + 1)" t-att-value="str(dl.id)"/>
                                     <input type="hidden" class="delivery-stop-key"
                                            t-att-name="'delivery_stop_key_' + str(dl_index + 1)"
@@ -821,9 +919,9 @@
                 </t>
 
                 <!-- ══════════════════════════════════════════════════════
-                     MILK-RUN ROUTE BUILDER — additional pickup/delivery
-                     stops and per-pallet movement assignment. A booking
-                     becomes a generalized movement_v1 milk run when it has
+                     STOP DETAILS — additional pickup/delivery stops and
+                     per-pallet movement assignment. A booking uses the
+                     generalized movement_v1 model when it has
                      more than one pickup OR a pallet shared across
                      multiple delivery stops.
                      ══════════════════════════════════════════════════════ -->
@@ -843,17 +941,14 @@
                         </div>
                     </div>
                 </div>
-                <!-- MILK-RUN ROUTE BUILDER — shown ONLY for complex routes:
-                     multiple pickups and/or shared pallets. -->
-                <div class="col-12 mt-3" id="milk_run_builder_card" style="display:none">
+                <!-- Stop details are shown only when the generalized route
+                     data needs customer review: multiple stops or shared
+                     pallet destinations. -->
+                <div class="col-12 mt-3" id="stop_details_card" style="display:none">
                     <div class="card border-success">
                         <div class="card-header bg-success bg-opacity-10 d-flex justify-content-between align-items-center">
-                            <div><strong>MILK-RUN ROUTE BUILDER</strong>
-                                <small class="text-muted d-block">Multiple pickups or shared pallets — one truck, one route.</small>
-                            </div>
-                            <div>
-                                <button type="button" class="btn btn-sm btn-outline-success me-1" onclick="addExtraPickupCard()">+ Add Pickup</button>
-                                <button type="button" class="btn btn-sm btn-outline-success" onclick="addExtraDeliveryCard()">+ Add Delivery</button>
+                            <div><strong>STOP OPTIONS &amp; PALLET ASSIGNMENTS</strong>
+                                <small class="text-muted d-block">Review options for the stops selected above.</small>
                             </div>
                         </div>
                         <div class="card-body py-2">
@@ -864,7 +959,7 @@
                             <div id="extra_delivery_cards"></div>
                             <div id="movement_grid_card" style="display:none">
                                 <div class="card mt-2"><div class="card-header bg-light py-2">
-                                    <strong>PALLET MOVEMENTS</strong>
+                                    <strong>PALLET ASSIGNMENTS</strong>
                                     <small class="text-muted">— Pickup From / Deliver To (physical pallets)</small>
                                 </div>
                                 <div class="card-body py-2" id="movement_grid_body"></div></div>
@@ -1698,7 +1793,7 @@
     ]]></script>
 
     <!-- ══════════════════════════════════════════════════════════════
-         MILK-RUN ROUTE BUILDER JS
+         STOP DETAILS JS
          Stop identity uses stable stop_key strings — never array
          indices. A booking becomes a generalized movement_v1 milk run
          when it has >1 pickup, OR more than one delivery stop (a simple
@@ -1780,6 +1875,7 @@
                     + '<div class="col-md-6 stop-window-fields" style="display:none">'
                     + '<input type="time" class="form-control form-control-sm d-inline-block stop-window-start" style="width:45%"/> — '
                     + '<input type="time" class="form-control form-control-sm d-inline-block stop-window-end" style="width:45%"/></div>'
+                    + '<div class="col-md-12"><a href="/my/saved-locations/add?return=booking" class="btn btn-sm btn-outline-secondary add-loc-link">+ New Location</a></div>'
                     + '<div class="col-md-12"><input type="text" class="form-control form-control-sm stop-instructions" placeholder="Stop instructions (dock, door, contact…)"/></div>'
                     + '</div></div></div>';
             }
@@ -1894,7 +1990,12 @@
             }
             function locDisplayName(loc) {
                 if (!loc) return '';
-                return loc.business_name || loc.name || loc.city || '';
+                var name = loc.business_name || loc.name || loc.city || '';
+                var city = loc.city || '';
+                if (name && city && name.toLowerCase().indexOf(city.toLowerCase()) === -1) {
+                    return name + ' — ' + city;
+                }
+                return name;
             }
             // The saved-location id behind a stop (legacy fields or card
             // selects) so the route chain can show real facility names —
@@ -1928,17 +2029,16 @@
             // Display rules:
             //   A. 1 pickup + 1 delivery  → NO builder, NO route summary.
             //   B. 1 pickup + N deliveries → ROUTE SUMMARY (name chain).
-            //   C. multiple pickups and/or shared pallets → MILK-RUN ROUTE
-            //      BUILDER.
+            //   C. multiple pickups and/or shared pallets → stop details.
             function refreshRouteSections() {
-                var builder = document.getElementById('milk_run_builder_card');
+                var builder = document.getElementById('stop_details_card');
                 var summary = document.getElementById('route_summary_card');
                 if (!builder || !summary) return;
                 refreshRouteChain();
                 var complex = builderActive();
                 if (complex) {
                     builder.style.display = '';
-                    summary.style.display = 'none';
+                    summary.style.display = '';
                     return;
                 }
                 var deCount = deliveryStops().length;
@@ -2168,6 +2268,142 @@
                 });
             }
 
+            // ── Temporary booking draft while adding a location ────────
+            // This is UX state only. The quote endpoint still validates all
+            // customer-owned locations, stable keys, movements and capacity.
+            var draftStorageKey = 'prema_booking_location_draft';
+            function draftFields() {
+                var out = {};
+                form.querySelectorAll('[name]').forEach(function(el) {
+                    if (el.name === 'csrf_token') return;
+                    if (el.type === 'checkbox') out[el.name] = el.checked ? '1' : '0';
+                    else out[el.name] = el.value;
+                });
+                return out;
+            }
+            function captureDraft(link) {
+                var row = link.closest('.extra-stop-card, .delivery-stop-breakdown-row');
+                var key = row && (row.dataset.stopKey || (row.querySelector('.delivery-stop-key') || {}).value) || '';
+                var type = row && row.classList.contains('extra-stop-card') ? row.dataset.stopType : 'delivery';
+                var cards = [];
+                document.querySelectorAll('.extra-stop-card').forEach(function(card) {
+                    var val = function(cls) { var el = card.querySelector(cls); return el ? el.value : ''; };
+                    var checked = function(cls) { var el = card.querySelector(cls); return !!(el && el.checked); };
+                    cards.push({key: card.dataset.stopKey, type: card.dataset.stopType,
+                        location: val('.stop-saved-location'), liftgate: checked('.stop-liftgate'),
+                        appointment: checked('.stop-appointment'), timing: val('.stop-timing'),
+                        service: val('.stop-service-minutes'), start: val('.stop-window-start'),
+                        end: val('.stop-window-end'), instructions: val('.stop-instructions')});
+                });
+                var movements = [];
+                document.querySelectorAll('.movement-row').forEach(function(mrow) {
+                    var p = mrow.dataset.pallet;
+                    var pu = mrow.querySelector('.movement-pickup');
+                    var wt = mrow.querySelector('.movement-weight');
+                    var ref = mrow.querySelector('.movement-reference');
+                    movements.push({pallet: p, pickup: pu ? pu.value : '', weight: wt ? wt.value : '',
+                        reference: ref ? ref.value : '', deliveries: Array.from(
+                            mrow.querySelectorAll('.movement-delivery-check:checked')).map(function(cb) { return cb.dataset.stopKey; })});
+                });
+                var allocations = Array.from(document.querySelectorAll('.pallet-stop-check:checked')).map(function(cb) {
+                    return {pallet: cb.dataset.pallet, stop: cb.dataset.stop};
+                });
+                try {
+                    sessionStorage.setItem(draftStorageKey, JSON.stringify({stage: 'step2', saved_at: Date.now(),
+                        origin_url: window.location.pathname + window.location.search,
+                        return_stop_key: key, return_type: type, fields: draftFields(),
+                        cards: cards, movements: movements, allocations: allocations}));
+                } catch (e) {}
+            }
+            function setNamedFields(fields) {
+                if (!fields) return;
+                form.querySelectorAll('[name]').forEach(function(el) {
+                    if (el.name === 'csrf_token' || fields[el.name] === undefined) return;
+                    if (el.type === 'checkbox') el.checked = fields[el.name] === '1';
+                    else el.value = fields[el.name];
+                });
+            }
+            function restoreLocation(key, locationId) {
+                if (!key || !locationId) return;
+                var card = document.querySelector('.extra-stop-card[data-stop-key="' + key + '"]');
+                if (card) {
+                    var sel = card.querySelector('.stop-saved-location');
+                    if (sel) { sel.value = String(locationId); sel.dispatchEvent(new Event('change')); }
+                    return;
+                }
+                var keyEl = Array.from(document.querySelectorAll('.delivery-stop-breakdown-row .delivery-stop-key')).find(function(el) { return el.value === key; });
+                if (keyEl) {
+                    var loc = keyEl.closest('.delivery-stop-breakdown-row').querySelector('input[name^="delivery_loc_id_"]');
+                    if (loc) loc.value = String(locationId);
+                }
+            }
+            function restoreDraft() {
+                var raw;
+                try { raw = sessionStorage.getItem(draftStorageKey); } catch (e) { return; }
+                if (!raw) return;
+                var saved;
+                try { saved = JSON.parse(raw); } catch (e) { return; }
+                if (!saved || saved.stage !== 'step2' || Date.now() - (saved.saved_at || 0) > 30 * 60 * 1000) return;
+                setNamedFields(saved.fields);
+                var wanted = saved.cards || [];
+                wanted.forEach(function(item) {
+                    if (!document.querySelector('.extra-stop-card[data-stop-key="' + item.key + '"]')) {
+                        if (item.type === 'pickup') window.addExtraPickupCard();
+                        else window.addExtraDeliveryCard();
+                        var cards = document.querySelectorAll('.extra-stop-card');
+                        var card = cards[cards.length - 1];
+                        if (card) { card.dataset.stopKey = item.key; card.dataset.stopType = item.type; bindStopCard(item.key); }
+                    }
+                    var card = document.querySelector('.extra-stop-card[data-stop-key="' + item.key + '"]');
+                    if (!card) return;
+                    var set = function(cls, value) { var el = card.querySelector(cls); if (el && value !== undefined) el.value = value; };
+                    var check = function(cls, value) { var el = card.querySelector(cls); if (el) el.checked = !!value; };
+                    set('.stop-saved-location', item.location); check('.stop-liftgate', item.liftgate);
+                    check('.stop-appointment', item.appointment); set('.stop-timing', item.timing);
+                    set('.stop-service-minutes', item.service); set('.stop-window-start', item.start);
+                    set('.stop-window-end', item.end); set('.stop-instructions', item.instructions);
+                    var timing = card.querySelector('.stop-timing');
+                    if (timing) timing.dispatchEvent(new Event('change'));
+                });
+                movementState = {pickups: {}, deliveries: {}, weights: {}, references: {}};
+                (saved.movements || []).forEach(function(item) {
+                    movementState.pickups[item.pallet] = item.pickup;
+                    movementState.deliveries[item.pallet] = item.deliveries || [];
+                    movementState.weights[item.pallet] = item.weight || '';
+                    movementState.references[item.pallet] = item.reference || '';
+                });
+                var palletInput = document.getElementById('pallets_input');
+                if (palletInput) palletInput.dispatchEvent(new Event('input'));
+                var weightInput = document.getElementById('weight_input');
+                if (weightInput && saved.fields && saved.fields.weight_lbs !== undefined) {
+                    weightInput.value = saved.fields.weight_lbs;
+                }
+                buildMovementGrid();
+                (saved.allocations || []).forEach(function(item) {
+                    var cb = document.querySelector('.pallet-stop-check[data-pallet="' + item.pallet + '"][data-stop="' + item.stop + '"]');
+                    if (cb) cb.checked = true;
+                });
+                var params = new URLSearchParams(window.location.search);
+                restoreLocation(params.get('return_stop_key') || saved.return_stop_key, params.get('new_loc_id'));
+                refreshRouteSections();
+                try { sessionStorage.removeItem(draftStorageKey); } catch (e) {}
+            }
+            form.addEventListener('click', function(event) {
+                var link = event.target.closest('.add-loc-link');
+                if (!link) return;
+                event.preventDefault();
+                captureDraft(link);
+                var row = link.closest('.extra-stop-card, .delivery-stop-breakdown-row');
+                var key = row && (row.dataset.stopKey || (row.querySelector('.delivery-stop-key') || {}).value) || '';
+                var type = row && row.classList.contains('extra-stop-card') ? row.dataset.stopType : 'delivery';
+                var target = new URL(link.href, window.location.href);
+                target.searchParams.set('type', type);
+                target.searchParams.set('return', 'booking');
+                target.searchParams.set('return_stop_key', key);
+                target.searchParams.set('return_url', window.location.pathname + window.location.search);
+                window.location.assign(target.href);
+            });
+            restoreDraft();
             refreshRouteSections();
         });
     ]]></script>
