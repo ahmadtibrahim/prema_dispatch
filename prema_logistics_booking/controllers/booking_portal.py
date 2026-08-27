@@ -383,6 +383,12 @@ def _quote_error_context(kwargs, partner, pickup_fsa, delivery_fsa, error):
     except (TypeError, ValueError):
         weight_lbs = 0.0
     pickup_loc = _resolve_loc(request.env, partner, pickup_loc_id) if pickup_loc_id else None
+    pickup_locs = [
+        loc for loc_id in pickup_loc_ids
+        if (loc := _resolve_loc(request.env, partner, loc_id))
+    ]
+    if not pickup_locs and pickup_loc:
+        pickup_locs = [pickup_loc]
     delivery_locs = [
         loc for loc_id in delivery_loc_ids
         if (loc := _resolve_loc(request.env, partner, loc_id))
@@ -406,7 +412,8 @@ def _quote_error_context(kwargs, partner, pickup_fsa, delivery_fsa, error):
         })
     return {
         "pickup_fsa": pickup_fsa, "delivery_fsa": delivery_fsa,
-        "pickup_loc": pickup_loc, "delivery_loc": first_delivery,
+        "pickup_loc": pickup_loc, "pickup_locs": pickup_locs,
+        "delivery_loc": first_delivery,
         "delivery_locs": delivery_locs, "pickup_loc_ids": pickup_loc_ids,
         "delivery_loc_ids": delivery_loc_ids, "pickup_loc_id": pickup_loc_id,
         "delivery_loc_id": delivery_loc_id,
@@ -1097,10 +1104,12 @@ class LogisticsBookingPortal(http.Controller):
                     "longitude": pu_eff[1],
                 }
             initial_route_stops = []
+            pickup_locs = []
             for i, loc in enumerate([_resolve_loc(request.env, partner, loc_id)
                                      for loc_id in pickup_loc_ids], 1):
                 if not loc:
                     return request.redirect("/my/booking/new")
+                pickup_locs.append(loc)
                 initial_route_stops.append({
                     "stop_key": _safe_stop_key(
                         pickup_stop_keys[i - 1] if i <= len(pickup_stop_keys) else "",
@@ -1116,7 +1125,8 @@ class LogisticsBookingPortal(http.Controller):
                 })
             return request.render("prema_logistics_booking.portal_step2_shipment", {
                 "pickup_fsa": pickup_fsa, "delivery_fsa": delivery_fsa,
-                "pickup_loc": pickup_loc, "delivery_locs": delivery_locs,
+                "pickup_loc": pickup_loc, "pickup_locs": pickup_locs,
+                "delivery_locs": delivery_locs,
                 "delivery_loc": first_delivery,
                 "pickup_lat": float(pickup_lat), "pickup_lng": float(pickup_lng or 0),
                 "delivery_lat": float(delivery_lat), "delivery_lng": float(delivery_lng or 0),
@@ -1139,7 +1149,7 @@ class LogisticsBookingPortal(http.Controller):
             return request.redirect("/my/booking/new")
         return request.render("prema_logistics_booking.portal_step2_shipment", {
             "pickup_fsa": pickup_fsa, "delivery_fsa": delivery_fsa,
-            "pickup_loc": None, "delivery_loc": None,
+            "pickup_loc": None, "pickup_locs": [], "delivery_loc": None,
             "pickup_lat": 0, "pickup_lng": 0,
             "delivery_lat": 0, "delivery_lng": 0,
             "pickup_loc_id": None, "delivery_loc_id": None,
