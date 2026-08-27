@@ -33,6 +33,7 @@ from . import logistics_booking_pallet
 from . import logistics_booking_stop
 from . import logistics_booking_leg
 from . import logistics_booking
+from . import logistics_booking_price_adjustment
 from . import account_move_booking
 from . import logistics_corridor
 from . import dispatch_job_extension

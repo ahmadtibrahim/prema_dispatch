@@ -240,6 +240,12 @@ class LogisticsBooking(models.Model):
         help="This booking requires multiple operational legs (e.g., hub transfer)."
     )
     leg_ids = fields.One2many("logistics.booking.leg", "booking_id", string="Legs")
+    # Append-only structured history of POST-confirmation sell-price
+    # adjustments. price_snapshot is immutable after confirmation and is
+    # never touched by these; each change gets one row here.
+    price_adjustment_ids = fields.One2many(
+        "logistics.booking.price.adjustment", "booking_id",
+        string="Price Adjustments", readonly=True)
 
     recurring_agreement_id = fields.Many2one("logistics.recurring.agreement", readonly=True, copy=False, string="Recurring Agreement")
     recurring_job_id = fields.Many2one(
@@ -377,9 +383,12 @@ class LogisticsBooking(models.Model):
             rec.margin_pct = (rec.calculated_margin / rec.calculated_price * 100.0) if rec.calculated_price > 0 else 0.0
 
     # ── Manual sell-price adjustment on a CONFIRMED booking ──────────
-    # Manager-only, while no customer invoice is posted. Appends a
-    # booking-level line to the immutable price_snapshot and never touches
-    # physical leg frozen prices, carrier BUY rates, or corridor pricing.
+    # Manager-only, while no customer invoice is posted. price_snapshot is
+    # IMMUTABLE after confirmation and is NEVER modified here — each
+    # change is recorded through the flat audit fields, an append-only
+    # logistics.booking.price.adjustment row, and a mail.message audit
+    # note. Physical leg frozen prices, carrier BUY rates, and corridor
+    # pricing are never touched either.
 
     @staticmethod
     def _sell_price_audit_message(old_price, new_price, reason, by):
@@ -398,9 +407,12 @@ class LogisticsBooking(models.Model):
 
         Requires a positive price and a reason; blocked once a customer
         invoice is posted (use the normal credit/debit invoice workflow
-        after that). Preserves original_confirmed_price on first change,
-        appends a booking-level snapshot line, and records the full audit
-        trail. Never touches legs, BUY rates, or corridor pricing.
+        after that). Preserves original_confirmed_price on first change and
+        records the full audit trail through the flat audit fields, an
+        append-only logistics.booking.price.adjustment row, and a
+        mail.message audit note. price_snapshot is IMMUTABLE after
+        confirmation — never appended to or rewritten here. Never touches
+        legs, BUY rates, or corridor pricing.
         """
         for rec in self:
             if not new_price or new_price <= 0:
@@ -417,22 +429,6 @@ class LogisticsBooking(models.Model):
                 raise UserError(_("A reason is required when changing the customer sell price."))
             by = changed_by or self.env.user
             system = rec.system_calculated_price or old_price
-            snapshot = list(rec.price_snapshot or [])
-            snapshot.extend([
-                {
-                    "label": "Manual negotiated adjustment",
-                    "amount": round(float(new_price) - old_price, 2),
-                    "system_calculated_price": system,
-                    "final_customer_sell_price": float(new_price),
-                    "reason": reason,
-                    "changed_by": by.name or "",
-                    "changed_at": fields.Datetime.now().isoformat(),
-                },
-                {
-                    "label": "Final customer sell price",
-                    "amount": float(new_price),
-                },
-            ])
             vals = {
                 "calculated_price": float(new_price),
                 "final_quoted_price": float(new_price),
@@ -441,11 +437,21 @@ class LogisticsBooking(models.Model):
                 "manual_price_reason": reason,
                 "manual_price_changed_by": by.id,
                 "manual_price_changed_at": fields.Datetime.now(),
-                "price_snapshot": snapshot,
             }
             if not rec.original_confirmed_price:
                 vals["original_confirmed_price"] = old_price
             rec.sudo().write(vals)
+            # Structured append-only audit row — durable history for
+            # multiple adjustments. price_snapshot stays untouched.
+            self.env["logistics.booking.price.adjustment"].sudo().create({
+                "booking_id": rec.id,
+                "old_price": old_price,
+                "new_price": float(new_price),
+                "adjustment_amount": round(float(new_price) - old_price, 2),
+                "reason": reason,
+                "changed_by": by.id,
+                "changed_at": fields.Datetime.now(),
+            })
             # Audit message — queryable even though the booking form has no
             # chatter widget (mail.message on the model record).
             self.env["mail.message"].sudo().create({

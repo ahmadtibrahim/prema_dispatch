@@ -181,6 +181,19 @@
                         <page string="Price Snapshot (immutable)">
                             <field name="price_snapshot_display" readonly="1" widget="text"/>
                         </page>
+                        <page string="Price Adjustments">
+                            <field name="price_adjustment_ids" readonly="1">
+                                <list>
+                                    <field name="create_date"/>
+                                    <field name="old_price"/>
+                                    <field name="new_price"/>
+                                    <field name="adjustment_amount"/>
+                                    <field name="reason"/>
+                                    <field name="changed_by"/>
+                                    <field name="changed_at"/>
+                                </list>
+                            </field>
+                        </page>
                     </notebook>
                 </sheet>
             </form>
