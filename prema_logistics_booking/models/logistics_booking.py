@@ -1602,14 +1602,21 @@ class LogisticsBooking(models.Model):
     # Freight Tax Decision Engine
     # ═══════════════════════════════════════════════════════════════════
 
-    def _resolve_freight_tax(self, partner, delivery_province):
+    def _resolve_freight_tax(self, partner, delivery_province,
+                             billing_rel=None, tax_treatment=None):
         """Determine the correct freight tax based on billing relationship
-        and final delivery province. Returns (account.tax record, reason string)."""
+        and final delivery province. Returns (account.tax record, reason string).
+
+        billing_rel / tax_treatment are the SNAPSHOT values from the booking
+        (see _apply_tax_decision); when not given they fall back to the
+        customer profile — the default at confirmation time."""
         ICP = self.env["ir.config_parameter"].sudo()
 
-        # Step 1: Read contact's freight tax profile
-        billing_rel = partner.x_freight_billing_relationship or "direct"
-        tax_treatment = partner.x_freight_tax_treatment or "automatic"
+        # Step 1: Read contact's freight tax profile (snapshot wins)
+        billing_rel = billing_rel \
+            or partner.x_freight_billing_relationship or "direct"
+        tax_treatment = tax_treatment \
+            or partner.x_freight_tax_treatment or "automatic"
 
         # Step 2: Manual review always wins
         if billing_rel == "manual_review" or tax_treatment == "manual_review":
@@ -1696,32 +1703,75 @@ class LogisticsBooking(models.Model):
         except Exception as e:
             _logger.warning("Could not create tax-missing activity: %s", e)
 
+    @staticmethod
+    def _extract_province(address):
+        """Regex-extract a Canadian province code from a free-form address."""
+        import re
+        match = re.search(
+            r'\b(ON|QC|NS|NB|PE|NL|AB|BC|MB|SK|NT|YT|NU)\b', address, re.I)
+        return match.group(1).upper() if match else ""
+
     def _get_delivery_province(self):
-        """Extract the final delivery province from booking stops or legacy fields."""
+        """Extract the final delivery province from booking stops or legacy fields.
+
+        Uses the LAST delivery stop that actually carries a province (earlier
+        stops with no province are skipped), falling back to the legacy
+        delivery_address regex when no stop has one. Never geocodes."""
         self.ensure_one()
         # From multi-stop
         if self.stop_ids:
-            deliveries = self.stop_ids.filtered(lambda s: s.stop_type == "delivery")
-            last_del = deliveries.sorted("sequence")[-1] if deliveries else None
-            if last_del and last_del.province_state:
-                return last_del.province_state
+            deliveries = [
+                s for s in self.stop_ids
+                if s.stop_type == "delivery"
+                and s.province_state and s.province_state.strip()
+            ]
+            if deliveries:
+                last_del = sorted(deliveries, key=lambda s: s.sequence)[-1]
+                return last_del.province_state.strip().upper()
         # From legacy field
         if self.delivery_address:
-            import re
-            match = re.search(r'\b(ON|QC|NS|NB|PE|NL|AB|BC|MB|SK|NT|YT|NU)\b', self.delivery_address, re.I)
-            if match:
-                return match.group(1).upper()
+            return self._extract_province(self.delivery_address)
+        return ""
+
+    def _get_pickup_province(self):
+        """Extract the pickup province from booking stops or legacy fields.
+
+        Mirrors _get_delivery_province for the ORIGIN side — used to decide
+        Quebec-domestic (pickup AND delivery both in QC) vs interprovincial."""
+        self.ensure_one()
+        # From multi-stop
+        if self.stop_ids:
+            pickups = [
+                s for s in self.stop_ids
+                if s.stop_type == "pickup"
+                and s.province_state and s.province_state.strip()
+            ]
+            if pickups:
+                first_pu = sorted(pickups, key=lambda s: s.sequence)[0]
+                return first_pu.province_state.strip().upper()
+        # From legacy field
+        if self.pickup_address:
+            return self._extract_province(self.pickup_address)
         return ""
 
     def _apply_tax_decision(self):
         """Run the freight tax decision engine and store the result on this booking.
-        Must be called after booking creation, before invoice creation."""
+        Must be called after booking creation, before invoice creation.
+
+        The billing relationship / tax treatment are SNAPSHOTTED onto the
+        booking on the first run (confirmation). Later runs reuse the
+        booking's own snapshot — customer-profile changes never rewrite
+        historical bookings."""
         self.ensure_one()
         partner = self.commercial_partner_id
         province = self._get_delivery_province()
 
-        tax, reason = self._resolve_freight_tax(partner, province)
-        billing_rel = partner.x_freight_billing_relationship or "direct"
+        # Snapshot authority: the booking's own fields win once set; the
+        # customer profile only provides the DEFAULT at confirmation.
+        billing_rel = self.billing_relationship \
+            or partner.x_freight_billing_relationship or "direct"
+        tax_treatment = self.tax_treatment \
+            or partner.x_freight_tax_treatment or "automatic"
 
         # Check for multi-province deliveries (flag for manual review)
         if self.stop_ids:
@@ -1732,20 +1782,36 @@ class LogisticsBooking(models.Model):
             )
             if len(delivery_provinces) > 1:
                 self.write({
+                    "billing_relationship": billing_rel,
+                    "tax_treatment": tax_treatment,
                     "tax_review_required": True,
                     "tax_reason": f"multi_province_deliveries_{','.join(sorted(delivery_provinces))}",
                 })
                 return
 
-        # Quebec-only: flag for manual review
-        if province == "QC" and billing_rel == "direct":
-            if not self.stop_ids or len(self.stop_ids.filtered(lambda s: s.stop_type == "delivery")) <= 1:
-                self.write({"tax_review_required": True, "tax_reason": "QC_manual_review"})
-                return
+        # QUEBEC-DOMESTIC freight ONLY (pickup AND final delivery both in
+        # Quebec) is flagged for manual GST/QST review. Interprovincial
+        # freight into Quebec (e.g. ON→QC) is NOT manual review — it gets
+        # the configured Quebec Interprovincial GST. QC→ON is Ontario HST.
+        # A zero-rated interlining treatment always wins over the review.
+        pickup_province = self._get_pickup_province()
+        if (province == "QC" and pickup_province == "QC"
+                and billing_rel == "direct"
+                and tax_treatment != "zero_rated_interlining"):
+            self.write({
+                "billing_relationship": billing_rel,
+                "tax_treatment": tax_treatment,
+                "tax_review_required": True,
+                "tax_reason": "QC_manual_review",
+            })
+            return
 
+        tax, reason = self._resolve_freight_tax(
+            partner, province, billing_rel=billing_rel,
+            tax_treatment=tax_treatment)
         self.write({
             "billing_relationship": billing_rel,
-            "tax_treatment": partner.x_freight_tax_treatment or "automatic",
+            "tax_treatment": tax_treatment,
             "tax_reason": reason,
             "tax_rule_id": tax.id if tax else False,
             "tax_rule_name": tax.name if tax else "",

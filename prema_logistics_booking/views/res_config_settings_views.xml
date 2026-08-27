@@ -118,6 +118,18 @@
                                 <div class="text-muted">Zero-rated tax for qualifying international freight</div>
                             </div>
                         </div>
+                        <div class="col-12 col-lg-6 o_setting_box">
+                            <div class="o_setting_left_pane">
+                                <field name="logistics_freight_tax_buy_interlining_id"/>
+                            </div>
+                            <div class="o_setting_right_pane">
+                                <label for="logistics_freight_tax_buy_interlining_id"/>
+                                <div class="text-muted">
+                                    PURCHASE-side 0% interlining tax on subcontract carrier
+                                    POs / Rate Confirmations. Separate from customer SELL tax.
+                                </div>
+                            </div>
+                        </div>
                     </div>
                     <h2>Pricing Defaults</h2>
                     <div class="row mt16 o_settings_container">

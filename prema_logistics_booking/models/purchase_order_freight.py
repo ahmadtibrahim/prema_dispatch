@@ -107,6 +107,11 @@ class PurchaseOrderFreight(models.Model):
                 _("No 'Subcontracted Freight Service' product is configured. "
                   "Run the 18.0.13.39.0 migration or create it."))
         booking = leg.booking_id
+        # BUY-side tax authority: the configured carrier buy interlining
+        # tax (0%, purchase use) — NEVER the customer's destination
+        # sell tax. The accepted BUY rate stays the commercial amount.
+        buy_tax_id = int(self.env["ir.config_parameter"].sudo().get_param(
+            "logistics.freight_tax_buy_interlining_id", "0") or "0")
         po_vals = {
             "partner_id": carrier.id,
             "is_freight_subcontract": True,
@@ -118,6 +123,7 @@ class PurchaseOrderFreight(models.Model):
                 "name": self._freight_line_name(leg),
                 "product_qty": 1,
                 "price_unit": rate,
+                "taxes_id": [(6, 0, [buy_tax_id])] if buy_tax_id else [],
             })],
         }
         if booking and booking.dispatch_job_ids:

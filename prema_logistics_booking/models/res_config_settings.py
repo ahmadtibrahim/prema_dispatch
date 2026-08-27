@@ -21,27 +21,35 @@ class ResConfigSettings(models.TransientModel):
         help="Tax applied to freight delivered to Ontario (HST).",
     )
     logistics_freight_tax_quebec_id = fields.Many2one(
-        "account.tax", string="Quebec Interprovincial Freight Tax (GST)",
+        "account.tax", string="Quebec Interprovincial Freight Tax (5% GST)",
         config_parameter="logistics.freight_tax_quebec_id",
         domain=[("type_tax_use", "=", "sale")],
-        help="Tax applied to interprovincial freight delivered to Quebec (GST portion).",
+        help="GST applied to interprovincial freight delivered to Quebec "
+             "(ON→QC, QC→ON, or any non-Quebec origin). NOT for Quebec-"
+             "domestic shipments.",
     )
     logistics_freight_tax_quebec_gst_id = fields.Many2one(
-        "account.tax", string="Quebec Domestic GST Tax",
+        "account.tax", string="Quebec Domestic GST (Manual Review)",
         config_parameter="logistics.freight_tax_quebec_gst_id",
         domain=[("type_tax_use", "=", "sale")],
-        help="GST portion for Quebec-only pickup and delivery freight.",
+        help="GST portion for Quebec-only pickup AND delivery freight. "
+             "Applied only after manual/accounting approval — QC-domestic "
+             "bookings always require review first.",
     )
     logistics_freight_tax_quebec_qst_id = fields.Many2one(
-        "account.tax", string="Quebec Domestic QST Tax",
+        "account.tax", string="Quebec Domestic QST (Manual Review)",
         config_parameter="logistics.freight_tax_quebec_qst_id",
         domain=[("type_tax_use", "=", "sale")],
-        help="QST portion for Quebec-only pickup and delivery freight.",
+        help="QST portion for Quebec-only pickup AND delivery freight. "
+             "Applied only after manual/accounting approval — QC-domestic "
+             "bookings always require review first.",
     )
     logistics_freight_tax_ns_id = fields.Many2one(
-        "account.tax", string="Nova Scotia Freight Tax (HST 15%)",
+        "account.tax", string="Nova Scotia Freight Tax (HST 14%)",
         config_parameter="logistics.freight_tax_ns_id",
         domain=[("type_tax_use", "=", "sale")],
+        help="HST 14% for freight delivered to Nova Scotia — effective "
+             "2026-07-30 per the accountant's rate guide (was 15%).",
     )
     logistics_freight_tax_nb_id = fields.Many2one(
         "account.tax", string="New Brunswick Freight Tax (HST 15%)",
@@ -75,6 +83,17 @@ class ResConfigSettings(models.TransientModel):
         config_parameter="logistics.freight_tax_zero_international_id",
         domain=[("type_tax_use", "=", "sale")],
         help="Zero-rated tax for qualifying international freight shipments.",
+    )
+    logistics_freight_tax_buy_interlining_id = fields.Many2one(
+        "account.tax", string="Carrier Buy Interlining Tax (0%)",
+        config_parameter="logistics.freight_tax_buy_interlining_id",
+        domain=[("type_tax_use", "=", "purchase")],
+        help="PURCHASE-side 0% interlining tax stamped on subcontract "
+             "carrier Purchase Orders / Rate Confirmations. A SEPARATE "
+             "authority from the customer SELL tax — destination HST/GST "
+             "is never copied onto the carrier purchase. The accepted "
+             "carrier BUY rate is always preserved as the commercial "
+             "freight amount.",
     )
 
     # ── Phase 3: Default excess weight rate ──────────────────────────
@@ -116,11 +135,12 @@ class ResConfigSettings(models.TransientModel):
         """Return which tax mappings are configured and which are missing.
         Used by the booking tax engine to validate before confirmation."""
         fields_to_check = [
-            ("logistics_freight_tax_ontario_id", "Ontario"),
-            ("logistics_freight_tax_quebec_id", "Quebec Interprovincial"),
-            ("logistics_freight_tax_gst_id", "GST (AB/BC/MB/SK/NT/YT/NU)"),
-            ("logistics_freight_tax_zero_interlining_id", "Interlining Zero-Rated"),
-            ("logistics_freight_tax_zero_international_id", "International Zero-Rated"),
+            ("logistics.freight_tax_ontario_id", "Ontario"),
+            ("logistics.freight_tax_quebec_id", "Quebec Interprovincial"),
+            ("logistics.freight_tax_gst_id", "GST (AB/BC/MB/SK/NT/YT/NU)"),
+            ("logistics.freight_tax_zero_interlining_id", "Interlining Zero-Rated"),
+            ("logistics.freight_tax_zero_international_id", "International Zero-Rated"),
+            ("logistics.freight_tax_buy_interlining_id", "Carrier Buy Interlining"),
         ]
 
         configured = []
