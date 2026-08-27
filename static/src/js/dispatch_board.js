@@ -560,6 +560,22 @@ export class DispatchBoard extends Component {
             ) {
                 this.clearHighlight();
             }
+            // ── Stale-map guard ────────────────────────────────────
+            // Switching the planner date (or a background refresh landing on
+            // a new day) keeps the same truck selected — WITHOUT a redraw the
+            // map kept showing the previous day's pins, route polyline and
+            // route summary (e.g. Sunday's Toronto→London pin + "188.9 km"
+            // hanging over the Tuesday board while the stops panel already
+            // showed the new day's Mississauga→Montréal stops). Redraw from
+            // the fresh payload once per selected date, only while the map is
+            // actually open.
+            if (this.state.mapTruckId
+                && this.state.mapGoogleReady
+                && !this.state.mapMinimized
+                && this._mapRenderedForDate !== this.state.selectedDate) {
+                this._mapRenderedForDate = this.state.selectedDate;
+                this._redrawTruckRoute();
+            }
             this._maybeLoadWeather();
         } catch (e) {
             console.error("Board load failed:", e);
@@ -1042,6 +1058,8 @@ export class DispatchBoard extends Component {
             // Map exists — move it to the new container if needed (panel ↔ fullscreen switch)
             return;
         }
+        // Fresh map instance — no day's route is rendered yet.
+        this._mapRenderedForDate = null;
         try {
             const apiKey = await this.orm.call("ir.config_parameter", "get_param", ["google_maps_api_key"]);
             await loadGoogleMaps(apiKey || "", { libraries: "places,geometry" });
@@ -1077,6 +1095,9 @@ export class DispatchBoard extends Component {
         this.state.mapTruckId = truck.truck_id;
         this.state.routeSummary = null;
         this.clearHighlight();
+        // This click renders the route for the currently selected date —
+        // the stale-map guard in loadData() keys off this stamp.
+        this._mapRenderedForDate = this.state.selectedDate;
 
         // Ensure map is open and initialized
         if (this.state.mapMinimized) {
@@ -1447,6 +1468,12 @@ export class DispatchBoard extends Component {
         this.state.mapMinimized = !this.state.mapMinimized;
         if (!this.state.mapMinimized && !this._map) {
             setTimeout(() => this._initBoardMap(), 50);
+        }
+        // Reopening the map must never show the previous day's pins/route —
+        // redraw the currently selected truck's route for today.
+        if (!this.state.mapMinimized && this._map && this.state.mapTruckId) {
+            this._mapRenderedForDate = null;
+            this._redrawTruckRoute();
         }
     }
 
