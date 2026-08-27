@@ -1453,11 +1453,41 @@ function renderPickupActualsCard(stop){
 function renderFreightItems(stop){
     const items=stop.freight_items||[];
     if(!items.length) return "";
+    const isPickup=stop.type==="pickup";
+    const isDrop=(stop.type==="dropoff"||stop.type==="return");
+    const title=isPickup?"📦 Freight to pick up here (manifest)":
+        (isDrop?"📦 Freight to unload here (manifest)":"📦 Transit Pallets / Freight");
+    const rows=items.map(item=>{
+        const weight=item.weight_lbs?` <span class="da-move-w">${item.weight_lbs} lb</span>`:"";
+        const meta=[];
+        if(item.pallet_count&&item.pallet_count>1) meta.push(`${item.pallet_count} pallets`);
+        if(item.commodity) meta.push(item.commodity);
+        if(item.temperature_requirement) meta.push("🌡 "+item.temperature_requirement);
+        if(item.customer_reference) meta.push("Ref: "+item.customer_reference);
+        if(item.shared_skid) meta.push("shared pallet");
+        const metaHtml=meta.length?`<div class="da-detail-items-meta">${meta.map(m=>`<span class="da-detail-item-tag">${esc(m)}</span>`).join("")}</div>`:"";
+        let movesHtml="";
+        if(isPickup){
+            // Only freight expected at THIS pickup: show each pallet's
+            // customer-visible destinations with portion weights.
+            const dests=item.delivery_stops||[];
+            movesHtml=dests.length?`<div class="da-detail-items-moves">${dests.map(d=>
+                `<div class="da-move-line">→ <strong>${esc(d.destination_name||("Stop "+d.stop_sequence))}</strong>`+
+                (d.weight_lbs?` <span class="da-move-w">${d.weight_lbs} lb</span>`:"")+`</div>`
+            ).join("")}</div>`:"";
+        }else if(isDrop){
+            // Only freight unloaded HERE: origin of each pallet, plus the
+            // portion of a shared pallet that comes off at this stop.
+            const origin=item.pickup_origin;
+            const portion=(item.delivery_stops||[]).filter(d=>d.stop_id===stop.id);
+            const portionW=portion.length&&portion[0].weight_lbs?` <span class="da-move-w">${portion[0].weight_lbs} lb</span>`:"";
+            movesHtml=`<div class="da-detail-items-moves"><div class="da-move-line">← <strong>${esc(origin?origin.location_name:"pickup")}</strong>${portionW}</div></div>`;
+        }
+        return `<div class="da-detail-item-chip"><strong>${esc(item.label)}</strong>${weight}${movesHtml}${metaHtml}</div>`;
+    }).join("");
     return `<div class="da-detail-items">
-        <div class="da-detail-items-title">📦 Transit Pallets / Freight</div>
-        <div class="da-detail-items-list">${items.map(item=>`
-            <div class="da-detail-item-chip">${esc(item.label)}</div>
-        `).join("")}</div>
+        <div class="da-detail-items-title">${title}</div>
+        <div class="da-detail-items-list">${rows}</div>
     </div>`;
 }
 
