@@ -55,6 +55,29 @@ class LogisticsCustomQuote(models.Model):
     # Resolution
     state = fields.Selection(QUOTE_STATE, default="new", tracking=True)
     quoted_price = fields.Float(string="Quoted Price")
+    # ── Manual / negotiated sell price audit ─────────────────────────
+    # quoted_price is the FINAL price offered — the customer-facing number
+    # (the printed quotation shows only this). system_calculated_price
+    # preserves the original pricing-engine result and the manual_price_*
+    # fields the audit trail. Staff may edit quoted_price until the quote
+    # is converted; a reason is required when it differs from the system
+    # price (a reset back to the system price exempts).
+    system_calculated_price = fields.Float(
+        string="System Calculated Price", readonly=True,
+        help="Original pricing-engine sell price — audit only, never shown "
+             "to the customer.")
+    manual_price_override = fields.Boolean(
+        string="Manual Price Override", readonly=True, copy=False)
+    manual_price_adjustment = fields.Float(
+        string="Manual Price Adjustment", readonly=True,
+        compute="_compute_manual_price_adjustment",
+        help="Quoted price minus system calculated price "
+             "(negative = discount).")
+    manual_price_reason = fields.Char(string="Manual Price Reason")
+    manual_price_changed_by = fields.Many2one(
+        "res.users", string="Price Changed By", readonly=True)
+    manual_price_changed_at = fields.Datetime(
+        string="Price Changed At", readonly=True)
     internal_notes = fields.Text(string="Internal Notes")
     reason_code = fields.Char(string="Reason", help="Why this required manual quoting.")
 
@@ -97,6 +120,69 @@ class LogisticsCustomQuote(models.Model):
             if vals.get("name", "New") == "New":
                 vals["name"] = self.env["ir.sequence"].sudo().next_by_code("logistics.custom.quote") or "CQ-0001"
         return super().create(vals_list)
+
+    @api.depends("quoted_price", "system_calculated_price")
+    def _compute_manual_price_adjustment(self):
+        for rec in self:
+            rec.manual_price_adjustment = round(
+                (rec.quoted_price or 0.0) - (rec.system_calculated_price or 0.0), 2)
+
+    def write(self, vals):
+        """Audit every manual quoted-price change on a non-converted quote.
+
+        - quoted_price is the FINAL price offered — the customer-facing
+          number. The first manual change on a legacy quote (no system
+          price stored) captures the pre-change price as its system
+          reference.
+        - A reason is required whenever the new price differs from the
+          system calculated price — except a reset back to the system
+          price, which clears the reason.
+        - Once converted, quoted_price is frozen (never silently
+          rewritten — adjust the booking instead).
+        """
+        changed = []
+        for rec in self:
+            if "quoted_price" in vals and vals.get("quoted_price") is not None \
+                    and round(float(vals.get("quoted_price")), 2) != round(rec.quoted_price or 0.0, 2):
+                new_price = float(vals.get("quoted_price"))
+                old_price = rec.quoted_price or 0.0
+                if not rec.system_calculated_price:
+                    vals["system_calculated_price"] = old_price
+                system = vals.get("system_calculated_price", rec.system_calculated_price) or old_price
+                if rec.state == "converted":
+                    raise UserError(_(
+                        "This quotation is already converted to a booking — "
+                        "the final quoted price is frozen. Adjust the "
+                        "booking's customer sell price instead."))
+                if round(new_price, 2) != round(system, 2) \
+                        and not (vals.get("manual_price_reason") or rec.manual_price_reason):
+                    raise UserError(_(
+                        "A Manual Price Reason is required when the quoted "
+                        "price differs from the system calculated price."))
+                changed.append((rec, old_price, new_price, system))
+        result = super().write(vals)
+        for rec, old_price, new_price, system in changed:
+            rec.write({
+                "manual_price_override": round(new_price, 2) != round(system, 2),
+                "manual_price_changed_by": self.env.user.id,
+                "manual_price_changed_at": fields.Datetime.now(),
+            })
+            rec.message_post(body=self.env["logistics.booking"]._sell_price_audit_message(
+                old_price, new_price, rec.manual_price_reason or "",
+                self.env.user.name or ""))
+        return result
+
+    def action_reset_price(self):
+        """Convenience reset — quoted price back to the system price; the
+        reason is then no longer required."""
+        self.ensure_one()
+        if not self.system_calculated_price:
+            raise UserError(_("No system calculated price is stored for this quote."))
+        self.write({
+            "quoted_price": self.system_calculated_price,
+            "manual_price_reason": "",
+        })
+        return True
 
     def action_start_review(self):
         self.state = "reviewing"
@@ -157,7 +243,17 @@ class LogisticsCustomQuote(models.Model):
             "idempotency_key": f"custom_quote:{self.id}",
         }, source_channel="custom_quote")
 
-        booking = svc.confirm_from_internal(norm, skip_invoice=False)
+        booking = svc.confirm_from_internal(
+            norm,
+            skip_invoice=False,
+            # The FINAL quoted price becomes the booking's customer sell
+            # price (revenue authority); the system price and the reason
+            # travel along for the permanent audit trail.
+            sell_price_override=self.quoted_price,
+            sell_price_override_reason=self.manual_price_reason or "",
+            sell_price_override_by=self.manual_price_changed_by.id or False,
+            system_calculated_price=self.system_calculated_price,
+        )
         self.booking_id = booking.id
         self.state = "converted"
 

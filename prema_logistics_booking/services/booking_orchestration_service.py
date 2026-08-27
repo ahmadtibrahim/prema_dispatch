@@ -1036,6 +1036,10 @@ class BookingOrchestrationService:
         existing_invoice: object = None,
         skip_invoice: bool = False,
         pricing_session: object = None,
+        sell_price_override: float = None,
+        sell_price_override_reason: str = "",
+        sell_price_override_by=None,
+        system_calculated_price: float = None,
     ):
         """Create a confirmed booking from an internal (staff) source.
         This is the canonical method for phone, internal, invoice, WA,
@@ -1144,6 +1148,31 @@ class BookingOrchestrationService:
                 "agreed rate was supplied."
             ))
 
+        # ── 4b. Manual / negotiated customer sell price ────────────────
+        # Staff may override the CUSTOMER SELL price for this shipment only
+        # (discounts AND increases — any positive amount). The engine result
+        # stays forever in system_calculated_price; calculated_price and
+        # final_quoted_price become the FINAL sell price — the revenue and
+        # invoice authority. The immutable price_snapshot gains one
+        # booking-level "Manual negotiated adjustment" line. Physical leg
+        # frozen prices, carrier BUY rates and corridor pricing are NEVER
+        # touched.
+        sell_override_applied = False
+        override_by = self.env.user
+        system_price = system_calculated_price or calculated_price
+        if sell_price_override is not None:
+            final_sell = float(sell_price_override)
+            if final_sell <= 0:
+                raise UserError(_("The customer quoted price must be greater than zero."))
+            if round(final_sell, 2) != round(calculated_price, 2):
+                if not sell_price_override_reason:
+                    raise UserError(_("A reason is required when changing the customer sell price."))
+                calculated_price = final_sell
+                sell_override_applied = True
+                if sell_price_override_by:
+                    override_by = self.env["res.users"].sudo().browse(
+                        sell_price_override_by) or self.env.user
+
         # ── 5. Build booking vals ─────────────────────────────────────────
         booking_vals = {
             "partner_id": partner.id,
@@ -1170,6 +1199,9 @@ class BookingOrchestrationService:
             "weight_lbs": normalized_request.weight_lbs,
             "commodity": normalized_request.commodity or "",
             "calculated_price": calculated_price,
+            "system_calculated_price": system_price,
+            "final_quoted_price": calculated_price,
+            "original_confirmed_price": calculated_price,
             "po_number": normalized_request.po_number or "",
             "customer_reference": normalized_request.customer_reference or "",
             "booking_number": self.env["logistics.booking"]._generate_booking_number(),
@@ -1216,6 +1248,33 @@ class BookingOrchestrationService:
             if allocs:
                 price_snapshot = list(price_snapshot) + [{"_pallet_allocs": allocs}]
             booking_vals["price_snapshot"] = price_snapshot
+
+        # Manual sell-price override: booking-level audit line, never a
+        # rewrite of the pricing-engine breakdown (immutable snapshot).
+        if sell_override_applied:
+            price_snapshot = list(price_snapshot or []) + [
+                {
+                    "label": "Manual negotiated adjustment",
+                    "amount": round(calculated_price - system_price, 2),
+                    "system_calculated_price": system_price,
+                    "final_customer_sell_price": calculated_price,
+                    "reason": sell_price_override_reason,
+                    "changed_by": override_by.name or "",
+                    "changed_at": fields.Datetime.now().isoformat(),
+                },
+                {
+                    "label": "Final customer sell price",
+                    "amount": calculated_price,
+                },
+            ]
+            booking_vals["price_snapshot"] = price_snapshot
+            booking_vals.update({
+                "manual_price_override": True,
+                "manual_price_adjustment": round(calculated_price - system_price, 2),
+                "manual_price_reason": sell_price_override_reason,
+                "manual_price_changed_by": override_by.id,
+                "manual_price_changed_at": fields.Datetime.now(),
+            })
         if normalized_request.departure_id:
             booking_vals["departure_id"] = normalized_request.departure_id
 
@@ -1267,6 +1326,21 @@ class BookingOrchestrationService:
                     )
 
                 booking = Booking.sudo().create(booking_vals)
+
+                # Sell-override audit message on the booking record
+                # (queryable via mail.message — the booking form has no
+                # chatter widget).
+                if sell_override_applied:
+                    self.env["mail.message"].sudo().create({
+                        "model": booking._name,
+                        "res_id": booking.id,
+                        "body": Booking._sell_price_audit_message(
+                            system_price, calculated_price,
+                            sell_price_override_reason,
+                            override_by.name or ""),
+                        "message_type": "comment",
+                        "subtype_id": self.env.ref("mail.mt_comment").id,
+                    })
 
                 # Create booking stops
                 self._create_booking_stops(

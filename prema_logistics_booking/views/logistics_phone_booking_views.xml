@@ -87,11 +87,17 @@
 
                     <group string="Quote Result" invisible="price == 0">
                         <group>
-                            <field name="price" readonly="1"/>
-                            <field name="pickup_date" readonly="1"/>
-                            <field name="delivery_date" readonly="1"/>
+                            <field name="system_calculated_price" readonly="1"/>
+                            <field name="customer_quoted_price"/>
+                            <field name="manual_price_adjustment" readonly="1"/>
+                            <field name="manual_price_reason"
+                                   placeholder="Required when the quoted price differs from the system price"/>
+                            <button name="action_reset_price" string="Reset to System Price" type="object"
+                                    class="btn-secondary"/>
                         </group>
                         <group>
+                            <field name="pickup_date" readonly="1"/>
+                            <field name="delivery_date" readonly="1"/>
                             <field name="quote_id" readonly="1"/>
                             <field name="booking_id" readonly="1" invisible="not booking_id"/>
                         </group>

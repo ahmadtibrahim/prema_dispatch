@@ -1,5 +1,34 @@
 <?xml version="1.0" encoding="utf-8"?>
 <odoo>
+    <!-- Manager-only post-confirmation customer sell-price adjustment
+         (logistics.booking._apply_sell_price_change is the authority).
+         MUST load before the booking form view — the form's Adjust button
+         references action_logistics_booking_price_adjust by %()ref. -->
+    <record id="view_logistics_booking_price_adjust_form" model="ir.ui.view">
+        <field name="name">logistics.booking.price.adjust.form</field>
+        <field name="model">logistics.booking.price.adjust</field>
+        <field name="arch" type="xml">
+            <form string="Adjust Customer Sell Price">
+                <group>
+                    <field name="booking_id" readonly="1"/>
+                    <field name="new_price"/>
+                    <field name="reason"/>
+                </group>
+                <footer>
+                    <button name="action_apply" string="Apply" type="object" class="btn-primary"/>
+                    <button string="Cancel" special="cancel" class="btn-secondary"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+    <record id="action_logistics_booking_price_adjust" model="ir.actions.act_window">
+        <field name="name">Adjust Customer Sell Price</field>
+        <field name="res_model">logistics.booking.price.adjust</field>
+        <field name="view_mode">form</field>
+        <field name="target">new</field>
+        <field name="groups_id" eval="[(4, ref('prema_logistics_booking.group_logistics_booking_manager'))]"/>
+    </record>
+
     <record id="view_logistics_booking_list" model="ir.ui.view">
         <field name="name">logistics.booking.list</field>
         <field name="model">logistics.booking</field>
@@ -45,11 +74,23 @@
                             <field name="booking_channel" readonly="1"/>
                         </group>
                         <group>
+                            <button name="%(action_logistics_booking_price_adjust)d" string="Adjust Customer Price"
+                                    type="action" class="btn-secondary"
+                                    groups="prema_logistics_booking.group_logistics_booking_manager"
+                                    context="{'default_booking_id': id}"
+                                    invisible="state in ('cancelled', 'completed')"/>
                             <field name="corridor_id" readonly="1"/>
                             <field name="departure_id" readonly="1"/>
                             <field name="pickup_date" readonly="1"/>
                             <field name="estimated_delivery_date" readonly="1"/>
                             <field name="calculated_price" readonly="1"/>
+                            <field name="final_quoted_price" readonly="1" invisible="not manual_price_override"/>
+                            <field name="system_calculated_price" readonly="1" invisible="not manual_price_override"/>
+                            <field name="manual_price_adjustment" readonly="1" invisible="not manual_price_override"/>
+                            <field name="manual_price_reason" readonly="1" invisible="not manual_price_override"/>
+                            <field name="manual_price_changed_by" readonly="1" invisible="not manual_price_override"/>
+                            <field name="manual_price_changed_at" readonly="1" invisible="not manual_price_override"/>
+                            <field name="original_confirmed_price" readonly="1" invisible="not original_confirmed_price"/>
                         </group>
                     </group>
                     <notebook>

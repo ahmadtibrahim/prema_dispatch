@@ -144,6 +144,41 @@ class LogisticsBooking(models.Model):
 
     pricing_session_token = fields.Char(readonly=True, copy=False, index=True)
 
+    # ── Manual / negotiated customer sell price (audit) ──────────────
+    # Staff may override the CUSTOMER SELL price on a shipment-by-shipment
+    # basis (negotiation, volume, mistakes) — discounts AND increases are
+    # valid. The pricing-engine result is preserved forever in
+    # system_calculated_price; calculated_price and final_quoted_price hold
+    # the FINAL sell price — the revenue and invoice authority. An override
+    # NEVER rewrites physical leg frozen prices, carrier BUY rates, or
+    # corridor pricing: the immutable price_snapshot only gains a
+    # booking-level "Manual negotiated adjustment" line.
+    system_calculated_price = fields.Float(
+        string="System Calculated Price", readonly=True,
+        help="Original pricing-engine customer sell price (audit — never "
+             "shown to the customer).")
+    final_quoted_price = fields.Float(
+        string="Final Customer Quoted Price", readonly=True,
+        help="Final customer sell price offered/confirmed — the revenue "
+             "authority. Equals calculated_price; differs only under a "
+             "manual sell-price override.")
+    manual_price_override = fields.Boolean(
+        string="Manual Price Override", readonly=True, copy=False)
+    manual_price_adjustment = fields.Float(
+        string="Manual Price Adjustment", readonly=True,
+        help="Final quoted price minus system calculated price "
+             "(negative = discount).")
+    manual_price_reason = fields.Char(
+        string="Manual Price Reason", readonly=True)
+    manual_price_changed_by = fields.Many2one(
+        "res.users", string="Price Changed By", readonly=True)
+    manual_price_changed_at = fields.Datetime(
+        string="Price Changed At", readonly=True)
+    original_confirmed_price = fields.Float(
+        string="Original Confirmed Price", readonly=True, copy=False,
+        help="First confirmed customer sell price — preserved forever when "
+             "a confirmed booking's price is later adjusted.")
+
     # ── Phase 8: Capacity Override ───────────────────────────────────
     capacity_override = fields.Boolean(
         string="Capacity Override",
@@ -340,6 +375,87 @@ class LogisticsBooking(models.Model):
         for rec in self:
             rec.calculated_margin = rec.calculated_price - (rec.estimated_cost or 0.0)
             rec.margin_pct = (rec.calculated_margin / rec.calculated_price * 100.0) if rec.calculated_price > 0 else 0.0
+
+    # ── Manual sell-price adjustment on a CONFIRMED booking ──────────
+    # Manager-only, while no customer invoice is posted. Appends a
+    # booking-level line to the immutable price_snapshot and never touches
+    # physical leg frozen prices, carrier BUY rates, or corridor pricing.
+
+    @staticmethod
+    def _sell_price_audit_message(old_price, new_price, reason, by):
+        return _(
+            "Customer sell price manually changed: %(old_price)s → %(new_price)s\n"
+            "Reason: %(reason)s\nBy: %(by)s"
+        ) % {
+            "old_price": "%.2f" % old_price,
+            "new_price": "%.2f" % new_price,
+            "reason": reason or "—",
+            "by": by or "",
+        }
+
+    def _apply_sell_price_change(self, new_price, reason="", changed_by=None):
+        """Adjust the customer sell price of confirmed bookings.
+
+        Requires a positive price and a reason; blocked once a customer
+        invoice is posted (use the normal credit/debit invoice workflow
+        after that). Preserves original_confirmed_price on first change,
+        appends a booking-level snapshot line, and records the full audit
+        trail. Never touches legs, BUY rates, or corridor pricing.
+        """
+        for rec in self:
+            if not new_price or new_price <= 0:
+                raise UserError(_("The new customer sell price must be greater than zero."))
+            if rec.invoice_id and rec.invoice_id.state == "posted":
+                raise UserError(_(
+                    "A posted customer invoice already exists for this "
+                    "booking — use the normal credit/debit invoice workflow "
+                    "to change the billed amount."))
+            old_price = rec.calculated_price or 0.0
+            if round(float(new_price), 2) == round(old_price, 2):
+                continue
+            if not reason:
+                raise UserError(_("A reason is required when changing the customer sell price."))
+            by = changed_by or self.env.user
+            system = rec.system_calculated_price or old_price
+            snapshot = list(rec.price_snapshot or [])
+            snapshot.extend([
+                {
+                    "label": "Manual negotiated adjustment",
+                    "amount": round(float(new_price) - old_price, 2),
+                    "system_calculated_price": system,
+                    "final_customer_sell_price": float(new_price),
+                    "reason": reason,
+                    "changed_by": by.name or "",
+                    "changed_at": fields.Datetime.now().isoformat(),
+                },
+                {
+                    "label": "Final customer sell price",
+                    "amount": float(new_price),
+                },
+            ])
+            vals = {
+                "calculated_price": float(new_price),
+                "final_quoted_price": float(new_price),
+                "manual_price_override": True,
+                "manual_price_adjustment": round(float(new_price) - system, 2),
+                "manual_price_reason": reason,
+                "manual_price_changed_by": by.id,
+                "manual_price_changed_at": fields.Datetime.now(),
+                "price_snapshot": snapshot,
+            }
+            if not rec.original_confirmed_price:
+                vals["original_confirmed_price"] = old_price
+            rec.sudo().write(vals)
+            # Audit message — queryable even though the booking form has no
+            # chatter widget (mail.message on the model record).
+            self.env["mail.message"].sudo().create({
+                "model": rec._name,
+                "res_id": rec.id,
+                "body": self._sell_price_audit_message(
+                    old_price, float(new_price), reason, by.name or ""),
+                "message_type": "comment",
+                "subtype_id": self.env.ref("mail.mt_comment").id,
+            })
 
     # ------------------------------------------------------------------
     # The atomic confirmation transaction (steps mirror the approved plan).

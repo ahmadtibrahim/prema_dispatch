@@ -52,7 +52,21 @@
                         </group>
                         <group>
                             <field name="state"/>
-                            <field name="quoted_price"/>
+                            <field name="quoted_price" readonly="state == 'converted'"/>
+                            <field name="system_calculated_price" readonly="1"
+                                   invisible="not system_calculated_price"/>
+                            <field name="manual_price_adjustment" readonly="1"
+                                   invisible="not system_calculated_price"/>
+                            <field name="manual_price_reason"
+                                   invisible="not system_calculated_price"
+                                   placeholder="Required when the quoted price differs from the system price"/>
+                            <button name="action_reset_price" string="Reset to System Price" type="object"
+                                    class="btn-secondary"
+                                    invisible="state == 'converted' or not system_calculated_price"/>
+                            <field name="manual_price_changed_by" readonly="1"
+                                   invisible="not manual_price_changed_by"/>
+                            <field name="manual_price_changed_at" readonly="1"
+                                   invisible="not manual_price_changed_at"/>
                             <field name="reason_code"/>
                         </group>
                     </group>

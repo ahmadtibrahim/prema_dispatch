@@ -82,6 +82,23 @@ class LogisticsPhoneBooking(models.TransientModel):
     # Results / persistent quotation link
     result_text = fields.Text(readonly=True)
     price = fields.Float(readonly=True)
+    # ── Manual / negotiated customer sell price ──────────────────────
+    # System Calculated Price (readonly audit) + editable Customer Quoted
+    # Price. Any positive amount is allowed (discounts AND increases);
+    # Manual Price Reason is required whenever the quoted price differs
+    # from the system price. Reset restores the system price.
+    system_calculated_price = fields.Float(
+        string="System Calculated Price", readonly=True,
+        help="Pricing-engine price for this shipment. Audit reference — "
+             "never shown to the customer.")
+    customer_quoted_price = fields.Float(
+        string="Customer Quoted Price",
+        help="Final price offered to the customer — the revenue authority. "
+             "Any positive amount is allowed (discounts AND increases).")
+    manual_price_reason = fields.Char(string="Manual Price Reason")
+    manual_price_adjustment = fields.Float(
+        string="Adjustment", readonly=True,
+        compute="_compute_manual_price_adjustment")
     pickup_date = fields.Date(readonly=True)
     delivery_date = fields.Date(readonly=True)
     quote_token = fields.Char(readonly=True, copy=False)
@@ -264,7 +281,11 @@ class LogisticsPhoneBooking(models.TransientModel):
             ),
             "load_type": self.shipment_type,
             "requested_pickup_date": session.pickup_date or self.requested_pickup_date,
-            "quoted_price": session.calculated_price,
+            # quoted_price is the FINAL customer-facing price; the system
+            # price is preserved as the audit reference on the quote.
+            "quoted_price": self.customer_quoted_price or session.calculated_price,
+            "system_calculated_price": session.calculated_price,
+            "manual_price_reason": self.manual_price_reason or "",
             "departure_id": session.departure_id.id if session.departure_id else False,
             "routing_strategy": quote.get("lane_name") or "",
             "resolved_fsa_pickup": session.pickup_fsa_id.fsa if session.pickup_fsa_id else "",
@@ -381,6 +402,21 @@ class LogisticsPhoneBooking(models.TransientModel):
             "target": "new",
         }
 
+    @api.depends("system_calculated_price", "customer_quoted_price")
+    def _compute_manual_price_adjustment(self):
+        for rec in self:
+            rec.manual_price_adjustment = round(
+                (rec.customer_quoted_price or 0.0)
+                - (rec.system_calculated_price or 0.0), 2)
+
+    def action_reset_price(self):
+        """Convenience reset — quoted price back to the system price; the
+        reason is then no longer required."""
+        self.ensure_one()
+        self.customer_quoted_price = self.system_calculated_price
+        self.manual_price_reason = ""
+        return self._quote_form_action()
+
     def action_get_price(self):
         self.ensure_one()
         from ..services.booking_orchestration_service import BookingOrchestrationService
@@ -429,6 +465,11 @@ class LogisticsPhoneBooking(models.TransientModel):
 
         self.quote_token = session.token
         self.price = session.calculated_price
+        # Each fresh price seeds the editable quoted price at the system
+        # price; staff may then negotiate any positive amount.
+        self.system_calculated_price = session.calculated_price
+        self.customer_quoted_price = session.calculated_price
+        self.manual_price_reason = ""
         self.pickup_date = session.pickup_date
         self.delivery_date = session.delivery_date_estimate
         self._sync_persistent_quote(session, quote)
@@ -492,6 +533,26 @@ class LogisticsPhoneBooking(models.TransientModel):
         if not session or session.is_expired():
             raise UserError(_("This price is no longer available. Please get a new price."))
 
+        # Manual / negotiated sell price: any positive amount is allowed
+        # (discounts AND increases); a reason is required when it differs
+        # from the system calculated price.
+        final_price = self.customer_quoted_price or self.price
+        if final_price <= 0:
+            raise UserError(_("The customer quoted price must be greater than zero."))
+        if round(final_price, 2) != round(self.system_calculated_price or self.price, 2) \
+                and not self.manual_price_reason:
+            raise UserError(_(
+                "Please provide a Manual Price Reason — the quoted price "
+                "differs from the system calculated price."))
+
+        # The persistent quotation must reflect the FINAL price offered
+        # (audit + PDF). The CQ write path records the change audit.
+        if self.quote_id and self.quote_id.exists() and not self.quote_id.booking_id:
+            self.quote_id.sudo().write({
+                "quoted_price": final_price,
+                "manual_price_reason": self.manual_price_reason or "",
+            })
+
         # No Saved Location / Master Facility is created by this action.
         # Existing selected facility ids and one-off text are passed directly
         # into the canonical confirmation request. Capacity and departure are
@@ -500,6 +561,10 @@ class LogisticsPhoneBooking(models.TransientModel):
             self._normalized_request(svc),
             skip_invoice=False,
             pricing_session=session,
+            sell_price_override=final_price,
+            sell_price_override_reason=self.manual_price_reason or "",
+            sell_price_override_by=self.env.user.id,
+            system_calculated_price=self.system_calculated_price or self.price,
         )
         self.booking_id = booking.id
         if not self.quote_id:
