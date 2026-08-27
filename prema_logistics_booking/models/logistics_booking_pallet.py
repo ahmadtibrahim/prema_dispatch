@@ -35,6 +35,12 @@ class LogisticsBookingPallet(models.Model):
         "logistics.booking.stop", string="Pickup Stop", required=True,
         ondelete="restrict", index=True)
     reference = fields.Char(string="Customer Reference")
+    pickup_origin_display = fields.Char(
+        string="Pickup Origin", compute="_compute_movement_display",
+    )
+    delivery_destinations_display = fields.Char(
+        string="Delivery Destination(s)", compute="_compute_movement_display",
+    )
     active = fields.Boolean(default=True)
     state = fields.Selection([
         ("pending_pickup", "Pending Pickup"),
@@ -42,6 +48,30 @@ class LogisticsBookingPallet(models.Model):
         ("partially_delivered", "Partially Delivered"),
         ("delivered", "Delivered"),
     ], default="pending_pickup", required=True)
+
+    @api.depends(
+        "pickup_stop_id.location_name", "pickup_stop_id.company_name",
+        "pickup_stop_id.city", "delivery_allocation_ids.active",
+        "delivery_allocation_ids.delivery_stop_id.location_name",
+        "delivery_allocation_ids.delivery_stop_id.company_name",
+        "delivery_allocation_ids.delivery_stop_id.city",
+    )
+    def _compute_movement_display(self):
+        def label(stop):
+            if not stop:
+                return ""
+            name = stop.location_name or stop.company_name or stop.city or "Stop"
+            city = (stop.city or "").strip()
+            if city and city.lower() not in name.lower():
+                name = "%s — %s" % (name, city)
+            return name
+
+        for pallet in self:
+            pallet.pickup_origin_display = label(pallet.pickup_stop_id)
+            destinations = pallet.delivery_allocation_ids.filtered("active").sorted("unload_sequence").mapped("delivery_stop_id")
+            pallet.delivery_destinations_display = ", ".join(
+                label(stop) for stop in destinations if stop
+            ) or "—"
 
     delivery_allocation_ids = fields.One2many(
         "logistics.booking.pallet.stop.allocation", "pallet_id",

@@ -282,11 +282,15 @@ def _build_stop_pricing(session):
         pallets = line.get("pallets") or 0
         rate = line.get("pallet_rate_per_km") or 0.0
         distance = line.get("distance_km") or 0.0
-        base_charge = float(
-            line.get("base_leg_charge") if line.get("base_leg_charge") is not None
-            else line.get("amount") or 0.0)
-        per_pallet = round(rate * distance, 2) if (rate and distance) else (
-            base_charge / pallets if pallets else 0.0)
+        # ``amount`` is the frozen customer-billable line.  ``base_leg_charge``
+        # is retained in the snapshot as a raw diagnostic/formula component
+        # and may differ after route-level adjustments; it must never be
+        # presented as the customer subtotal unless it is the billable amount.
+        base_charge = float(line.get("amount") or 0.0)
+        # The explanatory average must be derived from the same billable
+        # amount shown on the line. The raw rate×distance formula can round
+        # to a different cent and is not the customer subtotal authority.
+        per_pallet = round(base_charge / pallets, 2) if pallets else 0.0
         legs.append({
             "label": line.get("label", ""),
             "display_label": display_label,
@@ -444,6 +448,14 @@ def _quote_error_context(kwargs, partner, pickup_fsa, delivery_fsa, error):
                     "delivery", index),
                 "stop_type": "delivery", "saved_location_id": loc_id,
             })
+    route_pickup_count = len([
+        stop for stop in route_stops
+        if isinstance(stop, dict) and stop.get("stop_type") == "pickup"
+    ])
+    route_delivery_count = len([
+        stop for stop in route_stops
+        if isinstance(stop, dict) and stop.get("stop_type") == "delivery"
+    ])
 
     def submitted_value(value):
         if isinstance(value, (str, int, float, bool)) or value is None:
@@ -517,6 +529,8 @@ def _quote_error_context(kwargs, partner, pickup_fsa, delivery_fsa, error):
         "required_temperature_c": kwargs.get("required_temperature_c") or "",
         "total_weight_mode": kwargs.get("total_weight_mode") or "auto",
         "pallet_weight_mode": kwargs.get("pallet_weight_mode") or "auto",
+        "pickup_stop_count": route_pickup_count or len(pickup_locs),
+        "delivery_stop_count": route_delivery_count or len(delivery_locs),
         "error": error,
     }
 
@@ -1291,6 +1305,8 @@ class LogisticsBookingPortal(http.Controller):
                     _saved_locations_builder_payload(partner)),
                 "delivery_locs_json": json.dumps(delivery_locs_payload),
                 "pickup_loc_json": json.dumps(pickup_loc_payload),
+                "pickup_stop_count": len(pickup_locs),
+                "delivery_stop_count": len(delivery_locs),
             })
 
         # Route B: FSA postal code fallback
@@ -1309,6 +1325,8 @@ class LogisticsBookingPortal(http.Controller):
             "initial_route_stops_json": "[]",
             "saved_locations_json": json.dumps(
                 _saved_locations_builder_payload(partner)),
+            "pickup_stop_count": 1,
+            "delivery_stop_count": 1,
         })
 
     @http.route("/my/booking/quote", type="http", auth="user", website=True, sitemap=False, methods=["POST"])

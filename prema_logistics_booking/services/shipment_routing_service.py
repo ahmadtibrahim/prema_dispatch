@@ -502,7 +502,9 @@ class ShipmentRoutingService:
     def _time_part(self, iso):
         """'2026-08-25T05:00:00' → '5:00 AM' ('' when absent)."""
         dt = self._parse_iso_dt(iso)
-        return dt.strftime("%-I:%M %p") if dt else ""
+        if not dt or (dt.hour == 0 and dt.minute == 0 and dt.second == 0):
+            return ""
+        return dt.strftime("%-I:%M %p")
 
     def _leg_info(self, leg):
         """Compact dict for a built leg — what the calendar needs to bind

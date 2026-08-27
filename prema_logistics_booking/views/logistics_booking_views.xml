@@ -69,6 +69,8 @@
                         <group>
                             <field name="booking_number" readonly="1"/>
                             <field name="partner_id" readonly="1"/>
+                            <field name="movement_route_summary" readonly="1"
+                                   invisible="route_model_version != 'movement_v1'"/>
                             <field name="state"/>
                             <field name="dispatch_job_id" readonly="1"/>
                             <field name="booking_channel" readonly="1"/>
@@ -94,7 +96,8 @@
                         </group>
                     </group>
                     <notebook>
-                        <page string="Pickup">
+                        <page string="Legacy Pickup Summary"
+                              invisible="route_model_version == 'movement_v1'">
                             <group>
                                 <field name="pickup_fsa_id" readonly="1"/>
                                 <field name="pickup_company" readonly="1"/>
@@ -104,7 +107,8 @@
                                 <field name="pickup_instructions" readonly="1"/>
                             </group>
                         </page>
-                        <page string="Delivery">
+                        <page string="Legacy Delivery Summary"
+                              invisible="route_model_version == 'movement_v1'">
                             <group>
                                 <field name="delivery_fsa_id" readonly="1"/>
                                 <field name="delivery_company" readonly="1"/>
@@ -127,6 +131,42 @@
                                 <field name="liftgate_delivery" readonly="1"/>
                                 <field name="appointment" readonly="1"/>
                             </group>
+                        </page>
+                        <page string="Stops &amp; Pallets" name="movement_v1_stops"
+                              invisible="route_model_version != 'movement_v1'">
+                            <group>
+                                <field name="route_model_version" readonly="1"/>
+                                <field name="movement_route_summary" readonly="1"/>
+                            </group>
+                            <separator string="Pickups &amp; Deliveries"/>
+                            <field name="stop_ids" readonly="1" nolabel="1">
+                                <list create="0" edit="0" delete="0">
+                                    <field name="sequence"/>
+                                    <field name="stop_key"/>
+                                    <field name="stop_type"/>
+                                    <field name="location_name"/>
+                                    <field name="city"/>
+                                    <field name="movement_pallet_labels"/>
+                                    <field name="movement_pallet_count"/>
+                                    <field name="movement_weight_lbs"/>
+                                    <field name="timing_type"/>
+                                    <field name="liftgate_required"/>
+                                    <field name="appointment_required"/>
+                                </list>
+                            </field>
+                            <separator string="Pallet Movements"/>
+                            <field name="pallet_ids" readonly="1" nolabel="1">
+                                <list create="0" edit="0" delete="0">
+                                    <field name="sequence"/>
+                                    <field name="label"/>
+                                    <field name="pickup_origin_display"/>
+                                    <field name="delivery_destinations_display"/>
+                                    <field name="weight_lbs"/>
+                                    <field name="reference"/>
+                                    <field name="shared"/>
+                                    <field name="state"/>
+                                </list>
+                            </field>
                         </page>
                         <page string="Route &amp; Dispatch Planner" name="route_planner">
                             <group>
@@ -169,7 +209,11 @@
                                 <field name="tax_rule_name" readonly="1"/>
                                 <field name="fiscal_position_id" readonly="1"/>
                             </group>
-                            <group string="Invoice Totals">
+                            <div class="alert alert-info" role="alert"
+                                 invisible="invoice_id">
+                                Customer Invoice: Not created yet — created after operational completion.
+                            </div>
+                            <group string="Invoice Totals" invisible="not invoice_id">
                                 <field name="amount_untaxed" readonly="1"/>
                                 <field name="amount_tax" readonly="1"/>
                                 <field name="amount_total" readonly="1"/>

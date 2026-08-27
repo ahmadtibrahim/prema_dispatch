@@ -894,10 +894,10 @@
                         </div></div>
                 </div>
                 <!-- One stop summary for the complete route. -->
-                <t t-if="(pickup_locs and len(pickup_locs) > 1) or (delivery_locs and len(delivery_locs) > 1)">
+                <t t-if="pickup_locs or delivery_locs">
                     <div class="col-12 mt-3">
                         <div class="card"><div class="card-header bg-light">
-                            <div><strong>STOP SUMMARY</strong> <small class="text-muted"><t t-esc="len(delivery_locs)"/> stops</small></div>
+                            <div><strong>STOP SUMMARY</strong> <small class="text-muted">· <t t-esc="pickup_stop_count or len(pickup_locs)"/> PICKUP<t t-if="(pickup_stop_count or len(pickup_locs)) != 1">S</t> · <t t-esc="delivery_stop_count or len(delivery_locs)"/> DELIVERY<t t-if="(delivery_stop_count or len(delivery_locs)) != 1">S</t></small></div>
                         </div>
                         <div class="card-body py-2" id="delivery_stops_summary">
                             <strong class="d-block mb-1">PICKUPS</strong>
@@ -1492,7 +1492,7 @@
                     var dlCd = dlDs ? fmtCardDate(dlDs) : null;
                     var dlLine = dlCd ? dlCd.day + ' ' + dlCd.date : 'Delivery ETA TBD';
                     if (d.delivery_time) { dlLine += ' · ' + d.delivery_time; }
-                    var puLabel = 'Estimated Pickup: ' + (puTime || 'time TBD');
+                    var puLabel = 'Estimated Pickup: ' + (puTime || 'Time TBD');
                     var dlLabel = 'Estimated Delivery: ' + dlLine;
                     var via = (d.transfer && d.transfer_hub_name)
                         ? '<small class="d-block" style="font-size:10px;opacity:.85">Via ' + d.transfer_hub_name + '</small>'
@@ -2755,17 +2755,19 @@
                     <div class="row mb-3">
                         <div class="col-6">
                             <small class="text-muted">Estimated Pickup Time</small><br/>
-                            <strong><t t-esc="session.pickup_date"/></strong>
+                            <strong><t t-esc="quote and (quote.get('pickup_date') or session.pickup_date) or 'Date TBD'"/></strong>
                             <t t-if="quote and quote.get('pickup_time')">
                                 <span class="text-muted"> · <t t-esc="quote['pickup_time']"/></span>
                             </t>
+                            <t t-if="not (quote and quote.get('pickup_time'))"><span class="text-muted"> · Time TBD</span></t>
                         </div>
                         <div class="col-6">
                             <small class="text-muted">Estimated Delivery Time</small><br/>
-                            <strong><t t-esc="session.delivery_date_estimate"/></strong>
+                            <strong><t t-esc="quote and (quote.get('delivery_date') or session.delivery_date_estimate) or 'Date TBD'"/></strong>
                             <t t-if="quote and quote.get('delivery_time')">
                                 <span class="text-muted"> · <t t-esc="quote['delivery_time']"/></span>
                             </t>
+                            <t t-if="not (quote and quote.get('delivery_time'))"><span class="text-muted"> · Time TBD</span></t>
                         </div>
                     </div>
                     <small class="text-muted">
@@ -3057,7 +3059,8 @@
                         <t t-foreach="stop_pricing['legs']" t-as="pl">
                             <div class="d-flex justify-content-between align-items-center py-1">
                                 <span><t t-esc="pl.get('display_label') or pl['label']"/></span>
-                                <span><t t-esc="pl['pallets']"/> pallet<t t-if="pl['pallets'] != 1">s</t> × $<t t-esc="'%.2f' % pl['per_pallet_price']"/> = $<t t-esc="'%.2f' % pl['base_charge']"/></span>
+                                <span><t t-esc="pl['pallets']"/> pallet<t t-if="pl['pallets'] != 1">s</t> · average $<t t-esc="'%.2f' % pl['per_pallet_price']"/> each</span>
+                                <span>$<t t-esc="'%.2f' % pl['base_charge']"/></span>
                             </div>
                         </t>
                         <div class="d-flex justify-content-between align-items-center py-1 border-top">

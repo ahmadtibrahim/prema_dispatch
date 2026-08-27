@@ -61,6 +61,10 @@ class LogisticsBooking(models.Model):
         compute="_compute_booking_name", store=True, string="Booking Name",
         help="Human-readable name from ordered stop cities (e.g. Brampton → Belleville).",
     )
+    movement_route_summary = fields.Char(
+        string="Movement Route Summary", compute="_compute_movement_route_summary",
+        help="Readonly canonical stop/pallet summary for movement_v1 staff review.",
+    )
 
     partner_id = fields.Many2one("res.partner", required=True, index=True)
     commercial_partner_id = fields.Many2one(
@@ -350,6 +354,23 @@ class LogisticsBooking(models.Model):
                 if city and (not cities or city != cities[-1]):
                     cities.append(city)
             rec.booking_name = " → ".join(cities) if cities else (rec.booking_number or f"Booking {rec.id}")
+
+    @api.depends("route_model_version", "stop_ids.stop_type", "pallet_ids")
+    def _compute_movement_route_summary(self):
+        for rec in self:
+            if rec.route_model_version != "movement_v1":
+                rec.movement_route_summary = False
+                continue
+            pickups = rec.stop_ids.filtered(lambda s: s.stop_type == "pickup")
+            deliveries = rec.stop_ids.filtered(lambda s: s.stop_type == "delivery")
+            pallets = rec.pallet_ids.filtered("active")
+            rec.movement_route_summary = (
+                "%d Pickup%s · %d Deliver%s · %d Physical Pallet%s" % (
+                    len(pickups), "" if len(pickups) == 1 else "s",
+                    len(deliveries), "y" if len(deliveries) == 1 else "ies",
+                    len(pallets), "" if len(pallets) == 1 else "s",
+                )
+            )
 
     def _compute_customer_status(self):
         for rec in self:
@@ -924,9 +945,17 @@ class LogisticsBooking(models.Model):
                 job.write({"stage_id": cancel_s.id})
         if self.invoice_id and self.invoice_id.state == "draft":
             self.invoice_id.button_cancel()
+        departure_ids = self.leg_ids.mapped("departure_id").ids
         for leg in self.leg_ids:
             if leg.reservation_state in ("reserved", "pending"):
                 leg.write({"reservation_state": "released"})
+        if departure_ids:
+            # Capacity fields are derived from the canonical reservation
+            # graph. Recompute immediately after cancellation so a later
+            # quote cannot see occupancy from a released UAT booking.
+            from ..services.booking_orchestration_service import BookingOrchestrationService
+            BookingOrchestrationService(self.env)._refresh_departure_peaks(
+                departure_ids)
         return True
 
     def _generate_booking_number(self):
@@ -1122,6 +1151,27 @@ class LogisticsBooking(models.Model):
             ["s%d" % s.id for s in stops], self.pallet_movements())
         deltas = {d["stop_key"]: d for d in simulation["deltas"]}
         operation_date = self.pickup_date or fields.Date.context_today(self)
+        # A movement_v1 route is still a scheduled-LTL operation on the
+        # exact departure that reserved its capacity.  The old bridge
+        # created the generalized stops/items but omitted this assignment,
+        # leaving the resulting Planner job unassigned and preventing its
+        # canonical load-plan sync.
+        departure = self.departure_id or self.leg_ids.sorted("sequence")[:1].departure_id
+        vehicle = departure.vehicle_id if departure else False
+        assigned_stage = self.env.ref(
+            "prema_dispatch.stage_assigned", raise_if_not_found=False)
+        draft_stage = self.env["prema.dispatch.stage"].sudo().search(
+            [("stage_type", "=", "draft")], limit=1)
+        first_pickup = self.stop_ids.filtered(
+            lambda stop: stop.stop_type == "pickup"
+        ).sorted("sequence")[:1]
+        scheduled_pickup = (
+            self._operation_time(
+                self.leg_ids.sorted("sequence")[:1], first_pickup,
+                operation_date, pickup=True,
+            ) if self.leg_ids and first_pickup else
+            self._dispatch_datetime(operation_date, 8.0)
+        )
         job = Job.create({
             "name": "Milk Run — %s" % self.booking_number,
             "partner_id": self.partner_id.id,
@@ -1130,9 +1180,21 @@ class LogisticsBooking(models.Model):
             "source_res_id": self.id,
             "logistics_booking_id": self.id,
             "operation_date": operation_date,
+            "corridor_departure_id": departure.id if departure else False,
+            "auto_scheduled_ltl": bool(departure),
+            "vehicle_id": vehicle.id if vehicle else False,
+            "driver_id": (
+                departure.driver_id.id
+                if departure and departure.driver_id else False
+            ),
+            "assignment_locked": bool(vehicle),
+            "stage_id": (
+                assigned_stage.id if vehicle and assigned_stage else
+                draft_stage.id if draft_stage else False
+            ),
             # Route anchor: the operation day at 08:00 local — time-aware
             # planning must never anchor on the creation timestamp.
-            "scheduled_pickup": self._dispatch_datetime(operation_date, 8.0),
+            "scheduled_pickup": scheduled_pickup,
             "operation_role": "combined",
             "tracking_number": "%s-01" % self.booking_number,
             "company_id": self.env.company.id,

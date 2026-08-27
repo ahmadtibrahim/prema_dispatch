@@ -88,6 +88,16 @@ class LogisticsBookingStop(models.Model):
 
     # Reference
     reference = fields.Char()
+    movement_pallet_labels = fields.Char(
+        string="Movement Pallets", compute="_compute_movement_totals",
+    )
+    movement_pallet_count = fields.Integer(
+        string="Movement Pallets", compute="_compute_movement_totals",
+    )
+    movement_weight_lbs = fields.Float(
+        string="Movement Weight (lbs)", compute="_compute_movement_totals",
+        digits=(10, 1),
+    )
     # Timing
     timing_type = fields.Selection([
         ("flexible", "Flexible"), ("time_window", "Time Window"),
@@ -100,6 +110,40 @@ class LogisticsBookingStop(models.Model):
     timezone = fields.Char(string="Timezone")
 
     instructions = fields.Text()
+
+    @api.depends(
+        "stop_type", "booking_id.route_model_version",
+        "booking_id.pallet_ids.active", "booking_id.pallet_ids.sequence",
+        "booking_id.pallet_ids.weight_lbs", "booking_id.pallet_ids.pickup_stop_id",
+        "booking_id.pallet_ids.delivery_allocation_ids.active",
+        "booking_id.pallet_ids.delivery_allocation_ids.delivery_stop_id",
+        "booking_id.pallet_ids.delivery_allocation_ids.weight_lbs",
+    )
+    def _compute_movement_totals(self):
+        for stop in self:
+            pallets = stop.booking_id.pallet_ids.filtered(
+                lambda pallet: pallet.active and (
+                    pallet.pickup_stop_id == stop
+                    or stop in pallet.delivery_allocation_ids.filtered("active").mapped("delivery_stop_id")
+                )
+            )
+            if stop.stop_type == "pickup":
+                total_weight = sum(pallets.mapped("weight_lbs"))
+            else:
+                total_weight = sum(
+                    allocation.weight_lbs or 0.0
+                    for pallet in pallets
+                    for allocation in pallet.delivery_allocation_ids.filtered(
+                        lambda item: item.active and item.delivery_stop_id == stop
+                    )
+                )
+            labels = ", ".join(
+                pallet.label or "P%d" % (pallet.sequence // 10 or index)
+                for index, pallet in enumerate(pallets.sorted("sequence"), 1)
+            )
+            stop.movement_pallet_labels = labels or "—"
+            stop.movement_pallet_count = len(pallets)
+            stop.movement_weight_lbs = round(total_weight, 1)
 
     # ── Facility/coordinate integrity ──────────────────────────────────
     # This snapshot (company, street, city, postal, lat/lng) is the

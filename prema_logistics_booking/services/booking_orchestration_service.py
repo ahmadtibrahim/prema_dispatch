@@ -871,7 +871,12 @@ class BookingOrchestrationService:
                 if mode == "date":
                     return str(value)[:10]
                 try:
-                    return datetime.datetime.fromisoformat(str(value)).strftime("%-I:%M %p")
+                    parsed = datetime.datetime.fromisoformat(str(value))
+                    # A date-only/default datetime is serialized by Odoo as
+                    # midnight. It is not a calculated service ETA.
+                    if parsed.hour == 0 and parsed.minute == 0 and parsed.second == 0:
+                        return ""
+                    return parsed.strftime("%-I:%M %p")
                 except ValueError:
                     return ""
 
@@ -1460,6 +1465,9 @@ class BookingOrchestrationService:
         for leg in booking.leg_ids:
             if leg.reservation_state in ("reserved", "pending"):
                 leg.write({"reservation_state": "released"})
+        departure_ids = booking.leg_ids.mapped("departure_id").ids
+        if departure_ids:
+            self._refresh_departure_peaks(departure_ids)
 
         # Cancel draft invoice if exists
         if booking.invoice_id and booking.invoice_id.state == "draft":
