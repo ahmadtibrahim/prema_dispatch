@@ -210,11 +210,21 @@ class DispatchTrackingController(http.Controller):
                 label = "Pending Pickup"
             else:
                 label = "Picked Up"
+            allocations = item.stop_allocation_ids.filtered("active")
+            delivery_labels = [
+                self._stop_label(allocation.stop_id)
+                for allocation in allocations
+            ]
             pallets.append({
                 "ref": item.name or item.item_ref or f"Pallet {item.id}",
                 "status_label": label,
                 "pickup_label": self._stop_label(item.pickup_stop_id),
-                "delivery_label": self._stop_label(item.delivery_stop_id),
+                # A shared physical pallet can have several customer-visible
+                # destinations; keep the old singular field for clients
+                # that still read it and add the complete allocation list.
+                "delivery_label": ", ".join(delivery_labels)
+                    or self._stop_label(item.delivery_stop_id),
+                "delivery_labels": delivery_labels,
                 "photos": photos,
             })
         return pallets

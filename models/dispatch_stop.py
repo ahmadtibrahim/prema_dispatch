@@ -505,15 +505,44 @@ class PremaDispatchStop(models.Model):
                     break
             stop.onboard_load_after_stop = running
 
-    @api.depends("freight_item_ids", "freight_item_ids.name", "freight_item_ids.item_ref", "freight_item_ids.pallet_count")
+    @api.depends(
+        "freight_item_ids", "freight_item_ids.name", "freight_item_ids.item_ref",
+        "freight_item_ids.pallet_count", "job_id.item_ids.pickup_stop_id",
+        "job_id.item_ids.delivery_stop_id", "job_id.item_ids.weight_lbs",
+        "job_id.item_ids.stop_allocation_ids.stop_id",
+        "job_id.item_ids.stop_allocation_ids.weight_lbs",
+    )
     def _compute_freight_item_summary(self):
         for stop in self:
+            if stop.stop_type == "pickup":
+                items = stop._items_picked_here()
+            elif stop.stop_type in ("dropoff", "return"):
+                items = stop._items_delivered_here()
+            else:
+                items = stop.freight_item_ids
+
+            def location_name(route_stop):
+                loc = route_stop.saved_location_id
+                return ((loc.business_name or loc.name or loc.address)
+                        if loc else (route_stop.address or "Stop"))
+
             labels = []
-            for item in stop.freight_item_ids[:3]:
-                labels.append(item.display_label())
-            if len(stop.freight_item_ids) > 3:
-                labels.append(f"+{len(stop.freight_item_ids) - 3} more")
-            stop.freight_item_summary = ", ".join(labels)
+            for item in items:
+                label = item.display_label()
+                weight = "%.0f lb" % (item.weight_lbs or 0.0)
+                if stop.stop_type == "pickup":
+                    destinations = item.stop_allocation_ids.filtered("active").mapped("stop_id")
+                    destination_text = ", ".join(
+                        location_name(destination) for destination in destinations)
+                    labels.append("%s [%s] → %s" % (
+                        label, weight, destination_text or "delivery"))
+                elif stop.stop_type in ("dropoff", "return"):
+                    origin = item.pickup_stop_id
+                    labels.append("%s [%s] ← %s" % (
+                        label, weight, location_name(origin) if origin else "pickup"))
+                else:
+                    labels.append("%s [%s]" % (label, weight))
+            stop.freight_item_summary = "; ".join(labels)
 
     @api.depends("sequence", "stop_type", "address")
     def _compute_name(self):

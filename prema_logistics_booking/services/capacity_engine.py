@@ -275,7 +275,8 @@ class CapacityEngine:
                 # AND delivery after seg_start
                 if bs["pickup_idx"] <= seg_start and bs["delivery_idx"] > seg_start:
                     seg_pallets += bs["pallets"]
-                    seg_weight += bs["weight"]
+                    seg_weight += bs.get("weight_by_segment", {}).get(
+                        seg_start, bs["weight"])
                     if not bs["exclusive"]:
                         seg_ltl += bs["pallets"]
 
@@ -384,11 +385,12 @@ class CapacityEngine:
     def _booking_segments(self, corridor_stops, booking):
         """Segment occupancy of one confirmed booking on the corridor.
 
-        movement_v1: one segment span PER PALlet MOVEMENT (pickup stop
+        movement_v1: one segment span PER PALLET MOVEMENT (pickup stop
         region → delivery stop region) — the milk-run segment capacity:
         a movement picked up at a later corridor stop occupies only the
-        segments after it. A shared pallet (multiple delivery stops) rides
-        to its DEEPEST delivery index.
+        segments after it. A shared pallet rides to its DEEPEST delivery
+        index; its weight is reduced by each delivery portion while its one
+        physical position remains onboard.
         Legacy: the booking's FSA-anchored span (pickup region → delivery
         region), counted in physical positions.
         Returns [{pallets, weight, pickup_idx, delivery_idx, exclusive}].
@@ -419,9 +421,28 @@ class CapacityEngine:
                 pu_idx = idxs[0]
                 de_idx = max(idxs[1:])
                 if pu_idx is not None and de_idx is not None:
+                    full_weight = float(
+                        mv.get("weight_lbs") or booking.weight_lbs or 0.0)
+                    entered_weights = mv.get("delivery_weights") or []
+                    if len(entered_weights) == len(dests):
+                        delivery_weights = [
+                            float(value or 0.0) for value in entered_weights]
+                    else:
+                        even_weight = full_weight / len(dests) if dests else 0.0
+                        delivery_weights = [even_weight] * len(dests)
+                    weight_by_segment = {}
+                    for segment in range(pu_idx, de_idx):
+                        delivered_weight = sum(
+                            portion for destination_idx, portion in zip(
+                                idxs[1:], delivery_weights)
+                            if destination_idx <= segment
+                        )
+                        weight_by_segment[segment] = max(
+                            full_weight - delivered_weight, 0.0)
                     result.append({
                         "pallets": 1,  # one physical position per movement
-                        "weight": float(mv.get("weight_lbs") or booking.weight_lbs or 0.0),
+                        "weight": full_weight,
+                        "weight_by_segment": weight_by_segment,
                         "pickup_idx": pu_idx, "delivery_idx": de_idx,
                         "exclusive": self._is_exclusive_service(booking),
                     })

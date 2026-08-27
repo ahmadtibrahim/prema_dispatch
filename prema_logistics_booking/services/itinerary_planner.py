@@ -88,31 +88,50 @@ class ItineraryPlanner:
         onboard = 0
         onboard_weight = 0.0
         peak = 0
-        active_deliveries = {}
-        for movement in pallet_movements:
-            deliveries = list(movement.get("delivery_stop_keys") or [])
-            active_deliveries[movement["key"]] = deliveries[:]
+        # The final delivery is determined by the actual route order, not by
+        # the order in which the browser happened to submit the allocations.
+        # This matters when the optimizer reorders two destinations of one
+        # shared physical pallet.
+        route_position = {key: index for index, key in enumerate(ordered_stop_keys)}
+
+        def delivery_weights(movement, deliveries):
+            entered = movement.get("delivery_weights") or []
+            if len(entered) == len(deliveries):
+                return [float(value or 0.0) for value in entered]
+            weight = float(movement.get("weight_lbs") or 0.0)
+            share = weight / len(deliveries) if deliveries else 0.0
+            return [share] * len(deliveries)
+
         for key in ordered_stop_keys:
+            before = onboard
             pickup = 0
             pickup_w = 0.0
             delivery = 0
             delivery_w = 0.0
             for movement in pallet_movements:
+                deliveries = list(movement.get("delivery_stop_keys") or [])
                 if movement.get("pickup_stop_key") == key:
                     pickup += 1
                     pickup_w += movement.get("weight_lbs") or 0.0
                     onboard += 1
                     onboard_weight += movement.get("weight_lbs") or 0.0
-                remaining = active_deliveries.get(movement["key"]) or []
-                if key in remaining:
-                    if not movement.get("shared") or remaining.index(key) == len(remaining) - 1:
+                if key in deliveries:
+                    portions = delivery_weights(movement, deliveries)
+                    delivery_w += portions[deliveries.index(key)]
+                    # One physical pallet occupies one position until its
+                    # last delivery allocation is completed.
+                    final_key = max(
+                        deliveries,
+                        key=lambda destination: route_position.get(
+                            destination, len(ordered_stop_keys)),
+                    )
+                    if key == final_key:
                         delivery += 1
-                        delivery_w += movement.get("weight_lbs") or 0.0
                         onboard -= 1
-                        onboard_weight -= movement.get("weight_lbs") or 0.0
+                    onboard_weight -= portions[deliveries.index(key)]
             deltas.append({
                 "stop_key": key,
-                "before": onboard - pickup + delivery,
+                "before": before,
                 "pickup": pickup,
                 "delivery": delivery,
                 "after": onboard,
@@ -283,10 +302,26 @@ class ItineraryPlanner:
                     ok, _, _, _ = self.arrival_plan(other, other_arrival)
                     if not ok:
                         hard_risk += 10000
-                if stop_type == "pickup":
-                    onboard_after = onboard + 1
-                else:
-                    onboard_after = onboard - 1
+                # Capacity is physical-position capacity.  A pickup loads
+                # every pallet assigned to that stop; an intermediate
+                # delivery of a shared pallet unloads its portion but does
+                # not free the pallet position until the final allocation.
+                pickup_delta = sum(
+                    1 for movement in pallet_movements
+                    if movement.get("pickup_stop_key") == key
+                ) if stop_type == "pickup" else 0
+                delivery_delta = 0
+                if stop_type == "delivery":
+                    for movement in pallet_movements:
+                        destinations = list(
+                            movement.get("delivery_stop_keys") or [])
+                        if key not in destinations:
+                            continue
+                        remaining = [destination for destination in destinations
+                                     if destination in pending]
+                        if len(remaining) == 1 and remaining[0] == key:
+                            delivery_delta += 1
+                onboard_after = onboard + pickup_delta - delivery_delta
                 capacity_risk = 0
                 if vehicle_max and onboard_after > vehicle_max:
                     capacity_risk += 50000

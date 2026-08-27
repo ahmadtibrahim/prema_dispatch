@@ -3472,6 +3472,46 @@ class PremaDispatchJob(models.Model):
         entrance_photo_url = ""
         if loc and loc.entrance_photo:
             entrance_photo_url = f"/web/image/prema.dispatch.location/{loc.id}/entrance_photo"
+        job = s.job_id
+        serialized_freight_items = []
+        for item in freight_items:
+            origin = item.pickup_stop_id
+            active_allocations = item.stop_allocation_ids.filtered("active")
+            serialized_freight_items.append({
+                "id": item.id,
+                "label": item.display_label(),
+                "pallet_count": item.pallet_count,
+                "weight_lbs": item.weight_lbs or 0.0,
+                "commodity": item.description or job.commodity or "",
+                "customer_reference": item.item_ref or job.po_number or "",
+                "temperature_requirement": item.temperature_zone
+                    or job.temp_requirement
+                    or ("Reefer" if job.requires_reefer else ""),
+                "status": item.status,
+                "custody": item.current_custody_type,
+                "load_unit_type": item.load_unit_type,
+                "shared_skid": item.shared_skid,
+                # Chain-of-custody source: a delivery stop can contain
+                # pallets from several pickup stops, so this is per item.
+                "pickup_origin": {
+                    "stop_id": origin.id,
+                    "sequence": origin.sequence,
+                    "address": origin.address or "",
+                    "location_name": self._stop_company_name(origin),
+                } if origin else False,
+                "delivery_stops": [
+                    {
+                        "stop_id": allocation.stop_id.id,
+                        "stop_sequence": allocation.stop_id.sequence,
+                        "stop_address": allocation.stop_id.address or "",
+                        "destination_name": self._stop_company_name(allocation.stop_id),
+                        "unload_sequence": allocation.unload_sequence,
+                        "weight_lbs": allocation.weight_lbs or 0.0,
+                        "piece_count": allocation.piece_count or 0,
+                    }
+                    for allocation in active_allocations
+                ],
+            })
         return {
             "id":                s.id,
             "vehicle_id":        vehicle.id if vehicle else False,
@@ -3530,27 +3570,7 @@ class PremaDispatchJob(models.Model):
             "transfer_to_vehicle": s.transfer_to_vehicle_id.display_name if s.transfer_to_vehicle_id else "",
             "transfer_to_vehicle_plate": s.transfer_to_vehicle_id.license_plate if s.transfer_to_vehicle_id else "",
             "freight_item_summary": s.freight_item_summary or "",
-            "freight_items": [
-                {
-                    "id": item.id,
-                    "label": item.display_label(),
-                    "pallet_count": item.pallet_count,
-                    "status": item.status,
-                    "custody": item.current_custody_type,
-                    "load_unit_type": item.load_unit_type,
-                    "shared_skid": item.shared_skid,
-                    "delivery_stops": [
-                        {
-                            "stop_id": a.stop_id.id,
-                            "stop_sequence": a.stop_id.sequence,
-                            "stop_address": a.stop_id.address or "",
-                            "unload_sequence": a.unload_sequence,
-                        }
-                        for a in item.stop_allocation_ids.filtered("active")
-                    ],
-                }
-                for item in freight_items
-            ],
+            "freight_items": serialized_freight_items,
             "transit_evidence": self._attachment_payloads(transit_evidence),
             "scheduled_time":    self._dt_iso_utc(s.scheduled_time),
             "estimated_arrival": self._dt_iso_utc(s.estimated_arrival),

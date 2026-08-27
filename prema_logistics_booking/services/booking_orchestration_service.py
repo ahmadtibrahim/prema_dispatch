@@ -164,6 +164,45 @@ class NormalizedBookingRequest:
             raise ValidationError(_("Invalid load_type: %s") % self.load_type)
         if self.route_model_version not in ("legacy", "movement_v1"):
             raise ValidationError(_("Invalid route_model_version: %s") % self.route_model_version)
+        if self.route_model_version == "movement_v1":
+            if not self.route_stops or not self.pallet_movements:
+                raise ValidationError(_(
+                    "Movement bookings require route stops and pallet movements."))
+            stop_by_key = {}
+            for stop in self.route_stops:
+                if not isinstance(stop, dict) or not stop.get("stop_key"):
+                    raise ValidationError(_("Every movement stop needs a stable stop key."))
+                if stop.get("stop_type") not in ("pickup", "delivery"):
+                    raise ValidationError(_(
+                        "Movement stops must be pickup or delivery stops."))
+                key = stop["stop_key"]
+                if key in stop_by_key:
+                    raise ValidationError(_("Movement stop keys must be unique."))
+                stop_by_key[key] = stop
+            pickup_keys = {k for k, s in stop_by_key.items()
+                           if s.get("stop_type") == "pickup"}
+            delivery_keys = {k for k, s in stop_by_key.items()
+                             if s.get("stop_type") == "delivery"}
+            if not pickup_keys or not delivery_keys:
+                raise ValidationError(_(
+                    "A movement booking needs at least one pickup and one delivery."))
+            if len(self.pallet_movements) != self.physical_pallets:
+                raise ValidationError(_(
+                    "Every physical pallet must have exactly one movement."))
+            movement_keys = set()
+            for movement in self.pallet_movements:
+                pickup = movement.get("pickup_stop_key") if isinstance(movement, dict) else None
+                deliveries = movement.get("delivery_stop_keys") if isinstance(movement, dict) else None
+                key = movement.get("key") if isinstance(movement, dict) else None
+                if not key or key in movement_keys or pickup not in pickup_keys:
+                    raise ValidationError(_(
+                        "Each pallet must reference one valid pickup stop."))
+                if not isinstance(deliveries, list) or not deliveries or \
+                        len(set(deliveries)) != len(deliveries) or \
+                        any(destination not in delivery_keys for destination in deliveries):
+                    raise ValidationError(_(
+                        "Every pallet must reference one or more valid delivery stops."))
+                movement_keys.add(key)
         validate_temperature_request(self.equipment_type, self.required_temperature_c)
 
 
@@ -1663,12 +1702,46 @@ class BookingOrchestrationService:
             for stop in booking.stop_ids
             if stop.stop_key
         }
+        expected_pallets = booking.physical_pallets or booking.pallets
+        if len(pallet_movements) != expected_pallets:
+            raise UserError(_(
+                "Every physical pallet must have exactly one movement."
+            ))
+        pickup_keys = {
+            key for key, stop in stops_by_key.items()
+            if stop.stop_type == "pickup"
+        }
+        delivery_keys = {
+            key for key, stop in stops_by_key.items()
+            if stop.stop_type == "delivery"
+        }
+        if not pickup_keys or not delivery_keys:
+            raise UserError(_(
+                "A movement booking needs at least one pickup and one delivery."
+            ))
+        movement_keys = set()
+        for movement in pallet_movements:
+            movement_key = movement.get("key")
+            pickup_key = movement.get("pickup_stop_key")
+            destinations = movement.get("delivery_stop_keys") or []
+            if (not movement_key or movement_key in movement_keys
+                    or pickup_key not in pickup_keys):
+                raise UserError(_(
+                    "Each pallet must reference one valid pickup stop."
+                ))
+            if (not isinstance(destinations, list) or not destinations
+                    or len(set(destinations)) != len(destinations)
+                    or any(destination not in delivery_keys
+                           for destination in destinations)):
+                raise UserError(_(
+                    "Every pallet must reference one or more valid delivery stops."
+                ))
+            movement_keys.add(movement_key)
         sequence = 10
         for movement in pallet_movements:
             pickup_key = movement.get("pickup_stop_key")
-            pickup_stop = stops_by_key.get(pickup_key) if pickup_key else booking.stop_ids.filtered(
-                lambda s: s.stop_type == "pickup")[:1]
-            if not pickup_stop:
+            pickup_stop = stops_by_key.get(pickup_key)
+            if not pickup_stop or pickup_stop.stop_type != "pickup":
                 raise UserError(_(
                     "Pallet movement %s references unknown pickup stop %s."
                 ) % (movement.get("key", "?"), pickup_key or "(none)"))
@@ -1689,7 +1762,7 @@ class BookingOrchestrationService:
             pieces = movement.get("delivery_pieces") or []
             for unload_index, delivery_key in enumerate(movement.get("delivery_stop_keys") or []):
                 delivery_stop = stops_by_key.get(delivery_key)
-                if not delivery_stop:
+                if not delivery_stop or delivery_stop.stop_type != "delivery":
                     raise UserError(_(
                         "Pallet movement %s references unknown delivery stop %s."
                     ) % (movement.get("key", "?"), delivery_key))

@@ -1,6 +1,8 @@
 import json
 import logging
+import re
 import traceback
+from urllib.parse import urlencode
 
 from odoo import _, http
 from odoo.exceptions import AccessError, UserError
@@ -365,6 +367,99 @@ def _resolve_loc(env, partner, loc_id):
     return Access.browse()
 
 
+def _indexed_ints(kwargs, prefix):
+    """Return indexed integer form values in DOM order.
+
+    Portal stop rows are reorderable.  The field suffix is only the current
+    form position; the stable stop key travels with the row and is handled
+    separately.  Keeping this helper deterministic also prevents a sparse or
+    malicious field set from silently changing the selected route.
+    """
+    values = []
+    def index_key(item):
+        match = re.search(r"_(\d+)$", item[0])
+        return int(match.group(1)) if match else 0
+    for key, value in sorted(kwargs.items(), key=index_key):
+        if not key.startswith(prefix) or not value:
+            continue
+        try:
+            values.append(int(value))
+        except (TypeError, ValueError):
+            continue
+    return values
+
+
+def _indexed_keys(kwargs, prefix):
+    """Return non-empty stable stop keys in indexed form order."""
+    values = []
+    def index_key(item):
+        match = re.search(r"_(\d+)$", item[0])
+        return int(match.group(1)) if match else 0
+    for key, value in sorted(kwargs.items(), key=index_key):
+        if key.startswith(prefix) and value:
+            values.append(str(value).strip())
+    return values
+
+
+def _safe_stop_key(value, stop_type, fallback_number):
+    """Normalize a portal stop key without trusting its visual position."""
+    value = str(value or "").strip()
+    prefix = "PU" if stop_type == "pickup" else "DL"
+    if not re.fullmatch(r"%s[A-Za-z0-9_-]{0,30}" % prefix, value):
+        return "%s%d" % (prefix, fallback_number)
+    return value
+
+
+def _validate_movement_payload(route_stops, pallet_movements, physical_pallets):
+    """Validate the movement_v1 graph before pricing or persistence.
+
+    This is intentionally independent of ORM records: it rejects malformed
+    JSON before any route engine can infer a default pickup or delivery.
+    Ownership and saved-location capability checks happen when the stop IDs
+    are resolved by the portal controller.
+    """
+    if not isinstance(route_stops, list) or not isinstance(pallet_movements, list):
+        raise UserError(_("The route stops or pallet movements are invalid."))
+    if len(pallet_movements) != int(physical_pallets):
+        raise UserError(_("Every physical pallet must have one movement."))
+    keys = [str(stop.get("stop_key") or "").strip() for stop in route_stops
+            if isinstance(stop, dict)]
+    if len(keys) != len(route_stops) or not all(keys) or len(set(keys)) != len(keys):
+        raise UserError(_("Each route stop must have a unique stable key."))
+    by_key = {stop["stop_key"]: stop for stop in route_stops}
+    if any(stop.get("stop_type") not in ("pickup", "delivery")
+           for stop in route_stops):
+        raise UserError(_("Route stops must be pickup or delivery stops."))
+    pickup_keys = {key for key, stop in by_key.items()
+                   if stop.get("stop_type") == "pickup"}
+    delivery_keys = {key for key, stop in by_key.items()
+                     if stop.get("stop_type") == "delivery"}
+    if not pickup_keys or not delivery_keys:
+        raise UserError(_("A booking requires at least one pickup and one delivery stop."))
+    movement_keys = set()
+    for movement in pallet_movements:
+        if not isinstance(movement, dict):
+            raise UserError(_("Each pallet movement must be an object."))
+        movement_key = str(movement.get("key") or "").strip()
+        pickup_key = str(movement.get("pickup_stop_key") or "").strip()
+        destinations = movement.get("delivery_stop_keys") or []
+        if not movement_key or movement_key in movement_keys:
+            raise UserError(_("Each physical pallet must have a unique movement key."))
+        if pickup_key not in pickup_keys:
+            raise UserError(_("A pallet must reference one valid pickup stop."))
+        if not isinstance(destinations, list) or not destinations:
+            raise UserError(_("Every physical pallet must have at least one delivery stop."))
+        if len(set(destinations)) != len(destinations) or any(
+                destination not in delivery_keys for destination in destinations):
+            raise UserError(_("A pallet references an invalid delivery stop."))
+        try:
+            if float(movement.get("weight_lbs") or 0) < 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            raise UserError(_("Pallet weights must be valid non-negative numbers."))
+        movement_keys.add(movement_key)
+
+
 def _partner_locations(env, partner, loc_type=None):
     """Every portal location of this customer: active access rows
     (logistics.location.customer.access — the sole portal location
@@ -480,18 +575,24 @@ class LogisticsBookingPortal(http.Controller):
 
         error = None
         if request.httprequest.method == "POST":
+            # Both stop groups use indexed fields.  The first legacy field is
+            # accepted for old bookmarked/forms, but new rows carry a stable
+            # key alongside their select so reorder/remove never changes a
+            # pallet's source stop identity.
+            pickup_loc_ids = _indexed_ints(kwargs, "pickup_saved_location_id_")
             pickup_loc_id = kwargs.get("pickup_saved_location_id")
+            if not pickup_loc_ids and pickup_loc_id:
+                try:
+                    pickup_loc_ids = [int(pickup_loc_id)]
+                except (TypeError, ValueError):
+                    pickup_loc_ids = []
+            pickup_stop_keys = _indexed_keys(kwargs, "pickup_stop_key_")
             pickup_postal = kwargs.get("pickup_postal_code")
             delivery_postal = kwargs.get("delivery_postal_code")
 
             # Collect delivery stop IDs from indexed form fields
-            delivery_loc_ids = []
-            for key, val in kwargs.items():
-                if key.startswith("delivery_saved_location_id_") and val:
-                    try:
-                        delivery_loc_ids.append(int(val))
-                    except (ValueError, TypeError):
-                        pass
+            delivery_loc_ids = _indexed_ints(kwargs, "delivery_saved_location_id_")
+            delivery_stop_keys = _indexed_keys(kwargs, "delivery_stop_key_")
             # Fallback: single legacy field
             if not delivery_loc_ids:
                 single_del = kwargs.get("delivery_saved_location_id")
@@ -504,8 +605,11 @@ class LogisticsBookingPortal(http.Controller):
             # Route 1: Saved Location selected (access rows canonical,
             # legacy rows during the transition window — _resolve_loc
             # enforces ownership on both).
-            if pickup_loc_id and delivery_loc_ids:
-                pickup_loc = _resolve_loc(request.env, partner, pickup_loc_id)
+            if pickup_loc_ids and delivery_loc_ids:
+                pickup_locs = [
+                    loc for loc_id in pickup_loc_ids
+                    if (loc := _resolve_loc(request.env, partner, loc_id))
+                ]
                 delivery_locs = [
                     loc for loc_id in delivery_loc_ids
                     if (loc := _resolve_loc(request.env, partner, loc_id))
@@ -513,10 +617,17 @@ class LogisticsBookingPortal(http.Controller):
                 # Effective coordinates: canonical facility pin pair
                 # preferred, own lat/lng second — a copy with stale or 0/0
                 # placeholder coordinates still validates via its master.
+                pickup_loc = pickup_locs[0] if pickup_locs else None
                 pu_eff = _portal_coord_pair(pickup_loc)
                 de_effs = {dl.id: _portal_coord_pair(dl) for dl in delivery_locs}
                 # Security: ensure all locations belong to this customer
-                if not pickup_loc:
+                if len(pickup_locs) != len(pickup_loc_ids):
+                    error = _("Invalid pickup location selection.")
+                elif any(not loc.can_pickup for loc in pickup_locs):
+                    error = _("Every pickup must be a valid pickup location.")
+                elif any(not loc.can_delivery for loc in delivery_locs):
+                    error = _("Every delivery must be a valid delivery location.")
+                elif not pickup_loc:
                     error = _("Invalid pickup location selection.")
                 elif len(delivery_locs) != len(delivery_loc_ids):
                     error = _("Invalid delivery location selection.")
@@ -525,18 +636,27 @@ class LogisticsBookingPortal(http.Controller):
                 elif any(eff[0] is None for eff in de_effs.values()):
                     error = _("All delivery locations must have valid coordinates.")
                 else:
-                    # Build URL with first delivery + all delivery loc IDs
+                    # Build a stable, ordered handoff to Step 2.  Keys are
+                    # carried separately from the visual array position.
                     first_del = delivery_locs[0]
                     de_eff = de_effs[first_del.id]
-                    params = (
-                        f"pickup_lat={pu_eff[0]}&pickup_lng={pu_eff[1]}"
-                        f"&delivery_lat={de_eff[0]}&delivery_lng={de_eff[1]}"
-                        f"&pickup_loc_id={pickup_loc_id}"
-                        f"&delivery_loc_id={first_del.id}"
-                    )
-                    for i, dl in enumerate(delivery_locs):
-                        params += f"&delivery_loc_id_{i+1}={dl.id}"
-                    return request.redirect(f"/my/booking/details?{params}")
+                    params = {
+                        "pickup_lat": pu_eff[0], "pickup_lng": pu_eff[1],
+                        "delivery_lat": de_eff[0], "delivery_lng": de_eff[1],
+                        "pickup_loc_id": pickup_locs[0].id,
+                        "delivery_loc_id": first_del.id,
+                    }
+                    for i, loc in enumerate(pickup_locs):
+                        params["pickup_loc_id_%d" % (i + 1)] = loc.id
+                        params["pickup_stop_key_%d" % (i + 1)] = _safe_stop_key(
+                            pickup_stop_keys[i] if i < len(pickup_stop_keys) else "",
+                            "pickup", i + 1)
+                    for i, loc in enumerate(delivery_locs):
+                        params["delivery_loc_id_%d" % (i + 1)] = loc.id
+                        params["delivery_stop_key_%d" % (i + 1)] = _safe_stop_key(
+                            delivery_stop_keys[i] if i < len(delivery_stop_keys) else "",
+                            "delivery", i + 1)
+                    return request.redirect("/my/booking/details?%s" % urlencode(params))
 
             # Route 2: Postal code fallback
             elif pickup_postal and delivery_postal:
@@ -572,6 +692,8 @@ class LogisticsBookingPortal(http.Controller):
         # Preserve the customer's selections when a POST validation error
         # re-renders the page — never silently reset to defaults.
         selected_pickup_id = None
+        selected_pickup_ids = []
+        selected_pickup_rows = []
         selected_delivery_ids = []
         raw_pickup = kwargs.get("pickup_saved_location_id")
         if raw_pickup:
@@ -579,12 +701,20 @@ class LogisticsBookingPortal(http.Controller):
                 selected_pickup_id = int(raw_pickup)
             except (ValueError, TypeError):
                 selected_pickup_id = None
-        for key, val in kwargs.items():
-            if key.startswith("delivery_saved_location_id_") and val:
-                try:
-                    selected_delivery_ids.append(int(val))
-                except (ValueError, TypeError):
-                    pass
+        posted_pickup_keys = _indexed_keys(kwargs, "pickup_stop_key_")
+        for idx, loc_id in enumerate(_indexed_ints(kwargs, "pickup_saved_location_id_"), 1):
+            selected_pickup_ids.append(loc_id)
+            selected_pickup_rows.append({
+                "loc_id": loc_id, "idx": idx,
+                "stop_key": _safe_stop_key(
+                    posted_pickup_keys[idx - 1] if idx <= len(posted_pickup_keys) else "",
+                    "pickup", idx),
+            })
+        if not selected_pickup_ids and selected_pickup_id:
+            selected_pickup_ids = [selected_pickup_id]
+            selected_pickup_rows = [{"loc_id": selected_pickup_id, "idx": 1, "stop_key": "PU1"}]
+        selected_delivery_keys = _indexed_keys(kwargs, "delivery_stop_key_")
+        selected_delivery_ids = _indexed_ints(kwargs, "delivery_saved_location_id_")
         if not selected_delivery_ids:
             raw_single = kwargs.get("delivery_saved_location_id")
             if raw_single:
@@ -602,9 +732,14 @@ class LogisticsBookingPortal(http.Controller):
             "new_loc_type": new_loc_type,
             "customer_bookings": customer_bookings,
             "selected_pickup_id": selected_pickup_id,
+            "selected_pickup_ids": selected_pickup_ids,
+            "selected_pickup_rows": selected_pickup_rows,
             "selected_delivery_ids": selected_delivery_ids,
             "selected_delivery_rows": [
-                {"loc_id": loc_id, "idx": i + 1}
+                {"loc_id": loc_id, "idx": i + 1,
+                 "stop_key": _safe_stop_key(
+                     selected_delivery_keys[i] if i < len(selected_delivery_keys) else "",
+                     "delivery", i + 1)}
                 for i, loc_id in enumerate(selected_delivery_ids)
             ],
         })
@@ -633,24 +768,41 @@ class LogisticsBookingPortal(http.Controller):
                 int(x) for x in raw_ids.split(",") if x.strip().lstrip("-").isdigit()
             ]
         stops = []
-        pickup_loc_id = kwargs.get("pickup_loc_id")
-        if pickup_loc_id and delivery_loc_ids:
-            pickup_loc = _resolve_loc(request.env, partner, pickup_loc_id)
+        pickup_loc_ids = []
+        raw_pickup_ids = kwargs.get("pickup_loc_ids", "")
+        if isinstance(raw_pickup_ids, str):
+            pickup_loc_ids = [int(x) for x in raw_pickup_ids.split(",")
+                              if x.strip().lstrip("-").isdigit()]
+        if not pickup_loc_ids and kwargs.get("pickup_loc_id"):
+            try:
+                pickup_loc_ids = [int(kwargs.get("pickup_loc_id"))]
+            except (TypeError, ValueError):
+                pickup_loc_ids = []
+        if pickup_loc_ids and delivery_loc_ids:
+            pickup_locs = [_resolve_loc(request.env, partner, loc_id)
+                           for loc_id in pickup_loc_ids]
             delivery_locs = [
                 loc for loc_id in delivery_loc_ids
                 if (loc := _resolve_loc(request.env, partner, loc_id))
             ]
-            pu_eff = _portal_coord_pair(pickup_loc)
-            if (pickup_loc and pu_eff[0] is not None
+            if pickup_locs:
+                pu_eff = _portal_coord_pair(pickup_locs[0])
+            else:
+                pu_eff = (None, None)
+            if (len(pickup_locs) == len(pickup_loc_ids)
+                    and all(loc and loc.can_pickup for loc in pickup_locs)
+                    and all(loc.can_delivery for loc in delivery_locs)
                     and len(delivery_locs) == len(delivery_loc_ids)
+                    and pu_eff[0] is not None
                     and all(_portal_coord_pair(dl)[0] is not None for dl in delivery_locs)):
-                stops.append({
-                    "stop_type": "pickup",
-                    "latitude": pu_eff[0],
-                    "longitude": pu_eff[1],
-                    "postal_code": pickup_loc.postal_code or "",
-                    **_stop_loc_refs(pickup_loc),
-                })
+                for pickup_loc in pickup_locs:
+                    pu_eff = _portal_coord_pair(pickup_loc)
+                    stops.append({
+                        "stop_type": "pickup",
+                        "latitude": pu_eff[0], "longitude": pu_eff[1],
+                        "postal_code": pickup_loc.postal_code or "",
+                        **_stop_loc_refs(pickup_loc),
+                    })
                 for dl in delivery_locs:
                     de_eff = _portal_coord_pair(dl)
                     stops.append({
@@ -723,23 +875,23 @@ class LogisticsBookingPortal(http.Controller):
         pickup_loc_id = kwargs.get("pickup_loc_id")
         delivery_loc_id = kwargs.get("delivery_loc_id")
 
-        # Collect all delivery stop IDs from indexed params
-        delivery_loc_ids = []
-        for key, val in kwargs.items():
-            if key.startswith("delivery_loc_id_") and val:
-                try:
-                    delivery_loc_ids.append(int(val))
-                except (ValueError, TypeError):
-                    pass
-
-        # Collect additional pickup stop IDs (milk-run route builder)
-        pickup_loc_ids = []
-        for key, val in kwargs.items():
-            if key.startswith("pickup_loc_id_") and val:
-                try:
-                    pickup_loc_ids.append(int(val))
-                except (ValueError, TypeError):
-                    pass
+        # Collect complete ordered stop selections.  The first scalar fields
+        # are compatibility inputs; indexed values are the canonical Step 1
+        # handoff and preserve the customer's reordered rows.
+        delivery_loc_ids = _indexed_ints(kwargs, "delivery_loc_id_")
+        if not delivery_loc_ids and delivery_loc_id:
+            try:
+                delivery_loc_ids = [int(delivery_loc_id)]
+            except (TypeError, ValueError):
+                delivery_loc_ids = []
+        pickup_loc_ids = _indexed_ints(kwargs, "pickup_loc_id_")
+        if not pickup_loc_ids and pickup_loc_id:
+            try:
+                pickup_loc_ids = [int(pickup_loc_id)]
+            except (TypeError, ValueError):
+                pickup_loc_ids = []
+        pickup_stop_keys = _indexed_keys(kwargs, "pickup_stop_key_")
+        delivery_stop_keys = _indexed_keys(kwargs, "delivery_stop_key_")
 
         Fsa = request.env["logistics.fsa"].sudo()
         partner = request.env.user.partner_id.commercial_partner_id
@@ -828,6 +980,24 @@ class LogisticsBookingPortal(http.Controller):
                     "latitude": pu_eff[0],
                     "longitude": pu_eff[1],
                 }
+            initial_route_stops = []
+            for i, loc in enumerate([_resolve_loc(request.env, partner, loc_id)
+                                     for loc_id in pickup_loc_ids], 1):
+                if not loc:
+                    return request.redirect("/my/booking/new")
+                initial_route_stops.append({
+                    "stop_key": _safe_stop_key(
+                        pickup_stop_keys[i - 1] if i <= len(pickup_stop_keys) else "",
+                        "pickup", i),
+                    "stop_type": "pickup", "saved_location_id": loc.id,
+                })
+            for i, loc in enumerate(delivery_locs, 1):
+                initial_route_stops.append({
+                    "stop_key": _safe_stop_key(
+                        delivery_stop_keys[i - 1] if i <= len(delivery_stop_keys) else "",
+                        "delivery", i),
+                    "stop_type": "delivery", "saved_location_id": loc.id,
+                })
             return request.render("prema_logistics_booking.portal_step2_shipment", {
                 "pickup_fsa": pickup_fsa, "delivery_fsa": delivery_fsa,
                 "pickup_loc": pickup_loc, "delivery_locs": delivery_locs,
@@ -837,6 +1007,9 @@ class LogisticsBookingPortal(http.Controller):
                 "pickup_loc_id": pickup_loc_id, "delivery_loc_ids": delivery_loc_ids,
                 "delivery_loc_id": delivery_loc_id,
                 "pickup_loc_ids": pickup_loc_ids,
+                "pickup_stop_keys": pickup_stop_keys,
+                "delivery_stop_keys": delivery_stop_keys,
+                "initial_route_stops_json": json.dumps(initial_route_stops),
                 "saved_locations_json": json.dumps(
                     _saved_locations_builder_payload(partner)),
                 "delivery_locs_json": json.dumps(delivery_locs_payload),
@@ -854,6 +1027,9 @@ class LogisticsBookingPortal(http.Controller):
             "pickup_lat": 0, "pickup_lng": 0,
             "delivery_lat": 0, "delivery_lng": 0,
             "pickup_loc_id": None, "delivery_loc_id": None,
+            "pickup_loc_ids": [], "delivery_loc_ids": [],
+            "pickup_stop_keys": [], "delivery_stop_keys": [],
+            "initial_route_stops_json": "[]",
             "saved_locations_json": json.dumps(
                 _saved_locations_builder_payload(partner)),
         })
@@ -926,16 +1102,48 @@ class LogisticsBookingPortal(http.Controller):
             pallet_movements = []
             route_stops_json = kwargs.get("route_stops_json", "").strip()
             movements_json = kwargs.get("pallet_movements_json", "").strip()
-            if route_stops_json and movements_json:
+            if route_stops_json or movements_json:
+                if not (route_stops_json and movements_json):
+                    raise UserError(_("The route stops and pallet movements must be submitted together."))
                 try:
                     route_stops = json.loads(route_stops_json)
                     pallet_movements = json.loads(movements_json)
                 except (json.JSONDecodeError, TypeError):
-                    route_stops = []
-                    pallet_movements = []
-                if route_stops and pallet_movements:
-                    physical_pallets = len(pallet_movements)
-        except ValueError:
+                    raise UserError(_("The route stops or pallet movements are invalid."))
+                _validate_movement_payload(
+                    route_stops, pallet_movements, physical_pallets)
+                posted_pickup_ids = set(_indexed_ints(
+                    kwargs, "pickup_loc_id_"))
+                posted_delivery_ids = set(_indexed_ints(
+                    kwargs, "delivery_loc_id_"))
+                route_pickup_ids = {
+                    int(stop.get("saved_location_id"))
+                    for stop in route_stops
+                    if stop.get("stop_type") == "pickup"
+                    and str(stop.get("saved_location_id") or "").lstrip("-").isdigit()
+                }
+                route_delivery_ids = {
+                    int(stop.get("saved_location_id"))
+                    for stop in route_stops
+                    if stop.get("stop_type") == "delivery"
+                    and str(stop.get("saved_location_id") or "").lstrip("-").isdigit()
+                }
+                if ((posted_pickup_ids and posted_pickup_ids != route_pickup_ids)
+                        or (posted_delivery_ids and posted_delivery_ids != route_delivery_ids)):
+                    raise UserError(_(
+                        "The submitted movement stops do not match the selected locations."))
+                for stop in route_stops:
+                    stop_type = stop.get("stop_type")
+                    location = _resolve_loc(
+                        request.env, partner, stop.get("saved_location_id"))
+                    if not location or (
+                            stop_type == "pickup" and not location.can_pickup) or (
+                            stop_type == "delivery" and not location.can_delivery):
+                        raise UserError(_("Every route stop must use a valid customer saved location."))
+            elif len(_indexed_ints(kwargs, "pickup_loc_id_")) > 1:
+                raise UserError(_(
+                    "Multiple pickup stops require pallet movement assignments."))
+        except (TypeError, ValueError, UserError) as exc:
             # Build error context with all required template vars
             pu_loc_for_err = _resolve_loc(request.env, partner, pickup_loc_id) or None
             de_loc_for_err = _resolve_loc(request.env, partner, delivery_loc_id) or None
@@ -947,7 +1155,8 @@ class LogisticsBookingPortal(http.Controller):
                 "delivery_lat": float(kwargs.get("delivery_lat") or 0) if kwargs.get("delivery_lat") else 0,
                 "delivery_lng": float(kwargs.get("delivery_lng") or 0) if kwargs.get("delivery_lng") else 0,
                 "pickup_loc_id": pickup_loc_id, "delivery_loc_id": delivery_loc_id,
-                "error": _("Please enter a valid pallet count and weight."),
+                "error": str(exc) if isinstance(exc, UserError) else _(
+                    "Please enter a valid pallet count and weight."),
             })
 
         # ── Server-side capacity pre-check (Get Price) ─────────────────
@@ -1112,10 +1321,9 @@ class LogisticsBookingPortal(http.Controller):
             for rs in route_stops:
                 loc = None
                 loc_id = rs.get("saved_location_id")
-                if loc_id:
-                    loc = _resolve_loc(request.env, partner, loc_id)
-                    if not loc:
-                        return request.redirect("/my/booking/new")
+                loc = _resolve_loc(request.env, partner, loc_id)
+                if not loc:
+                    return request.redirect("/my/booking/new")
                 loc_eff = _portal_coord_pair(loc) if loc else (None, None)
                 entry = {
                     "stop_key": rs.get("stop_key") or "",
@@ -1126,6 +1334,8 @@ class LogisticsBookingPortal(http.Controller):
                     "longitude": (loc_eff[1] if loc else rs.get("longitude")) or 0.0,
                     "address": (loc.street if loc else rs.get("address")) or "",
                     "city": (loc.city if loc else rs.get("city")) or "",
+                    "pallets": int(rs.get("pallets") or 0),
+                    "weight_lbs": float(rs.get("weight_lbs") or 0.0),
                     **(_stop_loc_refs(loc) if loc else {}),
                     "liftgate_required": bool(rs.get("liftgate_required")),
                     "dock_available": bool(rs.get("dock_available")),

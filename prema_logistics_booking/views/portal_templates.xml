@@ -136,32 +136,56 @@
                 <form action="/my/booking/new" method="post">
                     <input type="hidden" name="csrf_token" t-att-value="request.csrf_token()"/>
 
-                    <!-- Pickup Location -->
+                    <!-- Pickup Locations (multi-stop, stable keys) -->
                     <div class="card mb-4">
-                        <div class="card-header bg-light"><strong>📦 Pickup Location</strong></div>
-                        <div class="card-body">
-                            <div class="mb-3">
-                                <label class="form-label fw-bold">Select a saved location</label>
-                                <select name="pickup_saved_location_id" class="form-select form-select-lg">
+                        <div class="card-header bg-light d-flex justify-content-between align-items-center">
+                            <strong>📦 PICKUP LOCATIONS</strong>
+                            <button type="button" class="btn btn-sm btn-outline-primary" id="add_pickup_stop_btn">+ Add Pickup Stop</button>
+                        </div>
+                        <div class="card-body" id="pickup_stops_container">
+                            <div class="pickup-stop-row border rounded p-3 mb-2" data-stop-index="0" data-stop-key="PU1">
+                                <div class="d-flex justify-content-between align-items-center mb-2">
+                                    <strong class="stop-label">Pickup Stop 1</strong><span/>
+                                </div>
+                                <select name="pickup_saved_location_id_1" class="form-select form-select-lg pickup-select">
                                     <option value="">— Choose pickup location —</option>
                                     <t t-foreach="pickup_locations" t-as="loc">
                                         <option t-att-value="str(loc.id)"
-                                                t-att-selected="'selected' if (selected_pickup_id and loc.id == selected_pickup_id) or (not selected_pickup_id and loc.is_default_pickup) else None">
-                                            <t t-esc="loc.name"/>
-                                            <t t-if="loc.is_default_pickup"> ★ (Default)</t>
+                                                t-att-data-street="loc.street or ''"
+                                                t-att-data-city="loc.city or ''"
+                                                t-att-data-state="loc.state_id.code or ''"
+                                                t-att-selected="'selected' if (selected_pickup_rows and loc.id == selected_pickup_rows[0]['loc_id']) or (not selected_pickup_rows and loc.is_default_pickup) else None">
+                                            <t t-esc="loc.name"/><t t-if="loc.is_default_pickup"> ★ (Default)</t>
                                             — <t t-esc="loc.city or ''"/>, <t t-esc="loc.state_id.code or ''"/>
                                         </option>
                                     </t>
                                 </select>
+                                <input type="hidden" class="pickup-stop-key" name="pickup_stop_key_1" value="PU1"/>
+                                <div class="stop-detail-text text-muted small mt-1" id="pickup_detail_text"/>
+                                <div class="mt-2 d-flex gap-2">
+                                    <button type="button" class="btn btn-sm btn-outline-secondary move-up-btn" style="display:none">↑</button>
+                                    <button type="button" class="btn btn-sm btn-outline-secondary move-down-btn" style="display:none">↓</button>
+                                    <a href="/my/saved-locations/add?type=pickup&amp;return=booking&amp;stop_index=1" class="btn btn-sm btn-outline-secondary add-loc-link">+ New Location</a>
+                                    <button type="button" class="btn btn-sm btn-outline-danger remove-stop-btn" style="display:none">✕</button>
+                                </div>
                             </div>
-                            <div class="text-muted small mb-2" id="pickup_detail_text">
-                                <t t-if="not pickup_locations">
-                                    No saved pickup locations yet.
+                            <t t-foreach="selected_pickup_rows" t-as="row_data">
+                                <t t-if="row_data['idx'] > 1">
+                                    <div class="pickup-stop-row border rounded p-3 mb-2" t-att-data-stop-index="row_data['idx'] - 1" t-att-data-stop-key="row_data.get('stop_key') or ('PU' + str(row_data['idx']))">
+                                        <div class="d-flex justify-content-between align-items-center mb-2"><strong class="stop-label">Pickup Stop <t t-esc="row_data['idx']"/></strong><span/></div>
+                                        <select t-att-name="'pickup_saved_location_id_' + str(row_data['idx'])" class="form-select form-select-lg pickup-select">
+                                            <option value="">— Choose pickup location —</option>
+                                            <t t-foreach="pickup_locations" t-as="loc">
+                                                <option t-att-value="str(loc.id)" t-att-data-street="loc.street or ''" t-att-data-city="loc.city or ''" t-att-data-state="loc.state_id.code or ''" t-att-selected="'selected' if loc.id == row_data['loc_id'] else None"><t t-esc="loc.name"/> — <t t-esc="loc.city or ''"/>, <t t-esc="loc.state_id.code or ''"/></option>
+                                            </t>
+                                        </select>
+                                        <input type="hidden" class="pickup-stop-key" t-att-name="'pickup_stop_key_' + str(row_data['idx'])" t-att-value="row_data.get('stop_key') or ('PU' + str(row_data['idx']))"/>
+                                        <div class="stop-detail-text text-muted small mt-1"/>
+                                        <div class="mt-2 d-flex gap-2"><button type="button" class="btn btn-sm btn-outline-secondary move-up-btn">↑</button><button type="button" class="btn btn-sm btn-outline-secondary move-down-btn">↓</button><a t-att-href="'/my/saved-locations/add?type=pickup&amp;return=booking&amp;stop_index=' + str(row_data['idx'])" class="btn btn-sm btn-outline-secondary add-loc-link">+ New Location</a><button type="button" class="btn btn-sm btn-outline-danger remove-stop-btn">✕</button></div>
+                                    </div>
                                 </t>
-                            </div>
-                            <a href="/my/saved-locations/add?type=pickup&amp;return=booking" class="btn btn-sm btn-outline-primary">
-                                + Add New Pickup Location
-                            </a>
+                            </t>
+                            <div id="max_pickup_stops_msg" class="text-muted small text-center" style="display:none">Maximum 20 pickup stops per booking.</div>
                         </div>
                     </div>
 
@@ -192,6 +216,7 @@
                                         </option>
                                     </t>
                                 </select>
+                                <input type="hidden" class="delivery-stop-key" name="delivery_stop_key_1" value="DL1"/>
                                 <div class="stop-detail-text text-muted small mt-1"/>
                                 <div class="mt-2 d-flex gap-2">
                                     <button type="button" class="btn btn-sm btn-outline-secondary move-up-btn" style="display:none">↑</button>
@@ -206,7 +231,7 @@
                             <t t-foreach="selected_delivery_rows" t-as="row_data">
                                 <t t-if="row_data['idx'] > 1">
                                     <div class="delivery-stop-row border rounded p-3 mb-2"
-                                         t-att-data-stop-index="row_data['idx'] - 1">
+                                         t-att-data-stop-index="row_data['idx'] - 1" t-att-data-stop-key="row_data.get('stop_key') or ('DL' + str(row_data['idx']))">
                                         <div class="d-flex justify-content-between align-items-center mb-2">
                                             <strong class="stop-label">Delivery Stop <t t-esc="row_data['idx']"/></strong>
                                             <span/>
@@ -226,6 +251,7 @@
                                                 </option>
                                             </t>
                                         </select>
+                                        <input type="hidden" class="delivery-stop-key" t-att-name="'delivery_stop_key_' + str(row_data['idx'])" t-att-value="row_data.get('stop_key') or ('DL' + str(row_data['idx']))"/>
                                         <div class="stop-detail-text text-muted small mt-1"/>
                                         <div class="mt-2 d-flex gap-2">
                                             <button type="button" class="btn btn-sm btn-outline-secondary move-up-btn" style="display:none">↑</button>
@@ -247,6 +273,11 @@
                     <script><![CDATA[
                         var MAX_DELIVERY_STOPS = 20;
                         var stopCounter = 1; // starts at 1, Stop 1 already rendered
+                        var stopKeyCounter = 0;
+                        document.querySelectorAll('.delivery-stop-row').forEach(function(row) {
+                            var match = (row.dataset.stopKey || '').match(/^DL(\d+)$/);
+                            if (match) stopKeyCounter = Math.max(stopKeyCounter, parseInt(match[1], 10));
+                        });
 
                         // Template for a new stop row (cloned from Stop 1 style)
                         function createStopRow(index) {
@@ -254,12 +285,16 @@
                             if (!tmpl) return null;
                             var row = tmpl.cloneNode(true);
                             row.setAttribute('data-stop-index', index);
+                            stopKeyCounter += 1;
+                            row.setAttribute('data-stop-key', 'DL' + stopKeyCounter);
                             row.querySelector('.stop-label').textContent = 'Delivery Stop ' + (index + 1);
                             // Update select name
                             var sel = row.querySelector('select');
                             sel.name = 'delivery_saved_location_id_' + (index + 1);
                             sel.value = '';
                             sel.classList.remove('is-valid');
+                            var keyInput = row.querySelector('.delivery-stop-key');
+                            if (keyInput) { keyInput.name = 'delivery_stop_key_' + (index + 1); keyInput.value = row.dataset.stopKey; }
                             // Clear detail text
                             row.querySelector('.stop-detail-text').textContent = '';
                             // Update add-loc link
@@ -278,6 +313,8 @@
                             // Select name
                             var sel = row.querySelector('select');
                             sel.name = 'delivery_saved_location_id_' + (index + 1);
+                            var keyInput = row.querySelector('.delivery-stop-key');
+                            if (keyInput) keyInput.name = 'delivery_stop_key_' + (index + 1);
                             // Add-loc link
                             var addLoc = row.querySelector('.add-loc-link');
                             if (addLoc) addLoc.href = '/my/saved-locations/add?type=delivery&return=booking&stop_index=' + (index + 1);
@@ -382,6 +419,86 @@
                         });
                     ]]></script>
 
+                    <!-- Pickup stop builder mirrors delivery behavior. The
+                         hidden key remains attached to the row while the
+                         select field name is re-indexed for HTTP form parsing. -->
+                    <script><![CDATA[
+                        document.addEventListener('DOMContentLoaded', function() {
+                            var MAX_PICKUP_STOPS = 20;
+                            var container = document.getElementById('pickup_stops_container');
+                            var add = document.getElementById('add_pickup_stop_btn');
+                            if (!container || !add) return;
+                            var pickupKeyCounter = 0;
+                            container.querySelectorAll('.pickup-stop-row').forEach(function(row) {
+                                var match = (row.dataset.stopKey || '').match(/^PU(\d+)$/);
+                                if (match) pickupKeyCounter = Math.max(pickupKeyCounter, parseInt(match[1], 10));
+                            });
+                            function bind(row) {
+                                var sel = row.querySelector('.pickup-select');
+                                var detail = row.querySelector('.stop-detail-text');
+                                if (!sel || !detail) return;
+                                sel.addEventListener('change', function() {
+                                    var opt = sel.options[sel.selectedIndex];
+                                    if (opt && opt.value) {
+                                        detail.innerHTML = 'Selected: <strong>' + opt.text.replace(/ ★ \(Default\)/, '') + '</strong>';
+                                    } else detail.textContent = '';
+                                });
+                                sel.dispatchEvent(new Event('change'));
+                            }
+                            function rebind() {
+                                var rows = container.querySelectorAll('.pickup-stop-row');
+                                rows.forEach(function(row, i) {
+                                    row.dataset.stopIndex = i;
+                                    row.querySelector('.stop-label').textContent = 'Pickup Stop ' + (i + 1);
+                                    var sel = row.querySelector('.pickup-select');
+                                    if (sel) sel.name = 'pickup_saved_location_id_' + (i + 1);
+                                    var key = row.querySelector('.pickup-stop-key');
+                                    if (key) {
+                                        key.name = 'pickup_stop_key_' + (i + 1);
+                                        key.value = row.dataset.stopKey || ('PU' + (i + 1));
+                                        row.dataset.stopKey = key.value;
+                                    }
+                                    var up = row.querySelector('.move-up-btn');
+                                    var down = row.querySelector('.move-down-btn');
+                                    var remove = row.querySelector('.remove-stop-btn');
+                                    if (up) up.style.display = i ? '' : 'none';
+                                    if (down) down.style.display = i < rows.length - 1 ? '' : 'none';
+                                    if (remove) remove.style.display = rows.length > 1 ? '' : 'none';
+                                    bind(row);
+                                });
+                                document.getElementById('max_pickup_stops_msg').style.display = rows.length >= MAX_PICKUP_STOPS ? '' : 'none';
+                                add.style.display = rows.length >= MAX_PICKUP_STOPS ? 'none' : '';
+                            }
+                            add.addEventListener('click', function() {
+                                var rows = container.querySelectorAll('.pickup-stop-row');
+                                if (rows.length >= MAX_PICKUP_STOPS) return;
+                            var row = rows[0].cloneNode(true);
+                            var key;
+                            do { pickupKeyCounter += 1; key = 'PU' + pickupKeyCounter; }
+                            while (container.querySelector('[data-stop-key="' + key + '"]'));
+                                row.dataset.stopKey = key;
+                                row.querySelector('.pickup-select').value = '';
+                                row.querySelector('.pickup-stop-key').value = key;
+                                row.querySelector('.stop-detail-text').textContent = '';
+                                container.insertBefore(row, document.getElementById('max_pickup_stops_msg'));
+                                rebind();
+                            });
+                            container.addEventListener('click', function(e) {
+                                var btn = e.target.closest('button');
+                                var row = btn && btn.closest('.pickup-stop-row');
+                                if (!row) return;
+                                var rows = Array.from(container.querySelectorAll('.pickup-stop-row'));
+                                if (btn.classList.contains('move-up-btn')) {
+                                    var i = rows.indexOf(row); if (i > 0) container.insertBefore(row, rows[i - 1]);
+                                } else if (btn.classList.contains('move-down-btn')) {
+                                    var j = rows.indexOf(row); if (j < rows.length - 1) container.insertBefore(rows[j + 1], row);
+                                } else if (btn.classList.contains('remove-stop-btn') && rows.length > 1) row.remove();
+                                rebind();
+                            });
+                            rebind();
+                        });
+                    ]]></script>
+
                     <!-- Postal code fallback toggle -->
                     <div class="mb-3">
                         <a class="text-muted small text-decoration-none" data-bs-toggle="collapse" href="#postalFallback" role="button">
@@ -407,7 +524,7 @@
                     document.addEventListener('DOMContentLoaded', function() {
                         // Auto-select the only real option in each dropdown
                         // when nothing is pre-selected (no default flag set)
-                        ['pickup_saved_location_id', 'delivery_saved_location_id'].forEach(function(name) {
+                        ['pickup_saved_location_id_1', 'delivery_saved_location_id_1'].forEach(function(name) {
                             var sel = document.querySelector('select[name="' + name + '"]');
                             if (!sel) return;
                             // Count real options (value != "")
@@ -426,7 +543,7 @@
                             var newId = '<t t-esc="new_loc_id"/>';
                             var newType = '<t t-esc="new_loc_type"/>';
                             if (newType === 'pickup' || newType === 'both') {
-                                var pu = document.querySelector('select[name="pickup_saved_location_id"]');
+                                var pu = document.querySelector('select[name="pickup_saved_location_id_1"]');
                                 if (pu) { pu.value = newId; }
                             }
                             if (newType === 'delivery' || newType === 'both') {
@@ -499,6 +616,7 @@
                      A hidden div (not <script/>): textContent decodes the
                      escaped JSON so the builder can parse it safely. -->
                 <div id="saved_locations_data" style="display:none" t-esc="saved_locations_json or '[]'"/>
+                <div id="initial_route_stops_data" style="display:none" t-esc="initial_route_stops_json or '[]'"/>
                 <input type="hidden" name="csrf_token" t-att-value="request.csrf_token()"/>
                 <!-- FSA codes for routing (works in both modes) -->
                 <input type="hidden" name="pickup_fsa" t-att-value="pickup_fsa.fsa if pickup_fsa else ''"/>
@@ -507,8 +625,14 @@
                 <t t-if="pickup_loc_id">
                     <input type="hidden" name="pickup_loc_id" t-att-value="pickup_loc_id"/>
                 </t>
+                <t t-foreach="pickup_loc_ids or []" t-as="pu_id">
+                    <input type="hidden" t-att-name="'pickup_loc_id_' + str(pu_id_index + 1)" t-att-value="pu_id"/>
+                </t>
                 <t t-if="delivery_loc_id">
                     <input type="hidden" name="delivery_loc_id" t-att-value="delivery_loc_id"/>
+                </t>
+                <t t-foreach="pickup_stop_keys or []" t-as="pu_key">
+                    <input type="hidden" t-att-name="'pickup_stop_key_' + str(pu_key_index + 1)" t-att-value="pu_key"/>
                 </t>
                 <!-- Coordinates (for quote/confirm steps) -->
                 <t t-if="pickup_lat">
@@ -679,6 +803,9 @@
                                                style="width:85px" step="1800"/>
                                     </div>
                                     <input type="hidden" t-att-name="'delivery_loc_id_' + str(dl_index + 1)" t-att-value="str(dl.id)"/>
+                                    <input type="hidden" class="delivery-stop-key"
+                                           t-att-name="'delivery_stop_key_' + str(dl_index + 1)"
+                                           t-att-value="delivery_stop_keys[dl_index] if delivery_stop_keys and dl_index &lt; len(delivery_stop_keys) else 'DL' + str(dl_index + 1)"/>
                                 </div>
                             </t>
                         </div></div>
@@ -688,6 +815,7 @@
                 <t t-if="not delivery_locs or len(delivery_locs) &lt;= 1">
                     <t t-if="delivery_loc_id">
                         <input type="hidden" name="delivery_loc_id_1" t-att-value="delivery_loc_id"/>
+                        <input type="hidden" name="delivery_stop_key_1" value="DL1"/>
                         <input type="hidden" name="delivery_pallets_1" t-att-value="str(pallets or 1)"/>
                     </t>
                 </t>
@@ -975,11 +1103,16 @@
                 var params = 'pickup_date=' + encodeURIComponent(date) +
                     '&pickup_lat=' + puLat + '&pickup_lng=' + puLng +
                     '&pallets=' + (parseInt(palletsInput?.value || '1', 10) || 1);
-                var puLocId = (document.querySelector('input[name="pickup_loc_id"]') || {}).value || '';
+                var pickupLocIds = [];
+                document.querySelectorAll('input[name^="pickup_loc_id_"]').forEach(function(inp) {
+                    if (inp.value && pickupLocIds.indexOf(inp.value) === -1) pickupLocIds.push(inp.value);
+                });
+                var puLocId = (document.querySelector('input[name="pickup_loc_id"]') || {}).value || pickupLocIds[0] || '';
                 var puFsa = (document.querySelector('input[name="pickup_fsa"]') || {}).value || '';
                 var depInput = document.getElementById('pickup_departure_id');
                 if (depInput && depInput.value) { params += '&departure_id=' + encodeURIComponent(depInput.value); }
                 if (puLocId) { params += '&pickup_loc_id=' + encodeURIComponent(puLocId); }
+                if (pickupLocIds.length) { params += '&pickup_loc_ids=' + encodeURIComponent(pickupLocIds.join(',')); }
                 if (puFsa) { params += '&pickup_fsa=' + encodeURIComponent(puFsa); }
                 // Segment-aware occupancy needs BOTH route ends + the
                 // shipment type (same values fetchEligibleDates uses).
@@ -1111,7 +1244,11 @@
                 // location. The backend evaluates the whole route — all
                 // delivery stops, pallet count, capacity, equipment — never
                 // just the first delivery.
-                var puLocId = (document.querySelector('input[name="pickup_loc_id"]') || {}).value || '';
+                var pickupLocIds = [];
+                document.querySelectorAll('input[name^="pickup_loc_id_"]').forEach(function(inp) {
+                    if (inp.value && pickupLocIds.indexOf(inp.value) === -1) pickupLocIds.push(inp.value);
+                });
+                var puLocId = (document.querySelector('input[name="pickup_loc_id"]') || {}).value || pickupLocIds[0] || '';
                 var deliveryLocIds = [];
                 document.querySelectorAll('.delivery-stop-breakdown-row input[name^="delivery_loc_id_"]').forEach(function(inp) {
                     if (inp.value && deliveryLocIds.indexOf(inp.value) === -1) { deliveryLocIds.push(inp.value); }
@@ -1139,6 +1276,7 @@
                     '&shipment_type=' + st;
                 if (puLocId && deliveryLocIds.length) {
                     params += '&pickup_loc_id=' + encodeURIComponent(puLocId) +
+                        '&pickup_loc_ids=' + encodeURIComponent(pickupLocIds.join(',')) +
                         '&delivery_loc_ids=' + encodeURIComponent(deliveryLocIds.join(','));
                 }
 
@@ -1576,8 +1714,15 @@
                 SAVED_LOCS = locsEl ? JSON.parse(locsEl.textContent || '[]') : [];
             } catch (e) { SAVED_LOCS = []; }
 
+            var INITIAL_STOPS = [];
+            try {
+                var initialEl = document.getElementById('initial_route_stops_data');
+                INITIAL_STOPS = initialEl ? JSON.parse(initialEl.textContent || '[]') : [];
+            } catch (e) { INITIAL_STOPS = []; }
+
             var extraPickupCount = 0;
             var extraDeliveryCount = 0;
+            var movementState = {pickups: {}, deliveries: {}, weights: {}, references: {}};
 
             function fmtHours(h) {
                 if (!h) return 'Closed';
@@ -1644,7 +1789,7 @@
                 // 'stp-pu-x…' — must NOT collide with the legacy main
                 // pickup's 'stp-pu-1' (pickupStops()): a duplicate key would
                 // break movement-pickup selection and payload resolution.
-                var key = 'stp-pu-x' + extraPickupCount;
+                var key = 'PUX' + extraPickupCount;
                 var el = document.createElement('div');
                 el.innerHTML = stopCardHtml(key, 'pickup', extraPickupCount + 1);
                 document.getElementById('extra_pickup_cards').appendChild(el.firstChild);
@@ -1654,7 +1799,7 @@
             };
             window.addExtraDeliveryCard = function() {
                 extraDeliveryCount += 1;
-                var key = 'stp-de-x' + extraDeliveryCount;
+                var key = 'DLX' + extraDeliveryCount;
                 var el = document.createElement('div');
                 el.innerHTML = stopCardHtml(key, 'delivery', extraDeliveryCount + 1);
                 document.getElementById('extra_delivery_cards').appendChild(el.firstChild);
@@ -1685,6 +1830,25 @@
                 update();
             }
 
+            // Step 1 may already contain several pickups.  Materialize the
+            // additional selected rows in the Step-2 builder so every
+            // physical pallet can choose its source without losing the
+            // stable PU key handed off by Step 1.
+            (function seedInitialPickupCards() {
+                var extra = INITIAL_STOPS.filter(function(s) { return s.stop_type === 'pickup'; }).slice(1);
+                var host = document.getElementById('extra_pickup_cards');
+                if (!host) return;
+                extra.forEach(function(s, i) {
+                    var el = document.createElement('div');
+                    el.innerHTML = stopCardHtml(s.stop_key, 'pickup', i + 2);
+                    var card = el.firstChild;
+                    var select = card.querySelector('.stop-saved-location');
+                    if (select) select.value = String(s.saved_location_id || '');
+                    host.appendChild(card);
+                    bindStopCard(s.stop_key);
+                });
+            })();
+
             window.removeStopCard = function(key) {
                 var card = document.querySelector('.extra-stop-card[data-stop-key="' + key + '"]');
                 if (card) card.remove();
@@ -1693,8 +1857,10 @@
             };
 
             function pickupStops() {
-                // Pickup 1 = the legacy form fields; extras = cards.
-                var stops = [{key: 'stp-pu-1', type: 'pickup', legacy: true}];
+                // The first selected pickup remains compatible with the
+                // legacy hidden field; additional Step-1 pickups are cards.
+                var first = INITIAL_STOPS.filter(function(s) { return s.stop_type === 'pickup'; })[0];
+                var stops = [{key: first ? first.stop_key : 'PU1', type: 'pickup', legacy: true}];
                 document.querySelectorAll('#extra_pickup_cards .extra-stop-card').forEach(function(c) {
                     stops.push({key: c.dataset.stopKey, type: 'pickup', legacy: false, card: c});
                 });
@@ -1704,12 +1870,14 @@
                 var stops = [];
                 var rows = document.querySelectorAll('.delivery-stop-breakdown-row');
                 rows.forEach(function(row, idx) {
-                    stops.push({key: 'stp-de-' + (idx + 1), type: 'delivery', legacy: true, index: idx + 1});
+                    var keyInput = row.querySelector('.delivery-stop-key');
+                    stops.push({key: keyInput ? keyInput.value : ('DL' + (idx + 1)), type: 'delivery', legacy: true, index: idx + 1});
                 });
                 // Single-step-1 delivery (no visible row)
                 var single = document.querySelector('input[name="delivery_loc_id_1"]');
                 if (!rows.length && single) {
-                    stops.push({key: 'stp-de-1', type: 'delivery', legacy: true, index: 1});
+                    var singleKey = document.querySelector('input[name="delivery_stop_key_1"]');
+                    stops.push({key: singleKey ? singleKey.value : 'DL1', type: 'delivery', legacy: true, index: 1});
                 }
                 document.querySelectorAll('#extra_delivery_cards .extra-stop-card').forEach(function(c) {
                     stops.push({key: c.dataset.stopKey, type: 'delivery', legacy: false, card: c});
@@ -1784,7 +1952,7 @@
             }
 
             function builderActive() {
-                if (extraPickupCount > 0) return true;
+                if (pickupStops().length > 1) return true;
                 // A route with MULTIPLE delivery stops is a multi-stop milk
                 // run even when no pallet is shared (1 pickup → A → B) —
                 // the FTL/LTL engine must see EVERY ordered stop, so the
@@ -1817,6 +1985,21 @@
                 if (!body) return;
                 if (!show) { if (gridCard) gridCard.style.display = 'none'; return; }
                 if (gridCard) gridCard.style.display = '';
+                // Re-rendering is used after pallet-count and checkbox
+                // changes. Preserve selections by physical pallet key.
+                document.querySelectorAll('.movement-row').forEach(function(row) {
+                    var p = row.dataset.pallet;
+                    var pu = row.querySelector('.movement-pickup');
+                    if (pu && pu.value) movementState.pickups[p] = pu.value;
+                    var wt = row.querySelector('.movement-weight');
+                    var ref = row.querySelector('.movement-reference');
+                    if (wt && wt.value) movementState.weights[p] = wt.value;
+                    if (ref) movementState.references[p] = ref.value;
+                    movementState.deliveries[p] = [];
+                    row.querySelectorAll('.movement-delivery-check:checked').forEach(function(cb) {
+                        movementState.deliveries[p].push(cb.dataset.stopKey);
+                    });
+                });
                 var html = '';
                 for (var p = 1; p <= physical; p++) {
                     html += '<div class="d-flex align-items-center py-2 border-bottom movement-row" data-pallet="' + p + '">';
@@ -1824,14 +2007,18 @@
                     html += '<div class="me-3"><small class="text-muted">Pickup From</small><br/>';
                     html += '<select class="form-select form-select-sm movement-pickup" data-pallet="' + p + '">';
                     pickupStops().forEach(function(s, i) {
-                        html += '<option value="' + s.key + '"' + (i === 0 ? ' selected' : '') + '>Pickup ' + (i + 1) + '</option>';
+                        var selected = movementState.pickups[p] === s.key || (!movementState.pickups[p] && i === 0);
+                        html += '<option value="' + s.key + '"' + (selected ? ' selected' : '') + '>' + stopLabel(s, i + 1) + '</option>';
                     });
                     html += '</select></div>';
+                    html += '<div class="me-3"><small class="text-muted">Weight (lb)</small><br/><input type="number" min="0" step="0.1" class="form-control form-control-sm movement-weight" data-pallet="' + p + '" value="' + (movementState.weights[p] || '') + '" style="width:105px"/></div>';
+                    html += '<div class="me-3"><small class="text-muted">Commodity / Reference</small><br/><input type="text" class="form-control form-control-sm movement-reference" data-pallet="' + p + '" value="' + (movementState.references[p] || '') + '" style="min-width:170px"/></div>';
                     html += '<div class="flex-grow-1"><small class="text-muted">Deliver To</small><br/>';
                     deliveryStops().forEach(function(s, i) {
+                        var checked = (movementState.deliveries[p] || []).indexOf(s.key) >= 0;
                         html += '<label class="me-2" style="cursor:pointer;white-space:nowrap">';
-                        html += '<input type="checkbox" class="movement-delivery-check" data-pallet-key="pal-' + p + '" data-stop-key="' + s.key + '" data-delivery-index="' + (i + 1) + '" onchange="buildMovementGrid()"/> ';
-                        html += 'Delivery ' + (i + 1);
+                        html += '<input type="checkbox" class="movement-delivery-check" data-pallet-key="pal-' + p + '" data-stop-key="' + s.key + '" data-delivery-index="' + (i + 1) + '"' + (checked ? ' checked' : '') + ' onchange="buildMovementGrid()"/> ';
+                        html += stopLabel(s, i + 1);
                         html += '</label>';
                     });
                     html += '</div></div>';
@@ -1918,16 +2105,42 @@
                                 if (ds) selByPallet[p].push({stopKey: ds.key, idx: idx});
                             });
                         }
+                        if (!selByPallet[p].length) {
+                            ev.preventDefault();
+                            window.alert('Assign at least one delivery stop to every physical pallet before getting a price.');
+                            return;
+                        }
                     }
                     var stops = pickupStops().concat(deliveryStops());
+                    function palletWeight(palletNumber) {
+                        var input = document.querySelector(
+                            '.movement-weight[data-pallet="' + palletNumber + '"]');
+                        return parseFloat(input && input.value || 0)
+                            || ((parseFloat(weightEl.value || 0) || 0) / physical);
+                    }
                     var routeStops = stops.map(function(s) {
                         var payload = stopPayload(s);
-                        if (s.type === 'delivery' && s.index) {
+                        if (s.type === 'delivery') {
                             var count = 0;
+                            var stopWeight = 0;
                             for (var p = 1; p <= physical; p++) {
-                                if (selByPallet[p].some(function(m) { return m.idx === s.index; })) count++;
+                                if (selByPallet[p].some(function(m) { return m.stopKey === s.key; })) {
+                                    count++;
+                                    stopWeight += palletWeight(p) / selByPallet[p].length;
+                                }
                             }
                             payload.pallets = count || 1;
+                            payload.weight_lbs = stopWeight;
+                        } else {
+                            var pickupCount = 0, pickupWeight = 0;
+                            for (var pp = 1; pp <= physical; pp++) {
+                                if (document.querySelector('.movement-pickup[data-pallet="' + pp + '"]')?.value === s.key) {
+                                    pickupCount += 1;
+                                    pickupWeight += palletWeight(pp);
+                                }
+                            }
+                            payload.pallets = pickupCount;
+                            payload.weight_lbs = pickupWeight;
                         }
                         return payload;
                     });
@@ -1935,13 +2148,17 @@
                     var legacyAllocs = [];
                     for (var p = 1; p <= physical; p++) {
                         var puSelect = document.querySelector('.movement-pickup[data-pallet="' + p + '"]');
-                        var pickupKey = puSelect ? puSelect.value : 'stp-pu-1';
+                        var pickupKey = puSelect ? puSelect.value : (pickupStops()[0] || {}).key;
                         var deliveryKeys = selByPallet[p].map(function(m) { return m.stopKey; });
                         var deliveryIdx = selByPallet[p].map(function(m) { return m.idx; });
+                        var weightInput = document.querySelector('.movement-weight[data-pallet="' + p + '"]');
+                        var refInput = document.querySelector('.movement-reference[data-pallet="' + p + '"]');
                         movements.push({
                             key: 'pal-' + p, label: 'Pallet-' + p,
-                            weight_lbs: 500, shared: deliveryKeys.length > 1,
-                            pickup_stop_key: pickupKey, delivery_stop_keys: deliveryKeys
+                            weight_lbs: parseFloat(weightInput?.value || 0) || ((parseFloat(weightEl.value || 0) || 0) / physical),
+                            shared: deliveryKeys.length > 1,
+                            pickup_stop_key: pickupKey, delivery_stop_keys: deliveryKeys,
+                            commodity: refInput ? refInput.value : '', reference: refInput ? refInput.value : ''
                         });
                         legacyAllocs.push({pallet: p, stops: deliveryIdx, shared: deliveryKeys.length > 1});
                     }
