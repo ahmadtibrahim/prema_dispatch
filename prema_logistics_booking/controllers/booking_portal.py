@@ -434,6 +434,7 @@ def _quote_error_context(kwargs, partner, pickup_fsa, delivery_fsa, error):
         "weight_lbs": weight_lbs, "shipment_type": kwargs.get("shipment_type") or "ltl",
         "temperature_mode": kwargs.get("temperature_mode") or "dry",
         "required_temperature_c": kwargs.get("required_temperature_c") or "",
+        "total_weight_mode": kwargs.get("total_weight_mode") or "auto",
         "pallet_weight_mode": kwargs.get("pallet_weight_mode") or "auto",
         "error": error,
     }
@@ -577,10 +578,10 @@ def _validate_movement_payload(route_stops, pallet_movements, physical_pallets):
                 destination not in delivery_keys for destination in destinations):
             raise UserError(_("A pallet references an invalid delivery stop."))
         try:
-            if float(movement.get("weight_lbs") or 0) < 0:
+            if float(movement.get("weight_lbs") or 0) <= 0:
                 raise ValueError
         except (TypeError, ValueError):
-            raise UserError(_("Pallet weights must be valid non-negative numbers."))
+            raise UserError(_("Every physical pallet must have a positive weight."))
         movement_keys.add(movement_key)
 
 
@@ -1307,14 +1308,13 @@ class LogisticsBookingPortal(http.Controller):
                     raise UserError(_("The route stops or pallet movements are invalid."))
                 _validate_movement_payload(
                     route_stops, pallet_movements, physical_pallets)
-                if str(kwargs.get("pallet_weight_mode") or "auto").strip().lower() == "manual":
-                    movement_weight_total = sum(
-                        float(movement.get("weight_lbs") or 0.0)
-                        for movement in pallet_movements
-                    )
-                    if abs(movement_weight_total - weight_lbs) > 0.05:
-                        raise UserError(_(
-                            "Manual pallet weights must equal the total shipment weight."))
+                movement_weight_total = sum(
+                    float(movement.get("weight_lbs") or 0.0)
+                    for movement in pallet_movements
+                )
+                if abs(movement_weight_total - weight_lbs) > 0.05:
+                    raise UserError(_(
+                        "Pallet weights must equal the total shipment weight."))
                 posted_pickup_ids = set(_indexed_ints(
                     kwargs, "pickup_loc_id_"))
                 posted_delivery_ids = set(_indexed_ints(
