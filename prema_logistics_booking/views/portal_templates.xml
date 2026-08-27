@@ -743,8 +743,8 @@
                     <label class="form-label">Shipment Type</label>
                     <select name="shipment_type" id="portal_shipment_type" class="form-select"
                             onchange="onPortalShipmentTypeChange()">
-                        <option value="ltl" selected="selected">LTL</option>
-                        <option value="ftl">FTL</option>
+                        <option value="ltl" t-att-selected="'selected' if (shipment_type or 'ltl') == 'ltl' else None">LTL</option>
+                        <option value="ftl" t-att-selected="'selected' if shipment_type == 'ftl' else None">FTL</option>
                     </select>
                     <div class="form-text" id="portal_ftl_note" style="display:none">
                         Full Truckload pricing applies. The entire truck is reserved for this shipment.
@@ -754,14 +754,14 @@
                     <label class="form-label">Temperature</label>
                     <select name="temperature_mode" id="portal_temperature_mode" class="form-select"
                             onchange="togglePortalTemperature()">
-                        <option value="dry">Dry</option>
-                        <option value="reefer" selected="selected">Reefer</option>
+                        <option value="dry" t-att-selected="'selected' if (temperature_mode or 'reefer') == 'dry' else None">Dry</option>
+                        <option value="reefer" t-att-selected="'selected' if (temperature_mode or 'reefer') == 'reefer' else None">Reefer</option>
                     </select>
                 </div>
                 <div class="col-md-6" id="portal_required_temperature">
                     <label class="form-label">Required Temperature (°C)</label>
                     <input type="number" step="0.5" name="required_temperature_c"
-                           id="portal_required_temperature_input" class="form-control" value="15"/>
+                           id="portal_required_temperature_input" class="form-control" t-att-value="required_temperature_c or '15'"/>
                     <div class="form-text">Required for Reefer. 0°C is valid.</div>
                 </div>
                 <script><![CDATA[
@@ -801,11 +801,13 @@
                 <div class="col-12">
                     <label class="form-label fw-bold">Requested Pickup Date *</label>
                     <div id="selected_date_display" class="mb-2" style="font-size:15px;color:#1565C0;font-weight:600;min-height:22px"/>
-                    <input type="hidden" id="requested_pickup_date" name="requested_pickup_date" required="required"/>
+                    <input type="hidden" id="requested_pickup_date" name="requested_pickup_date"
+                           t-att-value="requested_pickup_date or ''" required="required"/>
                     <!-- Exact scheduled departure selected on the calendar —
                          server-re-validated in the quote (corridor, date,
                          active, status). -->
-                    <input type="hidden" id="pickup_departure_id" name="pickup_departure_id"/>
+                    <input type="hidden" id="pickup_departure_id" name="pickup_departure_id"
+                           t-att-value="pickup_departure_id or ''"/>
                     <!-- Manual Quote Required banner: shown when the pickup
                          (or any delivery) is outside the scheduled network —
                          the same strict verdict Get Price uses. -->
@@ -836,7 +838,7 @@
                     <label class="form-label">Total Physical Pallets *</label>
                     <div class="input-group" style="max-width:220px">
                         <button type="button" class="btn btn-outline-secondary btn-sm" id="pallets_minus">−</button>
-                        <input type="number" id="pallets_input" name="physical_pallets" class="form-control text-center" min="1" value="1" required="required"/>
+                        <input type="number" id="pallets_input" name="physical_pallets" class="form-control text-center" min="1" t-att-value="physical_pallets or pallets or 1" required="required"/>
                         <button type="button" class="btn btn-outline-secondary btn-sm" id="pallets_plus">+</button>
                     </div>
                     <div class="form-text" id="pallets_capacity_hint">Enter the number of physical pallets/skids</div>
@@ -844,7 +846,7 @@
                 </div>
                 <div class="col-md-3">
                     <label class="form-label">Total Weight (lbs)</label>
-                    <input type="number" id="weight_input" step="0.1" name="weight_lbs" class="form-control" value="500" required="required"/>
+                    <input type="number" id="weight_input" step="0.1" name="weight_lbs" class="form-control" t-att-value="weight_lbs or 500" required="required"/>
                     <div class="form-text" id="weight_hint" style="display:none">
                         <a href="#" id="reset_weight_link" class="text-decoration-none small">Reset to 500 lb/pallet</a>
                     </div>
@@ -852,7 +854,8 @@
                 <!-- Hidden: legacy pallets field for backward compatibility -->
                 <input type="hidden" name="pallets" id="legacy_pallets" value="1"/>
                 <input type="hidden" name="shared_pallet_mode" id="shared_pallet_mode_input" value="0"/>
-                <input type="hidden" name="pallet_allocations_json" id="pallet_allocations_json" value="[]"/>
+                <input type="hidden" name="pallet_allocations_json" id="pallet_allocations_json"
+                       t-att-value="pallet_allocations_json or '[]'"/>
                 <!-- Pallet Allocation (visible when multi-stop) -->
                 <t t-if="delivery_locs and len(delivery_locs) > 1">
                     <div class="col-12 mt-3">
@@ -925,8 +928,12 @@
                      more than one pickup OR a pallet shared across
                      multiple delivery stops.
                      ══════════════════════════════════════════════════════ -->
-                <input type="hidden" name="route_stops_json" id="route_stops_json" value=""/>
-                <input type="hidden" name="pallet_movements_json" id="pallet_movements_json" value=""/>
+                <input type="hidden" name="route_stops_json" id="route_stops_json"
+                       t-att-value="route_stops_json or ''"/>
+                <input type="hidden" name="pallet_movements_json" id="pallet_movements_json"
+                       t-att-value="pallet_movements_json or ''"/>
+                <div id="submitted_booking_state_data" style="display:none" t-esc="submitted_form_json or '{}'"/>
+                <div id="movement_validation_error" class="alert alert-danger mt-2" style="display:none"/>
                 <!-- ROUTE SUMMARY — shown ONLY for a simple multi-delivery
                      route (1 pickup + N deliveries, no shared pallets):
                      a plain name chain, never 'Pickup 1 → Pickup 1'. -->
@@ -2106,8 +2113,10 @@
                     html += '<strong class="me-2" style="min-width:75px">PALLET ' + p + '</strong>';
                     html += '<div class="me-3"><small class="text-muted">Pickup From</small><br/>';
                     html += '<select class="form-select form-select-sm movement-pickup" data-pallet="' + p + '">';
+                    if (pickupStops().length > 1) html += '<option value="">— Select pickup —</option>';
                     pickupStops().forEach(function(s, i) {
-                        var selected = movementState.pickups[p] === s.key || (!movementState.pickups[p] && i === 0);
+                        var selected = movementState.pickups[p] === s.key ||
+                            (!movementState.pickups[p] && pickupStops().length === 1 && i === 0);
                         html += '<option value="' + s.key + '"' + (selected ? ' selected' : '') + '>' + stopLabel(s, i + 1) + '</option>';
                     });
                     html += '</select></div>';
@@ -2126,6 +2135,10 @@
                 body.innerHTML = html;
                 refreshRouteSections();
             }
+            // The dynamically-rendered assignment checkboxes use a small
+            // inline onchange hook. Keep the implementation scoped here,
+            // but expose only this handler for that browser event.
+            window.buildMovementGrid = buildMovementGrid;
 
             function legacyDeliveryLocId(idx) {
                 var el = document.querySelector('input[name="delivery_loc_id_' + idx + '"]');
@@ -2176,6 +2189,7 @@
 
             var form = document.querySelector('form[action="/my/booking/quote"]');
             if (form) {
+                var weightEl = document.getElementById('weight_input');
                 form.addEventListener('submit', function(ev) {
                     if (!builderActive()) {
                         document.getElementById('route_stops_json').value = '';
@@ -2183,6 +2197,32 @@
                         return;
                     }
                     var physical = parseInt((document.getElementById('pallets_input') || {}).value) || 1;
+                    var validation = document.getElementById('movement_validation_error');
+                    var movementRows = document.querySelectorAll('.movement-row');
+                    var pickupKeys = pickupStops().map(function(s) { return s.key; });
+                    function showMovementError(message) {
+                        ev.preventDefault();
+                        if (validation) { validation.textContent = message; validation.style.display = ''; }
+                    }
+                    if (movementRows.length !== physical) {
+                        showMovementError('Please wait for all physical pallet assignments to load before getting a price.');
+                        return;
+                    }
+                    for (var rowIndex = 0; rowIndex < physical; rowIndex++) {
+                        var movementRow = movementRows[rowIndex];
+                        var pickupSelect = movementRow.querySelector('.movement-pickup');
+                        var selectedPickup = pickupSelect ? pickupSelect.value : '';
+                        var selectedDeliveries = movementRow.querySelectorAll('.movement-delivery-check:checked');
+                        if (pickupKeys.indexOf(selectedPickup) < 0) {
+                            showMovementError('Select a pickup location for every physical pallet before getting a price.');
+                            return;
+                        }
+                        if (!selectedDeliveries.length) {
+                            showMovementError('Assign at least one delivery stop to every physical pallet before getting a price.');
+                            return;
+                        }
+                    }
+                    if (validation) { validation.textContent = ''; validation.style.display = 'none'; }
                     // Per-pallet delivery selection. The per-pallet
                     // ALLOCATION engine (.pallet-stop-check) is the
                     // authoritative live UI; the legacy movement grid
@@ -2267,6 +2307,54 @@
                     document.getElementById('pallet_allocations_json').value = JSON.stringify(legacyAllocs);
                 });
             }
+
+            // The movement grid is part of the generalized route state. It
+            // must exist as soon as Step 2 has multiple stops, and must
+            // track every physical-pallet count change before submission.
+            var movementPalletInput = document.getElementById('pallets_input');
+            if (movementPalletInput) {
+                movementPalletInput.addEventListener('input', buildMovementGrid);
+                movementPalletInput.addEventListener('change', buildMovementGrid);
+            }
+            buildMovementGrid();
+
+            // Restore a complete server-rendered validation state before
+            // any second click. Generalized JSON remains visible and is
+            // rebuilt into the same stable-key movement controls.
+            function restoreSubmittedState() {
+                var stateEl = document.getElementById('submitted_booking_state_data');
+                if (!stateEl) return;
+                var submitted;
+                try { submitted = JSON.parse(stateEl.textContent || '{}'); } catch (e) { return; }
+                if (!submitted || !submitted.pallet_movements_json) return;
+                setNamedFields(submitted);
+                var movementPayload;
+                try { movementPayload = JSON.parse(submitted.pallet_movements_json || '[]'); } catch (e) { movementPayload = []; }
+                movementState = {pickups: {}, deliveries: {}, weights: {}, references: {}};
+                (movementPayload || []).forEach(function(item, i) {
+                    var p = String(i + 1);
+                    movementState.pickups[p] = item.pickup_stop_key || '';
+                    movementState.deliveries[p] = item.delivery_stop_keys || [];
+                    movementState.weights[p] = item.weight_lbs || '';
+                    movementState.references[p] = item.reference || item.commodity || '';
+                });
+                var palletInput = document.getElementById('pallets_input');
+                if (palletInput) palletInput.dispatchEvent(new Event('input'));
+                var weightInput = document.getElementById('weight_input');
+                if (weightInput && submitted.weight_lbs !== undefined) weightInput.value = submitted.weight_lbs;
+                buildMovementGrid();
+                try {
+                    var allocs = JSON.parse(submitted.pallet_allocations_json || '[]');
+                    (allocs || []).forEach(function(item) {
+                        (item.stops || []).forEach(function(stop) {
+                            var cb = document.querySelector('.pallet-stop-check[data-pallet="' + item.pallet + '"][data-stop="' + stop + '"]');
+                            if (cb) cb.checked = true;
+                        });
+                    });
+                } catch (e) {}
+            }
+
+            restoreSubmittedState();
 
             // ── Temporary booking draft while adding a location ────────
             // This is UX state only. The quote endpoint still validates all

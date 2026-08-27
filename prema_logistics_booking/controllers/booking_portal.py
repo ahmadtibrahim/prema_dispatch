@@ -314,6 +314,122 @@ def _parse_time_float(val):
     except (ValueError, IndexError):
         return None
 
+
+def _quote_error_context(kwargs, partner, pickup_fsa, delivery_fsa, error):
+    """Re-render quote validation errors from the complete submitted route.
+
+    The error page is still only a form view: the quote endpoint remains the
+    authority.  Keeping the generalized JSON and every indexed stop here
+    prevents a failed quote from falling back to the legacy first pickup and
+    first delivery fields on the next click.
+    """
+    pickup_loc_id = kwargs.get("pickup_loc_id")
+    delivery_loc_id = kwargs.get("delivery_loc_id")
+    pickup_loc_ids = _indexed_ints(kwargs, "pickup_loc_id_")
+    delivery_loc_ids = _indexed_ints(kwargs, "delivery_loc_id_")
+    if not pickup_loc_ids and pickup_loc_id:
+        try:
+            pickup_loc_ids = [int(pickup_loc_id)]
+        except (TypeError, ValueError):
+            pickup_loc_ids = []
+    if not delivery_loc_ids and delivery_loc_id:
+        try:
+            delivery_loc_ids = [int(delivery_loc_id)]
+        except (TypeError, ValueError):
+            delivery_loc_ids = []
+
+    pickup_stop_keys = _indexed_keys(kwargs, "pickup_stop_key_")
+    delivery_stop_keys = _indexed_keys(kwargs, "delivery_stop_key_")
+    route_stops_json = str(kwargs.get("route_stops_json") or "").strip()
+    movements_json = str(kwargs.get("pallet_movements_json") or "").strip()
+    allocations_json = str(kwargs.get("pallet_allocations_json") or "[]").strip()
+    try:
+        route_stops = json.loads(route_stops_json) if route_stops_json else []
+    except (json.JSONDecodeError, TypeError):
+        route_stops = []
+    if not isinstance(route_stops, list) or not route_stops:
+        route_stops = []
+        for index, loc_id in enumerate(pickup_loc_ids, 1):
+            route_stops.append({
+                "stop_key": _safe_stop_key(
+                    pickup_stop_keys[index - 1] if index <= len(pickup_stop_keys) else "",
+                    "pickup", index),
+                "stop_type": "pickup", "saved_location_id": loc_id,
+            })
+        for index, loc_id in enumerate(delivery_loc_ids, 1):
+            route_stops.append({
+                "stop_key": _safe_stop_key(
+                    delivery_stop_keys[index - 1] if index <= len(delivery_stop_keys) else "",
+                    "delivery", index),
+                "stop_type": "delivery", "saved_location_id": loc_id,
+            })
+
+    def submitted_value(value):
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            return value
+        if isinstance(value, (list, tuple)):
+            return [submitted_value(item) for item in value]
+        return str(value)
+
+    submitted = {str(key): submitted_value(value) for key, value in kwargs.items()
+                 if key != "csrf_token"}
+    physical_pallets = kwargs.get("physical_pallets") or kwargs.get("pallets") or 1
+    try:
+        physical_pallets = int(physical_pallets)
+    except (TypeError, ValueError):
+        physical_pallets = 1
+    try:
+        weight_lbs = float(kwargs.get("weight_lbs") or 0)
+    except (TypeError, ValueError):
+        weight_lbs = 0.0
+    pickup_loc = _resolve_loc(request.env, partner, pickup_loc_id) if pickup_loc_id else None
+    delivery_locs = [
+        loc for loc_id in delivery_loc_ids
+        if (loc := _resolve_loc(request.env, partner, loc_id))
+    ]
+    first_delivery = delivery_locs[0] if delivery_locs else None
+    pickup_payload = None
+    if pickup_loc:
+        eff = _portal_coord_pair(pickup_loc)
+        pickup_payload = {
+            "id": pickup_loc.id, "name": pickup_loc.name or "",
+            "business_name": pickup_loc.business_name or "", "city": pickup_loc.city or "",
+            "latitude": eff[0], "longitude": eff[1],
+        }
+    delivery_payload = []
+    for loc in delivery_locs:
+        eff = _portal_coord_pair(loc)
+        delivery_payload.append({
+            "id": loc.id, "name": loc.name or "",
+            "business_name": loc.business_name or "", "city": loc.city or "",
+            "latitude": eff[0], "longitude": eff[1],
+        })
+    return {
+        "pickup_fsa": pickup_fsa, "delivery_fsa": delivery_fsa,
+        "pickup_loc": pickup_loc, "delivery_loc": first_delivery,
+        "delivery_locs": delivery_locs, "pickup_loc_ids": pickup_loc_ids,
+        "delivery_loc_ids": delivery_loc_ids, "pickup_loc_id": pickup_loc_id,
+        "delivery_loc_id": delivery_loc_id,
+        "pickup_stop_keys": pickup_stop_keys, "delivery_stop_keys": delivery_stop_keys,
+        "pickup_lat": float(kwargs.get("pickup_lat") or 0) if kwargs.get("pickup_lat") else 0,
+        "pickup_lng": float(kwargs.get("pickup_lng") or 0) if kwargs.get("pickup_lng") else 0,
+        "delivery_lat": float(kwargs.get("delivery_lat") or 0) if kwargs.get("delivery_lat") else 0,
+        "delivery_lng": float(kwargs.get("delivery_lng") or 0) if kwargs.get("delivery_lng") else 0,
+        "initial_route_stops_json": json.dumps(route_stops),
+        "saved_locations_json": json.dumps(_saved_locations_builder_payload(partner)),
+        "delivery_locs_json": json.dumps(delivery_payload),
+        "pickup_loc_json": json.dumps(pickup_payload),
+        "route_stops_json": route_stops_json,
+        "pallet_movements_json": movements_json,
+        "pallet_allocations_json": allocations_json,
+        "submitted_form_json": json.dumps(submitted),
+        "pallets": physical_pallets, "physical_pallets": physical_pallets,
+        "weight_lbs": weight_lbs, "shipment_type": kwargs.get("shipment_type") or "ltl",
+        "temperature_mode": kwargs.get("temperature_mode") or "dry",
+        "required_temperature_c": kwargs.get("required_temperature_c") or "",
+        "error": error,
+    }
+
 def _parse_bool(val):
     """Strict portal checkbox parsing — the single helper for every
     checkbox flag in this controller. Only 1/true/yes/on are True:
@@ -1144,20 +1260,11 @@ class LogisticsBookingPortal(http.Controller):
                 raise UserError(_(
                     "Multiple pickup stops require pallet movement assignments."))
         except (TypeError, ValueError, UserError) as exc:
-            # Build error context with all required template vars
-            pu_loc_for_err = _resolve_loc(request.env, partner, pickup_loc_id) or None
-            de_loc_for_err = _resolve_loc(request.env, partner, delivery_loc_id) or None
-            return request.render("prema_logistics_booking.portal_step2_shipment", {
-                "pickup_fsa": pickup_fsa, "delivery_fsa": delivery_fsa,
-                "pickup_loc": pu_loc_for_err, "delivery_loc": de_loc_for_err,
-                "pickup_lat": float(kwargs.get("pickup_lat") or 0) if kwargs.get("pickup_lat") else 0,
-                "pickup_lng": float(kwargs.get("pickup_lng") or 0) if kwargs.get("pickup_lng") else 0,
-                "delivery_lat": float(kwargs.get("delivery_lat") or 0) if kwargs.get("delivery_lat") else 0,
-                "delivery_lng": float(kwargs.get("delivery_lng") or 0) if kwargs.get("delivery_lng") else 0,
-                "pickup_loc_id": pickup_loc_id, "delivery_loc_id": delivery_loc_id,
-                "error": str(exc) if isinstance(exc, UserError) else _(
-                    "Please enter a valid pallet count and weight."),
-            })
+            error = str(exc) if isinstance(exc, UserError) else _(
+                "Please enter a valid pallet count and weight.")
+            return request.render("prema_logistics_booking.portal_step2_shipment",
+                                  _quote_error_context(
+                                      kwargs, partner, pickup_fsa, delivery_fsa, error))
 
         # ── Server-side capacity pre-check (Get Price) ─────────────────
         # The customer can never quote more pallets than the selected
@@ -1176,24 +1283,15 @@ class LogisticsBookingPortal(http.Controller):
                 capacity = VehicleCapacityService.for_pickup_date(
                     request.env, pickup_region, requested_pickup_date)
                 if capacity.get("available") and physical_pallets > capacity["remaining_pallets"]:
-                    pu_loc_for_err = _resolve_loc(request.env, partner, pickup_loc_id) if pickup_loc_id else None
-                    de_loc_for_err = _resolve_loc(request.env, partner, delivery_loc_id) if delivery_loc_id else None
-                    return request.render("prema_logistics_booking.portal_step2_shipment", {
-                        "pickup_fsa": pickup_fsa, "delivery_fsa": delivery_fsa,
-                        "pickup_loc": pu_loc_for_err, "delivery_loc": de_loc_for_err,
-                        "pickup_lat": float(kwargs.get("pickup_lat") or 0) if kwargs.get("pickup_lat") else 0,
-                        "pickup_lng": float(kwargs.get("pickup_lng") or 0) if kwargs.get("pickup_lng") else 0,
-                        "delivery_lat": float(kwargs.get("delivery_lat") or 0) if kwargs.get("delivery_lat") else 0,
-                        "delivery_lng": float(kwargs.get("delivery_lng") or 0) if kwargs.get("delivery_lng") else 0,
-                        "pickup_loc_id": pickup_loc_id, "delivery_loc_id": delivery_loc_id,
-                        # Non-disclosing: never reveal the remaining pallet
-                        # count — exact capacity is internal.
-                        "error": _(
-                            "This pallet quantity is not available on the "
-                            "selected departure. Reduce the quantity or "
-                            "choose another pickup date.",
-                        ),
-                    })
+                    return request.render(
+                        "prema_logistics_booking.portal_step2_shipment",
+                        _quote_error_context(
+                            kwargs, partner, pickup_fsa, delivery_fsa, _(
+                                "This pallet quantity is not available on the "
+                                "selected departure. Reduce the quantity or "
+                                "choose another pickup date.",
+                            )),
+                    )
             except (ValueError, TypeError):
                 pass
 
@@ -1404,9 +1502,10 @@ class LogisticsBookingPortal(http.Controller):
             }, source_channel="portal")
             quote = service.prepare_quote(normalized, requested_departure_id=pickup_departure_id)
         except UserError as exc:
-            return request.render("prema_logistics_booking.portal_not_available", {
-                "reason": str(exc),
-            })
+            return request.render(
+                "prema_logistics_booking.portal_step2_shipment",
+                _quote_error_context(kwargs, partner, pickup_fsa, delivery_fsa, str(exc)),
+            )
         except Exception:
             import traceback, secrets, logging
             _logger = logging.getLogger(__name__)
