@@ -207,6 +207,39 @@ class NormalizedBookingRequest:
 
 
 class BookingOrchestrationService:
+    @staticmethod
+    def _snapshot_with_metadata(snapshot, key, value):
+        """Keep one canonical metadata entry in an immutable price snapshot.
+
+        Pricing metadata is explanatory and must not become a second billable
+        line.  Confirmation may receive a session snapshot that already has
+        the entry, so appending blindly created duplicate ``_pallet_allocs``.
+        """
+        rows = [row for row in (snapshot or []) if not (
+            isinstance(row, dict) and key in row)]
+        if value is not None:
+            rows.append({key: value})
+        return rows
+
+    def _canonical_stop_company_name(self, stop):
+        """Prefer the canonical facility name over an address-derived label."""
+        location_id = stop.get("saved_location_id") or stop.get("facility_id")
+        if location_id:
+            location = self.env["prema.dispatch.location"].browse(int(location_id))
+            if location.exists():
+                business = (location.business_name or "").strip()
+                # Some legacy facility rows used the first address line as
+                # business_name.  A verified chain/branch label is the
+                # customer and operational identity in that case.
+                address_head = (location.address or "").split(",", 1)[0].strip().lower()
+                if location.chain_name and business.lower() in {
+                    address_head, (location.name or "").strip().lower(), "",
+                }:
+                    return "%s - %s" % (location.chain_name, location.city) \
+                        if location.city else location.chain_name
+                return (business or location.name or stop.get("company_name") or "").strip()
+        return (stop.get("company_name") or stop.get("business_name") or
+                stop.get("location_name") or "").strip()
     """Canonical orchestration service for all booking channels.
 
     Every entry point (portal, phone, internal, invoice, WhatsApp, custom quote,
@@ -720,6 +753,11 @@ class BookingOrchestrationService:
                 "corridor_id": corridor.id if corridor else None,
                 "shipment_type": normalized_request.load_type,
                 "temperature_mode": normalized_request.equipment_type,
+                # Canonical operational authorities.  The legacy fields are
+                # retained for compatibility, but internal forms/dispatch
+                # matching must not default a portal reefer shipment to dry.
+                "load_type": normalized_request.load_type,
+                "equipment_requirement": normalized_request.equipment_type,
                 "required_temperature_c": normalized_request.required_temperature_c or 0.0,
                 "pallets": normalized_request.physical_pallets,  # physical pallets for pricing/capacity
                 "physical_pallets": normalized_request.physical_pallets,
@@ -742,13 +780,14 @@ class BookingOrchestrationService:
                 "departure_id": first_leg.departure_id if first_leg else None,
                 "delivery_date_estimate": est_delivery,
                 "calculated_price": final_price,
-                "price_snapshot": price_lines + [
-                    {"_pallet_allocs": normalized_request.pallet_allocations},
-                ] + ([
-                    {"_pallet_movements": normalized_request.pallet_movements},
-                ] if normalized_request.route_model_version == "movement_v1" else []) + ([
-                    {"_stop_cost_allocations": stop_cost_allocations},
-                ] if stop_cost_allocations else []),
+                "price_snapshot": self._snapshot_with_metadata(
+                    price_lines + ([
+                        {"_pallet_movements": normalized_request.pallet_movements},
+                    ] if normalized_request.route_model_version == "movement_v1" else []) + ([
+                        {"_stop_cost_allocations": stop_cost_allocations},
+                    ] if stop_cost_allocations else []),
+                    "_pallet_allocs", normalized_request.pallet_allocations,
+                ),
                 "route_snapshot": route_snapshot_for_session,
                 "pickup_customer_access_id": pu_access_id,
                 "delivery_customer_access_id": de_access_id,
@@ -991,6 +1030,8 @@ class BookingOrchestrationService:
             "corridor_id": result.corridor.id,
             "shipment_type": normalized_request.load_type,
             "temperature_mode": normalized_request.equipment_type,
+            "load_type": normalized_request.load_type,
+            "equipment_requirement": normalized_request.equipment_type,
             "required_temperature_c": normalized_request.required_temperature_c or 0.0,
             "pallets": normalized_request.physical_pallets,
             "physical_pallets": normalized_request.physical_pallets,
@@ -1004,7 +1045,8 @@ class BookingOrchestrationService:
             "pickup_date": result.pickup_date,
             "delivery_date_estimate": result.delivery_date_estimate,
             "calculated_price": calculated_price,
-            "price_snapshot": price_lines + [{"_pallet_allocs": normalized_request.pallet_allocations}],
+            "price_snapshot": self._snapshot_with_metadata(
+                price_lines, "_pallet_allocs", normalized_request.pallet_allocations),
             "route_snapshot": route_snapshot_for_session,
             "pickup_customer_access_id": pu_access_id,
             "delivery_customer_access_id": de_access_id,
@@ -1290,7 +1332,8 @@ class BookingOrchestrationService:
             # Embed pallet_allocations into price_snapshot for zero-migration storage
             allocs = normalized_request.pallet_allocations
             if allocs:
-                price_snapshot = list(price_snapshot) + [{"_pallet_allocs": allocs}]
+                price_snapshot = self._snapshot_with_metadata(
+                    price_snapshot, "_pallet_allocs", allocs)
             booking_vals["price_snapshot"] = price_snapshot
 
         # Manual sell-price override: booking-level audit line, never a
@@ -1326,7 +1369,7 @@ class BookingOrchestrationService:
         if normalized_request.pickup_stops:
             pu = normalized_request.pickup_stops[0]
             booking_vals.update({
-                "pickup_company": pu.get("company_name", ""),
+                "pickup_company": self._canonical_stop_company_name(pu),
                 "pickup_address": pu.get("formatted_address", pu.get("address", booking_vals.get("pickup_address", ""))),
                 "pickup_contact_name": pu.get("contact_name", ""),
                 "pickup_phone": pu.get("phone", ""),
@@ -1335,7 +1378,7 @@ class BookingOrchestrationService:
         if normalized_request.delivery_stops:
             dl = normalized_request.delivery_stops[-1]
             booking_vals.update({
-                "delivery_company": dl.get("company_name", ""),
+                "delivery_company": self._canonical_stop_company_name(dl),
                 "delivery_address": dl.get("formatted_address", dl.get("address", booking_vals.get("delivery_address", ""))),
                 "delivery_contact_name": dl.get("contact_name", ""),
                 "delivery_phone": dl.get("phone", ""),
@@ -1615,7 +1658,7 @@ class BookingOrchestrationService:
                 "stop_type": "pickup",
                 "stop_key": pu.get("stop_key") or "",
                 "saved_location_id": dispatch_id,
-                "company_name": pu.get("company_name", ""),
+                "company_name": self._canonical_stop_company_name(pu),
                 "street": pu.get("street", ""),
                 "city": pu.get("city", ""),
                 "province_state": pu.get("province_state", pu.get("province", "")),
@@ -1652,7 +1695,7 @@ class BookingOrchestrationService:
                 "stop_type": "delivery",
                 "stop_key": dl.get("stop_key") or "",
                 "saved_location_id": dispatch_id,
-                "company_name": dl.get("company_name", ""),
+                "company_name": self._canonical_stop_company_name(dl),
                 "street": dl.get("street", ""),
                 "city": dl.get("city", ""),
                 "province_state": dl.get("province_state", dl.get("province", "")),

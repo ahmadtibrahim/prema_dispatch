@@ -208,6 +208,12 @@ class DriverAppController(http.Controller):
         )
         return result
 
+    @http.route("/dispatch/driver/route-visit/arrive", type="json", auth="user", methods=["POST"])
+    def arrive_route_visit(self, route_visit_id, lat=0.0, lng=0.0, **kwargs):
+        """Record one physical arrival for all authorized linked stops."""
+        return request.env["prema.dispatch.route.visit"].arrive_physical_visit(
+            route_visit_id, lat=lat, lng=lng)
+
     @http.route("/dispatch/driver/job/finish", type="json", auth="user", methods=["POST"])
     def finish_job(self, job_id, **kwargs):
         return request.env["prema.dispatch.job"].driver_finish_job(job_id)

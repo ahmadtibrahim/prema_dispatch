@@ -3445,7 +3445,13 @@ class PremaDispatchJob(models.Model):
     def _stop_company_name(self, stop):
         loc = stop.saved_location_id
         if loc:
-            return loc.business_name or loc.name or loc.address or ""
+            business = (loc.business_name or "").strip()
+            address_head = (loc.address or "").split(",", 1)[0].strip().lower()
+            if loc.chain_name and business.lower() in {
+                address_head, (loc.name or "").strip().lower(), "",
+            }:
+                return "%s - %s" % (loc.chain_name, loc.city) if loc.city else loc.chain_name
+            return business or loc.name or loc.address or ""
         return (
             stop.contact_name
             or (stop.partner_id.name if stop.partner_id else "")
@@ -4433,7 +4439,8 @@ class PremaDispatchJob(models.Model):
             return None
 
         stops_out = []
-        for order_idx, s in enumerate(self.combined_vehicle_day_stops(jobs, check_d), start=1):
+        driver_logical_stops = self.combined_vehicle_day_stops(jobs, check_d)
+        for order_idx, s in enumerate(driver_logical_stops, start=1):
             job = s.job_id
             sd = stop_date_local(s, job)
             if sd != check_d:
@@ -4462,6 +4469,9 @@ class PremaDispatchJob(models.Model):
         # Sort by scheduled_time then sequence
         stops_out.sort(key=self._serialized_stop_sort_key)
         self._apply_truck_onboard_counts(stops_out)
+        physical_visits = self.env["prema.dispatch.route.visit"].physical_visits_payload(
+            driver_logical_stops
+        ) if driver_logical_stops else []
 
         from odoo.addons.prema_dispatch.services.availability_service import DispatchAvailabilityService
         available_transfer_trucks = []
@@ -4503,6 +4513,7 @@ class PremaDispatchJob(models.Model):
                 "summary": None,
             }),
             "stops": stops_out,
+            "physical_visits": physical_visits,
         }
 
     @api.model

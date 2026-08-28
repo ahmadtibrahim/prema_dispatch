@@ -896,6 +896,34 @@ async function selectDay(dateStr) {
 }
 
 // ── Stop List ─────────────────────────────────────────────────────
+function physicalVisitsForDay(){
+    return (S.dayData?.physical_visits||[]).filter(v=>Array.isArray(v.stops)&&v.stops.length);
+}
+
+function buildPhysicalVisitRow(visit){
+    const stops=visit.stops||[];
+    const open=stops.some(s=>!["completed","skipped","cancelled"].includes(s.status));
+    const row=mk("div","da-stop-row da-physical-visit-row"+(open?"":" completed-row"));
+    const pickup=stops.some(s=>isPickupLikeStop(s.type));
+    const tl=mk("div","da-stop-timeline");
+    tl.innerHTML=`<div class="da-dot ${pickup?"pickup":""}${open?"":" done"}"></div>`;
+    const ct=mk("div","da-stop-content");
+    const shipments=(visit.shipments||[]).map(s=>
+        `<div class="da-physical-shipment"><strong>${esc(s.job_name||"Shipment")}</strong>`+
+        `${s.booking_number?` · ${esc(s.booking_number)}`:""} · ${s.pallets||0} pallet${s.pallets===1?"":"s"}`+
+        `${s.weight_lbs?` · ${esc(String(Math.round(s.weight_lbs)))} lb`:""}`+
+        `${s.pop_required?` · POP ${s.pop_count?"✓":"required"}`:""}`+
+        `${s.pod_required?` · POD ${s.pod_count?"✓":"required"}`:""}</div>`).join("");
+    ct.innerHTML=`<div class="da-stop-type ${pickup?"pickup":""}">${esc(visit.type_label||"Visit")} · <span style="opacity:.7">${stops.length} shipment stop${stops.length===1?"":"s"}</span></div>`+
+        `<div class="da-stop-name">${esc(visit.company_name||"Physical visit")}</div>`+
+        `<div class="da-stop-addr">${esc(visit.address||"")}</div>`+
+        `<div class="da-physical-shipments">${shipments}</div>`+
+        (open?"":"<span class=\"da-stop-badge green\">✓ All linked shipments complete</span>");
+    ct.onclick=()=>openStop(stops[0]);
+    row.append(tl,ct);
+    return row;
+}
+
 function renderStopList() {
     const list=q("#stopList"); if(!list)return;
     list.innerHTML="";
@@ -934,6 +962,28 @@ function renderStopList() {
         card.querySelector("#nextStopGo").onclick=()=>showViewTab("nav");
         card.querySelector("#nextStopDetails").onclick=()=>openStop(next);
         list.appendChild(card);
+    }
+
+    // Physical visits are the driver's route units.  Each visit retains the
+    // logical stop cards inside it, so evidence, custody, and completion are
+    // still handled against the correct job/stop.
+    const physicalVisits=physicalVisitsForDay();
+    if(physicalVisits.length){
+        const openVisits=physicalVisits.filter(v=>(v.stops||[]).some(s=>!["completed","skipped","cancelled"].includes(s.status)));
+        const doneVisits=physicalVisits.filter(v=>!openVisits.includes(v));
+        if(openVisits.length){
+            const head=mk("div","da-list-section-title");
+            head.textContent=`UPCOMING VISITS · ${openVisits.length}`;
+            list.appendChild(head);
+            openVisits.forEach(v=>list.appendChild(buildPhysicalVisitRow(v)));
+        }
+        if(doneVisits.length){
+            const det=mk("details","da-completed-details");
+            det.innerHTML=`<summary class="da-list-section-title">COMPLETED VISITS · ${doneVisits.length}</summary>`;
+            doneVisits.forEach(v=>det.appendChild(buildPhysicalVisitRow(v)));
+            list.appendChild(det);
+        }
+        return;
     }
 
     // 2. UPCOMING STOPS — rows with route headers + drag reorder.
@@ -1100,7 +1150,8 @@ function initRouteMap() {
     }
     if(!S.trafficRoute) S.trafficRoute=new google.maps.TrafficLayer();
     S.trafficRoute.setMap(S.navTrafficOn ? S.maps.route : null);
-    const pts=S.stops.filter(s=>s.lat&&s.lng);
+    const pts=(physicalVisitsForDay().length ? physicalVisitsForDay() : S.stops)
+        .filter(s=>s.lat&&s.lng);
     drawStopsOnMap(S.maps.route,pts,true);
 }
 
@@ -4061,7 +4112,19 @@ function stripHtml(html){
 async function doArrived(){
     const stopId=S.stop?.id;
     if(!stopId) return;
-    const ok=await callStop(stopId,"arrived",{lat:S.lat||0,lng:S.lng||0});
+    let ok;
+    if(S.stop?._physical_visit_id){
+        try{
+            const result=await rpc("/dispatch/driver/route-visit/arrive",{
+                route_visit_id:S.stop._physical_visit_id,
+                lat:S.lat||0,lng:S.lng||0,
+            });
+            ok=!!result?.success;
+            if(!ok && result?.error) toast(result.error);
+        }catch(e){ toast(e.message||"Could not record physical arrival"); ok=false; }
+    }else{
+        ok=await callStop(stopId,"arrived",{lat:S.lat||0,lng:S.lng||0});
+    }
     if(ok){
         patchStopState(stopId,{status:"arrived",actual_arrival_time:new Date().toISOString()});
         await reloadDay();
@@ -4399,7 +4462,8 @@ function openFullMap(){
     }
     if(!S.trafficFull) S.trafficFull=new google.maps.TrafficLayer();
     S.trafficFull.setMap(S.navTrafficOn ? S.maps.full : null);
-    const pts=S.stops.filter(s=>s.lat&&s.lng);
+    const pts=(physicalVisitsForDay().length ? physicalVisitsForDay() : S.stops)
+        .filter(s=>s.lat&&s.lng);
     drawStopsOnMap(S.maps.full,pts,true);
     if(S.lat&&S.lng){
         if(S.markers.fullDrv)S.markers.fullDrv.setMap(null);

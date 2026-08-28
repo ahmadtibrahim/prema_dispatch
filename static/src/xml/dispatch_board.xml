@@ -424,7 +424,7 @@
                                                       t-esc="transferRoleLabel(stop)"/>
                                                 <span class="o_stop_marker_city" t-esc="stop.company_name || stop.business_name || (stop.address || '').split(',')[0]"/>
                                             </div>
-                                            <div class="o_stop_marker_job" t-esc="stop.job_name"/>
+                                            <div class="o_stop_marker_job" t-esc="stop.physical_visit ? (stop.job_label || 'Multiple shipments') : stop.job_name"/>
                                             <div class="o_stop_marker_pallets">
                                                 <t t-if="stop.pallets_in">+<t t-esc="stop.pallets_in"/></t>
                                                 <t t-if="stop.pallets_out">-<t t-esc="stop.pallets_out"/></t>
@@ -594,8 +594,8 @@
                         <div t-attf-class="o_bsp_item #{state.highlightStopId === stop.id ? 'highlighted' : ''}"
                              t-att-data-stop-id="stop.id"
                              t-att-data-seq="stop.sequence"
-                             draggable="true"
-                             t-on-dragstart="(ev) => this.bspDragStart(ev, stop)"
+                             t-att-draggable="stop.physical_visit ? 'false' : 'true'"
+                             t-on-dragstart="(ev) => { if (!stop.physical_visit) this.bspDragStart(ev, stop); }"
                              t-on-dragover="(ev) => this.bspDragOver(ev)"
                              t-on-drop="(ev) => this.bspDrop(ev, stop)"
                              t-on-dragend="bspDragEnd"
@@ -608,6 +608,9 @@
                                 <div class="o_bsp_name" t-esc="stop.company_name || stop.business_name || stop.partner || stop.address.split(',')[0]"/>
                                 <div class="o_bsp_addr text-muted" t-esc="stop.type_label || stopTypeLabel(stop)"/>
                                 <div class="o_bsp_addr text-muted" t-esc="stop.address"/>
+                                <div t-if="stop.physical_visit" class="small text-primary mt-1">
+                                    <t t-esc="stop.shipments.length"/> shipments · <t t-esc="stop.pallets_in + stop.pallets_out"/> pallet movements
+                                </div>
                                 <div t-if="stop.address_warning" class="o_bsp_addr_warn" t-att-title="stop.address_warning">
                                     <i class="fa fa-exclamation-triangle"/> <t t-esc="stop.address_warning"/>
                                 </div>

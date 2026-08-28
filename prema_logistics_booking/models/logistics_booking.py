@@ -532,6 +532,8 @@ class LogisticsBooking(models.Model):
         from ..services.itinerary_planner import (
             snapshot_facility_hours,
         )
+        from ..services.booking_orchestration_service import BookingOrchestrationService
+        canonical_name = BookingOrchestrationService(self.env)._canonical_stop_company_name
         pickups, deliveries = [], []
         for stop in session.stop_ids.sorted("sequence"):
             acc = stop.customer_access_id
@@ -546,8 +548,11 @@ class LogisticsBooking(models.Model):
             hours_snapshot = snapshot_facility_hours(self.env, dispatch_loc_id, stop.stop_type)
             values = {
                 "stop_key": stop.stop_key or "",
-                "company_name": (acc.business_name if acc and acc.business_name
-                                 else (fac.business_name if fac else "")) or stop.location_name or "",
+                "company_name": canonical_name({
+                    "saved_location_id": dispatch_loc_id,
+                    "company_name": (acc.business_name if acc and acc.business_name
+                                      else (fac.business_name if fac else "")) or stop.location_name or "",
+                }),
                 "street": acc.street if acc else (fac.street if fac else stop.street or ""),
                 "city": acc.city if acc else (fac.city if fac else stop.city or ""),
                 "province_state": (acc.state_id.code if acc and acc.state_id
@@ -624,8 +629,11 @@ class LogisticsBooking(models.Model):
                 # The physical facility behind the union record
                 dispatch_loc_id = fac.id if fac else None
                 stops.append({
-                    "company_name": (sl.business_name if sl and sl.business_name
-                                     else (fac.business_name if fac else "")) or "",
+                    "company_name": canonical_name({
+                        "saved_location_id": dispatch_loc_id,
+                        "company_name": (sl.business_name if sl and sl.business_name
+                                          else (fac.business_name if fac else "")),
+                    }),
                     "street": sl.street if sl else (fac.street if fac else ""),
                     "city": sl.city if sl else (fac.city if fac else ""),
                     "province_state": (sl.state_id.code if sl and sl.state_id
@@ -657,8 +665,11 @@ class LogisticsBooking(models.Model):
         elif de_fac:
             dispatch_loc_id = de_fac.id
         return [{
-            "company_name": (de_acc.business_name if de_acc and de_acc.business_name
-                             else (de_fac.business_name if de_fac else "")) or "",
+            "company_name": BookingOrchestrationService(self.env)._canonical_stop_company_name({
+                "saved_location_id": dispatch_loc_id,
+                "company_name": (de_acc.business_name if de_acc and de_acc.business_name
+                                  else (de_fac.business_name if de_fac else "")),
+            }),
             "street": de_acc.street if de_acc else (de_fac.street if de_fac else ""),
             "city": de_acc.city if de_acc else (de_fac.city if de_fac else ""),
             "province_state": (de_acc.state_id.code if de_acc and de_acc.state_id
@@ -759,8 +770,11 @@ class LogisticsBooking(models.Model):
             pickup_stops, delivery_stops = self._build_confirm_stops_from_session(session)
         else:
             pickup_stops = [{
-                "company_name": (pu_acc.business_name if pu_acc and pu_acc.business_name
-                                 else (pu_fac.business_name if pu_fac else "")) or "",
+                "company_name": svc._canonical_stop_company_name({
+                    "saved_location_id": pu_dispatch_id,
+                    "company_name": (pu_acc.business_name if pu_acc and pu_acc.business_name
+                                      else (pu_fac.business_name if pu_fac else "")),
+                }),
                 "street": pu_acc.street if pu_acc else (pu_fac.street if pu_fac else ""),
                 "city": pu_acc.city if pu_acc else (pu_fac.city if pu_fac else ""),
                 "province_state": (pu_acc.state_id.code if pu_acc and pu_acc.state_id

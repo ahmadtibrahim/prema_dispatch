@@ -356,6 +356,19 @@ class DispatchAvailabilityService:
 
             self.env["prema.dispatch.job"]._apply_truck_onboard_counts(truck_stop_payloads)
 
+            # The planner route is a physical route, not a concatenation of
+            # each customer's logical stop list.  Materialize/reuse the
+            # existing route.visit links so two jobs at the same canonical
+            # facility produce one waypoint while their job stops remain in
+            # each job summary above.
+            physical_stop_ids = [
+                st.id for j in v_jobs for st in j.stop_ids.sorted("sequence")
+                if self._stop_belongs_to_day(st, j, check_date)
+            ]
+            physical_visits = self.env["prema.dispatch.route.visit"].physical_visits_payload(
+                self.env["prema.dispatch.stop"].browse(physical_stop_ids)
+            ) if physical_stop_ids else []
+
             results.append({
                 "truck_id": vehicle.id,
                 "name": vehicle.name,
@@ -375,6 +388,7 @@ class DispatchAvailabilityService:
                 "gps_age_minutes": gps_age,
                 "status": status,
                 "jobs": job_summaries,
+                "physical_visits": physical_visits,
                 "available_from": self._to_local_hhmm(available_from),
                 "busy_until": self._to_local_hhmm(busy_until),
                 "committed_pallets": committed,

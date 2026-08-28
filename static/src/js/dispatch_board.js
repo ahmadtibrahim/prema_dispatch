@@ -152,6 +152,12 @@ export class DispatchBoard extends Component {
         if (!this.state.mapTruckId) return [];
         const truck = this.state.trucks.find(t => t.truck_id === this.state.mapTruckId);
         if (!truck) return [];
+        if (truck.physical_visits?.length) return truck.physical_visits;
+        return this.mapTruckLogicalStops(truck);
+    }
+
+    mapTruckLogicalStops(truck) {
+        if (!truck) return [];
         // Flatten all stops from all jobs on this truck. When the backend has
         // materialized a real cross-job route (Auto Plan / Consolidate), the
         // scheduled_time values carry the true merged order and must win over
@@ -397,7 +403,8 @@ export class DispatchBoard extends Component {
         if (!draggedId || draggedId === targetStop.id) return;
 
         // Reorder: swap sequences
-        const stops = this.mapTruckStops;
+        const stops = this.mapTruckLogicalStops(
+            this.state.trucks.find(t => t.truck_id === this.state.mapTruckId));
         const draggedIdx = stops.findIndex(s => s.id === draggedId);
         const targetIdx  = stops.findIndex(s => s.id === targetStop.id);
         if (draggedIdx === -1 || targetIdx === -1) return;
@@ -774,6 +781,15 @@ export class DispatchBoard extends Component {
     // Flattened, time-sorted stop list for one truck, each stop tagged with
     // its job's name/color/priority for the marker row.
     truckStopMarkers(truck) {
+        if (truck.physical_visits?.length) {
+            return truck.physical_visits.map(visit => ({
+                ...visit,
+                job_color: this.getJobColor(visit.job_id),
+                leg_kind: "primary",
+                physical_visit: true,
+                job_label: (visit.shipments || []).map(s => s.job_name).join(", "),
+            }));
+        }
         const out = [];
         for (const job of (truck.jobs || [])) {
             for (const stop of (job.stops || [])) {
