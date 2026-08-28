@@ -148,7 +148,12 @@ class PremaDispatchRouteVisit(models.Model):
         evidence data comes from the original logical stop serializer.
         """
         stops = stops.filtered(lambda s: s.status != "cancelled")
-        self.ensure_for_stops(stops)
+        # Lazy visit materialization is internal bookkeeping on stops the
+        # caller is already authorized for. Drivers may read their route
+        # but never create grouping records (Dispatcher/Manager groups
+        # only), so the materialization runs elevated — the driver's own
+        # stops remain the only input, no scope is expanded.
+        self.sudo().ensure_for_stops(stops)
         Link = self.env["prema.dispatch.route.visit.stop"]
         by_stop = {}
         for link in Link.search([("stop_id", "in", stops.ids), ("active", "=", True)]):
@@ -198,20 +203,35 @@ class PremaDispatchRouteVisit(models.Model):
             delivered = sum(len(s._items_delivered_here()) for s in logical if s.stop_type in ("dropoff", "return"))
             jobs = {}
             for stop, payload in zip(logical, serialized):
+                # Driver access is scoped to the dispatch job/stop.  The
+                # linked booking is customer-scoped and intentionally not
+                # readable by the driver user; expose only its safe public
+                # booking reference in this already-authorized job section.
+                booking = stop.job_id.logistics_booking_id.sudo()
                 entry = jobs.setdefault(stop.job_id.id, {
                     "job_id": stop.job_id.id, "job_name": stop.job_id.name,
-                    "booking_number": stop.job_id.logistics_booking_id.booking_number
-                        if getattr(stop.job_id, "logistics_booking_id", False) else "",
+                    "booking_number": booking.booking_number
+                        if booking else "",
                     "partner": stop.job_id.partner_id.name if stop.job_id.partner_id else "",
                     "stops": [], "pallets": 0, "weight_lbs": 0.0,
                     "pop_required": False, "pod_required": False,
                     "pop_count": 0, "pod_count": 0,
+                    "requires_reefer": bool(stop.job_id.requires_reefer),
+                    "required_temperature_c": (
+                        payload.get("required_temperature_c")
+                        if payload.get("required_temperature_c") not in (None, False, "")
+                        else False
+                    ),
+                    "temperature_requirement": payload.get("temperature_requirement") or "",
                 })
                 entry["stops"].append(payload)
                 entry["pop_required"] = entry["pop_required"] or bool(payload.get("pop_required"))
                 entry["pod_required"] = entry["pod_required"] or bool(payload.get("pod_required"))
-                entry["pop_count"] += len(payload.get("pop_attachments") or [])
-                entry["pod_count"] += len(payload.get("pod_attachments") or [])
+                # Evidence counts come from the stop records directly —
+                # _driver_stop_dict does not serialize attachment lists (the
+                # stops list carries them), so payload keys would always be 0.
+                entry["pop_count"] += len(stop.pop_attachment_ids)
+                entry["pod_count"] += len(stop.pod_attachment_ids)
                 if stop.stop_type == "pickup":
                     entry["pallets"] += len(stop._items_picked_here())
                     entry["weight_lbs"] += sum(i.weight_lbs for i in stop._items_picked_here())

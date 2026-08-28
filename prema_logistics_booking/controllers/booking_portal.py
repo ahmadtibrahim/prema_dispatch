@@ -13,6 +13,8 @@ from odoo.addons.prema_logistics_booking.models.logistics_pricing_session import
     _customer_safe_leg_label,
 )
 
+_logger = logging.getLogger(__name__)
+
 def _allocate_transportation(route_total, cumulative_distances, onboard_counts):
     """Display-only explanatory allocation of an EXISTING route-level
     transportation total across stops.
@@ -1456,7 +1458,12 @@ class LogisticsBookingPortal(http.Controller):
         # The customer can never quote more pallets than the selected
         # departure's truck can carry. The authoritative locked re-check
         # still runs at confirmation.
+        # Defensive defaults so the final error handler below can always
+        # log a sanitized request shape even when a later parse step
+        # (temperature setpoint, departure id) fails first.
         requested_pickup_date = kwargs.get("requested_pickup_date", "").strip() or None
+        pickup_departure_id = None
+        required_temperature_c = None
         if pickup_fsa or (kwargs.get("pickup_lat") and kwargs.get("pickup_lng")):
             try:
                 from ..services.region_resolver import RegionResolver
@@ -1711,14 +1718,66 @@ class LogisticsBookingPortal(http.Controller):
                 _quote_error_context(kwargs, partner, pickup_fsa, delivery_fsa, str(exc)),
             )
         except Exception:
-            import traceback, secrets, logging
-            _logger = logging.getLogger(__name__)
+            import secrets
             error_ref = f"ERR-{secrets.token_hex(4)[:8]}"
-            _logger.exception("booking_quote unexpected error [%s]", error_ref)
-            return request.render("prema_logistics_booking.portal_booking_error", {
-                "message": _("We couldn't calculate this shipment right now. Please try again or contact us."),
-                "error_ref": error_ref,
-            })
+            # Keep the diagnostic record useful without recording cookies,
+            # tokens, passwords, or the raw POST.  The stable route/movement
+            # shape is enough to correlate a failed quote to its inputs.
+            sanitized_request = {
+                "route_stop_keys": [
+                    stop.get("stop_key") for stop in route_stops
+                    if isinstance(stop, dict)
+                ],
+                "pickup_location_ids": [
+                    stop.get("saved_location_id") for stop in route_stops
+                    if isinstance(stop, dict) and stop.get("stop_type") == "pickup"
+                ],
+                "delivery_location_ids": [
+                    stop.get("saved_location_id") for stop in route_stops
+                    if isinstance(stop, dict) and stop.get("stop_type") == "delivery"
+                ],
+                "pallet_movements": [
+                    {
+                        "key": movement.get("key"),
+                        "pickup_stop_key": movement.get("pickup_stop_key"),
+                        "delivery_stop_keys": movement.get("delivery_stop_keys") or [],
+                        "weight_lbs": movement.get("weight_lbs"),
+                    }
+                    for movement in pallet_movements
+                    if isinstance(movement, dict)
+                ],
+                "pickup_count": len([
+                    stop for stop in route_stops
+                    if isinstance(stop, dict) and stop.get("stop_type") == "pickup"
+                ]),
+                "delivery_count": len([
+                    stop for stop in route_stops
+                    if isinstance(stop, dict) and stop.get("stop_type") == "delivery"
+                ]),
+                "physical_pallets": physical_pallets,
+                "weight_lbs": weight_lbs,
+                "equipment_type": temperature_mode,
+                "required_temperature_c": required_temperature_c,
+                "requested_pickup_date": requested_pickup_date,
+                "departure_id": pickup_departure_id,
+            }
+            _logger.exception(
+                "booking_quote unexpected error [%s] partner=%s user=%s company=%s "
+                "request=%s",
+                error_ref, partner.id, request.env.user.id,
+                request.env.company.id, sanitized_request,
+            )
+            # Re-render Step 2 with the submitted values.  A transient quote
+            # failure must not discard a multi-stop allocation and force the
+            # customer to rebuild the shipment from Step 1.
+            return request.render(
+                "prema_logistics_booking.portal_step2_shipment",
+                _quote_error_context(
+                    kwargs, partner, pickup_fsa, delivery_fsa,
+                    _("We couldn't calculate this shipment right now. "
+                      "Please try again. Reference: %s") % error_ref,
+                ),
+            )
 
         session = request.env["logistics.pricing.session"].sudo().search([
             ("token", "=", quote["quote_token"]),

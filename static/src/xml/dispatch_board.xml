@@ -595,7 +595,7 @@
                              t-att-data-stop-id="stop.id"
                              t-att-data-seq="stop.sequence"
                              t-att-draggable="stop.physical_visit ? 'false' : 'true'"
-                             t-on-dragstart="(ev) => !stop.physical_visit &amp;&amp; this.bspDragStart(ev, stop)"
+                             t-on-dragstart="(ev) => this.bspDragStartIfMovable(ev, stop)"
                              t-on-dragover="(ev) => this.bspDragOver(ev)"
                              t-on-drop="(ev) => this.bspDrop(ev, stop)"
                              t-on-dragend="bspDragEnd"

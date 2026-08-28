@@ -1,5 +1,6 @@
 id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
 access_dispatch_stage_user,dispatch.stage.user,model_prema_dispatch_stage,base.group_user,1,0,0,0
+access_dispatch_stage_driver,dispatch.stage.driver,model_prema_dispatch_stage,group_dispatch_driver,1,0,0,0
 access_dispatch_stage_manager,dispatch.stage.manager,model_prema_dispatch_stage,group_dispatch_manager,1,1,1,1
 access_dispatch_job_user,dispatch.job.user,model_prema_dispatch_job,base.group_user,1,0,0,0
 access_dispatch_job_dispatcher,dispatch.job.dispatcher,model_prema_dispatch_job,group_dispatcher,1,1,1,0

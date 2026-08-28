@@ -707,6 +707,7 @@ class PremaDispatchJob(models.Model):
         link = self.env["prema.dispatch.load.plan.job"].search([("job_id", "=", self.id), ("active", "=", True)], limit=1)
         pickup = self.stop_ids.filtered(lambda s: s.stop_type == "pickup")[:1]
         layout_type = link.load_plan_id.layout_template_id.layout_type if link and link.load_plan_id and link.load_plan_id.layout_template_id else (self.vehicle_id.default_pallet_layout or "straight") if self.vehicle_id else "straight"
+        required_temperature_c = self._driver_required_temperature_c(self)
         return {
             "job_id": self.id, "job_name": self.name, "customer": self.partner_id.name if self.partner_id else "",
             "planned_route_name": self.planned_route_name or "", "planned_route_corridor": self.planned_route_corridor or "",
@@ -719,6 +720,9 @@ class PremaDispatchJob(models.Model):
             "reserved_positions": link.reserved_floor_positions if link else (self.approximate_skids if self.reserve_capacity else 0),
             "confirmed_skids": len(self.item_ids.filtered(lambda i: i.status != "cancelled" and i.consumes_floor_position)) if hasattr(self, "item_ids") else 0,
             "expected_pallet_count": self.expected_pallet_count,
+            "equipment_type": self.equipment_type or "",
+            "requires_reefer": bool(self.requires_reefer),
+            "required_temperature_c": required_temperature_c,
             "reserved_pallet_count": self.reserved_pallet_count,
             "actual_received_pallet_count": self.actual_received_pallet_count,
             "pickup_actuals_confirmed": bool(self.pickup_actuals_confirmed_at),
@@ -3465,6 +3469,29 @@ class PremaDispatchJob(models.Model):
             for att in attachments
         ]
 
+    @api.model
+    def _driver_required_temperature_c(self, job):
+        """Return a trusted numeric setpoint for driver serialization.
+
+        Older dispatch jobs have a Float default of 0.0 while retaining a
+        legacy text requirement.  A zero setpoint is valid, so compare the
+        numeric field with the canonical degree label before emitting it;
+        this prevents an old 15°C job from being serialized as 0°C.
+        """
+        if not job.requires_reefer:
+            return False
+        value = getattr(job, "required_temperature_c", False)
+        label = (job.temp_requirement or "").replace(",", ".")
+        match = re.search(r"[-+]?\d+(?:\.\d+)?", label)
+        if value is False or value is None or not match:
+            return False
+        try:
+            if abs(float(value) - float(match.group(0))) > 0.0001:
+                return False
+        except (TypeError, ValueError):
+            return False
+        return value
+
     def _driver_stop_dict(self, s):
         """Serialize a dispatch stop for the driver app."""
         from odoo.addons.prema_dispatch.models.dispatch_stop import tz_from_longitude_band
@@ -3479,6 +3506,12 @@ class PremaDispatchJob(models.Model):
         if loc and loc.entrance_photo:
             entrance_photo_url = f"/web/image/prema.dispatch.location/{loc.id}/entrance_photo"
         job = s.job_id
+        required_temperature_c = self._driver_required_temperature_c(job)
+        temperature_requirement = (
+            job.temp_requirement
+            if job.requires_reefer and job.temp_requirement
+            else ("Reefer" if job.requires_reefer else "")
+        )
         serialized_freight_items = []
         for item in freight_items:
             origin = item.pickup_stop_id
@@ -3490,9 +3523,10 @@ class PremaDispatchJob(models.Model):
                 "weight_lbs": item.weight_lbs or 0.0,
                 "commodity": item.description or job.commodity or "",
                 "customer_reference": item.item_ref or job.po_number or "",
-                "temperature_requirement": item.temperature_zone
-                    or job.temp_requirement
-                    or ("Reefer" if job.requires_reefer else ""),
+                "temperature_requirement": temperature_requirement,
+                "required_temperature_c": (
+                    required_temperature_c if job.requires_reefer else False
+                ),
                 "status": item.status,
                 "custody": item.current_custody_type,
                 "load_unit_type": item.load_unit_type,
@@ -3584,6 +3618,12 @@ class PremaDispatchJob(models.Model):
             "actual_arrival_time": self._dt_iso_utc(s.actual_arrival_time),
             "actual_departure_time": self._dt_iso_utc(s.actual_departure_time),
             "job_summary": s.job_id._driver_job_summary(),
+            "equipment_type": job.equipment_type or "",
+            "requires_reefer": bool(job.requires_reefer),
+            "required_temperature_c": (
+                required_temperature_c if job.requires_reefer else False
+            ),
+            "temperature_requirement": temperature_requirement,
         }
 
     @api.model
@@ -4469,9 +4509,17 @@ class PremaDispatchJob(models.Model):
         # Sort by scheduled_time then sequence
         stops_out.sort(key=self._serialized_stop_sort_key)
         self._apply_truck_onboard_counts(stops_out)
+        # combined_vehicle_day_stops deliberately returns a plain list so
+        # callers can preserve its deterministic cross-job order.  The
+        # physical-visit serializer has a recordset contract; normalize at
+        # this boundary instead of making it guess between lists and ORM
+        # recordsets (which previously caused ``list.filtered`` here).
+        logical_stop_records = self.env["prema.dispatch.stop"].browse(
+            [stop.id for stop in driver_logical_stops]
+        )
         physical_visits = self.env["prema.dispatch.route.visit"].physical_visits_payload(
-            driver_logical_stops
-        ) if driver_logical_stops else []
+            logical_stop_records
+        ) if logical_stop_records else []
 
         from odoo.addons.prema_dispatch.services.availability_service import DispatchAvailabilityService
         available_transfer_trucks = []

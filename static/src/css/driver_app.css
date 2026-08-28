@@ -53,6 +53,8 @@ body.da-body{margin:0;padding:0;background:#f1f3f5;font-family:-apple-system,Bli
 .da-view-tab{flex:1;padding:10px;border:none;background:none;font-size:13px;font-weight:700;color:#999;cursor:pointer;border-bottom:3px solid transparent}
 .da-view-tab.active{color:#1565C0;border-bottom-color:#1565C0}
 .da-today-summary{display:flex;gap:8px;padding:12px;background:#fff;border-bottom:1px solid #e0e4ea;flex-wrap:wrap}
+.da-special-requirements{flex:0 0 100%;background:#fff4d6;border:1px solid #e8c66a;border-radius:10px;padding:9px 11px;color:#6b4e00;font-size:12px;line-height:1.5}
+.da-special-requirements strong{display:block;font-size:10px;letter-spacing:.05em;margin-bottom:2px}
 .da-sum-card{flex:1;min-width:80px;background:#f5f7fa;border-radius:10px;padding:10px 6px;text-align:center}
 .da-sum-val{font-size:18px;font-weight:800;color:#1a1a2e}
 .da-sum-label{font-size:10px;color:#888;margin-top:2px;text-transform:uppercase;letter-spacing:.03em}
@@ -116,6 +118,7 @@ body.da-body{margin:0;padding:0;background:#f1f3f5;font-family:-apple-system,Bli
 .da-stop-type.pickup{color:#34a853}
 .da-stop-time{font-weight:700;color:#555;text-transform:none;letter-spacing:0}
 .da-detail-time{font-size:12px;color:#555;margin:4px 0}
+.da-reefer-alert{margin:7px 0;padding:9px 10px;border-radius:8px;background:#e6f4ff;border:1px solid #8bc7ef;color:#075985;font-size:13px;font-weight:800}
 .da-est-badge{font-size:10px;color:#8e24aa;font-weight:600}
 .da-stop-name{font-size:14px;font-weight:700;color:#1a1a2e;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .da-stop-addr{font-size:11px;color:#888;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}

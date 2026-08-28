@@ -298,6 +298,18 @@ function applyDay(day) {
     renderLoadPlanChip();
 }
 
+function stopTemperatureRequirement(stop){
+    if(!stop?.requires_reefer && stop?.equipment_type!="reefer" &&
+       !stop?.job_summary?.requires_reefer) return "";
+    const temp=stop.required_temperature_c ?? stop.job_summary?.required_temperature_c;
+    // Do not use truthiness here: 0°C is a valid reefer setpoint.
+    if(temp!==false && temp!==null && temp!==undefined && temp!==""){
+        const n=Number(temp);
+        if(Number.isFinite(n)) return `REEFER — SET TEMPERATURE TO ${n}°C`;
+    }
+    return stop.temperature_requirement || "REEFER — SET TEMPERATURE REQUIRED";
+}
+
 function showViewTab(tab){
     S.viewTab=tab;
     const isHome=tab==="home", isStops=tab==="stops", isMap=tab==="map";
@@ -341,6 +353,10 @@ function renderTodaySummary(){
     const r=S.routeSummary;
     const picks=S.stops.filter(s=>isPickupLikeStop(s.type)).length;
     const dels=S.stops.filter(s=>s.type==="dropoff"||s.type==="return").length;
+    const requirements=[...new Map(S.stops.map(s=>{
+        const req=stopTemperatureRequirement(s);
+        return [s.job_id+"|"+req,req];
+    }).filter(([,req])=>req)).values()];
     // One physical pallet is picked up at one stop and delivered at another —
     // summing per-stop pallets would double-count it.  Count each job's
     // physical pallet count (server sends job_pallets on every stop) once.
@@ -350,7 +366,7 @@ function renderTodaySummary(){
     },0);
     // Spec §9: Jobs / Stops / Pickups / Deliveries / Pallets / Distance /
     // Estimated duration — the compact TODAY'S WORK strip on HOME.
-    el.innerHTML=`
+    el.innerHTML=(requirements.length?`<div class="da-special-requirements"><strong>⚠ SPECIAL REQUIREMENTS</strong>${requirements.map(r=>`<div>${esc(r)}</div>`).join("")}</div>`:"")+`
         <div class="da-sum-card"><div class="da-sum-val">${jobIds.size}</div><div class="da-sum-label">Jobs</div></div>
         <div class="da-sum-card"><div class="da-sum-val">${S.stops.length}</div><div class="da-sum-label">Stops</div></div>
         <div class="da-sum-card"><div class="da-sum-val">${picks}</div><div class="da-sum-label">Pickups</div></div>
@@ -913,7 +929,8 @@ function buildPhysicalVisitRow(visit){
         `${s.booking_number?` · ${esc(s.booking_number)}`:""} · ${s.pallets||0} pallet${s.pallets===1?"":"s"}`+
         `${s.weight_lbs?` · ${esc(String(Math.round(s.weight_lbs)))} lb`:""}`+
         `${s.pop_required?` · POP ${s.pop_count?"✓":"required"}`:""}`+
-        `${s.pod_required?` · POD ${s.pod_count?"✓":"required"}`:""}</div>`).join("");
+        `${s.pod_required?` · POD ${s.pod_count?"✓":"required"}`:""}`+
+        `${s.requires_reefer?` · ${esc(s.temperature_requirement||"REEFER")}`:""}</div>`).join("");
     ct.innerHTML=`<div class="da-stop-type ${pickup?"pickup":""}">${esc(visit.type_label||"Visit")} · <span style="opacity:.7">${stops.length} shipment stop${stops.length===1?"":"s"}</span></div>`+
         `<div class="da-stop-name">${esc(visit.company_name||"Physical visit")}</div>`+
         `<div class="da-stop-addr">${esc(visit.address||"")}</div>`+
@@ -1307,6 +1324,9 @@ function renderStopDetail() {
         `<div class="da-detail-type ${isPickupLikeStop(stop.type)?"pickup":""}">${esc(stopTypeLabel(stop.type))}</div>`+
         `<div class="da-detail-name">${esc(stopCompany(stop))}</div>`+
         `<div class="da-detail-addr">${esc(stop.address)}</div>`+
+        (stopTemperatureRequirement(stop)
+            ? `<div class="da-reefer-alert">❄ ${esc(stopTemperatureRequirement(stop))}</div>`
+            : "")+
         (stop.address_warning?`<div class="da-addr-warn">⚠ ${esc(stop.address_warning)}</div>`:"")+
         (renderStopTimeLine(stop))+
         (!isDone?`<div class="da-sched-edit">🕐 Set scheduled time:

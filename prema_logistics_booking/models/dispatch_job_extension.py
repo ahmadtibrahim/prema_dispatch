@@ -29,6 +29,11 @@ class PremaDispatchJob(models.Model):
         ("custom", "Custom / Expedited"),
     ], default="custom", required=True, copy=False)
     auto_scheduled_ltl = fields.Boolean(default=False, readonly=True, copy=False)
+    required_temperature_c = fields.Float(
+        string="Required Temperature °C", readonly=True, copy=False,
+        help="Frozen numeric reefer setpoint from the logistics booking. "
+             "Zero is a valid setpoint; this field is empty for dry loads.",
+    )
     has_subcontracted_legs = fields.Boolean(
         related="logistics_booking_id.has_subcontracted_legs", readonly=True,
         string="Subcontracted Execution",

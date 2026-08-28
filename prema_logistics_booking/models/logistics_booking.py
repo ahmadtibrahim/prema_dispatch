@@ -1215,7 +1215,17 @@ class LogisticsBooking(models.Model):
             "service_type": "ltl" if self.shipment_type == "ltl" else "ftl",
             "equipment_type": self.temperature_mode,
             "requires_reefer": self.temperature_mode == "reefer",
+            "required_temperature_c": (
+                self.required_temperature_c
+                if self.temperature_mode == "reefer" else False
+            ),
             "requires_liftgate": self.liftgate_pickup or self.liftgate_delivery,
+            "temp_requirement": (
+                f"{self.required_temperature_c:g} °C"
+                if self.temperature_mode == "reefer"
+                and self.required_temperature_c is not None
+                else self.required_temperature or ""
+            ),
             "approximate_skids": self.physical_pallets or self.pallets,
             "planned_delivery_date": fields.Date.to_date(operation_date),
             "pickup_window_type": "flexible",
@@ -1355,8 +1365,15 @@ class LogisticsBooking(models.Model):
             "equipment_type": self.temperature_mode,
             "requires_reefer": self.temperature_mode == "reefer",
             "requires_liftgate": self.liftgate_pickup or self.liftgate_delivery,
-            "temp_requirement": self.required_temperature or (
-                f"{self.required_temperature_c:g} °C" if self.temperature_mode == "reefer" else ""
+            "required_temperature_c": (
+                self.required_temperature_c
+                if self.temperature_mode == "reefer" else False
+            ),
+            "temp_requirement": (
+                f"{self.required_temperature_c:g} °C"
+                if self.temperature_mode == "reefer"
+                and self.required_temperature_c is not None
+                else self.required_temperature or ""
             ),
             "approximate_skids": self.pallets,
             "commodity": self.commodity or "",

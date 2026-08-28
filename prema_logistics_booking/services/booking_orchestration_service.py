@@ -753,12 +753,16 @@ class BookingOrchestrationService:
                 "corridor_id": corridor.id if corridor else None,
                 "shipment_type": normalized_request.load_type,
                 "temperature_mode": normalized_request.equipment_type,
-                # Canonical operational authorities.  The legacy fields are
-                # retained for compatibility, but internal forms/dispatch
-                # matching must not default a portal reefer shipment to dry.
-                "load_type": normalized_request.load_type,
-                "equipment_requirement": normalized_request.equipment_type,
-                "required_temperature_c": normalized_request.required_temperature_c or 0.0,
+                # ``shipment_type`` and ``temperature_mode`` are the actual
+                # fields on logistics.pricing.session.  Do not pass the
+                # booking/dispatch aliases here: they are not fields on the
+                # pricing session model and made every movement_v1 quote
+                # fail before the pricing engine ran.
+                "required_temperature_c": (
+                    normalized_request.required_temperature_c
+                    if normalized_request.required_temperature_c is not None
+                    else 0.0
+                ),
                 "pallets": normalized_request.physical_pallets,  # physical pallets for pricing/capacity
                 "physical_pallets": normalized_request.physical_pallets,
                 "shared_pallet_mode": normalized_request.shared_pallet_mode,
@@ -1030,9 +1034,11 @@ class BookingOrchestrationService:
             "corridor_id": result.corridor.id,
             "shipment_type": normalized_request.load_type,
             "temperature_mode": normalized_request.equipment_type,
-            "load_type": normalized_request.load_type,
-            "equipment_requirement": normalized_request.equipment_type,
-            "required_temperature_c": normalized_request.required_temperature_c or 0.0,
+            "required_temperature_c": (
+                normalized_request.required_temperature_c
+                if normalized_request.required_temperature_c is not None
+                else 0.0
+            ),
             "pallets": normalized_request.physical_pallets,
             "physical_pallets": normalized_request.physical_pallets,
             "shared_pallet_mode": normalized_request.shared_pallet_mode,

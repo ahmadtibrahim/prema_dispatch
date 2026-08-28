@@ -388,6 +388,11 @@ export class DispatchBoard extends Component {
     }
 
     // ── Stops panel drag-to-reorder ──────────────────────────────
+    bspDragStartIfMovable(ev, stop) {
+        if (stop.physical_visit) return;
+        this.bspDragStart(ev, stop);
+    }
+
     bspDragStart(ev, stop) {
         this.state.bspDraggingId = stop.id;
         ev.dataTransfer.setData("stop_id", String(stop.id));
