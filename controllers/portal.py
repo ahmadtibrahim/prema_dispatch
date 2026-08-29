@@ -20,6 +20,18 @@ class DispatchTrackingController(http.Controller):
 
         job = request.env["prema.dispatch.job"].sudo().search(domain, limit=1)
 
+        # §22 audit: unknown/unauthorized tracking numbers previously
+        # rendered the "not found" page with HTTP 200 (soft 404 — wrong
+        # status for crawlers and for the browser cache).  Keep the
+        # branded page but return a real 404.
+        def _not_found():
+            resp = request.render(
+                "prema_dispatch.portal_tracking_not_found",
+                {"tracking_number": tracking_number},
+            )
+            resp.status = 404
+            return resp
+
         if not job:
             booking = request.env["logistics.booking"].sudo().search(
                 [("booking_number", "=", tracking_number)], limit=1,
@@ -27,22 +39,13 @@ class DispatchTrackingController(http.Controller):
             if booking and booking.dispatch_job_id:
                 job = booking.dispatch_job_id
                 if tracking_token and booking.tracking_token != tracking_token:
-                    return request.render(
-                        "prema_dispatch.portal_tracking_not_found",
-                        {"tracking_number": tracking_number},
-                    )
+                    return _not_found()
 
         if not job:
-            return request.render(
-                "prema_dispatch.portal_tracking_not_found",
-                {"tracking_number": tracking_number},
-            )
+            return _not_found()
 
         if not tracking_token and not job.logistics_booking_id:
-            return request.render(
-                "prema_dispatch.portal_tracking_not_found",
-                {"tracking_number": tracking_number},
-            )
+            return _not_found()
 
         events = request.env["prema.dispatch.timeline.event"].sudo().search(
             [("job_id", "=", job.id)], order="occurred_at asc"

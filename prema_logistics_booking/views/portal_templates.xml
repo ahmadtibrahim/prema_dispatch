@@ -109,7 +109,7 @@
                                                    t-esc="b.booking_name or b.booking_number"/>
                                             <small class="text-muted" t-esc="b.booking_number"/>
                                         </div>
-                                        <span t-att-class="'badge ' + ('bg-success' if b.state in ('completed','delivered') else ('bg-secondary' if b.state == 'cancelled' else 'bg-primary'))"
+                                        <span t-att-class="'badge ' + ('badge-dispatch-success' if b.state in ('completed','delivered') else ('bg-secondary' if b.state == 'cancelled' else 'bg-primary'))"
                                               style="font-size:10px"
                                               t-esc="b.customer_status"/>
                                     </div>
@@ -3231,7 +3231,7 @@
                                 <small class="text-muted" t-esc="b.booking_number"/>
                             </td>
                             <td>
-                                <span t-att-class="'badge ' + ('bg-success' if b.state in ('completed','delivered') else ('bg-secondary' if b.state == 'cancelled' else 'bg-primary'))"
+                                <span t-att-class="'badge ' + ('badge-dispatch-success' if b.state in ('completed','delivered') else ('bg-secondary' if b.state == 'cancelled' else 'bg-primary'))"
                                       t-esc="b.customer_status"/>
                             </td>
                             <td>
@@ -3267,7 +3267,7 @@
                     <h2 class="mb-1"><t t-esc="booking.booking_name or booking.booking_number"/></h2>
                     <small class="text-muted" t-esc="booking.booking_number"/>
                 </div>
-                <span t-att-class="'badge fs-6 ' + ('bg-success' if booking.state in ('completed','delivered') else ('bg-secondary' if booking.state == 'cancelled' else 'bg-primary'))"
+                <span t-att-class="'badge fs-6 ' + ('badge-dispatch-success' if booking.state in ('completed','delivered') else ('bg-secondary' if booking.state == 'cancelled' else 'bg-primary'))"
                       t-esc="booking.customer_status"/>
             </div>
 
@@ -3297,7 +3297,7 @@
                                            t-esc="', '.join(part for part in [group['street'], group['city'], group['province_state'], group['postal_zip']] if part)"/>
                                 </div>
                                 <div class="text-end text-nowrap small">
-                                    <span t-if="group['pickups']" class="badge bg-success me-1"
+                                    <span t-if="group['pickups']" class="badge badge-dispatch-success me-1"
                                           t-esc="'%d Pickup%s' % (len(group['pickups']), 's' if len(group['pickups']) > 1 else '')"/>
                                     <span t-if="group['deliveries']" class="badge bg-primary"
                                           t-esc="'%d Deliver%s' % (len(group['deliveries']), 'ies' if len(group['deliveries']) > 1 else 'y')"/>

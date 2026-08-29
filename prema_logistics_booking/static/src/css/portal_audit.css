@@ -1,0 +1,39 @@
+/* §22 responsive/contrast audit fixes (2026-08-29).
+ *
+ * 1. Closed mobile navbar (o_navbar_mobile, an offcanvas translated 100%
+ *    offscreen) still extends the document's scrollable area in Chrome:
+ *    at ~215 CSS px (200% zoom on a 430 px phone) the page gained a real
+ *    horizontal scrollbar to a phantom menu.  display:none while closed
+ *    removes it from layout entirely (the menu still opens/closes, just
+ *    without the slide transition).
+ * 2. Bootstrap 4 $success (#28a745) behind white text is 3.13:1 — below
+ *    WCAG AA.  #1e7e34 (btn-success hover) gives 5.14:1.
+ */
+@media (max-width: 767.98px) {
+    .o_navbar_mobile:not(.show) {
+        display: none !important;
+    }
+}
+
+.badge-dispatch-success {
+    background-color: #1e7e34;
+    color: #fff;
+}
+
+/* 3. Footer contact links (e.g. info@yourcompany.example.com) are single
+ *    unbreakable strings ~254px wide — at 215 CSS px they pushed the whole
+ *    document 54px wide.  Allow wrapping anywhere inside the footer. */
+.o_footer a,
+.o_footer span {
+    overflow-wrap: anywhere;
+}
+
+/* 4. Page headers with a title + action button ("My Bookings" + "Book a
+ *    Shipment") overflowed the 185px content column at 215 CSS px by a few
+ *    px.  Let those header rows wrap instead of pushing the button out. */
+@media (max-width: 575.98px) {
+    .o_page_container .d-flex.justify-content-between {
+        flex-wrap: wrap;
+        gap: .5rem;
+    }
+}
