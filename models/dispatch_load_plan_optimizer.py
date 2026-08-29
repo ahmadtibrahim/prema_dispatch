@@ -31,6 +31,22 @@ class PremaDispatchLoadPlanOptimizer(models.Model):
         future_placements = [p for p in placements if p.get("future")]
         physical = [p for p in placements if not p.get("future")]
         for placement in future_placements:
+            # §5: never reserve truck space for freight whose job is in an
+            # unresolved temperature conflict (confirm_future_pickup_
+            # operation blocks the actual bind as well).
+            job_id = placement.get("job_id") or (
+                self.env["prema.dispatch.item"].browse(
+                    placement.get("item_id")).job_id.id
+                if placement.get("item_id") else False)
+            if job_id:
+                job = self.env["prema.dispatch.job"].browse(job_id)
+                if job.temperature_conflict:
+                    raise UserError(
+                        "Cannot reserve %s: temperature conflict on job %s — "
+                        "authorize an override or remove the incompatible "
+                        "freight before loading."
+                        % (placement.get("position_code") or "position",
+                           job.name))
             self._reserve_future_position(placement)
         if not physical:
             self._log_event(
@@ -66,6 +82,15 @@ class PremaDispatchLoadPlanOptimizer(models.Model):
                 raise UserError("Optimizer recommendation contains freight that is not active on this load plan.")
             if item.pending_future_pickup:
                 raise UserError("Future-pickup freight cannot be positioned before it is physically received.")
+            # §5 safe-engine guard: incompatible reefer ranges onboard must be
+            # authorized (temperature override) or the offending freight
+            # removed BEFORE any pallet of that job is placed on a truck.
+            if item.job_id.temperature_conflict:
+                raise UserError(
+                    "Cannot place %s: temperature conflict on job %s — "
+                    "authorize an override or remove the incompatible "
+                    "freight before loading."
+                    % (item.name, item.job_id.name))
 
             pos = self._get_position(position_id)
             if pos.id in used_target_ids:

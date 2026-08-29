@@ -984,6 +984,18 @@ class PremaDispatchLoadPlan(models.Model):
         })
         self._log_event("stale_cleared")
 
+    def _assert_temperature_safe(self, item):
+        """§5 safe-engine block: freight with an unresolved temperature
+        conflict must not be committed to a truck position. The dispatcher
+        must authorize an override (or remove the incompatible freight)
+        first — the driver is never asked to decide freight safety."""
+        job = item.job_id
+        if job.temperature_conflict:
+            raise UserError(
+                "Cannot place %s: temperature conflict on job %s — "
+                "authorize an override or remove the incompatible "
+                "freight before loading." % (item.name, job.name))
+
     def accept_recommendation(self, recommendation, version=None):
         self.ensure_one()
         self._check_access(require_not_locked=True)
@@ -993,10 +1005,15 @@ class PremaDispatchLoadPlan(models.Model):
                 # Planning commitment for freight not yet picked up: reserve
                 # the proposed position (operation + link count). The item
                 # keeps position_id empty until the pickup actually happens.
+                item = self.env["prema.dispatch.item"].browse(
+                    placement.get("item_id"))
+                if item.exists():
+                    self._assert_temperature_safe(item)
                 self._reserve_future_position(placement)
                 continue
             item = self.env["prema.dispatch.item"].browse(placement["item_id"])
             if item.exists() and item.load_plan_id.id == self.id:
+                self._assert_temperature_safe(item)
                 item.write({"position_id": placement["position_id"]})
         self._log_event("recommendation_accepted", new_value=recommendation)
         self._clear_stale_if_no_blocking()
@@ -1324,6 +1341,7 @@ class PremaDispatchLoadPlan(models.Model):
         if occupant:
             raise UserError(f"Position {pos.position_code} is still occupied by {occupant[0].name}; complete the rehandle steps first.")
         item = self.env["prema.dispatch.item"].browse(item_id)
+        self._assert_temperature_safe(item)
         item.write({"position_id": pos.id, "status": "loaded", "loaded_at": fields.Datetime.now(), "loaded_by": self.env.user.id})
         op.write({"item_id": item.id, "state": "completed", "completed_by": self.env.user.id, "completed_at": fields.Datetime.now()})
         self._set_job_reserved_count(item.job_id.id)

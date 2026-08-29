@@ -319,6 +319,28 @@ class TemperatureEngine:
             "temperature_message": result["message"],
         }
         job.write(vals)
+        # §5: mirror the conflict state onto the source bookings — the
+        # booking's temperature_override_required flag is what blocks route
+        # release at the load-plan layer and tells the dispatcher review
+        # screen that authorization is pending. Cleared as soon as the
+        # engine no longer sees a conflict (apply_override re-persists with
+        # the authorized setpoint; removing the freight also clears).
+        if result["conflict"]:
+            affected = self.env["logistics.booking"].browse({
+                c["booking_id"] for c in result.get("conflict_items", [])
+                if c.get("booking_id")})
+            flagged = affected.filtered(
+                lambda b: not b.temperature_override_required)
+            if flagged:
+                flagged.write({"temperature_override_required": True})
+        else:
+            cleared = self.env["logistics.booking"].browse({
+                self._booking_of(it).id
+                for it in job.item_ids if it.temperature_supplied
+                and self._booking_of(it)}).filtered(
+                    lambda b: b.temperature_override_required)
+            if cleared:
+                cleared.write({"temperature_override_required": False})
         changed = (
             prev[0] != result["state"]
             or prev[1] != result["setpoint_c"]
@@ -435,6 +457,18 @@ class TemperatureEngine:
             "original_requirements_json": json.dumps(orig),
             "state": "applied",
         })
+        # §5: record the authorization on the source bookings (the engine's
+        # next persist clears their override_required flag — the reason,
+        # authorizer and timestamp stay on the booking for the audit trail).
+        bookings = self.env["logistics.booking"].browse({
+            self._booking_of(it).id
+            for it in affected_items if self._booking_of(it)})
+        if bookings:
+            bookings.write({
+                "temperature_override_reason": reason,
+                "temperature_override_user_id": user_id or self.env.uid,
+                "temperature_override_at": fields.Datetime.now(),
+            })
         # The engine's next persist records the new state + timeline.
         state = self.recalc(job)
         job._post_timeline(
