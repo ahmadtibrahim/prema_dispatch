@@ -5,6 +5,7 @@ from . import res_country_state_extension
 # test-data cleanup; model + tables dropped in migrations/18.0.13.25.0.
 from . import logistics_location_customer_access
 from . import prema_dispatch_location_hours
+from . import prema_dispatch_location_hours_wizard
 from . import logistics_direct_delivery_rule
 from . import logistics_region
 from . import logistics_fsa

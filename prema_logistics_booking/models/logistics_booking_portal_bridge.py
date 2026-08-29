@@ -12,17 +12,25 @@ from odoo import models
 class LogisticsBookingPortalBridge(models.Model):
     _inherit = "logistics.booking"
 
-    def _build_confirm_stops_from_session(self, session):
+    def _build_confirm_stops_from_session(self, session, address_vals=None):
         """Build movement_v1 confirmation stops without portal ACL leakage.
 
         Also fixes the historical integer-vs-record mismatch in the facility
         hours snapshot helper: it expects the canonical facility record, not
         its numeric id.
+
+        Mirrors the base method's P1-8 additions: step-3 confirm-form edits
+        (delivery_contact_name_{seq} / phone / dock / instructions) are
+        merged by sequence and hard_deadline round-trips with the stop.
         """
         from ..services.itinerary_planner import snapshot_facility_hours
 
         sudo_env = self.env(su=True)
         session = session.sudo()
+        step3_by_seq = {
+            int(sd.get("sequence") or 0): sd
+            for sd in (address_vals or {}).get("delivery_stops_data") or []
+        }
         pickups, deliveries = [], []
 
         for stop in session.stop_ids.sorted("sequence"):
@@ -87,6 +95,7 @@ class LogisticsBookingPortalBridge(models.Model):
                 "window_start": stop.window_start,
                 "window_end": stop.window_end,
                 "appointment_time": stop.appointment_time,
+                "hard_deadline": stop.hard_deadline or False,
                 "service_time_minutes": stop.service_time_minutes or 15,
                 "timezone": stop.timezone or (acc.timezone if acc else "America/Toronto"),
                 "operating_hours_snapshot": hours_snapshot,
@@ -100,6 +109,18 @@ class LogisticsBookingPortalBridge(models.Model):
             if stop.stop_type == "pickup":
                 pickups.append(values)
             else:
+                step3 = step3_by_seq.get(stop.sequence)
+                if step3:
+                    # Customer's step-3 edits are authoritative over the
+                    # access-row defaults (same precedence as the legacy
+                    # _build_confirm_delivery_stops).
+                    values["contact_name"] = (
+                        step3.get("contact_name") or values["contact_name"])
+                    values["phone"] = step3.get("phone") or values["phone"]
+                    values["instructions"] = (
+                        step3.get("instructions") or values["instructions"])
+                    if step3.get("dock_info"):
+                        values["dock_available"] = True
                 deliveries.append(values)
 
         return pickups, deliveries

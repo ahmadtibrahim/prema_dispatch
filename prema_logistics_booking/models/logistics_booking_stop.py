@@ -1,5 +1,6 @@
 """Multi-stop booking stop — one record per pickup or delivery on a logistics.booking."""
 import math
+from datetime import datetime, time, timedelta
 
 from odoo import api, fields, models
 
@@ -98,16 +99,10 @@ class LogisticsBookingStop(models.Model):
         string="Movement Weight (lbs)", compute="_compute_movement_totals",
         digits=(10, 1),
     )
-    # Timing
-    timing_type = fields.Selection([
-        ("flexible", "Flexible"), ("time_window", "Time Window"),
-        ("exact_appointment", "Exact Appointment"),
-    ], default="flexible", string="Timing")
+    # Legacy duplicate declarations removed (18.0.13.x): timing_type is
+    # declared ONCE above (with the deadline option), requested_service_date
+    # kept here as a historical alias.
     requested_service_date = fields.Date(string="Requested Date")
-    window_start = fields.Float(string="Window Start")
-    window_end = fields.Float(string="Window End")
-    appointment_time = fields.Float(string="Appointment Time")
-    timezone = fields.Char(string="Timezone")
 
     instructions = fields.Text()
 
@@ -157,6 +152,41 @@ class LogisticsBookingStop(models.Model):
              "materially different place from this stop's confirmed "
              "coordinates (Booking 185: United Dairy's pickup was linked "
              "to 'Demo Logistics Customer'). Empty = consistent.")
+
+    def _dispatch_timing_vals(self, day):
+        """Map this booking stop's timing to prema.dispatch.stop timing
+        fields — the single authority used by BOTH the movement_v1 bridge
+        and the legacy _create_dispatch_operation extra-stop copies.
+
+        day: operation date (date) used to combine the 24h-float times.
+        Returns only the fields that apply (time_window_type always).
+        """
+        vals = {"time_window_type": "flexible"}
+        day = day or fields.Date.context_today(self)
+
+        def _combine(hours_float):
+            hours = float(hours_float or 0.0) % 24.0
+            return datetime.combine(day, time(0)) + timedelta(hours=hours)
+
+        if self.timing_type == "time_window" and self.window_start is not None:
+            vals.update({
+                "time_window_type": "window",
+                "earliest_time": _combine(self.window_start),
+                "latest_time": _combine(self.window_end if self.window_end is not None
+                                        else self.window_start),
+            })
+        elif self.timing_type == "exact_appointment" and self.appointment_time is not None:
+            vals.update({
+                "time_window_type": "exact",
+                "exact_time": _combine(self.appointment_time),
+            })
+        elif self.timing_type == "deadline" and self.hard_deadline:
+            vals.update({
+                "time_window_type": "deadline",
+                "deadline_time": self.hard_deadline,
+                "hard_deadline": True,
+            })
+        return vals
 
     @api.depends("saved_location_id.pin_lat", "saved_location_id.pin_lng",
                  "saved_location_id.address", "latitude", "longitude")

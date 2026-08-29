@@ -500,6 +500,7 @@ function startRealTimePoll() {
 async function refreshRouteNow() {
     try {
         const day = await rpc("/dispatch/driver/stops", { date_str:S.selDate });
+        S.refreshStale = false;
         const oldIds = JSON.stringify(S.stops.map(s=>[s.id,s.status,s.sequence]));
         const newIds = JSON.stringify((day.stops||[]).map(s=>[s.id,s.status,s.sequence]));
         if (oldIds !== newIds) {
@@ -512,7 +513,16 @@ async function refreshRouteNow() {
             toast("🔄 Route updated");
             if (S.mapsReady) initRouteMap();
         }
-    } catch(e) {}
+    } catch(e) {
+        // Never silent: after two consecutive failed polls flag the day as
+        // stale so the driver knows the board may be outdated (offline).
+        S.refreshStale = (S.refreshStale||0) + 1;
+        if (S.refreshStale === 2) {
+            S.refreshStale = Infinity;
+            toast("⚠ Connection weak — route may be out of date");
+        }
+        console.warn("Refresh poll failed", e);
+    }
 }
 
 // ── Real-time bus push (truck assign / unassign / stop changes) ────
@@ -1157,7 +1167,7 @@ async function dropStop(targetIdx) {
 // ── Route Map ─────────────────────────────────────────────────────
 function initRouteMap() {
     const el=q("#routeMap"); if(!el||!isMaps())return;
-    el.style.height="200px";
+    // Height comes from CSS (--da-map-height, responsive) — no inline px.
     if(!S.maps.route){
         S.maps.route=new google.maps.Map(el,{
             center:{lat:43.65,lng:-79.38},zoom:10,
@@ -1191,9 +1201,18 @@ function drawStopsOnMap(map,stops,withRoute) {
     });
 
     if(withRoute&&stops.length>=2&&S.dirSvc){
-        const rend=new google.maps.DirectionsRenderer({suppressMarkers:true,
-            polylineOptions:{strokeColor:"#1565C0",strokeWeight:4,strokeOpacity:.85}});
-        rend.setMap(map);
+        // ONE reusable renderer: a fresh DirectionsRenderer per draw was
+        // never disposed, so stale polylines accumulated on the map and
+        // every instance logged the deprecation warning (the constructor
+        // is retired 2026-02-25; kept here until the Routes-API migration).
+        if(!S.routeRenderer){
+            S.routeRenderer=new google.maps.DirectionsRenderer({suppressMarkers:true,
+                polylineOptions:{strokeColor:"#1565C0",strokeWeight:4,strokeOpacity:.85}});
+        }else{
+            S.routeRenderer.setMap(null);
+            S.routeRenderer.setDirections({routes:[]});
+        }
+        S.routeRenderer.setMap(map);
         S.dirSvc.route({
             origin:{lat:stops[0].lat,lng:stops[0].lng},
             destination:{lat:stops[stops.length-1].lat,lng:stops[stops.length-1].lng},
@@ -1201,17 +1220,21 @@ function drawStopsOnMap(map,stops,withRoute) {
             travelMode:google.maps.TravelMode.DRIVING,
             avoidTolls:S.routeOpts.tolls,avoidHighways:S.routeOpts.highways,avoidFerries:S.routeOpts.ferries
         },(r,st)=>{
-            if(st==="OK"){
-                rend.setDirections(r);
-                if(r.routes[0]?.bounds)map.fitBounds(r.routes[0].bounds,30);
-                const legs=r.routes[0]?.legs||[];
-                const driveMin=Math.round(legs.reduce((s,l)=>s+(l.duration?.value||0),0)/60);
-                const km=legs.reduce((s,l)=>s+(l.distance?.value||0),0)/1000;
-                const svcMin=stops.reduce((s,st2)=>s+(st2.service_time_min||15),0);
-                S.routeSummary={driveMin,km,totalMin:driveMin+svcMin};
-                renderTodaySummary();
+            try{
+                if(st==="OK"){
+                    S.routeRenderer.setDirections(r);
+                    if(r.routes[0]?.bounds)map.fitBounds(r.routes[0].bounds,30);
+                    const legs=r.routes[0]?.legs||[];
+                    const driveMin=Math.round(legs.reduce((s,l)=>s+(l.duration?.value||0),0)/60);
+                    const km=legs.reduce((s,l)=>s+(l.distance?.value||0),0)/1000;
+                    const svcMin=stops.reduce((s,st2)=>s+(st2.service_time_min||15),0);
+                    S.routeSummary={driveMin,km,totalMin:driveMin+svcMin};
+                    renderTodaySummary();
+                }else map.fitBounds(bounds,40);
+            }catch(e){
+                // Never let a directions callback failure break the map.
+                map.fitBounds(bounds,40);
             }
-            else map.fitBounds(bounds,40);
         });
     } else if(stops.length){
         map.fitBounds(bounds,40);
@@ -3251,6 +3274,8 @@ function retakeEvidence(stopId,evType,attId,palletId){
         }
         const input=document.querySelector(`.da-evidence-btns[data-stop="${stopId}"][data-evtype="${evType}"] input[type=file]`);
         if(input) input.click();
+    }).catch(e=>{
+        toast((e&&e.message)||"Could not retake — remove failed");
     });
 }
 window.retakeEvidence=retakeEvidence;
@@ -4122,6 +4147,8 @@ function doNavigate(){
         patchStopState(S.stop.id,{status:"en_route"});
         renderStopList();
         if(visibleScreen()==="sStop") renderStopDetail();
+    }).catch(e=>{
+        toast((e&&e.message)||"Could not mark en route — check connection");
     });
 }
 
@@ -4132,6 +4159,9 @@ function stripHtml(html){
 async function doArrived(){
     const stopId=S.stop?.id;
     if(!stopId) return;
+    // Record the pre-transition status so Cancel Arrival / Restore can put
+    // the stop back exactly where it was (pending vs en_route).
+    S.stop._preStatus = S.stop.status;
     let ok;
     if(S.stop?._physical_visit_id){
         try{
@@ -4230,7 +4260,13 @@ async function doComplete(){
 
 async function doRestoreStop(){
     if(!S.stop) return;
-    if(!confirm("Restore this stop back to Pending?"))return;
+    const wasArrived = S.stop.status === "arrived" || !!S.stop.actual_arrival_time;
+    const verb = wasArrived ? "Cancel arrival" : "Restore";
+    if(!confirm(wasArrived
+        ? "Cancel arrival and return this stop to Pending?"
+        : "Restore this stop back to Pending?"))return;
+    // Record where the stop is being restored FROM (for the audit trail).
+    S.stop._restoreFromStatus = S.stop.status;
     const ok=await callStop(S.stop.id,"restore",{});
     if(ok){
         await reloadDay();
@@ -4240,7 +4276,7 @@ async function doRestoreStop(){
         renderStopList();
         renderStopDetail();
         if(S.mapsReady) initStopMap(S.stop);
-        toast("Stop restored");
+        toast(verb + " — stop back to Pending");
     }
 }
 window.doRestoreStop=doRestoreStop;
@@ -4409,7 +4445,14 @@ function advanceNext(){
 }
 
 async function reloadDay(){
-    try{ const d=await rpc("/dispatch/driver/stops",{date_str:S.selDate}); applyDay(d); }catch(e){}
+    try{
+        const d=await rpc("/dispatch/driver/stops",{date_str:S.selDate});
+        applyDay(d);
+        S.refreshStale = false;
+    }catch(e){
+        S.refreshStale = (S.refreshStale||0) + 1;
+        console.warn("reloadDay failed", e);
+    }
 }
 
 async function callStop(id,action,data){

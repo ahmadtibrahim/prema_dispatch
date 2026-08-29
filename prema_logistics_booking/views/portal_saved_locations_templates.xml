@@ -18,6 +18,12 @@
                 </a>
             </div>
 
+            <!-- Post-edit notices (e.g. shared-facility hours not applied) -->
+            <div t-if="notice" class="alert alert-info alert-dismissible fade show" role="alert">
+                <t t-esc="notice"/>
+                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+            </div>
+
             <!-- Filters -->
             <div class="mb-3">
                 <div class="btn-group" role="group">
@@ -201,6 +207,7 @@
                         <input type="text" name="opening_hours" class="form-control"
                                placeholder="e.g. Mon-Fri 8:00-17:00"
                                t-att-value="location.opening_hours if location else ''"/>
+                        <small class="text-muted">Free text — e.g. Mon-Fri 8:00-17:00</small>
                     </div>
                 </div>
                 <div class="mb-3 form-check">
@@ -398,6 +405,8 @@
                             <input type="text" name="opening_hours" class="form-control"
                                    placeholder="e.g. Mon-Fri 8:00-17:00"
                                    t-att-value="location.opening_hours if location else ''"/>
+                            <small class="text-muted">Free-text note — the day-by-day
+                            schedule below is what dispatch uses.</small>
                         </div>
                     </div>
                     <!-- Operating Hours -->

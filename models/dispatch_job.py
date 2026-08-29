@@ -5692,6 +5692,24 @@ class PremaDispatchJob(models.Model):
                         stop.saved_location_id = loc.id
             elif action == "restore":
                 stop.action_restore_stop()
+                # Cancel Arrival on a consolidated physical visit undoes the
+                # WHOLE visit: arrive_physical_visit marked every linked stop
+                # arrived at once, so restore any peer that is still only
+                # "arrived" (no departure yet). Peers with real progress
+                # (completed/issue) or already pending are left untouched —
+                # each peer's own custody gate still applies.
+                for vs in self.env["prema.dispatch.route.visit.stop"].search([
+                        ("stop_id", "=", stop.id), ("active", "=", True)]):
+                    peers = self.env["prema.dispatch.route.visit.stop"].search([
+                        ("route_visit_id", "=", vs.route_visit_id.id),
+                        ("stop_id", "!=", stop.id), ("active", "=", True)]).stop_id
+                    for peer in peers:
+                        if peer.status == "arrived" and not peer.actual_departure_time:
+                            try:
+                                peer.action_restore_stop()
+                            except Exception:
+                                _logger.exception(
+                                    "visit peer restore failed for stop %s", peer.id)
             elif action == "assign_receiving_truck":
                 result = stop.action_assign_receiving_truck(
                     data.get("vehicle_id") or False,

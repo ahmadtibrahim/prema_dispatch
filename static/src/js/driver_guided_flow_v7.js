@@ -682,7 +682,7 @@
                     </div>`;
             } else {
                 cardHtml = `${simplifiedInfo(stop)}<div class="da-v7-state-card arrived"><b>✓ Arrived</b><span>Stop work is now unlocked. The app will guide you one step at a time.</span></div>
-                    <div class="da-v7-stop-actions"><button class="da-v7-btn da-v7-btn-primary" data-v7="open-guide">${stop.type === "pickup" ? "Continue Pickup" : "Continue Delivery"}</button><button class="da-v7-btn da-v7-btn-secondary" data-v7="defer">↪ Come Back Later</button><button class="da-v7-btn da-v7-btn-warning" data-v7="report-problem">⚠ Report a Problem</button></div>`;
+                    <div class="da-v7-stop-actions"><button class="da-v7-btn da-v7-btn-primary" data-v7="open-guide">${stop.type === "pickup" ? "Continue Pickup" : "Continue Delivery"}</button><button class="da-v7-btn da-v7-btn-secondary" data-v7="defer">↪ Come Back Later</button><button class="da-v7-btn da-v7-btn-secondary" data-v7="cancel-arrival">↺ Cancel Arrival</button><button class="da-v7-btn da-v7-btn-warning" data-v7="report-problem">⚠ Report a Problem</button></div>`;
             }
             body.innerHTML = cardHtml;
             if (body.firstElementChild) body.firstElementChild.dataset.v7RenderKey = renderKey;
@@ -791,6 +791,13 @@
         if (action === "continue") return continueGuide();
         if (action === "open-guide") return openGuide(S.stop);
         if (action === "arrive") return arrivalAction();
+        if (action === "cancel-arrival") {
+            // Undo a mistaken arrival (restores this stop — and, server-side,
+            // any consolidated-visit peers still only "arrived").
+            if (guide && $("#oGuidedV7")?.style.display !== "none") closeGuide();
+            if (typeof window.doRestoreStop === "function") return window.doRestoreStop();
+            return tell("Restore unavailable right now");
+        }
         if (action === "defer") return deferCurrentStop();
         if (action === "return-deferred") return returnToDeferred(S.stop);
         if (action === "report-problem") return reportProblem();

@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_location_hours_wizard_form" model="ir.ui.view">
+        <field name="name">prema.dispatch.location.hours.wizard.form</field>
+        <field name="model">prema.dispatch.location.hours.wizard</field>
+        <field name="arch" type="xml">
+            <form string="Bulk Facility Hours">
+                <group>
+                    <group string="Facilities">
+                        <field name="facility_ids" widget="many2many_tags"/>
+                    </group>
+                    <group string="Scope">
+                        <field name="service_scope"/>
+                    </group>
+                </group>
+                <group string="Apply To Days">
+                    <field name="apply_monday"/>
+                    <field name="apply_tuesday"/>
+                    <field name="apply_wednesday"/>
+                    <field name="apply_thursday"/>
+                    <field name="apply_friday"/>
+                    <field name="apply_saturday"/>
+                    <field name="apply_sunday"/>
+                </group>
+                <group string="Schedule Template">
+                    <field name="day_status"/>
+                    <field name="open_time" invisible="day_status != 'custom'"/>
+                    <field name="close_time" invisible="day_status != 'custom'"/>
+                </group>
+                <separator string="Integrity Preview"/>
+                <field name="preview" readonly="1" nolabel="1"/>
+                <footer>
+                    <button name="apply_hours" type="object"
+                            string="Apply Hours" class="btn-primary"/>
+                    <button string="Cancel" class="btn-secondary" special="cancel"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+
+    <record id="action_location_hours_wizard" model="ir.actions.act_window">
+        <field name="name">Bulk Edit Facility Hours</field>
+        <field name="res_model">prema.dispatch.location.hours.wizard</field>
+        <field name="view_mode">form</field>
+        <field name="target">new</field>
+    </record>
+
+    <menuitem id="menu_v4_location_hours_wizard" name="Bulk Edit Facility Hours"
+              parent="menu_v4_locations" action="action_location_hours_wizard" sequence="30"/>
+</odoo>

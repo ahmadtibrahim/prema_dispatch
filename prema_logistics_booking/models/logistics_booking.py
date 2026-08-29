@@ -516,9 +516,13 @@ class LogisticsBooking(models.Model):
     # ── Booking Legs from Route Snapshot ──────────────────────────────
     # ------------------------------------------------------------------
 
-    def _build_confirm_stops_from_session(self, session):
+    def _build_confirm_stops_from_session(self, session, address_vals=None):
         """Build (pickup_stops, delivery_stops) from the ordered session
         stop list for generalized milk-run confirmations.
+
+        Step-3 per-stop edits (delivery_contact_name_{seq} / phone / dock /
+        instructions from the confirm form) are merged by sequence so the
+        movement branch consumes them exactly like the legacy branch does.
 
         Each stop keeps its stable stop_key so pallet movements resolve
         against persistent booking stops. Operating hours are SNAPSHOTTED
@@ -534,6 +538,11 @@ class LogisticsBooking(models.Model):
         )
         from ..services.booking_orchestration_service import BookingOrchestrationService
         canonical_name = BookingOrchestrationService(self.env)._canonical_stop_company_name
+        # Step-3 confirm-form per-stop edits, keyed by sequence.
+        step3_by_seq = {
+            int(sd.get("sequence") or 0): sd
+            for sd in (address_vals or {}).get("delivery_stops_data") or []
+        }
         pickups, deliveries = [], []
         for stop in session.stop_ids.sorted("sequence"):
             acc = stop.customer_access_id
@@ -566,7 +575,9 @@ class LogisticsBooking(models.Model):
                 "contact_name": acc.contact_name if acc else "",
                 "phone": acc.contact_phone if acc else "",
                 "instructions": stop.instructions or "",
-                "pallet_count": stop.pallets or 1,
+                # Step-3 confirm-form edits override the access-row defaults
+                # for delivery stops (mirror of _build_confirm_delivery_stops).
+                "pallet_count": stop.pallets or 0,
                 "weight_lb": stop.weight_lbs or 0.0,
                 # Stop-level requirements — the stop carries them, never
                 # the booking-level legacy flags.
@@ -577,6 +588,7 @@ class LogisticsBooking(models.Model):
                 "window_start": stop.window_start,
                 "window_end": stop.window_end,
                 "appointment_time": stop.appointment_time,
+                "hard_deadline": stop.hard_deadline or False,
                 "service_time_minutes": stop.service_time_minutes or 15,
                 "timezone": stop.timezone or (acc.timezone if acc else "America/Toronto"),
                 # Fresh snapshot at confirmation (spec: freeze current
@@ -590,6 +602,18 @@ class LogisticsBooking(models.Model):
             if stop.stop_type == "pickup":
                 pickups.append(values)
             else:
+                step3 = step3_by_seq.get(stop.sequence)
+                if step3:
+                    # Customer's step-3 edits are authoritative over the
+                    # access-row defaults (same precedence as the legacy
+                    # _build_confirm_delivery_stops).
+                    values["contact_name"] = (
+                        step3.get("contact_name") or values["contact_name"])
+                    values["phone"] = step3.get("phone") or values["phone"]
+                    values["instructions"] = (
+                        step3.get("instructions") or values["instructions"])
+                    if step3.get("dock_info"):
+                        values["dock_available"] = True
                 deliveries.append(values)
         return pickups, deliveries
 
@@ -648,9 +672,27 @@ class LogisticsBooking(models.Model):
                     "phone": sd.get("phone") or (sl.contact_phone if sl else ""),
                     "instructions": sd.get("instructions") or (sl.delivery_instructions if sl else ""),
                     "dock_available": bool(sl.dock_info) if sl else False,
-                    "pallet_count": session_stop.pallets if session_stop else 1,
-                    "weight_lb": session_stop.weight_lbs if session_stop else 500,
-                    "liftgate_required": session.liftgate_delivery or (sl.liftgate_required if sl else False),
+                    "pallet_count": session_stop.pallets if session_stop else 0,
+                    "weight_lb": session_stop.weight_lbs if session_stop else 0.0,
+                    # Stop-level requirement from the session stop (per-stop
+                    # authority), falling back to booking-level legacy flag.
+                    "liftgate_required": (
+                        session_stop.liftgate_required
+                        if session_stop and session_stop.liftgate_required
+                        else session.liftgate_delivery
+                        or (sl.liftgate_required if sl else False)),
+                    "appointment_required": (
+                        session_stop.appointment_required
+                        if session_stop and session_stop.appointment_required
+                        else False),
+                    "timing_type": session_stop.timing_type if session_stop else "flexible",
+                    "window_start": session_stop.window_start if session_stop else False,
+                    "window_end": session_stop.window_end if session_stop else False,
+                    "appointment_time": session_stop.appointment_time if session_stop else False,
+                    "service_time_minutes": (
+                        session_stop.service_time_minutes
+                        if session_stop and session_stop.service_time_minutes
+                        else 15),
                     # CRITICAL: saved_location_id = prema.dispatch.location (master facility)
                     "saved_location_id": dispatch_loc_id,
                     "shared_pallet": bool(session_stop.shared_pallet) if session_stop else False,
@@ -767,7 +809,8 @@ class LogisticsBooking(models.Model):
             # ordered session stop list (stable stop keys, per-stop
             # requirements, operating-hours snapshot re-read from the
             # master saved locations at confirmation).
-            pickup_stops, delivery_stops = self._build_confirm_stops_from_session(session)
+            pickup_stops, delivery_stops = self._build_confirm_stops_from_session(
+                session, address_vals)
         else:
             pickup_stops = [{
                 "company_name": svc._canonical_stop_company_name({
@@ -1262,12 +1305,15 @@ class LogisticsBooking(models.Model):
                 # stop, not from booking-level legacy flags.
                 "requires_liftgate": stop.liftgate_required,
                 "appointment_required": stop.appointment_required,
-                "exact_time": stop.timing_type == "exact_appointment",
                 "service_time_minutes": stop.service_time_minutes or 15,
                 "dispatcher_notes": stop.instructions or "",
                 # Frozen facility hours for time-aware route planning —
                 # master location edits never change this route.
                 "operating_hours_snapshot": stop.operating_hours_snapshot or False,
+                # Timing: single authority mapping (window/exact/deadline
+                # from the booking stop's timing_type — the old line wrote
+                # a BOOLEAN into the Datetime exact_time field).
+                **stop._dispatch_timing_vals(operation_date),
             })
         for pallet in pallets:
             deliveries = pallet.delivery_allocation_ids.filtered("active")
@@ -1400,11 +1446,18 @@ class LogisticsBooking(models.Model):
                 "longitude": origin_stop.longitude,
                 "coordinate_source": "booking_stop",
                 "scheduled_time": scheduled_at,
-                "time_window_type": "flexible",
-                "exact_time": False,
                 "pallets_in": self.pallets,
                 "weight_in_lbs": self.weight_lbs,
                 "dispatcher_notes": origin_stop.instructions or "",
+                # Stop-level requirements + timing thread-through (legacy
+                # path previously hardcoded flexible / dropped everything).
+                "requires_liftgate": origin_stop.liftgate_required,
+                "appointment_required": origin_stop.appointment_required,
+                "service_time_minutes": origin_stop.service_time_minutes or 15,
+                "operating_hours_snapshot": origin_stop.operating_hours_snapshot or False,
+                "tz_name": origin_stop.timezone or "America/Toronto",
+                "pop_required": True,
+                **origin_stop._dispatch_timing_vals(operation_date),
             })
         if destination_stop:
             created_destination = Stop.create({
@@ -1421,11 +1474,16 @@ class LogisticsBooking(models.Model):
                 "longitude": destination_stop.longitude,
                 "coordinate_source": "booking_stop",
                 "scheduled_time": delivery_at,
-                "time_window_type": "flexible",
-                "exact_time": False,
                 "pallets_out": self.pallets,
                 "weight_out_lbs": self.weight_lbs,
                 "dispatcher_notes": destination_stop.instructions or "",
+                "requires_liftgate": destination_stop.liftgate_required,
+                "appointment_required": destination_stop.appointment_required,
+                "service_time_minutes": destination_stop.service_time_minutes or 15,
+                "operating_hours_snapshot": destination_stop.operating_hours_snapshot or False,
+                "tz_name": destination_stop.timezone or "America/Toronto",
+                "pod_required": True,
+                **destination_stop._dispatch_timing_vals(operation_date),
             })
         # ── Create dispatch stops for each delivery (prema.dispatch.stop, NOT logistics.booking.stop) ──
         BStop = self.env["logistics.booking.stop"].sudo()
@@ -1455,6 +1513,13 @@ class LogisticsBooking(models.Model):
                     "pallets_out": bstop.pallet_count,
                     "weight_out_lbs": bstop.weight_lb,
                     "dispatcher_notes": bstop.instructions or "",
+                    "requires_liftgate": bstop.liftgate_required,
+                    "appointment_required": bstop.appointment_required,
+                    "service_time_minutes": bstop.service_time_minutes or 15,
+                    "operating_hours_snapshot": bstop.operating_hours_snapshot or False,
+                    "tz_name": bstop.timezone or "America/Toronto",
+                    "pod_required": True,
+                    **bstop._dispatch_timing_vals(operation_date),
                 })
                 dispatch_delivery_stops |= created_destination
             else:
@@ -1472,11 +1537,16 @@ class LogisticsBooking(models.Model):
                     "longitude": bstop.longitude,
                     "coordinate_source": "booking_stop",
                     "scheduled_time": delivery_at,
-                    "time_window_type": "flexible",
-                    "exact_time": False,
                     "pallets_out": bstop.pallet_count,
                     "weight_out_lbs": bstop.weight_lb,
                     "dispatcher_notes": bstop.instructions or "",
+                    "requires_liftgate": bstop.liftgate_required,
+                    "appointment_required": bstop.appointment_required,
+                    "service_time_minutes": bstop.service_time_minutes or 15,
+                    "operating_hours_snapshot": bstop.operating_hours_snapshot or False,
+                    "tz_name": bstop.timezone or "America/Toronto",
+                    "pod_required": True,
+                    **bstop._dispatch_timing_vals(operation_date),
                 })
                 dispatch_delivery_stops |= extra
 

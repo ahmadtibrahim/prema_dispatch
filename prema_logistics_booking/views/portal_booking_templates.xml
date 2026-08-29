@@ -107,6 +107,18 @@
     </xpath>
 </template>
 
+<template id="portal_my_home_saved_locations" name="Portal My Home: Saved Locations tile"
+          inherit_id="portal.portal_my_home" priority="28">
+    <xpath expr="//div[@id='portal_common_category']" position="before">
+        <div class="o_portal_index_card col-md-6 order-2">
+            <a href="/my/saved-locations" title="Saved Locations" class="d-flex gap-2 gap-md-3 py-3 pe-2 px-md-3 h-100 rounded text-decoration-none bg-100">
+                <div class="d-block align-self-start"><img src="/prema_logistics_booking/static/src/img/portal-saved-locations.svg" alt=""/></div>
+                <div><div class="mt-0 mb-1 fs-5 fw-normal lh-1">Saved Locations</div><div class="opacity-75">Manage your facilities, hours and access</div></div>
+            </a>
+        </div>
+    </xpath>
+</template>
+
 <template id="portal_my_home_where_we_go" name="Portal My Home: Where We Go tile"
           inherit_id="portal.portal_my_home" priority="29">
     <xpath expr="//div[@id='portal_common_category']" position="before">

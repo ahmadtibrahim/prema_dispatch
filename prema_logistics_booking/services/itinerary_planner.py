@@ -26,7 +26,14 @@ WEEKDAY_KEYS = [str(day) for day in range(7)]
 def _snapshot_from_rows(rows, day, scope_chain):
     """Per-day window from structured hours rows: scope-specific rows
     (pickup scope for pickup stops, receiving scope for delivery stops) →
-    general rows → first row. Closed/no row → None."""
+    general rows → first row. Closed/no row → None.
+
+    Split windows (multiple sequence rows on one day+scope) merge into a
+    single open span: [07:00–11:00, 13:00–17:00] → [7.0, 17.0]. A day is
+    thus planned as "open within the span" instead of silently using only
+    the FIRST row (the pre-fix behavior made the second window dead). A
+    closed row anywhere in the day still wins (None); any open_24h row
+    makes the whole day 24h."""
     day_rows = rows.filtered(lambda r, d=day: r.day_of_week == d)
     if not day_rows:
         return None
@@ -37,12 +44,13 @@ def _snapshot_from_rows(rows, day, scope_chain):
             break
     chosen = chosen or day_rows.filtered(lambda r: r.service_scope == "general")
     chosen = chosen or day_rows[:1]
-    row = chosen[0]
-    if row.status == "closed":
+    if any(r.status == "closed" for r in chosen):
         return None
-    if row.status == "open_24h":
+    if any(r.status == "open_24h" for r in chosen):
         return [0.0, 24.0]
-    return [float(row.open_time or 0.0), float(row.close_time or 24.0)]
+    opens = [float(r.open_time or 0.0) for r in chosen]
+    closes = [float(r.close_time or 24.0) for r in chosen]
+    return [min(opens), max(closes)]
 
 
 def snapshot_facility_hours(env, facility, stop_type="pickup"):

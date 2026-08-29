@@ -1626,6 +1626,8 @@ class LogisticsBookingPortal(http.Controller):
                     "longitude": (loc_eff[1] if loc else rs.get("longitude")) or 0.0,
                     "address": (loc.street if loc else rs.get("address")) or "",
                     "city": (loc.city if loc else rs.get("city")) or "",
+                    "state_code": (loc.state_id.code if loc and loc.state_id else "")
+                    or rs.get("province_state") or rs.get("state_code") or "",
                     "pallets": int(rs.get("pallets") or 0),
                     "weight_lbs": float(rs.get("weight_lbs") or 0.0),
                     **(_stop_loc_refs(loc) if loc else {}),
@@ -1645,17 +1647,15 @@ class LogisticsBookingPortal(http.Controller):
                 # carries stable keys and saved-location references; passing
                 # that raw list downstream drops coordinates and yields
                 # NO_PICKUP_REGION for access-row locations.
-                resolved_route_stops.append({
-                    "stop_key": entry["stop_key"],
-                    "stop_type": rs.get("stop_type"),
-                    "saved_location_id": loc.id,
-                    "latitude": entry["latitude"],
-                    "longitude": entry["longitude"],
-                    "postal_code": entry["postal_code"],
-                    "address": entry["address"],
-                    "city": entry["city"],
-                    **_stop_loc_refs(loc),
-                })
+                #
+                # The FULL entry is forwarded (not a coordinate whitelist):
+                # per-stop timing (timing_type/window/appointment), service
+                # time, liftgate/dock/appointment flags and instructions all
+                # thread through to session → booking stops → dispatch stops.
+                # The canonicalizer recomputes pallets/weight from the
+                # pallet_movements and re-verifies ownership, so forwarding
+                # more fields cannot loosen the security boundary.
+                resolved_route_stops.append({**entry, "stop_type": rs.get("stop_type")})
                 if rs.get("stop_type") == "pickup":
                     gen_pickup_stops.append(entry)
                 else:

@@ -3248,15 +3248,46 @@
             </div>
 
             <div class="card mb-3"><div class="card-body">
-            <table class="table table-sm mb-0">
-                <tr><td>Pickup</td><td t-esc="booking.pickup_address"/></tr>
-                <tr><td>Delivery</td><td t-esc="booking.delivery_address"/></tr>
-                <tr><td>Pickup Date</td><td t-esc="booking.pickup_date"/></tr>
-                <tr><td>Est. Delivery</td><td t-esc="booking.estimated_delivery_date"/></tr>
-                <tr><td>Pallets</td><td t-esc="booking.physical_pallets or booking.pallets"/></tr>
-                <tr><td>Weight</td><td t-esc="'%g lb' % booking.weight_lbs"/></tr>
-                <tr><td>Price</td><td><strong>$<t t-esc="'%.2f' % booking.calculated_price"/> CAD</strong></td></tr>
-            </table>
+                <h6 class="text-muted mb-1">Route</h6>
+                <t t-if="booking.stop_ids">
+                    <!-- Multi-stop route timeline (PF-260829-000003: intermediate
+                         stops were invisible; hub-transfer placeholders excluded) -->
+                    <t t-foreach="booking.stop_ids.sorted('sequence')" t-as="stop">
+                        <t t-if="not stop.hub_transfer_stop">
+                            <div t-att-class="'d-flex gap-2 align-items-start py-2' + (' border-top' if stop_index else '')">
+                                <span t-att-class="'badge ' + ('bg-success' if stop.stop_type == 'pickup' else 'bg-primary')"
+                                      t-esc="'P' if stop.stop_type == 'pickup' else 'D'"/>
+                                <div class="flex-grow-1">
+                                    <div class="fw-semibold" t-esc="stop.location_name or stop.company_name or 'Stop'"/>
+                                    <small class="text-muted d-block" t-esc="stop.formatted_address or (stop.street or '')"/>
+                                    <small class="text-muted d-block"
+                                           t-esc="', '.join(part for part in [stop.city, stop.province_state, stop.postal_zip] if part)"/>
+                                    <small t-if="stop.service_date" class="text-muted d-block"
+                                           t-esc="'Date: ' + stop.service_date.strftime('%b %d, %Y')"/>
+                                    <small t-if="stop.requested_time_from or stop.requested_time_to" class="text-muted d-block"
+                                           t-esc="'Window: %02d:%02d–%02d:%02d' % (int(stop.requested_time_from or 0), int(round((stop.requested_time_from % 1) * 60)) if stop.requested_time_from else 0, int(stop.requested_time_to or 0), int(round((stop.requested_time_to % 1) * 60)) if stop.requested_time_to else 0)"/>
+                                    <small t-if="stop.movement_pallet_count" class="text-muted d-block"
+                                           t-esc="'%d pallet(s), %g lb' % (stop.movement_pallet_count, stop.movement_weight_lbs)"/>
+                                </div>
+                            </div>
+                        </t>
+                    </t>
+                </t>
+                <t t-else="">
+                    <table class="table table-sm mb-0">
+                        <tr><td>Pickup</td><td t-esc="booking.pickup_address"/></tr>
+                        <tr><td>Delivery</td><td t-esc="booking.delivery_address"/></tr>
+                    </table>
+                </t>
+            </div></div>
+            <div class="card mb-3"><div class="card-body">
+                <table class="table table-sm mb-0">
+                    <tr><td>Pickup Date</td><td t-esc="booking.pickup_date"/></tr>
+                    <tr><td>Est. Delivery</td><td t-esc="booking.estimated_delivery_date"/></tr>
+                    <tr><td>Pallets</td><td t-esc="booking.physical_pallets or booking.pallets"/></tr>
+                    <tr><td>Weight</td><td t-esc="'%g lb' % booking.weight_lbs"/></tr>
+                    <tr><td>Price</td><td><strong>$<t t-esc="'%.2f' % booking.calculated_price"/> CAD</strong></td></tr>
+                </table>
             </div></div>
 
             <t t-if="booking.state not in ('cancelled', 'completed', 'delivered')">

@@ -463,6 +463,9 @@ class LogisticsSavedLocationsPortal(http.Controller):
                 "close_time": close_t or 24.0,
                 "sequence": 10,
                 "active": True,
+                "source": "portal",
+                "changed_by": request.env.user.id,
+                "changed_at": fields.Datetime.now(),
             })
         facility.write({"hours_review_required": False})
         return True
@@ -509,9 +512,16 @@ class LogisticsSavedLocationsPortal(http.Controller):
 
         locations = Access.search(
             domain, order="is_default_pickup DESC, is_default_delivery DESC, facility_id")
+        notice = ""
+        if kwargs.get("notice") == "hours_skipped":
+            notice = _(
+                "Your operating-hours changes were not saved: this location is "
+                "shared with other customers and the master facility's hours "
+                "remain the authority. Contact dispatch to change them.")
         return request.render("prema_logistics_booking.portal_my_saved_locations", {
             "locations": locations,
             "filter_type": filter_type,
+            "notice": notice,
         })
 
     # ── Add (§10) ──────────────────────────────────────────────────────
@@ -734,6 +744,7 @@ class LogisticsSavedLocationsPortal(http.Controller):
             ])
 
             # §12 — physical edit policy
+            created = False
             identity_changed = self._physical_identity_changed(facility, gv, unit, kwargs)
             if identity_changed:
                 if other_customers == 0:
@@ -774,7 +785,11 @@ class LogisticsSavedLocationsPortal(http.Controller):
             if not kwargs.get("name", "").strip():
                 error = _("Please enter a location name.")
             else:
-                return request.redirect("/my/saved-locations")
+                # Shared-facility hours are discarded (master is authority)
+                # — say so instead of silently dropping the edit.
+                hours_skipped = other_customers > 0 and not (identity_changed and created)
+                suffix = "?notice=hours_skipped" if hours_skipped else ""
+                return request.redirect("/my/saved-locations" + suffix)
 
         states = request.env["res.country.state"].sudo().search([
             ("country_id.code", "=", "CA"),
@@ -857,6 +872,16 @@ class LogisticsSavedLocationsPortal(http.Controller):
                 "pin_lng": gv.get("longitude") or facility.pin_lng,
                 "google_verified": True,
             })
+        # A submitted state/province selection is applied on EVERY physical
+        # write (both google and master sources) — previously it was
+        # display-only on edit (the selection was silently ignored when the
+        # facility was not re-verified against Google).
+        state_id = int(kwargs.get("state_id", 0) or 0) or None
+        if state_id:
+            state = request.env["res.country.state"].sudo().browse(state_id)
+            if state.exists():
+                vals["province_code"] = state.code or vals.get("province_code")
+                vals["country_id"] = state.country_id.id or vals.get("country_id")
         facility.write(vals)
         return facility
 

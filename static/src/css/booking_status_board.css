@@ -37,7 +37,7 @@
 
 /* ── Main table ───────────────────────────────────────────────────── */
 
-.o_bsb_table { display: flex; flex-direction: column; border: 1px solid #3a4258; border-radius: 6px; overflow: hidden; background: #242b3d; }
+.o_bsb_table { display: flex; flex-direction: column; border: 1px solid #3a4258; border-radius: 6px; overflow-x: auto; background: #242b3d; }
 
 .o_bsb_row {
     display: grid;

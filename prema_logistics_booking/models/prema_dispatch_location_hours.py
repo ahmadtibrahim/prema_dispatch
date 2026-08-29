@@ -87,9 +87,26 @@ class PremaDispatchLocationHours(models.Model):
     close_time = fields.Float(string="Close", help="Hours as float (e.g. 17.0 = 17:00)")
     active = fields.Boolean(default=True)
 
+    # Audit trail — who changed what, and from which surface. Every writer
+    # (portal form, bulk editor wizard, consolidation) stamps these.
+    source = fields.Selection([
+        ("backend", "Backend (manual)"),
+        ("portal", "Portal form"),
+        ("wizard", "Bulk editor"),
+        ("migration", "Consolidation/migration"),
+        ("test", "Test fixture"),
+    ], default="backend", string="Source")
+    changed_by = fields.Many2one("res.users", string="Changed By",
+                                 default=lambda self: self.env.user)
+    changed_at = fields.Datetime(string="Changed At",
+                                 default=fields.Datetime.now)
+
     _sql_constraints = [
+        # Partial: deactivated rows are audit tombstones (deactivate+create
+        # writers would otherwise collide with their own history on re-apply).
         ("unique_day_scope_seq",
-         "unique(facility_id, day_of_week, service_scope, sequence)",
+         "unique(facility_id, day_of_week, service_scope, sequence) "
+         "WHERE active = TRUE",
          "Duplicate operating period for this day and scope."),
     ]
 
