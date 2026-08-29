@@ -3327,6 +3327,15 @@ async function runEvidenceUpload(stopId,evType){
         // Spec §16: capture metadata (when/where/device) travels with the
         // file — the burned-in stamp is never the only record.
         const meta={captured_at:new Date().toISOString(), device:(navigator.userAgent||"driver-app").slice(0,120)};
+        // §57/§13: one idempotency key per CAPTURE, kept on the upload
+        // state so retries (and the offline queue) reuse it — the server
+        // replays the same key to its existing row instead of duplicating.
+        if(!st.idemKey){
+            st.idemKey=(window.crypto&&crypto.randomUUID)
+                ? crypto.randomUUID()
+                : String(Date.now())+"-"+Math.random().toString(36).slice(2,10);
+        }
+        meta.idempotency_key=st.idemKey;
         const coords=resolveStampCoords(findStopById(stopId)||S.stop);
         if(coords.lat!==null) meta.lat=coords.lat;
         if(coords.lng!==null) meta.lng=coords.lng;
@@ -3406,6 +3415,9 @@ async function runEvidenceUpload(stopId,evType){
             if(coords.lat!==null) meta.lat=coords.lat;
             if(coords.lng!==null) meta.lng=coords.lng;
             if(evType==="popp" && st.palletId) meta.pallet_id=st.palletId;
+            // Reuse the SAME idempotency key in the offline entry so a
+            // flush that actually committed server-side never duplicates.
+            if(st.idemKey) meta.idempotency_key=st.idemKey;
             const psOff=S.pendingSupersede;
             if(psOff && Number(psOff.stopId)===Number(stopId) && psOff.evType===evType) meta.supersedes_att_id=psOff.attId;
             enqueuePendingEvidence(stopId, evType, lastPayload.filename, lastPayload.data_b64, meta);

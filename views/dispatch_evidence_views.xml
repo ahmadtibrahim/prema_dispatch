@@ -16,10 +16,20 @@
                 <field name="job_id"/>
                 <field name="pallet_id" string="Pallet"/>
                 <field name="evidence_type" widget="badge"/>
+                <field name="upload_state" string="Upload"
+                       widget="badge" optional="hide"
+                       decoration-danger="upload_state == 'failed'"/>
                 <field name="attachment_id" string="File"/>
                 <field name="stop_id" string="Stop"/>
                 <field name="driver_id" string="Captured By"/>
                 <field name="captured_at" string="Captured At"/>
+                <field name="load_plan_id" string="Load Plan" optional="hide"/>
+                <field name="uploaded_at" string="Uploaded At" optional="hide"/>
+                <field name="original_filename" optional="hide"/>
+                <field name="idempotency_key" optional="hide"/>
+                <field name="gps_accuracy_m" string="GPS Accuracy (m)" optional="hide"/>
+                <field name="captured_tz" string="Capture TZ" optional="hide"/>
+                <field name="superseded_by_id" string="Superseded By" optional="hide"/>
                 <field name="lat" string="Lat" optional="hide"/>
                 <field name="lng" string="Lng" optional="hide"/>
                 <field name="device" optional="hide"/>
@@ -39,7 +49,15 @@
                         domain="[('evidence_type', '=', 'popp')]"/>
                 <filter name="f_pop_pod" string="POP / POD / Scans"
                         domain="[('evidence_type', 'in', ('pop_general','pod_general','scanned_pop','scanned_pod','scan_page'))]"/>
-                <filter name="f_pending" string="No GPS"
+                <!-- §13: the old "f_pending / No GPS" filter was mislabeled
+                     (lat=0 is a missing-GPS check, not a pending upload).
+                     Replaced with honest filters; pending/failed rows are
+                     the ones needing a dispatch retry or attention. -->
+                <filter name="f_failed" string="Pending / Failed Uploads"
+                        domain="[('upload_state', '=', 'failed')]"/>
+                <filter name="f_superseded" string="Superseded (Retaken)"
+                        domain="[('superseded_by_id', '!=', False)]"/>
+                <filter name="f_no_gps" string="No GPS"
                         domain="[('lat', '=', 0)]"/>
                 <group expand="0" string="Group By">
                     <filter name="g_job" string="Job" context="{'group_by': 'job_id'}"/>
@@ -60,18 +78,25 @@
                     <group>
                         <group string="Capture">
                             <field name="evidence_type"/>
+                            <field name="upload_state"/>
                             <field name="driver_id" string="Captured By"/>
                             <field name="captured_at" string="Captured At"/>
+                            <field name="uploaded_at" string="Uploaded At"/>
                             <field name="device"/>
                             <field name="lat" string="GPS Latitude"/>
                             <field name="lng" string="GPS Longitude"/>
+                            <field name="gps_accuracy_m" string="GPS Accuracy (m)"/>
+                            <field name="captured_tz" string="Capture TZ"/>
                             <field name="checksum_sha256" string="SHA-256"/>
+                            <field name="original_filename"/>
+                            <field name="idempotency_key"/>
                         </group>
                         <group string="Shipment">
                             <field name="job_id"/>
                             <field name="booking_id"/>
                             <field name="stop_id" string="Stop"/>
                             <field name="pallet_id" string="Pallet"/>
+                            <field name="load_plan_id" string="Load Plan"/>
                             <field name="invoice_id"/>
                         </group>
                     </group>

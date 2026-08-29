@@ -4746,6 +4746,33 @@ class PremaDispatchJob(models.Model):
         is_scan_page = ev_type == "scan"
         is_popp = ev_type == "popp"
 
+        # §57 / §13 idempotency replay: the app stamps every capture with a
+        # client-generated idempotency_key. When the FIRST attempt actually
+        # committed server-side but the driver's network died before the
+        # response arrived, the retry with the same key must return the
+        # existing record — never a second row. A keyed row persisted in the
+        # FAILED state (see the except block below) is RESUMED by the retry.
+        Evidence = self.env["prema.dispatch.evidence"]
+        idem_key = (extra or {}).get("idempotency_key")
+        if idem_key and not is_scan_page:
+            existing = Evidence.sudo().search([
+                ("idempotency_key", "=", idem_key),
+                ("job_id", "=", stop.job_id.id),
+                ("stop_id", "=", stop.id),
+            ], limit=1)
+            if existing:
+                att = existing.attachment_id
+                if existing.upload_state == "failed":
+                    existing.write({"upload_state": "uploaded"})
+                if att and att.exists():
+                    return {
+                        "success": True, "duplicate": True, "replayed": True,
+                        "id": att.id, "name": att.name,
+                        "url": f"/web/content/{att.id}",
+                        "message": "This capture was already received — resumed.",
+                    }
+                existing.write({"upload_state": "failed"})
+
         # POPP (spec §20): pallet-specific proof. The target pallet comes
         # from the app; it must belong to this job's pickup and is capped
         # at 4 photos per physical pallet.
@@ -4937,6 +4964,18 @@ class PremaDispatchJob(models.Model):
             }
         except Exception:
             _logger.exception("driver_add_evidence failed")
+            # §57/§13: the row may have committed before the failure (the
+            # attachment + evidence row are created first; the feed emit /
+            # timeline / invoice copy can still throw). Mark the keyed row
+            # FAILED so the dispatch panel surfaces it and a retry with the
+            # same idempotency_key RESUMES it instead of duplicating.
+            if idem_key:
+                try:
+                    Evidence.sudo().search(
+                        [("idempotency_key", "=", idem_key)],
+                        limit=1).write({"upload_state": "failed"})
+                except Exception:
+                    pass
             return {"success": False, "code": "upload_failed",
                     "error": "Could not save this upload. Please try again."}
 

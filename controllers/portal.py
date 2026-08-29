@@ -118,9 +118,11 @@ class DispatchTrackingController(http.Controller):
         for item in job.item_ids.sorted("sequence"):
             photos = []
             if show_photos:
+                # §13: customers see COMPLETED proof only — failed/pending
+                # rows and superseded (retaken) photos are never listed.
                 popp_evs = Evidence.sudo().search(
-                    [("job_id", "=", job.id), ("evidence_type", "=", "popp"),
-                     ("pallet_id", "=", item.id)],
+                    Evidence._customer_visible_domain(
+                        job=job, evidence_type="popp", pallet_id=item),
                     order="captured_at asc, id asc",
                 )
                 for ev in popp_evs:

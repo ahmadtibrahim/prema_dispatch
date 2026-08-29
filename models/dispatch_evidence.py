@@ -136,6 +136,25 @@ class PremaDispatchEvidence(models.Model):
     ]
 
     @api.model
+    def _customer_visible_domain(self, job=None, evidence_type=None,
+                                 pallet_id=None):
+        """§13: the customer's tracking page shows COMPLETED evidence only —
+        never rows still failed/pending (upload_state) and never
+        superseded (retaken) proof. Superseded rows stay in the audit
+        trail for dispatchers/invoicing; customers only ever see the live
+        capture."""
+        domain = [("upload_state", "=", "uploaded"),
+                  ("superseded_by_id", "=", False)]
+        if job:
+            domain.append(("job_id", "=", getattr(job, "id", job)))
+        if evidence_type:
+            domain.append(("evidence_type", "=", evidence_type))
+        if pallet_id:
+            domain.append(
+                ("pallet_id", "=", getattr(pallet_id, "id", pallet_id)))
+        return domain
+
+    @api.model
     def _create_evidence(self, attachment, stop, ev_type, meta=None):
         """Create the canonical record for an attachment just uploaded by
         a driver. `meta` may carry captured_at / lat / lng / device /

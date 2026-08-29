@@ -14,3 +14,4 @@ from . import test_phase6_reefer_instructions
 from . import test_phase7_driver_home
 from . import test_phase8_live_map
 from . import test_phase12_evidence_relationships
+from . import test_phase13_upload_pipeline
