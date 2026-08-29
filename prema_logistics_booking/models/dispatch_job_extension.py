@@ -394,20 +394,31 @@ class PremaDispatchJob(models.Model):
                 evidence["failed"] += 1
         pallets["popp"] = evidence["popp"]
 
-        # ── reefer instruction (dispatcher-facing, C-first) ─────────
+        # ── reefer instruction (dispatcher-facing, dispatcher's unit) ─
         reefer = None
         if job.requires_reefer and hasattr(job, "temperature_state"):
             state = job.temperature_state or "none"
             if state != "none":
                 setpoint_c = job.temperature_instruction_c
+                # The dispatcher sees the instruction in their own display
+                # unit (res.users.temperature_display_unit), like the
+                # driver sees theirs in the app.
+                f_first = (self.env.user.temperature_display_unit
+                           or "c") == "f"
                 reefer = {
                     "state": state,
                     "conflict": bool(job.temperature_conflict),
                     "instruction": job.temperature_message or "",
-                    "setpoint": format_dual(setpoint_c)
-                        if setpoint_c is not None else "",
+                    # Only on/precool carry a setpoint; the unset-Float
+                    # read-back (stored NULL → 0.0) must never render a
+                    # phantom 0 °C in the off/conflict states.
+                    "setpoint": (
+                        format_dual(setpoint_c, f_first=f_first)
+                        if state in ("on", "precool")
+                        and setpoint_c is not None else ""),
                     "range": range_dual(job.temperature_range_min_c,
-                                        job.temperature_range_max_c) or "",
+                                        job.temperature_range_max_c,
+                                        f_first=f_first) or "",
                     # On a reefer job every onboard pallet is a refrigerated
                     # pallet; the driver's unit counts are authoritative for
                     # loaded freight on reefer stops.
