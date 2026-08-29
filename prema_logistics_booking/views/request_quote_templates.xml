@@ -535,6 +535,14 @@
                 </div></div>
                 <!-- PRIVACY: only THIS booking's own stops — never other
                      customers' stops from the consolidated truck route. -->
+                <t t-set="eta_sources" t-value="{
+                    'scheduled': 'Planned',
+                    'live': 'Live traffic',
+                    'actual': 'Actual progress',
+                    'override': 'Manual override',
+                    'facility_adjusted': 'Facility-hours adjusted',
+                    'provisional': 'Provisional',
+                }"/>
                 <t t-if="stops_display">
                     <div class="card mt-3"><div class="card-body">
                         <strong>Your Route Stops</strong>
@@ -548,9 +556,16 @@
                                     <small class="text-muted d-block">
                                         <t t-esc="stop['status'].replace('_', ' ').title()"/>
                                         <t t-if="stop['eta']"> · ETA <t t-esc="stop['eta']"/></t>
+                                        <t t-if="stop['eta'] and stop['eta_source']"> · <t t-esc="eta_sources.get(stop['eta_source'], stop['eta_source'])"/></t>
+                                        <t t-if="stop['waiting_minutes']"> · Wait <t t-esc="stop['waiting_minutes']"/> min</t>
                                         <t t-if="stop['pop_attached']"> · POP ✓</t>
                                         <t t-if="stop['pod_attached']"> · POD ✓</t>
                                     </small>
+                                    <!-- §15: facility hours absent → the ETA
+                                         is provisional, never a promise. -->
+                                    <t t-if="stop['eta_provisional']">
+                                        <span class="badge bg-warning text-dark mt-1">HOURS NOT VERIFIED — ETA PROVISIONAL</span>
+                                    </t>
                                 </div>
                             </div>
                         </t>

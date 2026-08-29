@@ -317,22 +317,77 @@ class PremaDispatchLocation(models.Model):
              "Wins over history and the operational-class default. "
              "Staff-only — never customer-facing.",
     )
+    # §16 SERVICE-TIME LEARNING (work order): facility-level knobs. Never
+    # customer-facing; the ETA engine reads them through
+    # planning_service_time_minutes() / _appointment_buffer_minutes().
+    appointment_buffer_minutes = fields.Integer(
+        string="Appointment / Check-in Buffer (min)",
+        help="§16: minutes the driver must spend checking in before service "
+             "can begin at this facility. Added ahead of the service start "
+             "in the ETA walk — the truck is on the dock, not yet serving.",
+    )
+    per_pallet_service_minutes = fields.Float(
+        string="Per-Pallet Service (min)",
+        help="§16: optional additional service minutes per pallet "
+             "(pickup → pallets in, delivery → pallets out). Added on top "
+             "of the base service duration in the ETA walk.",
+    )
+    default_pickup_service_minutes = fields.Integer(
+        string="Default Pickup Service (min)",
+        help="§16: this facility's own pickup-service norm — used when "
+             "there is no manual override and fewer than 5 valid history "
+             "samples. Beats the operational-class default.",
+    )
+    default_delivery_service_minutes = fields.Integer(
+        string="Default Delivery Service (min)",
+        help="§16: this facility's own delivery-service norm — used when "
+             "there is no manual override and fewer than 5 valid history "
+             "samples. Beats the operational-class default.",
+    )
+    last_service_time_calculated_at = fields.Datetime(
+        string="Service Time Last Calculated", readonly=True,
+        help="§16: when the historical service-time statistics were last "
+             "recomputed from visit samples.",
+    )
+    service_sample_count = fields.Integer(
+        string="Service Sample Count", readonly=True, default=0,
+        help="§16: number of VALID actual-service samples (departure − "
+             "service start) used in the statistics — corrupt/outlier "
+             "sessions are rejected, not counted.",
+    )
 
-    def planning_service_time_minutes(self):
+    def planning_service_time_minutes(self, stop_type=None):
         """Recommended service duration for this facility (one hierarchy).
 
-        manual override → median dwell / recommended service time (history,
+        manual override → per-type history (pickup → loading average,
+        delivery → unloading average; else overall median/recommended,
         gated to at least 5 samples) → operational-class type default from
         the single ir.config_parameter authority → 15-minute baseline.
-        Returns an int; never raises, never returns 0/None.
-        """
+        Returns an int; never raises, never returns 0/None."""
         self.ensure_one()
         if self.manual_service_time_minutes:
             return max(1, int(self.manual_service_time_minutes))
-        if self.use_count >= 5:
+        # §16 auto-learning gate: the historical statistics feed future
+        # ETAs only while the explicit setting is enabled (default on).
+        # The parameter is the "explicit approved auto-learning setting" —
+        # Dispatch turns it off to freeze planning on declared defaults.
+        if self._auto_learn_enabled() and self.use_count >= 5:
+            # §16: pickup and delivery service differ (a distribution
+            # centre unloads far longer than it loads) — use the per-type
+            # historical average when the stop type is known.
+            if stop_type == "pickup" and self.avg_loading_minutes:
+                return max(1, int(round(self.avg_loading_minutes)))
+            if stop_type == "delivery" and self.avg_unloading_minutes:
+                return max(1, int(round(self.avg_unloading_minutes)))
             hist = self.recommended_service_time_minutes or self.median_dwell_minutes
             if hist and hist > 0:
                 return max(1, int(round(hist)))
+        # §16 per-facility type default (this facility's own norm for the
+        # stop type) — beats the operational-class default.
+        if stop_type == "pickup" and self.default_pickup_service_minutes:
+            return max(1, int(self.default_pickup_service_minutes))
+        if stop_type == "delivery" and self.default_delivery_service_minutes:
+            return max(1, int(self.default_delivery_service_minutes))
         defaults_raw = self.env["ir.config_parameter"].sudo().get_param(
             "prema_dispatch.service_time_defaults", "{}")
         try:
@@ -345,6 +400,13 @@ class PremaDispatchLocation(models.Model):
             if type_default:
                 return max(1, int(type_default))
         return 15
+
+    def _auto_learn_enabled(self):
+        """§16 explicit auto-learning setting (ir.config_parameter) —
+        off disables the historical branch of the service-time hierarchy
+        without touching the manual override or the defaults."""
+        return self.env["ir.config_parameter"].sudo().get_param(
+            "prema_dispatch.service_time_auto_learn", "1") != "0"
 
     effective_service_time_minutes = fields.Integer(
         string="Effective Service Time (min)", readonly=True,
@@ -1355,7 +1417,19 @@ class PremaDispatchLocation(models.Model):
         if arrival and departure:
             total_minutes = (departure - arrival).total_seconds() / 60.0
 
-        unload_minutes = stop.service_time_minutes or None
+        # §16: actual service = actual departure − actual SERVICE START —
+        # never arrival (the driver may have waited for the business to
+        # open; waiting and service must stay separate). Falls back to the
+        # planned duration only when the actual timestamps are missing.
+        # Obvious corrupt/outlier sessions are rejected, not recorded.
+        unload_minutes = None
+        if departure and stop.actual_service_start:
+            service_raw = (departure - stop.actual_service_start
+                           ).total_seconds() / 60.0
+            if 0 <= service_raw <= 720:  # 0..12h — anything else is corrupt
+                unload_minutes = service_raw
+        if unload_minutes is None:
+            unload_minutes = stop.service_time_minutes or None
 
         # Compliance: was the arrival within the requested window/appointment?
         target_time = stop.exact_time or stop.earliest_time or stop.latest_time or stop.scheduled_time
@@ -1471,24 +1545,42 @@ class PremaDispatchLocation(models.Model):
 
     def _recompute_sample_stats(self, stop=None):
         """Median dwell, last-10 dwell average, per-type loading/unloading
-        averages — exact figures over the raw visit-sample table (Phase 6)."""
+        averages — exact figures over the raw visit-sample table (Phase 6).
+
+        §16 robust statistics: median (resilient to outliers), valid-
+        sample gate — corrupt sessions (negative dwell, service outside
+        0..12h) are excluded from every statistic and never counted."""
         self.ensure_one()
         import statistics
         ordered = self.visit_sample_ids.sorted("id")  # chronological
-        dwells = [s.dwell_minutes for s in ordered if s.dwell_minutes]
+
+        def _valid(sample):
+            if sample.dwell_minutes is not None and sample.dwell_minutes < 0:
+                return False
+            if sample.service_minutes and not (0 <= sample.service_minutes <= 720):
+                return False
+            return True
+
+        valid = [s for s in ordered if _valid(s)]
+        dwells = [s.dwell_minutes for s in valid if s.dwell_minutes]
         vals = {}
         if dwells:
             vals["median_dwell_minutes"] = statistics.median(sorted(dwells))
             recent = dwells[-10:]  # most recent 10 samples
             vals["avg_last10_dwell_minutes"] = sum(recent) / len(recent)
-        load_svc = [s.service_minutes for s in ordered
+        load_svc = [s.service_minutes for s in valid
                     if s.is_loading and s.service_minutes]
-        unload_svc = [s.service_minutes for s in ordered
+        unload_svc = [s.service_minutes for s in valid
                       if s.is_unloading and s.service_minutes]
         if load_svc:
             vals["avg_loading_minutes"] = sum(load_svc) / len(load_svc)
         if unload_svc:
             vals["avg_unloading_minutes"] = sum(unload_svc) / len(unload_svc)
+        # §16 sample count / last-calculated — what the statistics actually
+        # used (valid samples only), and when they were recomputed.
+        vals["service_sample_count"] = len(
+            [s for s in valid if s.service_minutes])
+        vals["last_service_time_calculated_at"] = fields.Datetime.now()
         if vals:
             self.write(vals)
 

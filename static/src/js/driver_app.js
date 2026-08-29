@@ -436,7 +436,25 @@ function renderStartWork(){
         </div>`;
         return;
     }
-    card.innerHTML=`<button class="da-startwork-btn" onclick="startWork()">
+    // §17 driver start/hub recommendation: backward-calculated breakdown
+    // (leave home → arrive hub → pre-trip → depart hub → first binding
+    // constraint). Times only — home coordinates never reach the app.
+    let planHtml="";
+    const sp=(S.jobs[0]||{}).start_plan||null;
+    if(sp && sp.depart_hub_at){
+        const pf=(iso)=>iso?fmtStopTime(iso):"";
+        const rows=[];
+        if(sp.leave_home_at) rows.push(`<div class="da-startwork-sub">Leave home by <b>${pf(sp.leave_home_at)}</b></div>`);
+        if(sp.arrive_hub_at) rows.push(`<div class="da-startwork-sub">Arrive hub by <b>${pf(sp.arrive_hub_at)}</b></div>`);
+        if(sp.pretrip_start && sp.pretrip_end) rows.push(`<div class="da-startwork-sub">Pre-trip: <b>${pf(sp.pretrip_start)}–${pf(sp.pretrip_end)}</b></div>`);
+        if(sp.depart_hub_at) rows.push(`<div class="da-startwork-sub">Depart hub <b>${pf(sp.depart_hub_at)}</b></div>`);
+        if(sp.first_eta_at) rows.push(`<div class="da-startwork-sub">First service ETA <b>${pf(sp.first_eta_at)}</b></div>`);
+        if(sp.next_eta_at) rows.push(`<div class="da-startwork-sub">Next service <b>${pf(sp.next_eta_at)}</b></div>`);
+        if(rows.length){
+            planHtml=`<div class="da-startwork-plan" style="margin:6px 0 10px;padding:8px 10px;border-left:3px solid #27ae60;background:#f2f8f3;border-radius:4px">${rows.join("")}</div>`;
+        }
+    }
+    card.innerHTML=`${planHtml}<button class="da-startwork-btn" onclick="startWork()">
         <div class="da-startwork-btn-label">▶ START ROUTE</div>
         <div class="da-startwork-btn-sub">${S.stops.length} stop${S.stops.length===1?"":"s"} · ${S.stops.filter(s=>isPickupLikeStop(s.type)).length} pickup${S.stops.filter(s=>isPickupLikeStop(s.type)).length===1?"":"s"} · ${S.stops.filter(s=>s.type==="dropoff"||s.type==="return").length} deliver${S.stops.filter(s=>s.type==="dropoff"||s.type==="return").length===1?"y":"ies"}</div>
     </button>`;

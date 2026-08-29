@@ -3696,6 +3696,10 @@ class PremaDispatchJob(models.Model):
             "eta_delay_minutes": s.eta_delay_minutes,
             "eta_source": s.eta_source,
             "eta_confidence": s.eta_confidence,
+            # §15 per-stop breakdown: the wait at the door and the opening
+            # it waits for (never promised to the customer as arrival).
+            "waiting_minutes": s.waiting_minutes or 0.0,
+            "facility_opening_at": self._dt_iso_utc(s.facility_opening_at),
             "hours_verified": bool(loc and loc.hours_verified),
             "hours_not_verified": bool(
                 s.operating_hours_snapshot and loc and not loc.hours_verified),
@@ -5337,6 +5341,20 @@ class PremaDispatchJob(models.Model):
             for stop_dict in stops_out:
                 stop_dict["job_id"] = job.id
                 all_stops.append(stop_dict)
+            # §17 start/hub recommendation: the backward-calculated
+            # breakdown (leave home → arrive hub → pre-trip → depart hub →
+            # first constraint). Times only — driver home coordinates are
+            # never serialized anywhere.
+            try:
+                from odoo.addons.prema_logistics_booking.services.eta_engine import (
+                    EtaEngine)
+                start_plan = EtaEngine(self.env).driver_start_plan(job)
+                start_plan = {
+                    k: (v.isoformat() if hasattr(v, "isoformat") else v)
+                    for k, v in start_plan.items()
+                }
+            except Exception:
+                start_plan = {"mode": "depot"}
             result["jobs"].append({
                 "id":      job.id,
                 "name":    job.name,
@@ -5344,6 +5362,7 @@ class PremaDispatchJob(models.Model):
                 "route":   f"{job.pickup_city} → {job.delivery_cities}" if job.pickup_city else job.name,
                 "pallets": job.max_onboard_pallets or job.approximate_skids or 0,
                 "stops":   stops_out,
+                "start_plan": start_plan,
                 "temperature": (
                     job._driver_temperature_payload()
                     if hasattr(job, "_driver_temperature_payload") else {}),

@@ -282,7 +282,22 @@ class PremaDispatchStop(models.Model):
         ("live", "Live"),
         ("actual", "Actual"),
         ("override", "Dispatcher Override"),
+        # §15 ETA taxonomy: facility-hours adjusted (the truck waits at the
+        # door until the facility opens — never promise the raw travel
+        # arrival), and provisional (location hours UNVERIFIED — the
+        # "HOURS NOT VERIFIED — ETA PROVISIONAL" grade).
+        ("facility_adjusted", "Facility-Hours Adjusted"),
+        ("provisional", "Provisional (Hours Unverified)"),
     ], string="ETA Source", default="scheduled", readonly=True)
+    waiting_minutes = fields.Float(
+        string="Waiting (min)", readonly=True,
+        help="Minutes the truck waits at the door before service can begin "
+             "(facility opening / appointment window). Never promised to "
+             "the customer as arrival. §15 unified ETA engine.")
+    facility_opening_at = fields.Datetime(
+        string="Facility Opening", readonly=True,
+        help="The facility opening time the truck waits for — set only "
+             "when the truck arrives before opening (unified ETA engine).")
 
     # ── Unified ETA engine (Section C) — ONE authority ────────────────
     # Written by EtaEngine.compute_job_eta on every schedule change,

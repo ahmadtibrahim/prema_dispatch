@@ -21,10 +21,12 @@ class FleetVehicle(models.Model):
         ("hub", "Hub"),
         ("driver_home", "Driver Home"),
         ("prior_day_end", "Prior-Day End"),
+        ("custom", "Dispatcher Custom (Manual Start)"),
     ], string="Driver Start Mode", default="depot",
         help="Where the truck starts its operational day. Prior-Day End = "
              "last completed stop of the previous run (cross-day "
-             "positioning).")
+             "positioning). Custom = the dispatcher's operational start "
+             "IS the departure — the engine recommends no pre-steps.")
     driver_pretrip_minutes = fields.Integer(
         string="Pre-Trip Inspection (min)", default=10,
         help="Inspection time at the origin before the first leg — used to "
@@ -33,6 +35,21 @@ class FleetVehicle(models.Model):
         string="Home → Hub Drive (min)", default=30,
         help="Estimated drive from the driver's home to the hub/yard — "
              "only relevant when Driver Start Mode = Driver Home.")
+    # ── §17 driver start/hub recommendation inputs ───────────────────
+    # The backward chain: leave home → arrive hub → [hub dwell] →
+    # pre-trip → [departure buffer] → depart hub → travel → first
+    # service start. Dwell/buffer default 0 (no invented slack); a
+    # dispatcher configures them per truck when the yard norms differ.
+    driver_hub_dwell_minutes = fields.Integer(
+        string="Hub Dwell (min)", default=0,
+        help="§17: minutes at the hub between arrival and the pre-trip "
+             "(check-in, paperwork, fuelling). Only relevant when Driver "
+             "Start Mode = Hub or Driver Home.")
+    driver_departure_buffer_minutes = fields.Integer(
+        string="Departure Buffer (min)", default=0,
+        help="§17: safety margin between the end of the pre-trip and the "
+             "actual departure — recommended depart time is pre-trip end "
+             "plus this buffer.")
     # ── Live Map heartbeat (§8) ──────────────────────────────────────
     # Stamped by the driver app's polling loop (throttled server-side to
     # ≥60s); the Live Map truck panel shows it as "App sync" alongside

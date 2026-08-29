@@ -399,13 +399,16 @@ class TestPhase9_10(TransactionCase):
         self.assertEqual(state["state"], "on")
         rows = self._feed("temperature_changed", job=job_a)
         # Earlier transitions are legitimately recorded too (none → precool
-        # when the reefer freight first appeared, severity warning) — the
-        # override's OWN persist is the info-severity "instruction changed"
-        # row carrying the 4°C setpoint.
+        # when the reefer freight first appeared, severity warning). The
+        # freight-change recompute (item → loaded, spec §6) records the
+        # transient A-only instruction (2°C — B's pickup had not departed
+        # yet), and the override's OWN persist is the NEWEST info row,
+        # carrying the 4°C setpoint.
         applied = rows.filtered(lambda r: r.severity == "info")
-        self.assertEqual(len(applied), 1, [
+        self.assertEqual(len(applied), 2, [
             (r.severity, r.message) for r in rows])
         self.assertIn("4°C", applied[0].message)
+        self.assertIn("2°C", applied[1].message)
 
     # ── §9: physical visit → one feed event PER underlying job ──────
 

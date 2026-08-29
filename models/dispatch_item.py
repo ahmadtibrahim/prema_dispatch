@@ -221,6 +221,19 @@ class PremaDispatchItem(models.Model):
         res = super().write(vals)
         for plan in affected_plans:
             plan._mark_stale("Pallet dimensions or weight changed after positioning")
+        # §15 trigger: pallet/freight change → service durations on the
+        # affected route shift (per-pallet service, pallet counts). Same
+        # failure envelope as every other trigger: ETA is advisory.
+        if any(k in vals for k in ("pallet_count", "status")):
+            jobs = self.mapped("job_id").filtered(
+                lambda j: not j.stage_id.is_cancelled)
+            for job in jobs:
+                try:
+                    from odoo.addons.prema_logistics_booking.services.eta_engine import (
+                        EtaEngine)
+                    EtaEngine(self.env).recompute_job(job)
+                except Exception:
+                    pass
         return res
 
     def create(self, vals_list):
@@ -228,6 +241,14 @@ class PremaDispatchItem(models.Model):
         for plan in items.mapped("load_plan_id"):
             plan._mark_stale("Pallet added")
             plan.evaluate_layout_for_capacity()
+        for job in items.mapped("job_id").filtered(
+                lambda j: not j.stage_id.is_cancelled):
+            try:
+                from odoo.addons.prema_logistics_booking.services.eta_engine import (
+                    EtaEngine)
+                EtaEngine(self.env).recompute_job(job)
+            except Exception:
+                pass
         return items
 
     def display_label(self):

@@ -49,6 +49,9 @@ ENGINE_FIELDS = (
     "travel_arrival_at", "facility_service_start_at", "planned_departure_at",
     "customer_eta_at", "actual_service_start", "eta_live",
     "eta_delay_minutes", "eta_source", "eta_confidence",
+    # §15 per-stop breakdown: the wait at the door and the facility
+    # opening it waits for — never promised to the customer as arrival.
+    "waiting_minutes", "facility_opening_at",
 )
 
 # Stop states whose writes must shift downstream ETAs (the recalc guard).
@@ -202,12 +205,19 @@ class EtaEngine:
         if mode == "driver_home":
             if driver and driver.home_latitude and driver.home_longitude:
                 hub_pos = self._hub_position(job, vehicle)
-                leave_home = anchor_dt - timedelta(
-                    minutes=pretrip + home_to_hub)
+                # §17: leave-home = first service start − travel − buffer −
+                # pretrip − dwell − home→hub, via the ONE backward chain.
+                first = job.stop_ids.filtered(
+                    lambda s: not s.planning_only).sorted("sequence")[:1]
+                travel = self._travel_minutes(job, first, hub_pos) \
+                    if first else 0
+                chain = self._start_chain(
+                    vehicle, driver, anchor_dt + timedelta(minutes=travel),
+                    travel, mode)
                 return {
                     "mode": mode, "origin": "driver_home",
                     "position": hub_pos, "anchor": anchor_dt,
-                    "leave_home_at": leave_home,
+                    "leave_home_at": chain["leave_home_at"],
                 }
             # No home coords → fall through to depot.
             mode = "depot"
@@ -289,6 +299,8 @@ class EtaEngine:
                 "eta_delay_minutes": self._delay_minutes(override, stop),
                 "eta_source": "override",
                 "eta_confidence": "high",
+                "waiting_minutes": 0.0,
+                "facility_opening_at": False,
             }
         if stop.status in ("completed", "arrived"):
             actual = stop.actual_arrival_time or anchor_dt
@@ -304,6 +316,8 @@ class EtaEngine:
                 "eta_delay_minutes": self._delay_minutes(actual, stop),
                 "eta_source": "actual",
                 "eta_confidence": "high",
+                "waiting_minutes": 0.0,
+                "facility_opening_at": False,
             }
         if stop.status == "en_route" and (
                 stop.eta_live or stop.facility_service_start_at):
@@ -322,12 +336,22 @@ class EtaEngine:
                 "eta_delay_minutes": self._delay_minutes(held, stop),
                 "eta_source": "live",
                 "eta_confidence": self._confidence(stop, held),
+                "waiting_minutes": stop.waiting_minutes or 0.0,
+                "facility_opening_at": stop.facility_opening_at,
             }
 
         travel = self._travel_minutes(job, stop, position)
         travel_arrival = anchor_dt + timedelta(minutes=travel)
-        feasible, _waiting, service_start, departure = self._arrival_plan(
+        feasible, waiting, service_start, departure = self._arrival_plan(
             stop, travel_arrival)
+        # §16 appointment/check-in buffer: the facility's check-in norm
+        # precedes service (configurable per saved facility). Applied to
+        # the service start — the truck is on the dock (not yet serving).
+        buffer_minutes = self._appointment_buffer_minutes(stop)
+        if buffer_minutes:
+            waiting = (waiting or 0.0) + buffer_minutes
+            service_start = service_start + timedelta(minutes=buffer_minutes)
+            departure = departure + timedelta(minutes=buffer_minutes)
         if not feasible:
             # Facility closed or arrival after close: the estimate still
             # respects hours — never before an opening time. Roll to the
@@ -337,7 +361,23 @@ class EtaEngine:
             departure = service_start + timedelta(
                 minutes=self._service_minutes(stop))
             feasible = True
+        # §15 per-stop breakdown: the opening the truck waits for (set
+        # only when it actually waits) and the waiting minutes — kept
+        # separate from service, never promised as arrival.
+        opening_at = False
+        if waiting and waiting > 0:
+            opening_at = travel_arrival + timedelta(minutes=waiting)
         confidence = self._confidence(stop, service_start)
+        # §15 ETA source taxonomy: planned → facility-hours adjusted (the
+        # truck waits at the door) → provisional (hours unverified).
+        hours_verified = self._hours_verified(stop)
+        if hours_verified and waiting and waiting > 0:
+            eta_source = "facility_adjusted"
+        elif not hours_verified:
+            eta_source = "provisional"
+        else:
+            eta_source = source or (
+                "live" if mode == "locked" else "scheduled")
         return {
             "travel_arrival_at": travel_arrival,
             "facility_service_start_at": service_start,
@@ -345,9 +385,10 @@ class EtaEngine:
             "customer_eta_at": service_start,
             "eta_live": service_start,
             "eta_delay_minutes": self._delay_minutes(service_start, stop),
-            "eta_source": source or (
-                "live" if mode == "locked" else "scheduled"),
+            "eta_source": eta_source,
             "eta_confidence": confidence,
+            "waiting_minutes": round(waiting or 0.0, 1),
+            "facility_opening_at": opening_at,
         }
 
     def _planner_stop(self, stop):
@@ -433,27 +474,186 @@ class EtaEngine:
 
     def _service_minutes(self, stop):
         """Stop service time, else the facility's planning authority
-        (manual → history → class default → 15) — ONE hierarchy."""
+        (manual → per-type history → class default → 15) — ONE hierarchy.
+        §16 optional per-pallet minutes: added on top when the stop's
+        pallet count is known (pickup → pallets in, delivery → pallets
+        out)."""
         if stop.service_time_minutes:
             return max(1, int(stop.service_time_minutes))
         loc = stop.saved_location_id.sudo()
+        minutes = 15
         if loc and hasattr(loc, "planning_service_time_minutes"):
-            return max(1, int(loc.planning_service_time_minutes() or 15))
-        return 15
+            minutes = max(1, int(loc.planning_service_time_minutes(
+                stop_type=stop.stop_type) or 15))
+        if loc and "per_pallet_service_minutes" in loc._fields \
+                and loc.per_pallet_service_minutes:
+            pallets = (stop.pallets_in if stop.stop_type == "pickup"
+                       else stop.pallets_out) or 0
+            minutes += int(round(pallets * loc.per_pallet_service_minutes))
+        return max(1, minutes)
+
+    def _hours_verified(self, stop):
+        """True when the facility's hours are verified (or there is no
+        facility record at all — nothing to verify)."""
+        loc = stop.saved_location_id.sudo()
+        if loc and "hours_verified" in loc._fields:
+            return bool(loc.hours_verified)
+        return True
 
     def _confidence(self, stop, service_start):
         """eta_confidence: high (exact appointment + verified hours),
         medium (hours verified — the wait prediction is trustworthy),
         low (facility hours UNVERIFIED — the 'HOURS NOT VERIFIED' grade)."""
-        loc = stop.saved_location_id.sudo()
-        if loc and "hours_verified" in loc._fields:
-            verified = bool(loc.hours_verified)
-        else:
-            verified = True
+        verified = self._hours_verified(stop)
         exact = stop.time_window_type == "exact" and stop.exact_time
         if exact and verified:
             return "high"
         return "medium" if verified else "low"
+
+    def driver_start_plan(self, job):
+        """§17 DRIVER START/HUB RECOMMENDATION — the human-readable
+        breakdown, calculated BACKWARD from the first binding constraint
+        (the first stop's service start — the moment the truck must be
+        ready at the dock).
+
+        Returns a dict of naive-UTC datetimes (all steps False when they
+        do not apply to the driver's start mode):
+
+          leave_home_at  — "Leave home by"  (driver_home mode only)
+          arrive_hub_at  — "Arrive hub by"
+          pretrip_start  — "Pre-trip:"
+          pretrip_end    — "…–…"
+          depart_hub_at  — "Depart hub"  (the truck leaves the start point)
+          first_eta_at   — first stop's service start (the constraint)
+          next_eta_at    — second stop's service start (the next binding
+                           constraint, e.g. "Terra Freska service 05:00")
+
+        Driver home coordinates are NEVER part of this payload — the
+        breakdown exposes durations and times only (§17 sensitivity).
+        """
+        job = job.sudo()
+        vehicle = job.vehicle_id.sudo()
+        driver = job.driver_id.sudo()
+        pretrip = int(vehicle.driver_pretrip_minutes or 10) if vehicle else 10
+        home_to_hub = int(vehicle.driver_home_to_hub_minutes or 30) \
+            if vehicle else 30
+        mode = vehicle.driver_start_mode or "depot" if vehicle else "depot"
+
+        confirmed = job.stop_ids.filtered(
+            lambda s: not s.planning_only).sorted("sequence")
+        first = confirmed[:1]
+        first_eta = first.customer_eta_at or first.facility_service_start_at \
+            if first else False
+        # The first binding constraint: the first stop's service start.
+        # (Fallback = the dispatcher's operational start, which is the
+        # DEPART moment — no travel subtraction in that case.)
+        anchor = (first_eta
+                  or job.planned_operational_start
+                  or job.recommended_operational_start)
+        next_eta = False
+        if len(confirmed) >= 2:
+            second = confirmed[1]
+            next_eta = (second.customer_eta_at
+                        or second.facility_service_start_at)
+        plan = {
+            "mode": mode,
+            "leave_home_at": False,
+            "arrive_hub_at": False,
+            "pretrip_start": False,
+            "pretrip_end": False,
+            "depart_hub_at": False,
+            "first_eta_at": first_eta,
+            "next_eta_at": next_eta,
+            "home_to_hub_minutes": home_to_hub,
+            "pretrip_minutes": pretrip,
+            "hub_dwell_minutes": int(vehicle.driver_hub_dwell_minutes or 0)
+                if vehicle else 0,
+            "departure_buffer_minutes": int(
+                vehicle.driver_departure_buffer_minutes or 0)
+                if vehicle else 0,
+        }
+        if not anchor:
+            return plan
+        if first_eta:
+            # Engine-computed service start: depart hub = service start −
+            # travel to the first stop (the P-example chain: depart 03:40
+            # for a 04:00 service start with a 20-min drive).
+            if mode == "prior_day_end":
+                origin = self._stop_position(self._prior_day_end(job)) \
+                    or self._depot_position(vehicle)
+            elif mode in ("hub", "driver_home"):
+                origin = self._hub_position(job, vehicle)
+            else:  # depot / truck / custom
+                origin = self._depot_position(vehicle)
+            travel = self._travel_minutes(job, first, origin)
+            chain = self._start_chain(vehicle, driver, anchor, travel, mode)
+        else:
+            # Dispatcher's operational start is the depart moment.
+            chain = {"depart_hub_at": anchor}
+        plan.update({k: v for k, v in chain.items()
+                     if k in ("leave_home_at", "arrive_hub_at",
+                              "pretrip_start", "pretrip_end",
+                              "depart_hub_at")})
+        return plan
+
+    def _start_chain(self, vehicle, driver, service_anchor, travel_minutes,
+                     mode):
+        """§17 ONE backward-calculation chain, shared by the driver-start
+        recommendation and the walk's leave-home time — no divergent
+        algorithms. Backward from the first binding service start:
+
+          depart hub     = service start − travel to first stop
+          pre-trip ends  = depart − departure buffer
+          pre-trip starts = pre-trip end − pretrip
+          arrive hub     = pre-trip start − hub dwell
+          leave home     = arrive hub − home→hub
+
+        "custom": the dispatcher's operational start IS the depart moment
+        — depart at the anchor, no pre-steps to recommend. Returns a dict
+        with False on steps that do not apply to the mode."""
+        pretrip = int(vehicle.driver_pretrip_minutes or 10) if vehicle else 10
+        home_to_hub = int(vehicle.driver_home_to_hub_minutes or 30) \
+            if vehicle else 30
+        dwell = int(vehicle.driver_hub_dwell_minutes or 0) if vehicle else 0
+        buffer = int(vehicle.driver_departure_buffer_minutes or 0) \
+            if vehicle else 0
+        plan = {
+            "leave_home_at": False,
+            "arrive_hub_at": False,
+            "pretrip_start": False,
+            "pretrip_end": False,
+            "depart_hub_at": False,
+        }
+        if mode == "custom":
+            # Dispatcher-owned start: depart at the anchor itself.
+            plan["depart_hub_at"] = service_anchor
+            return plan
+        depart = service_anchor - timedelta(minutes=travel_minutes)
+        plan["depart_hub_at"] = depart
+        pretrip_end = depart - timedelta(minutes=buffer)
+        pretrip_start = pretrip_end - timedelta(minutes=pretrip)
+        if mode in ("hub", "driver_home"):
+            arrive_hub = pretrip_start - timedelta(minutes=dwell)
+            plan["arrive_hub_at"] = arrive_hub
+            plan["pretrip_start"] = pretrip_start
+            plan["pretrip_end"] = pretrip_end
+            if mode == "driver_home" and driver and driver.home_latitude \
+                    and driver.home_longitude:
+                plan["leave_home_at"] = arrive_hub - timedelta(
+                    minutes=home_to_hub)
+        elif mode in ("truck", "depot", "prior_day_end"):
+            plan["pretrip_start"] = pretrip_start
+            plan["pretrip_end"] = pretrip_end
+        return plan
+
+    def _appointment_buffer_minutes(self, stop):
+        """§16 appointment/check-in buffer of the saved facility (0 when
+        unset / no facility). The facility's check-in norm precedes
+        service: the truck is on the dock, not yet serving."""
+        loc = stop.saved_location_id.sudo()
+        if loc and "appointment_buffer_minutes" in loc._fields:
+            return max(0, int(loc.appointment_buffer_minutes or 0))
+        return 0
 
     @staticmethod
     def _delay_minutes(eta, stop):

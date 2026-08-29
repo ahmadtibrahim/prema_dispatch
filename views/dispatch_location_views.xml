@@ -71,6 +71,12 @@
                             <field name="location_type"/>
                             <field name="operational_classification"/>
                             <field name="manual_service_time_minutes"/>
+                            <field name="appointment_buffer_minutes"/>
+                            <field name="per_pallet_service_minutes"/>
+                            <field name="default_pickup_service_minutes"/>
+                            <field name="default_delivery_service_minutes"/>
+                            <field name="service_sample_count" readonly="1"/>
+                            <field name="last_service_time_calculated_at" readonly="1"/>
                             <field name="effective_service_time_minutes" readonly="1"/>
                             <field name="stop_type"/>
                             <field name="usage_type" widget="badge" decoration-success="usage_type == 'both'" decoration-info="usage_type == 'pickup'" decoration-warning="usage_type == 'delivery'" decoration-muted="usage_type == 'unknown'"/>

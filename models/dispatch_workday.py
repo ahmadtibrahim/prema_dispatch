@@ -166,6 +166,16 @@ class DriverWorkday(models.Model):
                 active[0]._emit_feed(
                     "workday_start", driver=self.driver_id,
                     message=f"Driver started work — {self.work_started_at and fields.Datetime.context_timestamp(self, self.work_started_at).strftime('%I:%M %p') or ''}")
+            # §15 trigger: workday begins → the route start is now known —
+            # recompute the forward ETAs (the walk anchors on the first
+            # binding constraint; starting the day locks the profile).
+            for job in active:
+                try:
+                    from odoo.addons.prema_logistics_booking.services.eta_engine import (
+                        EtaEngine)
+                    EtaEngine(self.env).recompute_job(job, source="live")
+                except Exception:
+                    pass
         return self._payload()
 
     def action_end_day(self):

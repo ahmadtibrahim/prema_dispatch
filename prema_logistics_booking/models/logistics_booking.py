@@ -1088,6 +1088,14 @@ class LogisticsBooking(models.Model):
                 # offset — the raw naive-UTC isoformat bug.
                 eta_dt = (twin.customer_eta_at or twin.facility_service_start_at
                           or twin.scheduled_time)
+            # §15: when the facility's hours are unverified the ETA is
+            # provisional — "HOURS NOT VERIFIED — ETA PROVISIONAL" is
+            # rendered on the tracking page, never a false promise.
+            hours_verified = bool(
+                twin and twin.saved_location_id
+                and "hours_verified" in twin.saved_location_id._fields
+                and twin.saved_location_id.hours_verified)
+            eta_provisional = bool(eta_dt and not hours_verified)
             stops_display.append({
                 "name": bstop.company_name or bstop.location_name or "Stop",
                 "city": bstop.city or "",
@@ -1095,6 +1103,10 @@ class LogisticsBooking(models.Model):
                 "status": twin.status if twin else "planned",
                 "eta": self._eta_iso_local(eta_dt, twin) if eta_dt else False,
                 "eta_source": twin.eta_source if twin else False,
+                "eta_provisional": eta_provisional,
+                "waiting_minutes": (
+                    round(twin.waiting_minutes or 0.0)
+                    if twin and twin.waiting_minutes else 0),
                 "sequence": bstop.sequence,
                 "pod_attached": bool(
                     twin.pod_attachment_ids if twin else False),
