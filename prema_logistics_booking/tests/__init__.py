@@ -11,3 +11,4 @@ from . import test_phase11_isolation
 from . import test_phase15_17
 from . import test_phase_temp_canonical
 from . import test_phase6_reefer_instructions
+from . import test_phase7_driver_home

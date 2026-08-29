@@ -4654,6 +4654,30 @@ class PremaDispatchJob(models.Model):
             ("work_date", "=", check_d),
         ], limit=1)
 
+        # §7 jobs array: the day's jobs with their §17 start/hub plan and
+        # §4-§6 temperature blocks. ONLY jobs with at least one stop on
+        # this date (the driver's multi-day window may include jobs whose
+        # stops belong to other days — the app reads S.jobs[0] as the
+        # day's first job and looks jobs up by stop.job_id, so the two
+        # feeds must agree).
+        jobs_payload = []
+        for job in jobs:
+            day_stops = [s for s in job.stop_ids.filtered(
+                lambda st: not st.planning_only)
+                if stop_date_local(s, job) == check_d]
+            if not day_stops:
+                continue
+            jobs_payload.append({
+                "payload": self._driver_job_payload(job),
+                "_first_at": min(
+                    (s.scheduled_time for s in day_stops
+                     if s.scheduled_time), default=None)
+                or job.scheduled_pickup,
+            })
+        jobs_payload.sort(key=lambda jp: (jp["_first_at"] or
+                                          datetime.max))
+        jobs_payload = [jp["payload"] for jp in jobs_payload]
+
         return {
             "date":        check_d.isoformat(),
             "is_today":    check_d == self._user_today(user_tz),
@@ -4674,6 +4698,7 @@ class PremaDispatchJob(models.Model):
                 "summary": None,
             }),
             "stops": stops_out,
+            "jobs": jobs_payload,
             "physical_visits": physical_visits,
         }
 
@@ -5298,6 +5323,44 @@ class PremaDispatchJob(models.Model):
             "today":        today.isoformat(),
         }
 
+    def _driver_job_payload(self, job):
+        """One entry of the app's `jobs` array (§7). Identity + stops +
+        §17 start/hub recommendation + §4-§6 temperature block. Shared by
+        get_driver_today_jobs and get_driver_stops_for_date so the two
+        feeds can never drift apart. Times only — driver home coordinates
+        are never serialized anywhere."""
+        stops_out = [
+            {**self._driver_stop_dict(s), "job_id": job.id}
+            for s in job.stop_ids.filtered(
+                lambda stop: not stop.planning_only).sorted("sequence")
+        ]
+        # §17 start/hub recommendation: backward-calculated breakdown
+        # (leave home → arrive hub → pre-trip → depart hub → first
+        # binding constraint).
+        try:
+            from odoo.addons.prema_logistics_booking.services.eta_engine import (
+                EtaEngine)
+            start_plan = EtaEngine(self.env).driver_start_plan(job)
+            start_plan = {
+                k: (v.isoformat() if hasattr(v, "isoformat") else v)
+                for k, v in start_plan.items()
+            }
+        except Exception:
+            start_plan = {"mode": "depot"}
+        return {
+            "id":      job.id,
+            "name":    job.name,
+            "partner": job.partner_id.name if job.partner_id else "",
+            "route":   f"{job.pickup_city} → {job.delivery_cities}" if job.pickup_city else job.name,
+            "pallets": job.max_onboard_pallets or job.approximate_skids or 0,
+            "stops":   stops_out,
+            "start_plan": start_plan,
+            "temperature": (
+                job._driver_temperature_payload()
+                if hasattr(job, "_driver_temperature_payload") else {}),
+            **job._driver_job_summary(),
+        }
+
     @api.model
     def get_driver_today_jobs(self, date_str=None):
         """Return dispatched jobs for the logged-in driver on a given date (default today).
@@ -5337,37 +5400,9 @@ class PremaDispatchJob(models.Model):
 
         all_stops = []
         for job in jobs:
-            stops_out = [self._driver_stop_dict(s) for s in job.stop_ids.filtered(lambda stop: not stop.planning_only).sorted("sequence")]
-            for stop_dict in stops_out:
-                stop_dict["job_id"] = job.id
-                all_stops.append(stop_dict)
-            # §17 start/hub recommendation: the backward-calculated
-            # breakdown (leave home → arrive hub → pre-trip → depart hub →
-            # first constraint). Times only — driver home coordinates are
-            # never serialized anywhere.
-            try:
-                from odoo.addons.prema_logistics_booking.services.eta_engine import (
-                    EtaEngine)
-                start_plan = EtaEngine(self.env).driver_start_plan(job)
-                start_plan = {
-                    k: (v.isoformat() if hasattr(v, "isoformat") else v)
-                    for k, v in start_plan.items()
-                }
-            except Exception:
-                start_plan = {"mode": "depot"}
-            result["jobs"].append({
-                "id":      job.id,
-                "name":    job.name,
-                "partner": job.partner_id.name if job.partner_id else "",
-                "route":   f"{job.pickup_city} → {job.delivery_cities}" if job.pickup_city else job.name,
-                "pallets": job.max_onboard_pallets or job.approximate_skids or 0,
-                "stops":   stops_out,
-                "start_plan": start_plan,
-                "temperature": (
-                    job._driver_temperature_payload()
-                    if hasattr(job, "_driver_temperature_payload") else {}),
-                **job._driver_job_summary(),
-            })
+            payload = self._driver_job_payload(job)
+            all_stops.extend(payload["stops"])
+            result["jobs"].append(payload)
         self._apply_truck_onboard_counts(all_stops)
 
         return result
