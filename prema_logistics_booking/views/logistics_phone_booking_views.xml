@@ -35,6 +35,12 @@
                             <field name="shipment_type"/>
                             <field name="temperature_mode"/>
                             <field name="required_temperature_c" invisible="temperature_mode != 'reefer'"/>
+                            <field name="submitted_temperature_unit"
+                                   invisible="temperature_mode != 'reefer'"
+                                   string="Temperature Unit"/>
+                            <field name="temperature_display_dual" readonly="1"
+                                   invisible="temperature_mode != 'reefer'"
+                                   string="Equivalent"/>
                         </group>
                     </group>
 

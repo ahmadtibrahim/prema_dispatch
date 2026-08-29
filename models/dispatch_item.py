@@ -183,6 +183,53 @@ class PremaDispatchItem(models.Model):
     temperature_zone = fields.Selection([
         ("ambient", "Ambient"), ("chilled", "Chilled"), ("frozen", "Frozen"), ("multi", "Multi-Zone"),
     ])
+    # ── Canonical temperature snapshot (18-section §3) ─────────────────
+    # Frozen at item creation from the booking pallet / job snapshot.
+    # Celsius only; supplied-flags are the existence checks (0°C valid,
+    # dry items carry nothing).
+    target_temperature_c = fields.Float(string="Target Temperature (°C)")
+    minimum_temperature_c = fields.Float(string="Minimum (°C)")
+    maximum_temperature_c = fields.Float(string="Maximum (°C)")
+    temperature_tolerance_c = fields.Float(string="Tolerance (°C)")
+    temperature_supplied = fields.Boolean(string="Temperature Set")
+    minimum_temperature_supplied = fields.Boolean(string="Minimum Set")
+    maximum_temperature_supplied = fields.Boolean(string="Maximum Set")
+    submitted_temperature_unit = fields.Selection(
+        [("c", "°C"), ("f", "°F")], string="Submitted In", default="c")
+    temperature_requirement_source = fields.Selection(
+        [("customer", "Customer"), ("dispatcher", "Dispatcher"),
+         ("system", "System"), ("legacy", "Legacy (pre-canonical)")],
+        string="Requirement Source", default="customer")
+    temperature_display = fields.Char(
+        string="Temperature", compute="_compute_temperature_display")
+    temperature_range_display = fields.Char(
+        string="Range", compute="_compute_temperature_display")
+
+    @api.depends("target_temperature_c", "temperature_supplied",
+                 "minimum_temperature_c", "maximum_temperature_c",
+                 "minimum_temperature_supplied",
+                 "maximum_temperature_supplied", "temperature_tolerance_c")
+    def _compute_temperature_display(self):
+        try:
+            from odoo.addons.prema_logistics_booking.services.temperature_service import (
+                format_dual, range_dual, validate_range)
+        except ImportError:  # module-load window only
+            for item in self:
+                item.temperature_display = ""
+                item.temperature_range_display = ""
+            return
+        for item in self:
+            item.temperature_display = (
+                format_dual(item.target_temperature_c)
+                if item.temperature_supplied else "")
+            _errors, effective = validate_range(
+                item.target_temperature_c, item.minimum_temperature_c,
+                item.maximum_temperature_c, item.temperature_tolerance_c,
+                target_supplied=item.temperature_supplied,
+                minimum_supplied=item.minimum_temperature_supplied,
+                maximum_supplied=item.maximum_temperature_supplied)
+            item.temperature_range_display = (
+                range_dual(effective[0], effective[1]) if effective else "")
     exception_state = fields.Selection([
         ("none", "None"), ("damaged", "Damaged"), ("shortage", "Shortage"),
         ("overage", "Overage"), ("other", "Other"),
@@ -236,7 +283,49 @@ class PremaDispatchItem(models.Model):
                     pass
         return res
 
+    @api.model_create_multi
     def create(self, vals_list):
+        # ── Canonical temperature snapshot (§3) ───────────────────────
+        # Copy the requirement from the linked booking pallet (fallback:
+        # the job's frozen snapshot) so the physical item row carries the
+        # canonical C-only requirement. Lazy lookups: prema_logistics_
+        # booking's models may not be registered yet during module-load
+        # test runs — skip quietly in that window (no requirement to
+        # copy; the job snapshot covers production paths).
+        for vals in vals_list:
+            if any(k in vals for k in ("target_temperature_c",
+                                       "required_temperature_c")):
+                continue  # explicit intake wins
+            if "logistics_booking_pallet_id" not in self._fields \
+                    or "logistics.booking.pallet" not in self.env.registry.models:
+                continue
+            pallet = self.env["logistics.booking.pallet"].browse(
+                vals.get("logistics_booking_pallet_id"))
+            source = pallet if pallet and pallet.temperature_supplied else False
+            if not source:
+                job = self.env["prema.dispatch.job"].browse(vals.get("job_id"))
+                if job and job.temperature_supplied:
+                    source = job
+            if not source:
+                continue
+            # Pallet carries target_temperature_c; the job's canonical
+            # target IS its legacy required_temperature_c (no mirror).
+            target = getattr(source, "target_temperature_c", None)
+            if target is None:
+                target = source.required_temperature_c
+            vals["target_temperature_c"] = target
+            vals["minimum_temperature_c"] = source.minimum_temperature_c
+            vals["maximum_temperature_c"] = source.maximum_temperature_c
+            vals["temperature_tolerance_c"] = source.temperature_tolerance_c
+            vals["temperature_supplied"] = source.temperature_supplied
+            vals["minimum_temperature_supplied"] = (
+                source.minimum_temperature_supplied)
+            vals["maximum_temperature_supplied"] = (
+                source.maximum_temperature_supplied)
+            vals["submitted_temperature_unit"] = (
+                source.submitted_temperature_unit or "c")
+            vals["temperature_requirement_source"] = (
+                source.temperature_requirement_source or "customer")
         items = super().create(vals_list)
         for plan in items.mapped("load_plan_id"):
             plan._mark_stale("Pallet added")

@@ -32,7 +32,8 @@ class LogisticsRecurringAgreement(models.Model):
     _name = "logistics.recurring.agreement"
     _description = "Recurring Shipment Agreement"
     _order = "create_date desc"
-    _inherit = ["mail.thread", "mail.activity.mixin"]
+    _inherit = ["mail.thread", "mail.activity.mixin",
+                "logistics.temperature.mixin"]
 
     name = fields.Char(compute="_compute_name", store=True)
     partner_id = fields.Many2one("res.partner", string="Customer", required=True, index=True, tracking=True)
@@ -158,6 +159,7 @@ class LogisticsRecurringJob(models.Model):
     _name = "logistics.recurring.job"
     _description = "Recurring Agreement Job"
     _order = "agreement_id, sequence, id"
+    _inherit = ["logistics.temperature.mixin"]
 
     agreement_id = fields.Many2one(
         "logistics.recurring.agreement", required=True, ondelete="cascade", index=True,

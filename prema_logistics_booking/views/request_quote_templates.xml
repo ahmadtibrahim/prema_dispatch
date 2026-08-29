@@ -144,6 +144,17 @@
                                 var isReefer = sel.value === 'reefer';
                                 row.style.display = isReefer ? '' : 'none';
                                 if (input) { input.required = isReefer; }
+                                if (!isReefer) {
+                                    // Dry-clear: never submit a stale requirement
+                                    // that was typed while Reefer was selected.
+                                    if (input) { input.value = ''; }
+                                    var unitSel = document.getElementById('required_temperature_unit');
+                                    if (unitSel) { unitSel.value = 'c'; }
+                                    var dual = document.getElementById('required_temperature_dual');
+                                    if (dual) {
+                                        dual.textContent = 'Required for Reefer shipments. 0°C / 32°F is a valid setting.';
+                                    }
+                                }
                             }
                         }
                     </script>

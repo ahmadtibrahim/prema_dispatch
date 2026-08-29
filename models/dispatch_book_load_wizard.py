@@ -27,7 +27,9 @@ class PremaDispatchBookLoadWizard(models.TransientModel):
         "prema.dispatch.location",
         domain="[('active','=',True), '|', ('partner_id','=',partner_id), ('partner_id','=',False)]",
     )
-    required_temperature_c = fields.Float(string="Required Temperature °C")
+    required_temperature_c = fields.Float(string="Required Temperature")
+    submitted_temperature_unit = fields.Selection(
+        [("c", "°C"), ("f", "°F")], string="Temperature Unit", default="c")
     temperature_confirmed = fields.Boolean(string="Temperature Confirmed")
     customer_reference = fields.Char()
     purchase_order = fields.Char()
@@ -100,7 +102,8 @@ class PremaDispatchBookLoadWizard(models.TransientModel):
             "weight_lbs": self.total_weight_lbs,
             "load_type": "ltl" if self.service_type == "ltl" else "ftl",
             "equipment_type": "reefer" if self.equipment_type == "reefer" else "dry",
-            "required_temperature_c": self.required_temperature_c if self.equipment_type == "reefer" else None,
+            "required_temperature_c": self._canonical_required_temperature(),
+            "submitted_temperature_unit": self.submitted_temperature_unit or "c",
             "commodity": self.commodity or "",
             "po_number": self.purchase_order or "",
             "bol_number": self.bol_reference or "",
@@ -119,3 +122,16 @@ class PremaDispatchBookLoadWizard(models.TransientModel):
             "res_model": "logistics.booking", "res_id": booking.id,
             "view_mode": "form", "target": "current",
         }
+
+    def _canonical_required_temperature(self):
+        """Reefer requirement converted to canonical Celsius (0°C survives);
+        None for dry — dry bookings never carry a temperature."""
+        if self.equipment_type != "reefer":
+            return None
+        try:
+            from odoo.addons.prema_logistics_booking.services.temperature_service import (
+                parse_temperature)
+        except ImportError:  # prema_logistics_booking not loaded yet
+            return self.required_temperature_c or None
+        return parse_temperature(
+            self.required_temperature_c, unit=self.submitted_temperature_unit or "c")

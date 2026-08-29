@@ -30,6 +30,78 @@ class LogisticsBookingPallet(models.Model):
     weight_lbs = fields.Float(string="Weight (lbs)", digits=(10, 1))
     commodity = fields.Char()
     temperature_notes = fields.Char(string="Temperature Requirement")
+    # ── Canonical temperature snapshot (18-section §3) ─────────────────
+    # Frozen from the booking at pallet creation so the pallet row itself
+    # carries the requirement (Driver App, evidence, invoice trail). C only;
+    # supplied-flags are the sanctioned existence checks (0°C valid).
+    target_temperature_c = fields.Float(string="Target Temperature (°C)")
+    minimum_temperature_c = fields.Float(string="Minimum (°C)")
+    maximum_temperature_c = fields.Float(string="Maximum (°C)")
+    temperature_tolerance_c = fields.Float(string="Tolerance (°C)")
+    temperature_supplied = fields.Boolean(string="Temperature Set")
+    minimum_temperature_supplied = fields.Boolean(string="Minimum Set")
+    maximum_temperature_supplied = fields.Boolean(string="Maximum Set")
+    submitted_temperature_unit = fields.Selection(
+        [("c", "°C"), ("f", "°F")], string="Submitted In", default="c")
+    temperature_requirement_source = fields.Selection(
+        [("customer", "Customer"), ("dispatcher", "Dispatcher"),
+         ("system", "System"), ("legacy", "Legacy (pre-canonical)")],
+        string="Requirement Source", default="customer")
+    temperature_display = fields.Char(
+        string="Temperature", compute="_compute_temperature_display")
+    temperature_range_display = fields.Char(
+        string="Range", compute="_compute_temperature_display")
+
+    @api.model_create_multi
+    def create(self, vals_list):
+        for vals in vals_list:
+            booking = self.env["logistics.booking"].browse(
+                vals.get("booking_id"))
+            if booking and not any(k in vals for k in (
+                    "target_temperature_c", "required_temperature_c")):
+                vals["target_temperature_c"] = (
+                    booking.target_temperature_c
+                    if booking.temperature_supplied else False)
+                vals["minimum_temperature_c"] = (
+                    booking.minimum_temperature_c
+                    if booking.minimum_temperature_supplied else False)
+                vals["maximum_temperature_c"] = (
+                    booking.maximum_temperature_c
+                    if booking.maximum_temperature_supplied else False)
+                vals["temperature_tolerance_c"] = (
+                    booking.temperature_tolerance_c
+                    if booking.temperature_supplied else False)
+                vals["temperature_supplied"] = booking.temperature_supplied
+                vals["minimum_temperature_supplied"] = (
+                    booking.minimum_temperature_supplied)
+                vals["maximum_temperature_supplied"] = (
+                    booking.maximum_temperature_supplied)
+                vals["submitted_temperature_unit"] = (
+                    booking.submitted_temperature_unit or "c")
+                vals["temperature_requirement_source"] = (
+                    booking.temperature_requirement_source or "customer")
+        return super().create(vals_list)
+
+    @api.depends("target_temperature_c", "temperature_supplied",
+                 "minimum_temperature_c", "maximum_temperature_c",
+                 "minimum_temperature_supplied",
+                 "maximum_temperature_supplied", "temperature_tolerance_c")
+    def _compute_temperature_display(self):
+        from ..services.temperature_service import (
+            format_dual, range_dual, validate_range)
+        for pallet in self:
+            pallet.temperature_display = (
+                format_dual(pallet.target_temperature_c)
+                if pallet.temperature_supplied else "")
+            _errors, effective = validate_range(
+                pallet.target_temperature_c, pallet.minimum_temperature_c,
+                pallet.maximum_temperature_c, pallet.temperature_tolerance_c,
+                target_supplied=pallet.temperature_supplied,
+                minimum_supplied=pallet.minimum_temperature_supplied,
+                maximum_supplied=pallet.maximum_temperature_supplied)
+            pallet.temperature_range_display = (
+                range_dual(effective[0], effective[1]) if effective else "")
+
     shared = fields.Boolean(string="Shared Pallet", default=False)
     pickup_stop_id = fields.Many2one(
         "logistics.booking.stop", string="Pickup Stop", required=True,

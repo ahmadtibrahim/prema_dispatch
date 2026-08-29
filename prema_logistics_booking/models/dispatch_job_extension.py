@@ -34,6 +34,51 @@ class PremaDispatchJob(models.Model):
         help="Frozen numeric reefer setpoint from the logistics booking. "
              "Zero is a valid setpoint; this field is empty for dry loads.",
     )
+    # ── Canonical requirement snapshot (18-section work order §3) ──────
+    # Frozen at booking→job creation so the Driver App, customer tracking
+    # and invoice evidence never have to chase the booking. Celsius only;
+    # the supplied-flags are the sanctioned existence checks (0°C valid,
+    # dry carries nothing).
+    minimum_temperature_c = fields.Float(
+        string="Minimum (°C)", readonly=True, copy=False)
+    maximum_temperature_c = fields.Float(
+        string="Maximum (°C)", readonly=True, copy=False)
+    temperature_tolerance_c = fields.Float(
+        string="Tolerance (°C)", readonly=True, copy=False)
+    temperature_supplied = fields.Boolean(
+        string="Temperature Set", readonly=True, copy=False)
+    minimum_temperature_supplied = fields.Boolean(
+        string="Minimum Set", readonly=True, copy=False)
+    maximum_temperature_supplied = fields.Boolean(
+        string="Maximum Set", readonly=True, copy=False)
+    submitted_temperature_unit = fields.Selection(
+        [("c", "°C"), ("f", "°F")], string="Submitted In", readonly=True,
+        copy=False, default="c")
+    temperature_requirement_source = fields.Selection(
+        [("customer", "Customer"), ("dispatcher", "Dispatcher"),
+         ("system", "System"), ("legacy", "Legacy (pre-canonical)")],
+        string="Requirement Source", readonly=True, copy=False,
+        default="customer")
+    temperature_display_dual = fields.Char(
+        string="Temperature", compute="_compute_temperature_display_dual",
+        help="Both-units display for dispatcher panels (C-first).")
+    temperature_range_display_dual = fields.Char(
+        string="Safe Range", compute="_compute_temperature_display_dual")
+
+    @api.depends("temperature_instruction_c", "temperature_supplied",
+                 "temperature_range_min_c", "temperature_range_max_c")
+    def _compute_temperature_display_dual(self):
+        from ..services.temperature_service import format_dual, range_dual
+        for job in self:
+            job.temperature_display_dual = (
+                format_dual(job.temperature_instruction_c)
+                if job.temperature_supplied else "")
+            if job.temperature_range_min_c is not None \
+                    and job.temperature_range_max_c is not None:
+                job.temperature_range_display_dual = range_dual(
+                    job.temperature_range_min_c, job.temperature_range_max_c)
+            else:
+                job.temperature_range_display_dual = ""
     # ── Dynamic reefer state (18-section work order §5-§6) ─────────────
     # Written ONLY by TemperatureEngine.recalc() — never edited by hand.
     temperature_state = fields.Selection([

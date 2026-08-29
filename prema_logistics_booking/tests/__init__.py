@@ -9,3 +9,4 @@ from . import test_phase4_temperature
 from . import test_phase9_10
 from . import test_phase11_isolation
 from . import test_phase15_17
+from . import test_phase_temp_canonical

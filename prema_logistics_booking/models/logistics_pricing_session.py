@@ -49,6 +49,7 @@ class LogisticsPricingSession(models.TransientModel):
 
     _name = "logistics.pricing.session"
     _description = "Short-lived, server-authoritative freight price + schedule result"
+    _inherit = ["logistics.temperature.mixin"]
 
     token = fields.Char(default=lambda self: uuid.uuid4().hex, index=True, required=True, copy=False)
     partner_id = fields.Many2one("res.partner", required=True, index=True)

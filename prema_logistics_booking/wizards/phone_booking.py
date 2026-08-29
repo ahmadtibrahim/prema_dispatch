@@ -64,10 +64,40 @@ class LogisticsPhoneBooking(models.TransientModel):
     weight_lbs = fields.Float(string="Weight (lbs)", default=750.0)
     temperature_mode = fields.Selection(TEMP_MODES, default="reefer", required=True)
     required_temperature_c = fields.Float(
-        string="Required Temperature °C",
+        string="Required Temperature",
         default=15.0,
         help="Required for Reefer bookings. 0°C is a valid value.",
     )
+    submitted_temperature_unit = fields.Selection(
+        [("c", "°C"), ("f", "°F")], string="Unit", default="c",
+        help="Unit the dispatcher typed the temperature in. Storage is "
+             "canonical Celsius — the value is converted once at intake.")
+    temperature_display_dual = fields.Char(
+        string="Temperature", compute="_compute_temperature_display_dual")
+
+    @api.depends("required_temperature_c", "temperature_mode",
+                 "submitted_temperature_unit")
+    def _compute_temperature_display_dual(self):
+        from ..services.temperature_service import parse_temperature, format_dual
+        for rec in self:
+            if rec.temperature_mode != "reefer":
+                rec.temperature_display_dual = ""
+                continue
+            celsius = parse_temperature(
+                rec.required_temperature_c,
+                unit=rec.submitted_temperature_unit or "c")
+            rec.temperature_display_dual = (
+                format_dual(celsius) if celsius is not None else "")
+
+    def _canonical_required_temperature(self):
+        """Convert the wizard's typed value to canonical Celsius (or None
+        for non-reefer). 0°C survives as 0.0."""
+        if self.temperature_mode != "reefer":
+            return None
+        from ..services.temperature_service import parse_temperature
+        return parse_temperature(
+            self.required_temperature_c,
+            unit=self.submitted_temperature_unit or "c")
     # Kept for compatibility with existing transient rows/views from older
     # versions. The phone flow no longer needs a separate confirmation box;
     # the canonical service validates the numeric temperature itself.
@@ -242,11 +272,9 @@ class LogisticsPhoneBooking(models.TransientModel):
             "weight_lbs": self.weight_lbs,
             "load_type": self.shipment_type,
             "equipment_type": self.temperature_mode,
-            "required_temperature_c": (
-                self.required_temperature_c
-                if self.temperature_mode == "reefer"
-                else None
-            ),
+            "required_temperature_c": self._canonical_required_temperature(),
+            "submitted_temperature_unit": self.submitted_temperature_unit
+                or "c",
             "requested_pickup_date": self.requested_pickup_date or None,
             "pricing_method": "corridor",
             "transfer_allowed": self.shipment_type != "ftl",
@@ -276,9 +304,7 @@ class LogisticsPhoneBooking(models.TransientModel):
             "pallets": self.pallets,
             "weight_lbs": self.weight_lbs,
             "temperature_mode": self.temperature_mode,
-            "required_temperature_c": (
-                self.required_temperature_c if self.temperature_mode == "reefer" else None
-            ),
+            "required_temperature_c": self._canonical_required_temperature(),
             "load_type": self.shipment_type,
             "requested_pickup_date": session.pickup_date or self.requested_pickup_date,
             # quoted_price is the FINAL customer-facing price; the system

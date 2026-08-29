@@ -1482,6 +1482,34 @@ class LogisticsBooking(models.Model):
                 self.required_temperature_c
                 if self.temperature_mode == "reefer" else False
             ),
+            "minimum_temperature_c": (
+                self.minimum_temperature_c
+                if self.temperature_mode == "reefer"
+                and self.minimum_temperature_supplied else False
+            ),
+            "maximum_temperature_c": (
+                self.maximum_temperature_c
+                if self.temperature_mode == "reefer"
+                and self.maximum_temperature_supplied else False
+            ),
+            "temperature_tolerance_c": (
+                self.temperature_tolerance_c
+                if self.temperature_mode == "reefer"
+                and self.temperature_supplied else False
+            ),
+            "temperature_supplied": (
+                self.temperature_mode == "reefer"
+                and self.temperature_supplied),
+            "minimum_temperature_supplied": (
+                self.temperature_mode == "reefer"
+                and self.minimum_temperature_supplied),
+            "maximum_temperature_supplied": (
+                self.temperature_mode == "reefer"
+                and self.maximum_temperature_supplied),
+            "submitted_temperature_unit": (
+                self.submitted_temperature_unit or "c"),
+            "temperature_requirement_source": (
+                self.temperature_requirement_source or "customer"),
             "requires_liftgate": self.liftgate_pickup or self.liftgate_delivery,
             "temp_requirement": (
                 f"{self.required_temperature_c:g} °C"
@@ -1635,6 +1663,34 @@ class LogisticsBooking(models.Model):
                 self.required_temperature_c
                 if self.temperature_mode == "reefer" else False
             ),
+            "minimum_temperature_c": (
+                self.minimum_temperature_c
+                if self.temperature_mode == "reefer"
+                and self.minimum_temperature_supplied else False
+            ),
+            "maximum_temperature_c": (
+                self.maximum_temperature_c
+                if self.temperature_mode == "reefer"
+                and self.maximum_temperature_supplied else False
+            ),
+            "temperature_tolerance_c": (
+                self.temperature_tolerance_c
+                if self.temperature_mode == "reefer"
+                and self.temperature_supplied else False
+            ),
+            "temperature_supplied": (
+                self.temperature_mode == "reefer"
+                and self.temperature_supplied),
+            "minimum_temperature_supplied": (
+                self.temperature_mode == "reefer"
+                and self.minimum_temperature_supplied),
+            "maximum_temperature_supplied": (
+                self.temperature_mode == "reefer"
+                and self.maximum_temperature_supplied),
+            "submitted_temperature_unit": (
+                self.submitted_temperature_unit or "c"),
+            "temperature_requirement_source": (
+                self.temperature_requirement_source or "customer"),
             "temp_requirement": (
                 f"{self.required_temperature_c:g} °C"
                 if self.temperature_mode == "reefer"

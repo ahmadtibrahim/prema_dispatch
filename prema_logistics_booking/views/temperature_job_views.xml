@@ -10,6 +10,12 @@
         <field name="inherit_id" ref="prema_dispatch.view_dispatch_job_form"/>
         <field name="arch" type="xml">
             <xpath expr="//field[@name='temp_requirement']" position="after">
+                <field name="temperature_display_dual" readonly="1"
+                       string="Requirement (dual-unit)"
+                       invisible="not temperature_supplied"/>
+                <field name="temperature_range_display_dual" readonly="1"
+                       string="Safe Range (dual-unit)"
+                       invisible="not temperature_supplied"/>
                 <field name="temperature_state"
                        readonly="1"
                        invisible="temperature_state in ('none', False)"/>

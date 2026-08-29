@@ -17,7 +17,8 @@ class LogisticsCustomQuote(models.Model):
     _name = "logistics.custom.quote"
     _description = "Custom Quote Request"
     _order = "create_date desc"
-    _inherit = ["mail.thread", "mail.activity.mixin"]
+    _inherit = ["mail.thread", "mail.activity.mixin",
+                "logistics.temperature.mixin"]
 
     name = fields.Char(string="Quote #", readonly=True, copy=False, default="New")
     partner_id = fields.Many2one("res.partner", string="Customer", index=True)

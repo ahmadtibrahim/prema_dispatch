@@ -375,7 +375,7 @@ class LogisticsWeeklyPlanReservation(models.Model):
     _name = "logistics.weekly.plan.reservation"
     _description = "Weekly Plan Recurring Card (one occurrence)"
     _order = "plan_date, id"
-    _inherit = ["mail.thread"]
+    _inherit = ["mail.thread", "logistics.temperature.mixin"]
 
     plan_id = fields.Many2one("logistics.weekly.plan", required=True,
                               ondelete="cascade", index=True)

@@ -1,3 +1,4 @@
+from . import logistics_temperature_mixin
 from . import res_country_extension
 from . import res_country_state_extension
 # logistics_saved_location / logistics_saved_location_hours RETIRED in

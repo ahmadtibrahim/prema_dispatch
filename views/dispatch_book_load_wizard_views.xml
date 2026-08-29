@@ -18,6 +18,9 @@
                             <field name="service_type"/>
                             <field name="equipment_type"/>
                             <field name="required_temperature_c" invisible="equipment_type != 'reefer'"/>
+                            <field name="submitted_temperature_unit"
+                                   invisible="equipment_type != 'reefer'"
+                                   string="Temperature Unit"/>
                             <field name="temperature_confirmed" invisible="equipment_type != 'reefer'"/>
                             <field name="requires_liftgate"/>
                             <field name="expected_skids"/>

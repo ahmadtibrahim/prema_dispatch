@@ -125,6 +125,23 @@
                                 <field name="equipment_requirement" readonly="1"/>
                                 <field name="shipment_type" readonly="1" string="Type (Legacy)"/>
                                 <field name="temperature_mode" readonly="1" string="Temp (Legacy)"/>
+                                <field name="temperature_display" readonly="1"
+                                       string="Temperature (dual-unit)"
+                                       invisible="not temperature_supplied"/>
+                                <field name="temperature_range_display" readonly="1"
+                                       string="Safe Range (dual-unit)"
+                                       invisible="not temperature_supplied"/>
+                                <field name="temperature_supplied" readonly="1"/>
+                                <field name="target_temperature_c" string="Target (°C)"
+                                       invisible="not temperature_supplied"/>
+                                <field name="minimum_temperature_c" string="Min (°C)"
+                                       invisible="not minimum_temperature_supplied"/>
+                                <field name="maximum_temperature_c" string="Max (°C)"
+                                       invisible="not maximum_temperature_supplied"/>
+                                <field name="temperature_tolerance_c" string="Tolerance (±°C)"
+                                       invisible="not temperature_supplied"/>
+                                <field name="submitted_temperature_unit" string="Submitted In"/>
+                                <field name="temperature_requirement_source"/>
                                 <field name="pallets" readonly="1"/>
                                 <field name="weight_lbs" readonly="1"/>
                                 <field name="liftgate_pickup" readonly="1"/>

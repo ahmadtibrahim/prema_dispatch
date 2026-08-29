@@ -23,6 +23,7 @@ by `recalc()` whenever a trigger fires.
 """
 
 import json
+import logging
 from datetime import timedelta
 
 from odoo import fields
@@ -31,6 +32,8 @@ from ..services.temperature_service import (
     format_dual,
     range_dual,
 )
+
+_logger = logging.getLogger(__name__)
 
 # Item statuses that mean "physically on the truck right now" (or in
 # transit). Pending-future-pickup items are NOT onboard; delivered and
@@ -281,6 +284,16 @@ class TemperatureEngine:
 
     def _active_override(self, job):
         """Latest APPLIED override for this job (applied = driver-facing)."""
+        # Partial-registry window: module-load test runs build prema_dispatch's
+        # graph before prema_logistics_booking's Python has loaded (booking
+        # depends on dispatch), and dispatch_stop.write lazily imports this
+        # engine mid-test. No override row can exist before the booking
+        # module's own upgrade created the table — treat as none, but say so.
+        if "prema.dispatch.temperature.override" not in self.env.registry.models:
+            _logger.warning(
+                "temperature override model not registered (partial registry) "
+                "— no override for job %s", job.id)
+            return None
         return self.env["prema.dispatch.temperature.override"].sudo().search([
             ("job_id", "=", job.id),
             ("state", "=", "applied"),
