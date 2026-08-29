@@ -3303,6 +3303,11 @@ function cancelEvidenceUpload(stopId,evType){
         S.uploadState=null;
         if(S.stop?.id===stopId) renderStopDetail();
     }
+    // A cancelled retake abandons the supersede intent — the old proof
+    // was never touched, so it stays fully live.
+    if(S.pendingSupersede&&Number(S.pendingSupersede.stopId)===Number(stopId)&&S.pendingSupersede.evType===evType){
+        S.pendingSupersede=null;
+    }
 }
 window.cancelEvidenceUpload=cancelEvidenceUpload;
 
@@ -3326,6 +3331,12 @@ async function runEvidenceUpload(stopId,evType){
         if(coords.lat!==null) meta.lat=coords.lat;
         if(coords.lng!==null) meta.lng=coords.lng;
         if(evType==="popp" && st.palletId) meta.pallet_id=st.palletId; // spec §20
+        // Spec §55 retake: carry the superseded attachment id so the
+        // server points the old record at this replacement.
+        const ps=S.pendingSupersede;
+        if(ps && Number(ps.stopId)===Number(stopId) && ps.evType===evType){
+            meta.supersedes_att_id=ps.attId;
+        }
         const r=await rpcWithProgress("/dispatch/driver/evidence/add",{
             stop_id:stopId, ev_type:evType,
             data_b64:payload.data_b64, filename:payload.filename,
@@ -3345,6 +3356,29 @@ async function runEvidenceUpload(stopId,evType){
                     const key=evType==="pop"?"pop_attachments":"pod_attachments";
                     (stop[key]=stop[key]||[]).push({id:r.id,name:r.name,url:r.url});
                 }
+            }
+            // Spec §55: a successful retake retires the old entry from the
+            // client list (the server kept both records for audit). A
+            // duplicate means the very same photo is already on file —
+            // nothing was superseded, so the old entry stays as it is.
+            if(!r.duplicate){
+                const psDone=S.pendingSupersede;
+                if(psDone && Number(psDone.stopId)===Number(stopId) && psDone.evType===evType){
+                    S.pendingSupersede=null;
+                    if(evType==="popp" && psDone.palletId){
+                        detachPoppFromItem(psDone.palletId, psDone.attId);
+                        if(S.pickupIntake) renderPickupIntake();
+                    } else {
+                        const stop=S.stops.find(s=>s.id===stopId);
+                        if(stop){
+                            const key=evType==="pop"?"pop_attachments":"pod_attachments";
+                            stop[key]=(stop[key]||[]).filter(a=>Number(a.id)!==Number(psDone.attId));
+                        }
+                    }
+                    if(S.stop?.id===stopId) renderStopDetail();
+                }
+            } else if(S.pendingSupersede && Number(S.pendingSupersede.stopId)===Number(stopId) && S.pendingSupersede.evType===evType){
+                S.pendingSupersede=null; // photo already on file — nothing to supersede
             }
             st.phase=r.duplicate?"duplicate":"success";
             st.message=r.duplicate?(r.message||"Already uploaded"):"Upload complete";
@@ -3372,6 +3406,8 @@ async function runEvidenceUpload(stopId,evType){
             if(coords.lat!==null) meta.lat=coords.lat;
             if(coords.lng!==null) meta.lng=coords.lng;
             if(evType==="popp" && st.palletId) meta.pallet_id=st.palletId;
+            const psOff=S.pendingSupersede;
+            if(psOff && Number(psOff.stopId)===Number(stopId) && psOff.evType===evType) meta.supersedes_att_id=psOff.attId;
             enqueuePendingEvidence(stopId, evType, lastPayload.filename, lastPayload.data_b64, meta);
         }
         console.warn("Evidence upload failed", e);
@@ -3396,18 +3432,19 @@ async function delEv(stopId,evType,attId,palletId){
 window.delEv=delEv;
 
 function retakeEvidence(stopId,evType,attId,palletId){
-    // Spec §55: retake supersedes — delete the old proof, then open the
-    // camera again so the driver replaces it in one flow.
-    delEv(stopId,evType,attId,palletId).then(()=>{
-        if(evType==="popp" && palletId){
-            openPoppCamera(stopId, palletId);
-            return;
-        }
-        const input=document.querySelector(`.da-evidence-btns[data-stop="${stopId}"][data-evtype="${evType}"] input[type=file]`);
-        if(input) input.click();
-    }).catch(e=>{
-        toast((e&&e.message)||"Could not retake — remove failed");
-    });
+    // Spec §55: retake SUPERSEDES. The replacement is captured/uploaded
+    // FIRST (runEvidenceUpload carries supersedes_att_id); the server then
+    // points the old record at the new one and keeps both for audit.
+    // Never delete the existing proof up front — a cancelled camera must
+    // not lose the evidence. The old entry leaves the client list only
+    // after the new upload succeeds.
+    S.pendingSupersede={stopId,evType,attId,palletId};
+    if(evType==="popp" && palletId){
+        openPoppCamera(stopId, palletId);
+        return;
+    }
+    const input=document.querySelector(`.da-evidence-btns[data-stop="${stopId}"][data-evtype="${evType}"] input[type=file]`);
+    if(input) input.click();
 }
 window.retakeEvidence=retakeEvidence;
 

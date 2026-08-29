@@ -114,6 +114,11 @@ def decode_and_validate(data_b64, filename, category="file", max_bytes=MAX_UPLOA
     unsupported_type, mime_mismatch, invalid_signature)."""
     if not data_b64:
         raise UploadError("empty_file", "No file data was received.")
+    # Callers pass str (JSON) in production, but internal/test callers may
+    # pass bytes — b64decode accepts both while str-methods on bytes raise
+    # TypeError, so normalize first (found while wiring the §12 tests).
+    if isinstance(data_b64, bytes):
+        data_b64 = data_b64.decode("ascii", errors="ignore")
     try:
         # Odoo's own attachment.datas convention: plain base64, no data:
         # URL prefix. Strip one if the caller sent one anyway.

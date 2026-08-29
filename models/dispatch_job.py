@@ -4763,6 +4763,30 @@ class PremaDispatchJob(models.Model):
                 return {"success": False, "code": "pallet_not_found",
                         "error": "This pallet was not picked up at this stop."}
 
+        # Spec §55 retake: extra['supersedes_att_id'] names the attachment
+        # this upload REPLACES. Valid only when an evidence row for that
+        # attachment exists on THIS job (the driver is already authorized
+        # for the stop) and it is not the very attachment being created.
+        supersede_att = False
+        supersedes_raw = (extra or {}).get("supersedes_att_id")
+        if supersedes_raw:
+            # sudo(): the driver user cannot read another (even their own
+            # earlier) stop-owned attachment under Odoo 18's ir.attachment
+            # record rules — the access DECISION here is ours.
+            try:
+                supersede_att = self.env["ir.attachment"].sudo().browse(
+                    int(supersedes_raw))
+            except (TypeError, ValueError):
+                supersede_att = False
+            if supersede_att and not supersede_att.exists():
+                supersede_att = False
+            if supersede_att:
+                old_evs = self.env["prema.dispatch.evidence"].sudo().search(
+                    [("attachment_id", "=", supersede_att.id),
+                     ("job_id", "=", stop.job_id.id)], limit=1)
+                if not old_evs:
+                    supersede_att = False  # foreign/unknown — plain upload
+
         try:
             validated = decode_and_validate(data_b64, filename, category=ev_type)
         except UploadError as e:
@@ -4795,6 +4819,16 @@ class PremaDispatchJob(models.Model):
                 "mimetype":    validated["mimetype"],
             })
             meta = extra or {}
+            # §12 envelope forwarded to the canonical evidence record.
+            env_meta = {
+                "idempotency_key": meta.get("idempotency_key"),
+                "original_filename": meta.get("original_filename"),
+                "uploaded_at": meta.get("uploaded_at"),
+                "gps_accuracy_m": meta.get("gps_accuracy_m"),
+                "captured_tz": meta.get("captured_tz"),
+                "load_plan_id": meta.get("load_plan_id"),
+                "upload_state": meta.get("upload_state"),
+            }
             if is_scan_page:
                 # Scanner page: hold aside until driver_complete_scan
                 # merges the session. Never satisfies pop/pod proof and is
@@ -4808,6 +4842,7 @@ class PremaDispatchJob(models.Model):
                         "scan_session": meta.get("scan_session"),
                         "scan_page_index": meta.get("scan_page_index"),
                         "checksum_sha256": validated["checksum_sha256"],
+                        **env_meta,
                     })
                 # §9 feed: scan page uploaded (evidence id, no binaries).
                 stop.job_id._emit_feed(
@@ -4833,6 +4868,7 @@ class PremaDispatchJob(models.Model):
                         "lng": meta.get("lng"),
                         "device": meta.get("device"),
                         "checksum_sha256": validated["checksum_sha256"],
+                        **env_meta,
                     })
                 # Spec §34: POPP capture propagates to the tracking timeline.
                 self._post_timeline(
@@ -4846,12 +4882,16 @@ class PremaDispatchJob(models.Model):
                 stop.job_id._emit_feed(
                     "evidence_popp", stop=stop, item=item, evidence=ev_row,
                     message=f"POPP photo for pallet {item.name}")
+                if supersede_att:
+                    self.env["prema.dispatch.evidence"]._supersede(
+                        supersede_att, ev_row)
                 return {
                     "success": True, "id": att.id, "name": att.name,
                     "url": f"/web/content/{att.id}", "mimetype": att.mimetype,
                     "evidence_id": ev_row.id, "pallet_id": item.id,
                     "checksum_sha256": validated["checksum_sha256"],
                     "preview_available": validated["preview_available"],
+                    "supersedes_attachment_id": supersede_att.id if supersede_att else False,
                 }
             stop.write({field: [(4, att.id)]})
             linked_items = stop._items_for_custody_transition()
@@ -4866,6 +4906,7 @@ class PremaDispatchJob(models.Model):
                     "lng": meta.get("lng"),
                     "device": meta.get("device"),
                     "checksum_sha256": validated["checksum_sha256"],
+                    **env_meta,
                 })
             self._copy_evidence_to_invoice(att, stop, ev_type)
             # Spec §34: general proof propagates to the tracking timeline
@@ -4883,12 +4924,16 @@ class PremaDispatchJob(models.Model):
                 stop=stop, evidence=ev_row,
                 message=f"{'POD' if ev_type == 'pod' else 'POP'} photo — "
                         f"{stop.address or stop.stop_type}")
+            if supersede_att:
+                self.env["prema.dispatch.evidence"]._supersede(
+                    supersede_att, ev_row)
             return {
                 "success": True, "id": att.id, "name": att.name,
                 "url": f"/web/content/{att.id}", "mimetype": att.mimetype,
                 "evidence_id": ev_row.id,
                 "checksum_sha256": validated["checksum_sha256"],
                 "preview_available": validated["preview_available"],
+                "supersedes_attachment_id": supersede_att.id if supersede_att else False,
             }
         except Exception:
             _logger.exception("driver_add_evidence failed")

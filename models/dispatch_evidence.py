@@ -69,6 +69,40 @@ class PremaDispatchEvidence(models.Model):
     device = fields.Char(string="Device / Source")
     checksum_sha256 = fields.Char(string="SHA-256 Checksum", index=True)
 
+    # §12 evidence relationships: the canonical row now also links to the
+    # physical load plan it belongs to and carries the full upload-trace
+    # envelope (client idempotency key, original filename, upload time,
+    # GPS accuracy, capture timezone). These power the §13 failed-state
+    # persistence + retry-by-idempotency-key pipeline.
+    load_plan_id = fields.Many2one(
+        "prema.dispatch.load.plan", string="Load Plan",
+        ondelete="set null", index=True,
+        help="Physical load plan the evidence was captured under (derived "
+             "from the job's load-plan membership at creation).")
+    upload_state = fields.Selection(
+        [("uploaded", "Uploaded"), ("failed", "Failed")],
+        string="Upload State", default="uploaded", index=True,
+        help="'failed' marks a row persisted server-side when the client "
+             "upload died mid-flight (spec §57) so retries dedupe via "
+             "idempotency_key instead of re-capturing.")
+    idempotency_key = fields.Char(
+        string="Idempotency Key", index=True,
+        help="Client-generated key so a retry of the same capture never "
+             "duplicates the row (spec §57).")
+    original_filename = fields.Char(
+        string="Original Filename",
+        help="The file name as chosen on the device, before server-side "
+             "renaming/stamping.")
+    uploaded_at = fields.Datetime(string="Uploaded At", index=True)
+    gps_accuracy_m = fields.Float(
+        string="GPS Accuracy (m)",
+        help="Reported positioning accuracy at capture time; drives the "
+             "'low GPS accuracy' warning instead of a hard lat/lng gate.")
+    captured_tz = fields.Char(
+        string="Capture Timezone",
+        help="The driver's local IANA timezone at capture time, so "
+             "captured_at can be re-interpreted in the capture location.")
+
     # Inline thumbnail for image attachments (backend staff view §2).
     image_preview = fields.Binary(
         string="Preview", compute="_compute_image_preview",
@@ -105,7 +139,9 @@ class PremaDispatchEvidence(models.Model):
     def _create_evidence(self, attachment, stop, ev_type, meta=None):
         """Create the canonical record for an attachment just uploaded by
         a driver. `meta` may carry captured_at / lat / lng / device /
-        scan_session / scan_page_index / pallet_id from the app.
+        scan_session / scan_page_index / pallet_id from the app, plus the
+        §12 envelope: idempotency_key / original_filename / uploaded_at /
+        gps_accuracy_m / captured_tz.
 
         Called from driver_add_evidence (already auth'd for the stop), so
         sudo() keeps this independent of the evidence model's own rules."""
@@ -123,12 +159,20 @@ class PremaDispatchEvidence(models.Model):
         # here so pop/pod/popp/scan all accept both forms.
         if isinstance(captured_at, str):
             captured_at = captured_at.replace("T", " ").split(".")[0].rstrip("Z").strip()
+        uploaded_at = meta.get("uploaded_at") or False
+        if isinstance(uploaded_at, str):
+            uploaded_at = uploaded_at.replace("T", " ").split(".")[0].rstrip("Z").strip()
         job = stop.job_id
         # prema_logistics_booking adds logistics_booking_id to
         # prema.dispatch.job — but its models load AFTER dispatch in the
         # graph (booking depends on dispatch), so at_install tests can run
         # before the field exists. Same guard pattern as dispatch_stop.py.
         booking = job.logistics_booking_id if "logistics_booking_id" in job._fields else False
+        # §12: derive the physical load plan from the job's load-plan
+        # membership (a job sits on at most one plan line at a time).
+        plan_line = self.env["prema.dispatch.load.plan.job"].sudo().search(
+            [("job_id", "=", job.id)], limit=1)
+        load_plan = plan_line.load_plan_id
         return self.sudo().create({
             "attachment_id": attachment.id,
             "evidence_type": ev_type,
@@ -144,6 +188,14 @@ class PremaDispatchEvidence(models.Model):
             "checksum_sha256": meta.get("checksum_sha256") or "",
             "scan_session": meta.get("scan_session") or False,
             "scan_page_index": meta.get("scan_page_index") or 0,
+            # §12 envelope
+            "load_plan_id": load_plan.id if load_plan else (meta.get("load_plan_id") or False),
+            "upload_state": meta.get("upload_state") or "uploaded",
+            "idempotency_key": meta.get("idempotency_key") or "",
+            "original_filename": meta.get("original_filename") or "",
+            "uploaded_at": uploaded_at,
+            "gps_accuracy_m": meta.get("gps_accuracy_m"),
+            "captured_tz": meta.get("captured_tz") or "",
         })
 
     def _payload(self):
@@ -162,4 +214,54 @@ class PremaDispatchEvidence(models.Model):
             "lng": self.lng,
             "device": self.device,
             "scan_session": self.scan_session or "",
+            # §12 envelope
+            "load_plan_id": self.load_plan_id.id,
+            "upload_state": self.upload_state,
+            "idempotency_key": self.idempotency_key,
+            "original_filename": self.original_filename,
+            "uploaded_at": self.uploaded_at.isoformat() if self.uploaded_at else "",
+            "gps_accuracy_m": self.gps_accuracy_m,
+            "captured_tz": self.captured_tz,
+            "superseded_by_id": self.superseded_by_id.id,
+            "invoice_id": self.invoice_id.id,
         }
+
+    def _supersede(self, old_attachment, new_evidence):
+        """Spec §55 retake: the retaken photo REPLACES the old one.
+
+        The old record and its attachment are KEPT for audit — the old
+        row's superseded_by_id points at the replacement, so the live map
+        and dispatch views count it as superseded (never as live proof).
+        But the old attachment leaves every driver-visible bucket (stop
+        POP/POD m2m, pallet POPP bucket, pallet evidence list) and its
+        invoice/quote copy is dropped, so the app and the customer's
+        invoice show only the live proof. Returns the rows superseded.
+
+        Idempotent: a retry that names an already-superseded row only
+        re-detaches buckets, it never re-points the chain."""
+        old_evs = self.sudo().search([
+            ("attachment_id", "=", old_attachment.id),
+            ("id", "!=", new_evidence.id),
+        ])
+        for old in old_evs:
+            if not old.superseded_by_id:
+                old.write({"superseded_by_id": new_evidence.id})
+            att = old.attachment_id
+            if att:
+                stop = old.stop_id
+                if stop:
+                    if att.id in stop.pop_attachment_ids.ids:
+                        stop.write({"pop_attachment_ids": [(3, att.id)]})
+                    if att.id in stop.pod_attachment_ids.ids:
+                        stop.write({"pod_attachment_ids": [(3, att.id)]})
+                    stop.job_id.item_ids.filtered(
+                        lambda item: att.id in item.evidence_attachment_ids.ids
+                    ).write({"evidence_attachment_ids": [(3, att.id)]})
+                item = old.pallet_id
+                if item and att.id in item.popp_attachment_ids.ids:
+                    item.write({"popp_attachment_ids": [(3, att.id)]})
+                # Replace the invoice/quote copy so only the new proof shows.
+                tag = f"__evidence_source:{att.id}__"
+                self.env["ir.attachment"].search(
+                    [("description", "=", tag)]).unlink()
+        return old_evs
