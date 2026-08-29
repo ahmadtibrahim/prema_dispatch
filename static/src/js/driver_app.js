@@ -12,7 +12,7 @@ const S = {
     gpsId:null, lat:null, lng:null,
     geoArmed:false, geoTimer:null,
     GEO_M:150, GEO_SEC:15,
-    maps:{}, markers:{}, dirSvc:null,
+    maps:{}, markers:{}, dirSvc:null, routeToken:0, routeTimer:null, routeAbort:null, routePolyline:null,
     isSat:true, mapCollapsed:false,
     mapsReady:false, dataLoaded:false,
     refreshPoll:null,
@@ -247,7 +247,6 @@ S.routeOpts=loadRouteOpts();
 function driverMapsReady(){
     if (S.mapsReady || !window.google?.maps) return;
     S.mapsReady = true;
-    S.dirSvc = new google.maps.DirectionsService();
     if (S.dataLoaded) {
         initAllMaps();
     }
@@ -1292,42 +1291,75 @@ function drawStopsOnMap(map,stops,withRoute) {
         bounds.extend({lat:s.lat,lng:s.lng});
     });
 
-    if(withRoute&&stops.length>=2&&S.dirSvc){
-        // ONE reusable renderer: a fresh DirectionsRenderer per draw was
-        // never disposed, so stale polylines accumulated on the map and
-        // every instance logged the deprecation warning (the constructor
-        // is retired 2026-02-25; kept here until the Routes-API migration).
-        if(!S.routeRenderer){
-            S.routeRenderer=new google.maps.DirectionsRenderer({suppressMarkers:true,
-                polylineOptions:{strokeColor:"#1565C0",strokeWeight:4,strokeOpacity:.85}});
-        }else{
-            S.routeRenderer.setMap(null);
-            S.routeRenderer.setDirections({routes:[]});
-        }
-        S.routeRenderer.setMap(map);
-        S.dirSvc.route({
-            origin:{lat:stops[0].lat,lng:stops[0].lng},
-            destination:{lat:stops[stops.length-1].lat,lng:stops[stops.length-1].lng},
-            waypoints:stops.slice(1,-1).map(s=>({location:{lat:s.lat,lng:s.lng},stopover:true})),
-            travelMode:google.maps.TravelMode.DRIVING,
-            avoidTolls:S.routeOpts.tolls,avoidHighways:S.routeOpts.highways,avoidFerries:S.routeOpts.ferries
-        },(r,st)=>{
-            try{
-                if(st==="OK"){
-                    S.routeRenderer.setDirections(r);
-                    if(r.routes[0]?.bounds)map.fitBounds(r.routes[0].bounds,30);
-                    const legs=r.routes[0]?.legs||[];
-                    const driveMin=Math.round(legs.reduce((s,l)=>s+(l.duration?.value||0),0)/60);
-                    const km=legs.reduce((s,l)=>s+(l.distance?.value||0),0)/1000;
-                    const svcMin=stops.reduce((s,st2)=>s+(st2.service_time_min||15),0);
-                    S.routeSummary={driveMin,km,totalMin:driveMin+svcMin};
-                    renderTodaySummary();
-                }else map.fitBounds(bounds,40);
-            }catch(e){
-                // Never let a directions callback failure break the map.
+    if(withRoute&&stops.length>=2){
+        // §19 Google Routes API: DirectionsService/DirectionsRenderer are
+        // retired by Google (2026-02-25); computeRoutes returns the same
+        // route (encoded polyline + duration + distance) via a plain
+        // fetch. Draws are debounced (rapid re-draws — tab switches,
+        // refresh polls — collapse into one request) and token-guarded:
+        // each draw bumps S.routeToken and aborts the in-flight request,
+        // so a stale response never touches the map or the summary.
+        clearTimeout(S.routeTimer);
+        S.routeToken++;
+        const token=S.routeToken;
+        if(S.routeAbort)S.routeAbort.abort();
+        const ctrl=(S.routeAbort=new AbortController());
+        S.routeTimer=setTimeout(()=>{
+            const t0=stops[0],tN=stops[stops.length-1];
+            fetch("https://routes.googleapis.com/directions/v2:computeRoutes",{
+                method:"POST",
+                signal:ctrl.signal,
+                headers:{
+                    "Content-Type":"application/json",
+                    "X-Goog-Api-Key":GMAPS_KEY,
+                    "X-Goog-FieldMask":
+                        "routes.distanceMeters,routes.duration,routes.polyline.encodedPolyline",
+                },
+                body:JSON.stringify({
+                    origin:{location:{latLng:{latitude:t0.lat,longitude:t0.lng}}},
+                    destination:{location:{latLng:{latitude:tN.lat,longitude:tN.lng}}},
+                    intermediates:stops.slice(1,-1).map(s=>({
+                        location:{latLng:{latitude:s.lat,longitude:s.lng}}})),
+                    travelMode:"DRIVE",
+                    routingPreference:"TRAFFIC_AWARE",
+                    routeModifiers:{avoidTolls:S.routeOpts.tolls,
+                        avoidHighways:S.routeOpts.highways,
+                        avoidFerries:S.routeOpts.ferries},
+                    units:"METRIC",
+                }),
+            }).then(async resp=>{
+                if(token!==S.routeToken)return;      // a newer draw superseded us
+                if(!resp.ok)throw new Error("routes HTTP "+resp.status);
+                const data=await resp.json();
+                if(token!==S.routeToken)return;
+                const route=data.routes?.[0];
+                if(!route?.polyline?.encodedPolyline)throw new Error("no polyline");
+                // ONE reusable Polyline overlay — the old per-draw
+                // DirectionsRenderer was never disposed, so stale
+                // polylines accumulated on the map.
+                if(!S.routePolyline){
+                    S.routePolyline=new google.maps.Polyline({
+                        map,strokeColor:"#1565C0",strokeWeight:4,strokeOpacity:.85});
+                }else{
+                    S.routePolyline.setMap(null);
+                    S.routePolyline.setMap(map);
+                }
+                const dec=google.maps.geometry?.encoding?.decodePath;
+                S.routePolyline.setPath(dec?dec(route.polyline.encodedPolyline):[]);
+                const driveMin=route.duration
+                    ?Math.round(parseFloat(String(route.duration).replace(/s$/,""))/60):0;
+                const km=(route.distanceMeters||0)/1000;
+                const svcMin=stops.reduce((s,st2)=>s+(st2.service_time_min||15),0);
+                S.routeSummary={driveMin,km,totalMin:driveMin+svcMin};
+                renderTodaySummary();
                 map.fitBounds(bounds,40);
-            }
-        });
+            }).catch(e=>{
+                if(e?.name==="AbortError")return;    // superseded — silent
+                if(token!==S.routeToken)return;
+                // Never let a route failure break the map.
+                map.fitBounds(bounds,40);
+            });
+        },250);
     } else if(stops.length){
         map.fitBounds(bounds,40);
     }

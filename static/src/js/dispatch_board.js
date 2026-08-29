@@ -46,7 +46,10 @@ export class DispatchBoard extends Component {
         this._mapMarkers   = {};
         this._mapPolylines = {};
         this._infoWindow   = null;
-        this._highlightRenderer = null;
+        this._gmapKey      = null;
+        this._routePolyline    = null;
+        this._highlightPolyline = null;
+        this._routeToken   = 0;
 
         const today = new Date();
         const todayStr = this._toISO(today);
@@ -1083,6 +1086,7 @@ export class DispatchBoard extends Component {
         this._mapRenderedForDate = null;
         try {
             const apiKey = await this.orm.call("ir.config_parameter", "get_param", ["google_maps_api_key"]);
+            this._gmapKey = apiKey || "";
             await loadGoogleMaps(apiKey || "", { libraries: "places,geometry" });
             const G = window.google.maps;
             this._map = new G.Map(el, {
@@ -1101,11 +1105,6 @@ export class DispatchBoard extends Component {
                 zoomControlOptions: { position: G.ControlPosition.RIGHT_CENTER },
             });
             this._infoWindow     = new G.InfoWindow();
-            this._dirService     = new G.DirectionsService();
-            this._dirRenderer    = new G.DirectionsRenderer({
-                suppressMarkers: true,
-                polylineOptions: { strokeColor: "#1a73e8", strokeWeight: 4, strokeOpacity: 0.9 },
-            });
             this.state.mapGoogleReady = true;
         } catch (e) {
             console.warn("Board map init failed:", e);
@@ -1264,47 +1263,85 @@ export class DispatchBoard extends Component {
             hasPoint = true;
         }
 
-        // ── Draw truck-friendly route via Directions API ─────
-        if (routeStops.length >= 2 && this._dirService) {
+        // ── Draw truck-friendly route via Routes API (§19) ─────
+        if (routeStops.length >= 2 && this._gmapKey) {
+            const token = ++this._routeToken;
             const origin      = routeStops[0];
             const destination = routeStops[routeStops.length - 1];
-            const waypoints   = routeStops.slice(1, -1).map(p => ({ location: p, stopover: true }));
-            this._dirRenderer.setMap(this._map);
-            this._dirService.route({
-                origin,
-                destination,
-                waypoints,
-                travelMode:    G.TravelMode.DRIVING,
+            this._routesApiRequest(origin, destination, routeStops.slice(1, -1), {
                 avoidTolls:    this.state.routeAvoidTolls,
                 avoidHighways: this.state.routeAvoidHighways,
                 avoidFerries:  this.state.routeAvoidFerries,
-            }, (result, status) => {
-                if (status === "OK") {
-                    this._dirRenderer.setDirections(result);
-                    this._setRouteSummary(result, orderedStops);
-                    // Fit to directions bounds
-                    const db = result.routes[0]?.bounds;
-                    if (db) this._map.fitBounds(db, 30);
-                } else {
-                    // Fallback straight-line polyline
-                    this._mapPolylines["route"] = new G.Polyline({
-                        path: routeStops, geodesic: true,
-                        strokeColor: "#4a90d9", strokeOpacity: 0.8, strokeWeight: 4,
-                        map: this._map,
-                    });
-                    if (hasPoint) this._map.fitBounds(bounds, 50);
-                }
+            }).then(route => {
+                if (token !== this._routeToken) return;   // superseded
+                if (!route?.polyline?.encodedPolyline) throw new Error("no polyline");
+                this._routePolyline = this._applyRoutePolyline(
+                    route.polyline.encodedPolyline, this._map, this._routePolyline,
+                    { strokeColor: "#1a73e8", strokeWeight: 4, strokeOpacity: 0.9 });
+                this._setRouteSummary(route, orderedStops);
+                if (hasPoint) this._map.fitBounds(bounds, 50);
+            }).catch(() => {
+                if (token !== this._routeToken) return;
+                // Fallback straight-line polyline
+                this._mapPolylines["route"] = new G.Polyline({
+                    path: routeStops, geodesic: true,
+                    strokeColor: "#4a90d9", strokeOpacity: 0.8, strokeWeight: 4,
+                    map: this._map,
+                });
+                if (hasPoint) this._map.fitBounds(bounds, 50);
             });
         } else if (hasPoint) {
             this._map.fitBounds(bounds, 50);
         }
     }
 
+    // ── §19 Google Routes API (DirectionsService is retired 2026-02-25) ─
+    // One shared POST to computeRoutes; the response carries the encoded
+    // polyline + duration + distance, decoded into a plain Polyline.
+    async _routesApiRequest(origin, destination, intermediates, modifiers) {
+        const G = window.google.maps;
+        const resp = await fetch("https://routes.googleapis.com/directions/v2:computeRoutes", {
+            method:  "POST",
+            headers: {
+                "Content-Type":   "application/json",
+                "X-Goog-Api-Key": this._gmapKey,
+                "X-Goog-FieldMask":
+                    "routes.distanceMeters,routes.duration,routes.polyline.encodedPolyline",
+            },
+            body: JSON.stringify({
+                origin:      { location: { latLng: { latitude: origin.lat, longitude: origin.lng } } },
+                destination: { location: { latLng: { latitude: destination.lat, longitude: destination.lng } } },
+                intermediates: (intermediates || []).map(p => ({
+                    location: { latLng: { latitude: p.lat, longitude: p.lng } } })),
+                travelMode:  "DRIVE",
+                routingPreference: "TRAFFIC_AWARE",
+                routeModifiers: modifiers,
+                units: "METRIC",
+            }),
+        });
+        if (!resp.ok) throw new Error("routes HTTP " + resp.status);
+        const data = await resp.json();
+        return data.routes?.[0] || null;
+    }
+
+    _applyRoutePolyline(encoded, map, polyline, opts) {
+        const G = window.google.maps;
+        if (!polyline) {
+            polyline = new G.Polyline(Object.assign({ map }, opts));
+        } else {
+            polyline.setMap(null);
+            polyline.setMap(map);
+        }
+        const dec = G.geometry?.encoding?.decodePath;
+        if (dec && encoded) polyline.setPath(dec(encoded));
+        return polyline;
+    }
+
     // ── Route summary (total drive + service time across the route) ─────
-    _setRouteSummary(directionsResult, orderedStops) {
-        const legs = directionsResult.routes[0]?.legs || [];
-        const driveSeconds = legs.reduce((sum, leg) => sum + (leg.duration?.value || 0), 0);
-        const distMeters   = legs.reduce((sum, leg) => sum + (leg.distance?.value || 0), 0);
+    _setRouteSummary(route, orderedStops) {
+        const driveSeconds = route.duration
+            ? parseFloat(String(route.duration).replace(/s$/, "")) : 0;
+        const distMeters   = route.distanceMeters || 0;
         const serviceMin   = orderedStops.reduce((sum, s) => sum + (s.service_time_min || 15), 0);
         const driveMin     = Math.round(driveSeconds / 60);
         this.state.routeSummary = {
@@ -1329,7 +1366,7 @@ export class DispatchBoard extends Component {
         }
         this.state.highlightStopId = stop.id;
         this.state.highlightSummary = null;
-        if (!this._dirService || !this._map) return;
+        if (!this._gmapKey || !this._map) return;
         const G = window.google.maps;
         truck = truck || this.state.trucks.find(t => t.truck_id === this.state.mapTruckId);
         const origin = (truck && truck.lat && truck.lng)
@@ -1337,38 +1374,31 @@ export class DispatchBoard extends Component {
             : this.mapTruckStops.find(s => s.lat && s.lng);
         if (!origin || !stop.lat || !stop.lng) return;
 
-        if (!this._highlightRenderer) {
-            this._highlightRenderer = new G.DirectionsRenderer({
-                suppressMarkers: true,
-                polylineOptions: { strokeColor: "#e74c3c", strokeWeight: 5, strokeOpacity: 0.95, zIndex: 50 },
-            });
-        }
-        this._highlightRenderer.setMap(this._map);
-
-        this._dirService.route({
-            origin,
-            destination: { lat: stop.lat, lng: stop.lng },
-            travelMode:    G.TravelMode.DRIVING,
+        const token = ++this._routeToken;
+        this._routesApiRequest(origin, { lat: stop.lat, lng: stop.lng }, [], {
             avoidTolls:    this.state.routeAvoidTolls,
             avoidHighways: this.state.routeAvoidHighways,
             avoidFerries:  this.state.routeAvoidFerries,
-        }, (result, status) => {
-            if (status === "OK") {
-                this._highlightRenderer.setDirections(result);
-                const leg = result.routes[0]?.legs?.[0];
-                this.state.highlightSummary = leg ? {
-                    label:    this.stopLabel(stop),
-                    duration: leg.duration?.text || "",
-                    distance: leg.distance?.text || "",
-                } : null;
-            } else {
-                this.notification.add("Could not compute route to that stop.", { type: "warning" });
-            }
+        }).then(route => {
+            if (token !== this._routeToken) return;   // superseded
+            if (!route?.polyline?.encodedPolyline) throw new Error("no polyline");
+            this._highlightPolyline = this._applyRoutePolyline(
+                route.polyline.encodedPolyline, this._map, this._highlightPolyline,
+                { strokeColor: "#e74c3c", strokeWeight: 5, strokeOpacity: 0.95, zIndex: 50 });
+            this.state.highlightSummary = {
+                label:    this.stopLabel(stop),
+                duration: this.fmtDuration(route.duration
+                    ? Math.round(parseFloat(String(route.duration).replace(/s$/, "")) / 60) : 0),
+                distance: route.distanceMeters ? `${(route.distanceMeters / 1000).toFixed(1)} km` : "",
+            };
+        }).catch(() => {
+            if (token !== this._routeToken) return;
+            this.notification.add("Could not compute route to that stop.", { type: "warning" });
         });
     }
 
     clearHighlight() {
-        if (this._highlightRenderer) this._highlightRenderer.setMap(null);
+        if (this._highlightPolyline) this._highlightPolyline.setMap(null);
         this.state.highlightStopId = null;
         this.state.highlightSummary = null;
     }
@@ -1470,7 +1500,8 @@ export class DispatchBoard extends Component {
         Object.values(this._mapPolylines).forEach(p => p.setMap(null));
         this._mapMarkers   = {};
         this._mapPolylines = {};
-        if (this._highlightRenderer) this._highlightRenderer.setMap(null);
+        if (this._highlightPolyline) this._highlightPolyline.setMap(null);
+        if (this._routePolyline) this._routePolyline.setMap(null);
         this.state.highlightStopId   = null;
         this.state.highlightSummary  = null;
     }

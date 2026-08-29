@@ -23,6 +23,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from odoo import _, fields, http
 from odoo.http import request
+from odoo.tools.translate import _lt
 from werkzeug.exceptions import NotFound
 
 from odoo.addons.prema_logistics_booking.services.google_places_service import (
@@ -32,7 +33,11 @@ from odoo.addons.prema_logistics_booking.services.location_resolver_service impo
     LocationResolverService,
 )
 
-_GOOGLE_INSTRUCTION = _(
+# §19: module-level _() is a latent language bug — the controller module
+# can be imported lazily on the first HTTP request, and then _() translates
+# EAGERLY in that request's language and bakes the constant forever. _lt
+# stays lazy: the string translates at render time, per user's language.
+_GOOGLE_INSTRUCTION = _lt(
     "Please select the address from the Google address suggestions so we can "
     "verify the location.")
 
