@@ -15,6 +15,20 @@ from ..services.pricing_service import PricingService
 
 _logger = logging.getLogger(__name__)
 
+
+def _fmt_window(time_from, time_to):
+    """Float hour window ("8.5" = 8:30) → "08:30–12:00" display, or an
+    empty string when no window is set. Shared by the §18 facility-group
+    stop cards (portal + summary field)."""
+    def _h(hrs):
+        if not hrs:
+            return ""
+        return "%02d:%02d" % (int(hrs), int(round((hrs % 1) * 60)))
+    frm, to = _h(time_from), _h(time_to)
+    if frm and to:
+        return f"{frm}–{to}"
+    return frm or to
+
 SHIPMENT_TYPE_SELECTION = [("ltl", "LTL"), ("ftl", "FTL")]
 TEMPERATURE_MODE_SELECTION = [("dry", "Dry"), ("reefer", "Reefer")]
 # Legacy values preserved for historical compatibility
@@ -64,6 +78,12 @@ class LogisticsBooking(models.Model):
     movement_route_summary = fields.Char(
         string="Movement Route Summary", compute="_compute_movement_route_summary",
         help="Readonly canonical stop/pallet summary for movement_v1 staff review.",
+    )
+    facility_grouping_summary = fields.Char(
+        string="Facility Grouping", compute="_compute_facility_grouping_summary",
+        help="§18: physical stops grouped by canonical facility — one line "
+             "per building with PICKUPS/DELIVERIES aggregation, for staff "
+             "review on the backend booking form.",
     )
 
     partner_id = fields.Many2one("res.partner", required=True, index=True)
@@ -553,6 +573,100 @@ class LogisticsBooking(models.Model):
                     len(pallets), "" if len(pallets) == 1 else "s",
                 )
             )
+
+    def _stop_groupings(self):
+        """§18: physical stops grouped by canonical facility.
+
+        One group per distinct building — the master facility link
+        (prema.dispatch.location) is the canonical identity; stops that
+        share a snapshot address without a master link still group
+        together (same company/street/city/postal). Groups appear in
+        route order (first stop encountered wins the position); within a
+        group, PICKUP and DELIVERY stop details are aggregated, so a
+        route visiting one building twice (two pickups, or pickup +
+        delivery) renders ONE facility card instead of repeated
+        identical addresses.
+
+        Returns a list of dicts shaped for QWeb rendering:
+        {"key", "facility_name", "street", "city", "province_state",
+         "postal_zip", "pickups": [...], "deliveries": [...]}
+        where each stop dict = {"id", "sequence", "stop_type",
+         "date_display", "window_display", "pallet_display"}.
+        Hub-transfer placeholders are excluded, matching the portal
+        timeline they replace.
+        """
+        self.ensure_one()
+        groups, by_key = [], {}
+        for stop in self.stop_ids.sorted("sequence"):
+            if stop.hub_transfer_stop:
+                continue
+            key = stop.saved_location_id.id or (
+                stop.company_name or "", stop.street or "",
+                stop.city or "", stop.postal_zip or "")
+            group = by_key.get(key)
+            if group is None:
+                facility = stop.saved_location_id
+                group = {
+                    "key": key,
+                    "facility_name": (
+                        facility.name if facility
+                        else (stop.location_name or stop.company_name
+                              or "Stop")),
+                    "street": stop.formatted_address or stop.street or "",
+                    "city": stop.city or "",
+                    "province_state": stop.province_state or "",
+                    "postal_zip": stop.postal_zip or "",
+                    "pickups": [],
+                    "deliveries": [],
+                }
+                by_key[key] = group
+                groups.append(group)
+            count = stop.movement_pallet_count or stop.pallet_count
+            labels = stop.movement_pallet_labels or ""
+            # The movement-total compute renders "—" for label-less stops;
+            # treat that placeholder as empty so no "N pallets — —" row.
+            if labels == "—":
+                labels = ""
+            stop_info = {
+                "id": stop.id,
+                "sequence": stop.sequence,
+                "stop_type": stop.stop_type,
+                "date_display": (
+                    stop.service_date.strftime("%b %d, %Y")
+                    if stop.service_date else ""),
+                "window_display": _fmt_window(
+                    stop.requested_time_from, stop.requested_time_to),
+                "pallet_display": (
+                    "%d pallet%s" % (count, "" if count == 1 else "s")
+                    + (f" — {labels}" if labels else "")),
+            }
+            (group["pickups"] if stop.stop_type == "pickup"
+             else group["deliveries"]).append(stop_info)
+        return groups
+
+    @api.depends(
+        "route_model_version",
+        "stop_ids.stop_type", "stop_ids.hub_transfer_stop",
+        "stop_ids.saved_location_id", "stop_ids.company_name",
+        "stop_ids.street", "stop_ids.city", "stop_ids.postal_zip",
+        "stop_ids.location_name", "stop_ids.formatted_address",
+    )
+    def _compute_facility_grouping_summary(self):
+        for rec in self:
+            lines = []
+            for group in rec._stop_groupings():
+                pu, dl = group["pickups"], group["deliveries"]
+                agg = "%d pickup%s" % (len(pu), "" if len(pu) == 1 else "s")
+                agg += " · %d deliver%s" % (
+                    len(dl), "y" if len(dl) == 1 else "ies")
+                where = ", ".join(
+                    x for x in (group["street"], group["city"],
+                                group["province_state"], group["postal_zip"])
+                    if x)
+                lines.append(
+                    f"{group['facility_name']} — {agg}"
+                    + (f" ({where})" if where else ""))
+            rec.facility_grouping_summary = "\n".join(lines) or "No stops"
 
     def _compute_customer_status(self):
         for rec in self:

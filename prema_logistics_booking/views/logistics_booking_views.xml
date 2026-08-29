@@ -154,6 +154,8 @@
                             <group>
                                 <field name="route_model_version" readonly="1"/>
                                 <field name="movement_route_summary" readonly="1"/>
+                                <field name="facility_grouping_summary" readonly="1"
+                                       string="Facility Grouping (§18)"/>
                             </group>
                             <separator string="Pickups &amp; Deliveries"/>
                             <field name="stop_ids" readonly="1" nolabel="1">

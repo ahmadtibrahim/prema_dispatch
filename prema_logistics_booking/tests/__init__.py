@@ -16,3 +16,4 @@ from . import test_phase8_live_map
 from . import test_phase12_evidence_relationships
 from . import test_phase13_upload_pipeline
 from . import test_phase14_evidence_invoice
+from . import test_phase18_stop_grouping
