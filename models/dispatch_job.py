@@ -3450,6 +3450,25 @@ class PremaDispatchJob(models.Model):
             for att in stop.document_attachment_ids:
                 _link_attachment(att, seq, "DOC")
 
+        # §14: completion-time invoice_id fill. Evidence uploaded BEFORE
+        # the deferred invoice existed has no link yet — link it now,
+        # idempotently (only rows without invoice_id), and only live rows
+        # (failed/superseded proof is never linked). Same-customer DRAFT
+        # gate per row, resolving stop-level invoices first (consolidated
+        # multi-invoice jobs): a cross-customer stop invoice never
+        # receives this job's evidence, exactly like the upload-time copy.
+        live_evs = self.env["prema.dispatch.evidence"].sudo().search([
+            ("job_id", "=", self.id),
+            ("upload_state", "=", "uploaded"),
+            ("superseded_by_id", "=", False),
+            ("invoice_id", "=", False),
+        ])
+        for ev in live_evs:
+            target = (ev.stop_id.invoice_id or self.invoice_id).sudo()
+            if (target.state == "draft"
+                    and target.partner_id.id == self.partner_id.id):
+                ev.write({"invoice_id": target.id})
+
         if attached:
             pop_count = sum(len(s.pop_attachment_ids) for s in self.stop_ids)
             pod_count = sum(len(s.pod_attachment_ids) for s in self.stop_ids)
@@ -5029,6 +5048,15 @@ class PremaDispatchJob(models.Model):
                 "name": copy_name,
                 "description": tag,
             })
+            # §14: record which draft invoice this proof was synced to —
+            # upload-time link, idempotent (never rewrites an existing
+            # link), and only under the same-customer DRAFT gate that
+            # actually produced the copy. Runs before the invoice exists
+            # (deferred invoicing) → the completion-time pass fills it.
+            ev = self.env["prema.dispatch.evidence"].sudo().search(
+                [("attachment_id", "=", att.id)], limit=1)
+            if ev and not ev.invoice_id:
+                ev.write({"invoice_id": inv.id})
         elif (
             job.sale_order_id
             and job.sale_order_id.partner_id.id == customer.id
