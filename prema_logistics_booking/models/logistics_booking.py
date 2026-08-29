@@ -896,12 +896,21 @@ class LogisticsBooking(models.Model):
             if self.route_model_version == "movement_v1" else self.stop_ids
         for bstop in visible_stops.sorted("sequence"):
             twin = dispatch_stops_by_booking_stop.get(bstop.id)
+            eta_dt = False
+            if twin:
+                # Unified ETA engine (Section C): the customer-facing
+                # promise is customer_eta_at (falls back through service
+                # start → schedule). Serialized WITH an explicit timezone
+                # offset — the raw naive-UTC isoformat bug.
+                eta_dt = (twin.customer_eta_at or twin.facility_service_start_at
+                          or twin.scheduled_time)
             stops_display.append({
                 "name": bstop.company_name or bstop.location_name or "Stop",
                 "city": bstop.city or "",
                 "stop_type": bstop.stop_type,
                 "status": twin.status if twin else "planned",
-                "eta": twin.scheduled_time if twin and twin.scheduled_time else False,
+                "eta": self._eta_iso_local(eta_dt, twin) if eta_dt else False,
+                "eta_source": twin.eta_source if twin else False,
                 "sequence": bstop.sequence,
                 "pod_attached": bool(
                     twin.pod_attachment_ids if twin else False),
@@ -909,6 +918,21 @@ class LogisticsBooking(models.Model):
                     twin.pop_attachment_ids if twin else False),
             })
         return stops_display
+
+    @staticmethod
+    def _eta_iso_local(dt, twin):
+        """Serialize an ETA with an explicit offset in the stop's own
+        timezone ('2026-08-29T08:00:00-04:00') — never a bare naive UTC
+        string on a customer-facing page."""
+        from datetime import timezone as _dt_tz
+        if dt.tzinfo is None:
+            tz_name = (twin.tz_name if twin else "") or "America/Toronto"
+            try:
+                from pytz import timezone as tz
+                dt = tz(tz_name).localize(dt)
+            except Exception:
+                dt = dt.replace(tzinfo=_dt_tz.utc)
+        return dt.isoformat()
 
     def sync_state_from_dispatch(self):
         """Server-side state machine for movement_v1 bookings, driven by

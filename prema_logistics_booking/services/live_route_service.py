@@ -152,48 +152,16 @@ class LiveRouteService:
     # ── Live ETA (11.1.e) ────────────────────────────────────────────
 
     def recompute_live_eta(self, job, anchor_time=None):
-        """Propagate delays stop-by-stop. Completed/arrived stops use
-        actual times (delay measured against scheduled); en_route stops
-        hold their ETA and pass the delay forward; dispatcher ETA
-        overrides win for their stop. Drives the customer-visible
-        milestone derivation."""
-        job.ensure_one()
-        ordered = job.stop_ids.filtered(
-            lambda s: not s.planning_only).sorted("sequence")
-        anchor = anchor_time or fields.Datetime.now()
-        for stop in ordered:
-            if stop.eta_override:
-                # Dispatcher override wins WHOLE — no drive/service drift.
-                eta = stop.eta_override
-                delay = (eta - (stop.scheduled_time or eta)).total_seconds() / 60.0
-                source = "override"
-            elif stop.status in ("completed", "arrived"):
-                actual = stop.actual_arrival_time or stop.scheduled_time
-                eta = actual
-                delay = (actual - (stop.scheduled_time or actual)).total_seconds() / 60.0
-                source = "scheduled"
-            elif stop.status == "en_route":
-                # en_route stops HOLD their ETA — the delay they carry
-                # passes forward unchanged (11.1.e).
-                eta = stop.eta_live or anchor
-                delay = (eta - (stop.scheduled_time or eta)).total_seconds() / 60.0
-                source = "live"
-            else:
-                # Pending: advance from the previous anchor by drive +
-                # service minutes.
-                eta = anchor
-                drive = stop.drive_time_from_prev_minutes or 0
-                service = stop.service_time_minutes or 15
-                eta = eta + timedelta(minutes=drive + service)
-                delay = (eta - (stop.scheduled_time or eta)).total_seconds() / 60.0
-                source = "live"
-            stop.write({
-                "eta_live": eta,
-                "eta_delay_minutes": round(delay, 1),
-                "eta_source": source,
-            })
-            anchor = eta
-        return ordered
+        """Delegates to the unified EtaEngine (Section C) — ONE authority.
+
+        The Phase-11 pipeline this class once owned is superseded by
+        eta_engine.EtaEngine.compute_job_eta (same anchor semantics:
+        actuals for executed stops, held ETAs for en_route, override wins,
+        delay propagated stop-by-stop). Kept as a compatibility entry
+        point; all production callers go through the engine."""
+        from ..services.eta_engine import EtaEngine
+        return EtaEngine(self.env).compute_job_eta(
+            job, anchor=anchor_time, source="live")
 
     # ── Customer-visible milestone (11.4) ────────────────────────────
 

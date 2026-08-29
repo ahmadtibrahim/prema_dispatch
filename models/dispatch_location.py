@@ -1466,10 +1466,10 @@ class PremaDispatchLocation(models.Model):
                 "service_minutes": unload_minutes or 0.0,
                 "wait_minutes":    max(total_minutes - (unload_minutes or 0.0), 0.0),
             })
-            self._recompute_sample_stats()
+            self._recompute_sample_stats(stop)
         return True
 
-    def _recompute_sample_stats(self):
+    def _recompute_sample_stats(self, stop=None):
         """Median dwell, last-10 dwell average, per-type loading/unloading
         averages — exact figures over the raw visit-sample table (Phase 6)."""
         self.ensure_one()
@@ -1491,6 +1491,20 @@ class PremaDispatchLocation(models.Model):
             vals["avg_unloading_minutes"] = sum(unload_svc) / len(unload_svc)
         if vals:
             self.write(vals)
+
+        # Unified ETA engine (Section C): service-time learning changed
+        # this facility's planning authority — recompute the pending jobs
+        # that touch it today so the new dwell median takes effect (the
+        # engine reads planning_service_time_minutes() at compute time).
+        if stop and stop.job_id and stop.job_id.scheduled_pickup:
+            from odoo.addons.prema_logistics_booking.services.eta_engine import (
+                EtaEngine,
+            )
+            day = stop.job_id.scheduled_pickup.date()
+            engine = EtaEngine(self.env)
+            for job in engine.jobs_touching_location(self, day):
+                engine.recompute_job(job)
+        return True
 
 
 class PremaDispatchLocationVisitSample(models.Model):

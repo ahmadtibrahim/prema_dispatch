@@ -10,6 +10,29 @@ class FleetVehicle(models.Model):
         ("pin_wheel", "Pin-Wheel"),
         ("turned", "Turned"),
     ], default="straight")
+
+    # ── Driver start profile (unified ETA engine, Section C) ─────────
+    # Where the truck starts its operational day. "driver_home" uses the
+    # driver's private home coordinates (res.partner.home_latitude/longitude,
+    # staff-only) and computes recommended_driver_leave_home_at =
+    # route start − pretrip − home→hub.
+    driver_start_mode = fields.Selection([
+        ("depot", "Depot / Truck Yard"),
+        ("hub", "Hub"),
+        ("driver_home", "Driver Home"),
+        ("prior_day_end", "Prior-Day End"),
+    ], string="Driver Start Mode", default="depot",
+        help="Where the truck starts its operational day. Prior-Day End = "
+             "last completed stop of the previous run (cross-day "
+             "positioning).")
+    driver_pretrip_minutes = fields.Integer(
+        string="Pre-Trip Inspection (min)", default=10,
+        help="Inspection time at the origin before the first leg — used to "
+             "back-compute the driver's leave-home time.")
+    driver_home_to_hub_minutes = fields.Integer(
+        string="Home → Hub Drive (min)", default=30,
+        help="Estimated drive from the driver's home to the hub/yard — "
+             "only relevant when Driver Start Mode = Driver Home.")
     straight_pallet_capacity = fields.Integer(default=12)
     pin_wheel_pallet_capacity = fields.Integer(default=13)
     turned_pallet_capacity = fields.Integer(default=14)

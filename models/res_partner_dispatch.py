@@ -15,6 +15,20 @@ class ResPartnerDispatch(models.Model):
         help="Internal PBX / softphone extension used for driver-to-dispatch calls.",
     )
 
+    # Private driver home coordinates — staff-only (the driver start
+    # profile reads them under sudo; never serialized to the driver app
+    # as a lat/lng, only as the computed leave-home time).
+    home_latitude = fields.Float(
+        string="Home Latitude", digits=(16, 7),
+        groups="prema_dispatch.group_dispatcher,prema_dispatch.group_dispatch_manager",
+        help="Driver's home coordinates for the Driver Home start mode — "
+             "private, staff-only.")
+    home_longitude = fields.Float(
+        string="Home Longitude", digits=(16, 7),
+        groups="prema_dispatch.group_dispatcher,prema_dispatch.group_dispatch_manager",
+        help="Driver's home coordinates for the Driver Home start mode — "
+             "private, staff-only.")
+
     # Many2one to GeoTab driver registry — user picks from dropdown.
     # On save this syncs back to x_geotab_driver_id (Char) that the ELD integration uses.
     geotab_driver_link_id = fields.Many2one(

@@ -6,6 +6,13 @@
         <field name="inherit_id" ref="premafirm_ai_engine.fleet_vehicle_form_geotab_inherit"/>
         <field name="arch" type="xml">
             <xpath expr="//page[@name='truck_config']//field[@name='x_gvwr_lbs']" position="after">
+                <separator string="Driver Start Profile"/>
+                <group string="Driver Start Profile (ETA Engine)">
+                    <field name="driver_start_mode"/>
+                    <field name="driver_pretrip_minutes"/>
+                    <field name="driver_home_to_hub_minutes"
+                           invisible="driver_start_mode != 'driver_home'"/>
+                </group>
                 <separator string="Pallet Layout Capacity"/>
                 <field name="default_pallet_layout"/>
                 <field name="straight_pallet_capacity"/>

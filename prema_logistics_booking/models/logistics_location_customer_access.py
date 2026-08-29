@@ -330,6 +330,12 @@ class PremaDispatchLocationExtension(models.Model):
              "during consolidation — a dispatcher must confirm the schedule "
              "before it is treated as authoritative. Never auto-guessed.",
     )
+    hours_verified = fields.Boolean(
+        string="Hours Verified", default=False,
+        help="Dispatcher-confirmed operating hours. Until verified, the "
+             "driver app and booking detail show 'HOURS NOT VERIFIED' and "
+             "the unified ETA engine grades confidence low.",
+    )
     legacy_hours_source = fields.Char(
         string="Legacy Hours Source",
         help="Names/ids of the legacy saved location(s) whose hours were "

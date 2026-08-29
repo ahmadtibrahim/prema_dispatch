@@ -440,6 +440,13 @@ class PremaDispatchJob(models.Model):
              "this is the authoritative start used for scheduling; otherwise "
              "the Recommended Operational Start stands.",
     )
+    recommended_driver_leave_home_at = fields.Datetime(
+        string="Driver Leave Home", readonly=True, copy=False,
+        help="When the driver must leave home when the truck's start "
+             "profile is Driver Home: route start − pretrip − home→hub. "
+             "Written by the unified ETA engine; False for other start "
+             "modes.",
+    )
 
     @api.depends("stop_ids.earliest_time", "stop_ids.latest_time",
                  "stop_ids.exact_time", "stop_ids.deadline_time",
@@ -1345,6 +1352,16 @@ class PremaDispatchJob(models.Model):
                     and job.stage_id.is_cancelled
                     and not pre_stage.get(job.id, job.stage_id).is_cancelled):
                 job._release_from_load_plans()
+        # Unified ETA engine: reassignment changes the start origin
+        # (driver home / hub / depot) — shift the estimates. Lazy import:
+        # prema_logistics_booking loads after this module.
+        if (not self.env.context.get("_eta_engine_write")
+                and ("vehicle_id" in vals or "driver_id" in vals)):
+            from odoo.addons.prema_logistics_booking.services.eta_engine import (
+                EtaEngine,
+            )
+            for job in self:
+                EtaEngine(self.env).recompute_job(job)
         return result
 
     def _check_vehicle_compatibility(self, vehicle):
@@ -3182,6 +3199,14 @@ class PremaDispatchJob(models.Model):
                     "status": stop.status,
                     "job_id": job.id,
                     "job_name": job.name,
+                    # Unified ETA engine — the truck-card drill-down reads
+                    # these (falling back to scheduled_time where absent).
+                    "travel_arrival_at": self._dt_iso_utc(stop.travel_arrival_at),
+                    "facility_service_start_at": self._dt_iso_utc(
+                        stop.facility_service_start_at),
+                    "customer_eta_at": self._dt_iso_utc(stop.customer_eta_at),
+                    "eta_source": stop.eta_source,
+                    "eta_delay_minutes": stop.eta_delay_minutes,
                 })
 
             # Primary job for the truck card: the job that actually has a stop
@@ -3627,6 +3652,21 @@ class PremaDispatchJob(models.Model):
             "estimated_departure": self._dt_iso_utc(s.estimated_departure),
             "actual_arrival_time": self._dt_iso_utc(s.actual_arrival_time),
             "actual_departure_time": self._dt_iso_utc(s.actual_departure_time),
+            # ── Unified ETA engine (Section C) ──────────────────────
+            "travel_arrival_at": self._dt_iso_utc(s.travel_arrival_at),
+            "facility_service_start_at": self._dt_iso_utc(s.facility_service_start_at),
+            "planned_departure_at": self._dt_iso_utc(s.planned_departure_at),
+            "customer_eta_at": self._dt_iso_utc(s.customer_eta_at),
+            "actual_service_start": self._dt_iso_utc(s.actual_service_start),
+            "eta_live": self._dt_iso_utc(s.eta_live),
+            "eta_delay_minutes": s.eta_delay_minutes,
+            "eta_source": s.eta_source,
+            "eta_confidence": s.eta_confidence,
+            "hours_verified": bool(loc and loc.hours_verified),
+            "hours_not_verified": bool(
+                s.operating_hours_snapshot and loc and not loc.hours_verified),
+            "recommended_driver_leave_home_at": self._dt_iso_utc(
+                job.recommended_driver_leave_home_at),
             "job_summary": s.job_id._driver_job_summary(),
             "equipment_type": job.equipment_type or "",
             "requires_reefer": bool(job.requires_reefer),

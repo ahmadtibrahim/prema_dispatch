@@ -657,10 +657,22 @@ class DispatchOptimizationService:
         for i, entry in enumerate(result["suggested_order"]):
             seq = (i + 1) * 10
             if entry["stop_id"]:
-                Stop.browse(entry["stop_id"]).write({
+                stop = Stop.browse(entry["stop_id"])
+                # Unified ETA engine (Section C): the consolidation's walk
+                # is an ESTIMATE — write the ETA fields, never the schedule.
+                # scheduled_time stays the schedule authority (finalizer /
+                # dispatcher / driver edit); the optimizer only seeds it
+                # when nothing else set it.
+                eta_vals = {
                     "sequence": seq,
-                    "scheduled_time": entry["eta"],
-                })
+                    "travel_arrival_at": entry["eta"],
+                    "facility_service_start_at": entry["eta"],
+                    "planned_departure_at": entry["eta"],
+                    "customer_eta_at": entry["eta"],
+                }
+                if not stop.scheduled_time:
+                    eta_vals["scheduled_time"] = entry["eta"]
+                stop.write(eta_vals)
             else:
                 # Skip if a prior Auto Plan / consolidation pass already
                 # created this exact leg (same job, type, location) — avoids
@@ -682,13 +694,21 @@ class DispatchOptimizationService:
                         limit=1,
                     )
                 if existing:
-                    existing.write({
+                    # Same rule as real stops: ETA fields, schedule only
+                    # when unset (schedule authority preserved).
+                    eta_vals = {
                         "sequence": seq,
-                        "scheduled_time": entry["eta"],
+                        "travel_arrival_at": entry["eta"],
+                        "facility_service_start_at": entry["eta"],
+                        "planned_departure_at": entry["eta"],
+                        "customer_eta_at": entry["eta"],
                         "service_time_minutes": 10,
                         "pod_required": True,
                         "cross_dock_origin_stop_id": origin_stop_id or existing.cross_dock_origin_stop_id.id or False,
-                    })
+                    }
+                    if not existing.scheduled_time:
+                        eta_vals["scheduled_time"] = entry["eta"]
+                    existing.write(eta_vals)
                     continue
                 cross_dock_legs += 1
                 is_drop = entry["cross_dock_type"] == "drop"
@@ -698,6 +718,10 @@ class DispatchOptimizationService:
                     "stop_type": entry["stop_type"],
                     "address": entry["address"],
                     "saved_location_id": entry["location_id"],
+                    "travel_arrival_at": entry["eta"],
+                    "facility_service_start_at": entry["eta"],
+                    "planned_departure_at": entry["eta"],
+                    "customer_eta_at": entry["eta"],
                     "scheduled_time": entry["eta"],
                     "pallets_in": entry["pallets_in"],
                     "pallets_out": entry["pallets_out"],

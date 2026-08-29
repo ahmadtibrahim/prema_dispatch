@@ -104,6 +104,21 @@
                             <field name="eta_delay_minutes" readonly="1"
                                    string="Delay (min)"/>
                             <field name="eta_source" readonly="1" string="ETA Source"/>
+                            <field name="eta_confidence" readonly="1"/>
+                            <field name="travel_arrival_at" readonly="1"
+                                   string="Travel Arrival"/>
+                            <field name="facility_service_start_at" readonly="1"
+                                   string="Service Start"/>
+                            <field name="planned_departure_at" readonly="1"
+                                   string="Planned Departure"/>
+                            <field name="customer_eta_at" readonly="1"
+                                   string="Customer ETA"/>
+                            <field name="actual_service_start" readonly="1"
+                                   string="Actual Service Start"/>
+                            <div class="text-warning" style="font-size:11px"
+                                 invisible="saved_location_id.hours_verified or not operating_hours_snapshot">
+                                <i class="fa fa-exclamation-triangle me-1"/>HOURS NOT VERIFIED — confirm facility hours before relying on this ETA.
+                            </div>
                         </group>
                     </group>
                     <group>

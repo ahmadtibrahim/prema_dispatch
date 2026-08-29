@@ -280,8 +280,41 @@ class PremaDispatchStop(models.Model):
     eta_source = fields.Selection([
         ("scheduled", "Scheduled"),
         ("live", "Live"),
+        ("actual", "Actual"),
         ("override", "Dispatcher Override"),
     ], string="ETA Source", default="scheduled", readonly=True)
+
+    # ── Unified ETA engine (Section C) — ONE authority ────────────────
+    # Written by EtaEngine.compute_job_eta on every schedule change,
+    # transition (arrive / complete / restore / driver update) and
+    # service-time learning tick. NEVER written by the optimizer as a
+    # schedule substitute — scheduled_time stays the schedule authority.
+    travel_arrival_at = fields.Datetime(
+        string="Travel Arrival", readonly=True,
+        help="Physical arrival at the facility, before any window waiting "
+             "(unified ETA engine).")
+    facility_service_start_at = fields.Datetime(
+        string="Service Start", readonly=True,
+        help="When service actually begins — facility-hours/window "
+             "adjusted (unified ETA engine).")
+    planned_departure_at = fields.Datetime(
+        string="Planned Departure", readonly=True,
+        help="Service start + service minutes (unified ETA engine).")
+    customer_eta_at = fields.Datetime(
+        string="Customer ETA", readonly=True,
+        help="The customer-facing promise shown on the tracking page "
+             "(unified ETA engine).")
+    actual_service_start = fields.Datetime(
+        string="Actual Service Start", readonly=True,
+        help="Actual arrival stamped on arrival/completion; cleared on "
+             "restore (unified ETA engine).")
+    eta_confidence = fields.Selection([
+        ("high", "High"),
+        ("medium", "Medium"),
+        ("low", "Low"),
+    ], string="ETA Confidence", readonly=True,
+        help="Data-quality grade: high = exact appointment + verified "
+             "hours; low = unverified/missing hours.")
     planning_only = fields.Boolean(
         string="Planning Anchor Placeholder",
         default=False,
@@ -1634,6 +1667,31 @@ class PremaDispatchStop(models.Model):
         if any(k in vals for k in ("sequence", "status", "address", "scheduled_time",
                                     "pin_lat", "pin_lng", "pallets_in", "pallets_out", "shared_pallet_number")):
             self._notify_driver_route_changed()
+
+        # Unified ETA engine (Section C): arrival/completion stamps the
+        # actual service start; restore clears it.
+        if vals.get("status") in ("arrived", "completed"):
+            for stop in self:
+                if stop.actual_arrival_time and not stop.actual_service_start:
+                    stop.with_context(_eta_engine_write=True).write(
+                        {"actual_service_start": stop.actual_arrival_time})
+        elif vals.get("status") == "pending":
+            for stop in self:
+                if stop.actual_service_start:
+                    stop.with_context(_eta_engine_write=True).write(
+                        {"actual_service_start": False})
+
+        # Live recalculation: any schedule-affecting change shifts
+        # downstream ETAs. The engine's own writes are excluded (the
+        # _eta_engine_write context flag + eta_* fields never trigger).
+        # Lazy import: prema_logistics_booking loads after this module.
+        from odoo.addons.prema_logistics_booking.services.eta_engine import (
+            EtaEngine, RECALC_TRIGGER_FIELDS,
+        )
+        if (not self.env.context.get("_eta_engine_write")
+                and any(k in vals for k in RECALC_TRIGGER_FIELDS)):
+            for job in self.mapped("job_id"):
+                EtaEngine(self.env).recompute_job(job)
         return result
 
     def _estimate_pickup_pallets(self):

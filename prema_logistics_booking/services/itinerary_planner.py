@@ -508,10 +508,19 @@ class ItineraryPlanner:
             tz_obj = tz(timezone or "America/Toronto")
             local_day = probe.astimezone(tz_obj).date()
             def _window_to_utc(hour_float):
-                local_dt = datetime(
-                    local_day.year, local_day.month, local_day.day,
-                    int(hour_float), int((hour_float % 1) * 60),
-                )
+                # hour=24 (OPEN_ALL snapshots) would crash datetime() with a
+                # ValueError — roll to the next day 00:00 instead. Anything
+                # past 24 is clamped the same way (defensive).
+                if hour_float >= 24.0:
+                    next_day = local_day + timedelta(days=1)
+                    local_dt = datetime(
+                        next_day.year, next_day.month, next_day.day, 0, 0,
+                    )
+                else:
+                    local_dt = datetime(
+                        local_day.year, local_day.month, local_day.day,
+                        int(hour_float), int((hour_float % 1) * 60),
+                    )
                 return tz_obj.localize(local_dt).astimezone(tz("UTC"))
             open_utc = _window_to_utc(window[0])
             close_utc = _window_to_utc(window[1])

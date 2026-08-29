@@ -44,6 +44,8 @@
                         </div>
                         <field name="facility_hours_summary" readonly="1"
                                string="Hours Summary"/>
+                        <field name="hours_verified" string="Hours Verified"
+                               help="Until verified, the driver app and booking detail show 'HOURS NOT VERIFIED' and ETA confidence is graded low."/>
                         <field name="facility_hours_ids" nolabel="1"
                                context="{'default_facility_id': id}">
                             <list string="Facility Hours" editable="bottom">
