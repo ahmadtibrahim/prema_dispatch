@@ -472,14 +472,24 @@ class PremaDispatchJob(models.Model):
                 local = dt.astimezone(tz(tz_name))
                 return round(local.hour + local.minute / 60.0, 4)
             loc = stop.saved_location_id
+            # Map dispatch timing fields to planner timing_type (same
+            # mapping as route_adviser_service.stop_dict()).
+            timing = "flexible"
+            if stop.time_window_type == "window":
+                timing = "time_window"
+            elif stop.time_window_type == "exact" and stop.exact_time:
+                timing = "exact_appointment"
+            elif stop.time_window_type == "deadline" and stop.deadline_time:
+                timing = "deadline"
             plan_stops.append({
                 "stop_key": "job_stop_%d" % stop.id,
+                "stop_type": "pickup" if stop.stop_type == "pickup" else "delivery",
                 "location_name": stop.address or (loc.name if loc else ""),
                 "latitude": stop.latitude or (loc.pin_lat if loc else 0.0),
                 "longitude": stop.longitude or (loc.pin_lng if loc else 0.0),
                 "timezone": tz_name,
                 "operating_hours_snapshot": stop.operating_hours_snapshot,
-                "timing_type": stop.timing_type or "flexible",
+                "timing_type": timing,
                 "window_start": _hour(stop.earliest_time),
                 "window_end": _hour(stop.latest_time),
                 "appointment_time": _hour(stop.exact_time),
