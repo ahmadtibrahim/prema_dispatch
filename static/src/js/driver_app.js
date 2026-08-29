@@ -394,9 +394,18 @@ function renderStartWork(){
         return;
     }
     if(wd.work_started_at){
+        // Completed-day progress (defect #22): a visible X of Y bar, not
+        // just "N remaining".
+        const done=S.stops.filter(s=>isClosedStopStatus(s.status)).length;
+        const total=S.stops.length;
+        const pct=total?Math.round((done/total)*100):0;
         card.innerHTML=`<div class="da-startwork-card da-startwork-progress">
             <div class="da-startwork-label">🚛 WORK IN PROGRESS</div>
-            <div class="da-startwork-sub">Started ${fmtStopTime(wd.work_started_at)} · ${S.stops.filter(s=>!isClosedStopStatus(s.status)).length} stop${S.stops.filter(s=>!isClosedStopStatus(s.status)).length===1?"":"s"} remaining</div>
+            <div class="da-startwork-sub">Started ${fmtStopTime(wd.work_started_at)} · ${total-done} stop${total-done===1?"":"s"} remaining</div>
+            <div class="da-startwork-bar" style="height:8px;border-radius:5px;background:#e2e4ea;margin:8px 0 4px;overflow:hidden">
+                <div class="da-startwork-bar-fill" style="height:100%;width:${pct}%;background:#27ae60;border-radius:5px;transition:width .4s"></div>
+            </div>
+            <div class="da-startwork-sub">${done} of ${total} stops completed (${pct}%)</div>
         </div>`;
         return;
     }
@@ -497,7 +506,7 @@ function startRealTimePoll() {
     startBusListener();
 }
 
-async function refreshRouteNow() {
+async function refreshRouteNow(force=false) {
     try {
         const day = await rpc("/dispatch/driver/stops", { date_str:S.selDate });
         S.refreshStale = false;
@@ -513,6 +522,14 @@ async function refreshRouteNow() {
             toast("🔄 Route updated");
             if (S.mapsReady) initRouteMap();
         }
+        if (force) {
+            // Manual refresh (defect #22): the driver asked — report
+            // success even when nothing changed, and re-sync the load plan.
+            S.loadPlan = await ensurePickupLoadPlan(true);
+            renderLoadPlanChip();
+            if (typeof window.__v7GuideRefresh === "function") window.__v7GuideRefresh();
+            toast("🔄 Route refreshed");
+        }
     } catch(e) {
         // Never silent: after two consecutive failed polls flag the day as
         // stale so the driver knows the board may be outdated (offline).
@@ -522,6 +539,16 @@ async function refreshRouteNow() {
             toast("⚠ Connection weak — route may be out of date");
         }
         console.warn("Refresh poll failed", e);
+    }
+}
+
+async function refreshNow(){
+    // Manual refresh button (defect #22): visible feedback, idempotent.
+    const btn=q("#refreshBtn");
+    if (btn) { btn.classList.add("da-refreshing"); btn.disabled = true; }
+    try { await refreshRouteNow(true); }
+    finally {
+        if (btn) { btn.classList.remove("da-refreshing"); btn.disabled = false; }
     }
 }
 
@@ -627,6 +654,7 @@ const APP = window.APP = {
     confirmFinishStop:() => confirmFinishStop(),
     finishNextStop:  () => finishNextStop(),
     finishSchedule:  () => finishSchedule(),
+    refreshNow:      () => refreshNow(),
     signOut:      () => { if(confirm("Sign out?")) { clearInterval(S.refreshPoll); stopBusListener(); window.location.href="/web/session/logout?redirect=/dispatch/driver"; }},
 };
 
@@ -1682,10 +1710,18 @@ function renderEvidence(stop){
 }
 
 function renderUploadStatus(stopId,evType){
-    const row=q(`#evStatusRow-${stopId}-${evType}`);
+    // Targets EVERY status row for this stop/type — the evidence screens'
+    // id-based row AND the POPP rows that v7 Step 4 / the legacy intake
+    // pallet cards render (defect #21: POPP uploads were invisible because
+    // no POPP screen rendered the row).
     const st=S.uploadState;
-    if(!row||!st||st.stopId!==stopId||st.evType!==evType||st.phase==="idle"){ if(row)row.style.display="none"; return; }
-    row.style.display="flex";
+    const rows=[...(document.querySelectorAll(
+        `#evStatusRow-${stopId}-${evType}, .da-ev-status-row[data-stop="${stopId}"][data-evtype="${evType}"]`))];
+    if(!rows.length) return;
+    if(!st||st.stopId!==stopId||st.evType!==evType||st.phase==="idle"){
+        rows.forEach(row=>{ row.style.display="none"; });
+        return;
+    }
     const parts=[`<span class="da-ev-status-file">${esc(st.filename||"")}</span>`];
     if(st.phase==="preparing") parts.push(`<span class="da-ev-status-msg">Preparing file…</span>`);
     else if(st.phase==="uploading") parts.push(`<span class="da-ev-status-msg">Uploading ${st.progress||0}%…</span><progress class="da-ev-progress" max="100" value="${st.progress||0}"></progress>`);
@@ -1696,7 +1732,7 @@ function renderUploadStatus(stopId,evType){
         `<button class="da-btn da-btn-secondary da-btn-sm" onclick="retryEvidenceUpload(${stopId},'${evType}')">Retry</button>`+
         `<button class="da-btn da-btn-ghost da-btn-sm" onclick="cancelEvidenceUpload(${stopId},'${evType}')">Dismiss</button>`
     );
-    row.innerHTML=parts.join("");
+    rows.forEach(row=>{ row.style.display="flex"; row.innerHTML=parts.join(""); });
 }
 
 function renderFinishProof(){
@@ -2391,7 +2427,10 @@ function renderPickupIntake(){
     const step=stop?.pickup_step_state||{};
     const expected=stop?.job_summary?.expected_pallet_count ?? step.expected ?? stop?.pallets_in ?? 0;
     if(title) title.textContent=`Pickup Intake — ${stopCompany(stop) || "Pickup"}`;
-    const steps=[[1,"Confirm"],[2,"Stops"],[3,"Pallets"],[4,"Save"]];
+    // Load-plan labels: the legacy tab names ("Confirm/Stops/Pallets")
+    // misled against v7's step vocabulary — the SAME meanings now share
+    // the v7 step names.
+    const steps=[[1,"Pallet Count"],[2,"Delivery Stops"],[3,"Destinations"],[4,"Save"]];
     let html=`<div class="da-pickup-steps">${steps.map(([id,label])=>`<button class="da-pickup-step ${flow.step===id?"active":""}" type="button" data-action="pickup-set-step" data-step="${id}">${label}</button>`).join("")}</div>`;
     if(flow.step===1){
         const variance=Number(flow.actual||0)-Number(expected||0);
@@ -2457,7 +2496,7 @@ function renderPickupIntake(){
                 }).join("")}</div>
                 <div class="da-pallet-sub">Assigned: ${selected.length} stop(s)</div>
                 <div class="da-pallet-shared">${selected.length>1 ? `Shared Pallet — ${selected.length} Stops` : "Single Stop Pallet"}</div>
-                <div class="da-popp-box">${poppPhotoHtml(item)}</div>
+                <div class="da-popp-box">${poppPhotoHtml(item, currentPickupStop()?.id)}</div>
             </div>`;
         }).join("") || `<div class="da-pickup-section"><div class="da-pickup-note">Save actual pallet count first to create physical pallets.</div></div>`;
         html+=`<div class="da-pickup-row">
@@ -3068,8 +3107,25 @@ function resolveStampCoords(stop){
     };
 }
 
-function stampedEvidenceFilename(name){
-    const base=(name||"evidence").replace(/\.[^.]+$/, "");
+function slugifyEvidencePart(t){
+    return String(t||"").replace(/[^A-Za-z0-9]+/g,"_").replace(/^_+|_+$/g,"").slice(0,32) || "evidence";
+}
+function stampedEvidenceFilename(name, ctx){
+    // Filename convention (defect #21): evidence names carry WHO (the
+    // stop / physical pallet), WHAT (type), and WHEN (capture stamp) —
+    // never raw camera names like IMG_2456_stamped.jpg. The burned-in
+    // canvas stamp remains the visual record; the filename is the
+    // sortable, searchable label in Documents and the invoice trail.
+    ctx = ctx || {};
+    const tag = ctx.stampTag || "";
+    if (ctx.evType === "popp" && ctx.itemName) {
+        return `PALLET_${slugifyEvidencePart(ctx.itemName)}_POPP${tag ? "_" + tag : ""}.jpg`;
+    }
+    if (ctx.stop) {
+        const stopName = slugifyEvidencePart(ctx.stop.company_name || ctx.stop.address || "stop");
+        return `${stopName}_${String(ctx.evType || "evidence").toUpperCase()}${tag ? "_" + tag : ""}.jpg`;
+    }
+    const base = (name || "evidence").replace(/\.[^.]+$/, "");
     return `${base}_stamped.jpg`;
 }
 
@@ -3133,8 +3189,19 @@ async function maybeBuildStampedEvidence(stopId, evType, file){
             ctx.fillText(line, boxX + pad, boxY + pad + (idx * lineHeight));
         });
 
+        // Filename convention (defect #21): PALLET_<pallet>_POPP_<stamp>
+        // or <stop>_<TYPE>_<stamp> — the camera's raw name never ships.
+        let poppItemName = "";
+        if (evType === "popp") {
+            const poppItem = (S.uploadState?.palletId && loadPlanItems().find(i => i.id === S.uploadState.palletId));
+            poppItemName = poppItem?.name || "";
+        }
+        const stampTag = `${dateText.replace(/\//g, "")}_${timeText.replace(/:/g, "")}`;
         return {
-            filename: stampedEvidenceFilename(file.name),
+            filename: stampedEvidenceFilename(file.name, {
+                evType, stop, stampTag,
+                itemName: poppItemName,
+            }),
             data_b64: canvas.toDataURL("image/jpeg", 0.92).split(",")[1],
         };
     }catch(err){
@@ -3316,13 +3383,21 @@ function openPoppCamera(stopId, itemId){
     });
     input.click();
 }
-function poppPhotoHtml(item){
+function poppPhotoHtml(item, stopId){
     const photos=item.popp_photos||[];
+    // POPP upload visibility (defect #21): the pallet card renders its own
+    // status row (renderUploadStatus now updates every .da-ev-status-row
+    // matching the stop/type) and counts per-pallet offline queue entries.
+    let pendingPopp=0;
+    try{ pendingPopp=(S.pendingQueue||[]).filter(e=>e.evType==="popp" && Number((e.meta||{}).pallet_id)===Number(item.id)).length; }
+    catch(_){}
     return `<div class="da-pallet-sub">POPP — Proof of Pickup Pallet ${photos.length>=4 ? "(max 4)" : ""}</div>
         <div class="da-popp-photos">${photos.map(p=>`<div class="da-popp-photo"><img src="${p.url}" alt="${esc(p.name)}"/><div class="da-popp-photo-actions">
             <button class="da-btn da-btn-ghost da-btn-sm" type="button" data-action="pickup-popp-del" data-item-id="${item.id}" data-att-id="${p.id}" title="Remove photo">✕</button>
             <button class="da-btn da-btn-ghost da-btn-sm" type="button" data-action="pickup-popp-retake" data-item-id="${item.id}" data-att-id="${p.id}" title="Retake photo">↻</button>
         </div></div>`).join("")}</div>
+        ${pendingPopp?`<div class="da-ev-pending">⏳ Pending Upload (${pendingPopp}) — retries automatically when connected</div>`:""}
+        ${stopId?`<div class="da-ev-status-row" data-stop="${stopId}" data-evtype="popp" style="display:none"></div>`:""}
         <button class="da-btn da-btn-sm ${photos.length>=4?"da-btn-ghost":"da-btn-secondary"}" type="button" data-action="pickup-popp-photo" data-item-id="${item.id}" ${photos.length>=4?"disabled aria-disabled=\"true\"":""}>
             ${photos.length ? `📷 Add Photo (${photos.length}/4)` : "📷 POPP — TAKE PHOTO"}
         </button>`;
@@ -4450,7 +4525,14 @@ async function reloadDay(){
         applyDay(d);
         S.refreshStale = false;
     }catch(e){
+        // defect #22: the silent catch hid every failed post-action sync.
+        // Same two-strike messaging as the poll — one toast per outage,
+        // never a toast storm (18 call sites).
         S.refreshStale = (S.refreshStale||0) + 1;
+        if (S.refreshStale === 2) {
+            S.refreshStale = Infinity;
+            toast("⚠ Sync failed — pull refresh or check connection");
+        }
         console.warn("reloadDay failed", e);
     }
 }

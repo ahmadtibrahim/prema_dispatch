@@ -138,14 +138,36 @@
     }
 
     function stopChoicesForItem(item) {
+        // Destination choices, in authority order:
+        //  1. the load-plan group (plan-level view of the job's stops)
+        //  2. the item's OWN delivery_choices (serialized with the item —
+        //     survives a missing load_plan_job group — the Step-2 defect:
+        //     "No delivery stop assigned" fired while delivery_stop_id was set)
+        //  3. a synthesized single choice from the item's assigned stop.
+        // A pallet with an assigned destination is NEVER rendered as
+        // unassigned just because the plan group is absent.
         const group = (S.loadPlan?.available_stops || []).find(g => g.job_id === item.job_id);
-        return group?.stops || [];
+        if (group?.stops?.length) return group.stops;
+        if ((item.delivery_choices || []).length) return item.delivery_choices;
+        if (item.delivery_stop_id) {
+            return [{
+                stop_id: item.delivery_stop_id,
+                sequence: 0,
+                customer: item.delivery_stop_name || "Assigned destination",
+                status: "pending",
+            }];
+        }
+        return [];
     }
 
     function pickupState(stop) {
         const summary = typeof pickupSummary === "function" ? pickupSummary(stop) : {};
         const items = itemsForPickup(stop);
-        const destinationsDone = items.length > 0 && items.every(i => (i.stops || []).length > 0);
+        // An item with delivery_stop_id is assigned even when its
+        // allocation rows are missing (the Step-2 data defect: the
+        // destination existed on the item but the flow demanded stops).
+        const destinationsDone = items.length > 0 && items.every(
+            i => (i.stops || []).length > 0 || i.delivery_stop_id);
         const positionsDone = items.length > 0 && items.every(i => !!positionForItem(i.id));
         const photosDone = items.length > 0 && items.every(i => i.popp_complete || (i.popp_photos || []).length > 0);
         const proofRequired = typeof proofRequiredForStop === "function" ? proofRequiredForStop(stop) : !!stop.pop_required;
@@ -158,6 +180,17 @@
             const queue = typeof loadPendingQueue === "function" ? (loadPendingQueue() || []) : (S.pendingQueue || []);
             return queue.some(e => Number(e.stopId) === Number(stopId) && (!type || e.evType === type));
         } catch (_) { return false; }
+    }
+
+    function pendingPoppForItem(itemId) {
+        // Offline POPP queue entries carry the pallet id in meta — per-item
+        // pending count for the Step-4 pallet card (the stop-level
+        // hasPendingEvidence can't distinguish one pallet from another).
+        try {
+            const queue = (S.pendingQueue || []);
+            return queue.filter(e => e.evType === "popp"
+                && Number((e.meta || {}).pallet_id) === Number(itemId)).length;
+        } catch (_) { return 0; }
     }
 
     function progressDots(total, step) {
@@ -183,8 +216,35 @@
         if (stop.type === "pickup") await ensurePlan();
         guide = loadGuideDraft(stop);
         if (forceStep) guide.step = forceStep;
+        clampGuideToServerTruth(stop);
         ensureGuideOverlay().style.display = "flex";
         renderGuide();
+    }
+
+    function clampGuideToServerTruth(stop) {
+        // Guide-draft drift (defect #22): the localStorage draft remembers
+        // only step/unloadConfirmed, so a stale draft — or server state
+        // changed by Dispatch/another device — can silently skip the
+        // driver past work that is not actually done. Clamp the resumed
+        // step to the first gate the server truth says is still open.
+        if (!guide || !stop) return;
+        if (stop.type === "pickup") {
+            const st = pickupState(stop);
+            if (!st.items.length) return; // no plan/items — nothing to clamp against
+            let maxStep = 1;
+            if (st.destinationsDone) maxStep = Math.max(maxStep, 2);
+            if (st.positionsDone) maxStep = Math.max(maxStep, 3);
+            if (st.photosDone || st.summary?.gateReady) maxStep = Math.max(maxStep, 4);
+            if (st.proofDone) maxStep = Math.max(maxStep, 5);
+            guide.step = Math.min(guide.step, Math.max(maxStep, 1));
+        } else {
+            const required = typeof proofRequiredForStop === "function"
+                ? proofRequiredForStop(stop) : !!stop.pod_required;
+            const proof = (stop.pod_attachments || []).length > 0
+                || hasPendingEvidence(stop.id, "pod");
+            if (required && !proof) guide.step = Math.min(guide.step, 2);
+        }
+        guide.step = Math.max(1, Math.min(stop.type === "pickup" ? 6 : 3, guide.step));
     }
 
     function closeGuide() {
@@ -254,9 +314,12 @@
         }
         if (step === 4) {
             return `<div class="da-v7-note">Take the required pallet photos now. Photos stay attached to the same physical pallet through delivery.</div>` +
-                state.items.map(item => `<article class="da-v7-pallet"><div class="da-v7-pallet-head"><b>${html(item.name)}</b><span>${(item.popp_photos || []).length} photo${(item.popp_photos || []).length === 1 ? "" : "s"}</span></div>
+                state.items.map(item => { const pending = pendingPoppForItem(item.id);
+                    return `<article class="da-v7-pallet"><div class="da-v7-pallet-head"><b>${html(item.name)}</b><span>${(item.popp_photos || []).length} photo${(item.popp_photos || []).length === 1 ? "" : "s"}</span></div>
                     <div class="da-v7-photo-strip">${(item.popp_photos || []).map(p => `<img src="${html(p.url)}" alt="Pallet photo"/>`).join("")}</div>
-                    <button type="button" class="da-v7-btn da-v7-btn-secondary" data-v7="pallet-photo" data-item="${item.id}">📷 Take Pallet Photo</button></article>`).join("");
+                    ${pending ? `<div class="da-ev-pending">⏳ Pending Upload (${pending}) — retries automatically when connected</div>` : ""}
+                    <div class="da-ev-status-row" data-stop="${stop.id}" data-evtype="popp" style="display:none"></div>
+                    <button type="button" class="da-v7-btn da-v7-btn-secondary" data-v7="pallet-photo" data-item="${item.id}">📷 Take Pallet Photo</button></article>`; }).join("");
         }
         if (step === 5) {
             return `<div class="da-v7-note">Add only the pickup documents required for this stop. Multi-page scans are saved as one PDF.</div>${typeof renderEvidence === "function" ? renderEvidence(stop) : ""}`;
@@ -300,6 +363,12 @@
         const stop = (S.stops || []).find(s => s.id === guide.stopId) || S.stop;
         if (!stop) return closeGuide();
         const pickup = guide.mode === "pickup";
+        // Step NAMES (not just "Step 3 of 6") — the load-plan labels: the
+        // old number-only kicker forced the driver to recall what each
+        // step meant and diverged from the legacy intake tab labels.
+        const STEP_NAMES = pickup
+            ? ["Pallet Count", "Destinations", "Positions", "Pallet Photos", "Documents", "Review"]
+            : ["Unload", "Evidence", "Review"];
         const total = pickup ? 6 : 3;
         guide.step = Math.max(1, Math.min(total, guide.step));
 
@@ -323,7 +392,7 @@
                 const body = $("#v7GuideBody");
                 const back = $('[data-v7="back"]');
                 const cont = $('[data-v7="continue"]');
-                const kickerText = `${pickup ? "Pickup" : "Delivery"} · Step ${guide.step} of ${total}`;
+                const kickerText = `${pickup ? "Pickup" : "Delivery"} · Step ${guide.step} of ${total} — ${STEP_NAMES[guide.step - 1] || "Review"}`;
                 const titleText = stopTitle(stop);
                 const progressHtml = progressDots(total, guide.step);
                 const bodyHtml = pickup ? pickupStepBody(stop, guide.step) : deliveryStepBody(stop, guide.step);
@@ -876,4 +945,13 @@
 
     if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot, {once: true});
     else boot();
+
+    // Hook for the driver_app.js manual refresh (defect #22): the guide's
+    // closure state (guide/renderGuide) is unreachable from other scripts,
+    // so expose a guarded re-render entry point.
+    window.__v7GuideRefresh = function () {
+        try {
+            if (guide && $("#oGuidedV7")?.style.display !== "none") renderGuide();
+        } catch (_) {}
+    };
 })();

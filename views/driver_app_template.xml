@@ -55,6 +55,7 @@
       </div>
       <button class="da-icon-btn" onclick="APP.callDispatch()" title="Call Dispatch">📞</button>
       <button class="da-icon-btn" onclick="APP.openMapFull()" title="Fullscreen map">⛶</button>
+      <button id="refreshBtn" class="da-icon-btn" onclick="APP.refreshNow()" title="Refresh route">🔄</button>
       <button class="da-icon-btn" onclick="APP.openRouteSettings()" title="Route Options">⚙</button>
       <button class="da-icon-btn" onclick="APP.openChat()" title="Chat with Dispatcher" style="position:relative">
         💬<span id="chatUnread" class="da-chat-unread" style="display:none">!</span>

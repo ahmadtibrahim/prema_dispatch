@@ -1578,6 +1578,17 @@ class LogisticsBooking(models.Model):
         Alloc = self.env["prema.dispatch.pallet.stop.allocation"].sudo()
         physical_count = self.physical_pallets or self.pallets
         pallet_allocs = self._get_pallet_allocations()
+        # Booking-pallet links: the canonical 1:1 mapping for per-pallet
+        # allocations. Legacy bridges never wrote logistics_booking_pallet_id,
+        # leaving driver/load-plan rows with "no linked booking pallet".
+        # Link by pallet number only when the counts align 1:1 — never
+        # fabricate a link for split/per-stop legacy shapes.
+        booking_pallets = self.env["logistics.booking.pallet"].sudo().search(
+            [("booking_id", "=", self.id)]).sorted("sequence")
+        pallet_by_number = {
+            idx + 1: pallet
+            for idx, pallet in enumerate(booking_pallets)
+        } if len(booking_pallets) == max(physical_count, 1) else {}
 
         # Build backward-compat allocations from legacy shared_pallet_mode
         if not pallet_allocs and self.shared_pallet_mode and dispatch_delivery_stops:
@@ -1608,6 +1619,9 @@ class LogisticsBooking(models.Model):
                     "description": self.commodity or "",
                     "pallet_count": 1,
                     "weight_lbs": self.weight_lbs / max(physical_count, 1),
+                    "logistics_booking_pallet_id": (
+                        pallet_by_number.get(pallet_num, False).id
+                        if pallet_by_number else False),
                     "pickup_stop_id": created_origin.id if created_origin else False,
                     "delivery_stop_id": assigned_stops[0].id if assigned_stops else (
                         dispatch_delivery_stops[0].id if dispatch_delivery_stops else False

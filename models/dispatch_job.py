@@ -3925,11 +3925,18 @@ class PremaDispatchJob(models.Model):
             applied += 1
         return {"applied_groups": applied, "unresolved_numbers": unresolved}
 
-    def _actual_pallet_prefix(self):
+    def _actual_pallet_prefix(self, pickup_stop=None):
+        """Letter prefix for the physical pallet labels of ONE pickup stop.
+
+        Milk-run jobs pick up at several facilities: the prefix must name
+        the facility where THIS stop's pallets were actually received, not
+        the job's primary pickup location (the singleton assumption)."""
         self.ensure_one()
+        loc = (pickup_stop.saved_location_id if pickup_stop else False)
+        loc = loc or self.pickup_saved_location_id
         source = (
-            (self.pickup_saved_location_id.chain_name or self.pickup_saved_location_id.business_name or self.pickup_saved_location_id.name)
-            if self.pickup_saved_location_id else
+            (loc.chain_name or loc.business_name or loc.name)
+            if loc else
             (self.partner_id.name or self.name)
         ) or self.name or "Pallet"
         key = source.upper()
@@ -3946,7 +3953,7 @@ class PremaDispatchJob(models.Model):
         if not pickup_stop:
             return self.env["prema.dispatch.item"]
         actual_count = int(actual_count if actual_count is not None else (self.actual_received_pallet_count or self.expected_pallet_count or 0))
-        prefix = self._actual_pallet_prefix()
+        prefix = self._actual_pallet_prefix(pickup_stop=pickup_stop)
         current_items = self.item_ids.filtered(
             lambda item: item.consumes_floor_position and item.status != "cancelled" and item.pickup_stop_id.id == pickup_stop.id
         )
@@ -3997,8 +4004,8 @@ class PremaDispatchJob(models.Model):
     def _sync_actual_pallet_items(self, actual_count, pickup_stop=None):
         self.ensure_one()
         actual_count = int(actual_count or 0)
-        prefix = self._actual_pallet_prefix()
         pickup_stop = pickup_stop or self.stop_ids.filtered(lambda stop: stop.stop_type == "pickup" and not stop.planning_only)[:1]
+        prefix = self._actual_pallet_prefix(pickup_stop=pickup_stop)
         self._normalize_current_pickup_pallet_items(actual_count=actual_count, pickup_stop=pickup_stop)
         # PER-STOP scope: the confirmed count belongs to THIS pickup stop.
         # A job-wide floor list mixes in pallets from other (later)
@@ -4674,9 +4681,6 @@ class PremaDispatchJob(models.Model):
             if item.pickup_stop_id and item.pickup_stop_id.id != stop.id:
                 return {"success": False, "code": "pallet_not_found",
                         "error": "This pallet was not picked up at this stop."}
-            if len(item.popp_attachment_ids) >= 4:
-                return {"success": False, "code": "popp_limit",
-                        "error": "Maximum 4 POPP photos per pallet (spec §20)."}
 
         try:
             validated = decode_and_validate(data_b64, filename, category=ev_type)
@@ -4694,6 +4698,11 @@ class PremaDispatchJob(models.Model):
                     "name": dup.name, "url": f"/web/content/{dup.id}",
                     "message": "This file was already uploaded.",
                 }
+            # Cap AFTER the dedupe: a retry of an identical photo on a
+            # full bucket is "already uploaded", not a cap violation.
+            if is_popp and len(item.popp_attachment_ids) >= 4:
+                return {"success": False, "code": "popp_limit",
+                        "error": "Maximum 4 POPP photos per pallet (spec §20)."}
 
         try:
             att = self.env["ir.attachment"].create({

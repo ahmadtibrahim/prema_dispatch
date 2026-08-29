@@ -258,6 +258,46 @@ class PremaDispatchLoadPlan(models.Model):
             for r in reservations if r.related_pickup_stop_id
         }
 
+        # Delivery destinations travel WITH each item (delivery_choices),
+        # not only in the plan-level available_stops groups keyed by the
+        # load_plan_job link. A job whose pallets reached the plan without
+        # a job-link row (or a plan without the job) used to render Step 2
+        # with zero choices — "No delivery stop assigned by Dispatch" —
+        # even though item.delivery_stop_id was set (the Step-2 defect).
+        choices_by_job = {
+            job.id: [{
+                "stop_id": stop.id,
+                "sequence": stop.sequence,
+                "customer": stop.saved_location_id.business_name or stop.address,
+                "status": stop.status,
+                "city": stop.saved_location_id.city or "",
+                "state": stop.saved_location_id.province_code or "",
+            } for stop in job.stop_ids.filtered(
+                lambda s: s.stop_type == "dropoff" and not s.planning_only
+                and s.status != "cancelled").sorted("sequence")]
+            for job in self.load_plan_job_ids.filtered("active").mapped("job_id")
+        }
+
+        def _choices_for(item):
+            """Item-level destination choices — the plan group when the
+            job is on the plan, else the item's OWN job's dropoff stops
+            (the authoritative fallback that never leaves a pallet with a
+            delivery stop but no renderable choice)."""
+            if item.job_id and item.job_id.id in choices_by_job:
+                return choices_by_job[item.job_id.id]
+            if not item.job_id:
+                return []
+            return [{
+                "stop_id": stop.id,
+                "sequence": stop.sequence,
+                "customer": stop.saved_location_id.business_name or stop.address,
+                "status": stop.status,
+                "city": stop.saved_location_id.city or "",
+                "state": stop.saved_location_id.province_code or "",
+            } for stop in item.job_id.stop_ids.filtered(
+                lambda s: s.stop_type == "dropoff" and not s.planning_only
+                and s.status != "cancelled").sorted("sequence")]
+
         def item_payload(item):
             allocs = self.env["prema.dispatch.pallet.stop.allocation"].search([
                 ("dispatch_item_id", "=", item.id), ("active", "=", True),
@@ -279,6 +319,7 @@ class PremaDispatchLoadPlan(models.Model):
                 "popp_complete": bool(popp),
                 "delivery_stop_id": item.delivery_stop_id.id if item.delivery_stop_id else False,
                 "delivery_stop_name": _loc_label(item.delivery_stop_id),
+                "delivery_choices": _choices_for(item),
                 "stops": [{
                     "stop_id": a.stop_id.id, "sequence": a.stop_id.sequence,
                     "customer": a.stop_id.job_id.partner_id.name,
@@ -362,6 +403,10 @@ class PremaDispatchLoadPlan(models.Model):
             if not item:
                 return item
             item["stops"] = [{"stop_id": s["stop_id"], "sequence": s["sequence"]} for s in item.get("stops", [])]
+            item["delivery_choices"] = [
+                {"stop_id": c["stop_id"], "sequence": c["sequence"]}
+                for c in item.get("delivery_choices", [])
+            ]
             return item
 
         for pos in payload["positions"]:
