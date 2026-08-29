@@ -5,3 +5,6 @@ from . import test_phase2_eta_engine
 from . import test_portal_multistop_bridge
 from . import test_uat_consolidated_booking
 from . import test_phase3_step2_popp_refresh
+from . import test_phase4_temperature
+from . import test_phase9_10
+from . import test_phase11_isolation

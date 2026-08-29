@@ -3207,6 +3207,18 @@ class PremaDispatchJob(models.Model):
                     "customer_eta_at": self._dt_iso_utc(stop.customer_eta_at),
                     "eta_source": stop.eta_source,
                     "eta_delay_minutes": stop.eta_delay_minutes,
+                    # §8 popup panel — current-work / next-stop metadata
+                    # (timestamps, counts, small text; no binaries).
+                    "actual_arrival_time": self._dt_iso_utc(stop.actual_arrival_time),
+                    "actual_service_start": self._dt_iso_utc(stop.actual_service_start),
+                    "service_time_min": stop.service_time_minutes or 15,
+                    "pallets_in": stop.pallets_in or 0,
+                    "pallets_out": stop.pallets_out or 0,
+                    "appointment_required": bool(stop.appointment_required),
+                    "appointment_text": self._stop_appointment_text(stop),
+                    "facility_hours": self._stop_facility_hours(stop),
+                    "pop_required": bool(stop.pop_required),
+                    "pod_required": bool(stop.pod_required),
                 })
 
             # Primary job for the truck card: the job that actually has a stop
@@ -3218,6 +3230,14 @@ class PremaDispatchJob(models.Model):
             if primary_job and not driver:
                 driver = primary_job.driver_id.name if primary_job.driver_id else ""
 
+            # §8 structured progress panel (defined by prema_logistics_booking;
+            # guarded so this module works without it). Counts and
+            # timestamps only — the popup fetches evidence lazily.
+            progress = (
+                self._live_map_truck_progress(primary_job, stops, vehicle)
+                if primary_job and hasattr(self, "_live_map_truck_progress")
+                else {}
+            )
             trucks.append({
                 "id": vehicle.id,
                 "name": vehicle.name or "",
@@ -3232,6 +3252,7 @@ class PremaDispatchJob(models.Model):
                 "job_name": primary_job.name if primary_job else "",
                 "stops": stops,
                 "active_job_count": len(veh_jobs),
+                "progress": progress,
             })
 
         # Sort: trucks with GPS first, then by name
@@ -3247,14 +3268,23 @@ class PremaDispatchJob(models.Model):
     # ── Internal helpers ─────────────────────────────────────────
 
     @api.model
-    def _post_timeline(self, job, event_type, notes=None, stop=None):
-        """Create a timeline event for job. Safe to call from create/write."""
+    def _post_timeline(self, job, event_type, notes=None, stop=None,
+                       visit=None, pallet=None, evidence=None):
+        """Create a timeline event for job. Safe to call from create/write.
+
+        §10 identifiers: every timeline event may carry the physical
+        visit, pallet/item and evidence it refers to, so the Progress
+        timeline never degrades into an ambiguous shared bucket.
+        """
         try:
             self.env["prema.dispatch.timeline.event"].sudo().create({
                 "job_id": job.id,
                 "event_type": event_type,
                 "notes": notes or False,
                 "stop_id": stop.id if stop else False,
+                "visit_id": visit.id if visit else False,
+                "pallet_id": pallet.id if pallet else False,
+                "evidence_id": evidence.id if evidence else False,
                 "user_id": self.env.user.id,
             })
         except Exception:
@@ -3304,6 +3334,10 @@ class PremaDispatchJob(models.Model):
                     job.message_post(
                         body="All stops completed and POD received. Job automatically moved to Completed."
                     )
+                    # §9 feed: route completed.
+                    job._emit_feed(
+                        "route_completed", severity="info",
+                        message="All stops completed and POD received — route complete")
                     # DEFERRED INVOICE: created at operational completion
                     # (idempotent), then the existing review gate runs.
                     inv = job._completion_invoice()
@@ -4002,6 +4036,17 @@ class PremaDispatchJob(models.Model):
         return keepers.sorted(key=lambda item: (item.sequence, item.id))
 
     def _sync_actual_pallet_items(self, actual_count, pickup_stop=None):
+        result = self._sync_actual_pallet_items_impl(actual_count, pickup_stop)
+        # Pallet count changed → the onboard reefer set may have changed
+        # (Section 6 trigger list). Safe on every call; timeline noise is
+        # suppressed when the state did not change. Defined by the booking
+        # module (dispatch_job_extension) — guard keeps prema_dispatch
+        # standalone-safe.
+        if hasattr(self, "_recalc_temperature"):
+            self._recalc_temperature()
+        return result
+
+    def _sync_actual_pallet_items_impl(self, actual_count, pickup_stop=None):
         self.ensure_one()
         actual_count = int(actual_count or 0)
         pickup_stop = pickup_stop or self.stop_ids.filtered(lambda stop: stop.stop_type == "pickup" and not stop.planning_only)[:1]
@@ -4071,6 +4116,13 @@ class PremaDispatchJob(models.Model):
                     "stop_id": sole_delivery.id,
                     "unload_sequence": item.sequence,
                 } for item in created])
+            # §9 feed: one "pallet loaded" event per physical pallet
+            # confirmed at this pickup (item identifier for drill-down).
+            for item in created:
+                self._emit_feed(
+                    "pallet_loaded", stop=pickup_stop, item=item,
+                    message=f"Pallet {item.name} loaded at "
+                            f"{(pickup_stop and pickup_stop.address) or self.name}")
             return floor_items | created
         removable = floor_items[actual_count:]
         blocked = removable.filtered(lambda item: item.position_id or item.status in ("loaded", "in_transit", "partially_unloaded", "delivered"))
@@ -4728,6 +4780,11 @@ class PremaDispatchJob(models.Model):
                         "scan_page_index": meta.get("scan_page_index"),
                         "checksum_sha256": validated["checksum_sha256"],
                     })
+                # §9 feed: scan page uploaded (evidence id, no binaries).
+                stop.job_id._emit_feed(
+                    "scan_uploaded", stop=stop, evidence=ev_row,
+                    message=f"Scan page {meta.get('scan_page_index') or ''} — "
+                            f"{stop.address or stop.stop_type}")
                 return {
                     "success": True, "id": att.id, "name": att.name,
                     "url": f"/web/content/{att.id}", "mimetype": att.mimetype,
@@ -4753,7 +4810,13 @@ class PremaDispatchJob(models.Model):
                     stop.job_id, "popp_captured",
                     notes=f"POPP photo for pallet {item.name}",
                     stop=stop,
+                    pallet=item,
+                    evidence=ev_row,
                 )
+                # §9 feed: POPP uploaded (pallet + evidence identifiers).
+                stop.job_id._emit_feed(
+                    "evidence_popp", stop=stop, item=item, evidence=ev_row,
+                    message=f"POPP photo for pallet {item.name}")
                 return {
                     "success": True, "id": att.id, "name": att.name,
                     "url": f"/web/content/{att.id}", "mimetype": att.mimetype,
@@ -4783,7 +4846,14 @@ class PremaDispatchJob(models.Model):
                 "pod_uploaded" if ev_type == "pod" else "evidence_uploaded",
                 notes=f"{'POD' if ev_type == 'pod' else 'POP'} photo — {stop.address or stop.stop_type}",
                 stop=stop,
+                evidence=ev_row,
             )
+            # §9 feed: POP / POD uploaded (with the canonical evidence id).
+            stop.job_id._emit_feed(
+                "evidence_pod" if ev_type == "pod" else "evidence_pop",
+                stop=stop, evidence=ev_row,
+                message=f"{'POD' if ev_type == 'pod' else 'POP'} photo — "
+                        f"{stop.address or stop.stop_type}")
             return {
                 "success": True, "id": att.id, "name": att.name,
                 "url": f"/web/content/{att.id}", "mimetype": att.mimetype,
@@ -5274,6 +5344,9 @@ class PremaDispatchJob(models.Model):
                 "route":   f"{job.pickup_city} → {job.delivery_cities}" if job.pickup_city else job.name,
                 "pallets": job.max_onboard_pallets or job.approximate_skids or 0,
                 "stops":   stops_out,
+                "temperature": (
+                    job._driver_temperature_payload()
+                    if hasattr(job, "_driver_temperature_payload") else {}),
                 **job._driver_job_summary(),
             })
         self._apply_truck_onboard_counts(all_stops)
@@ -5687,8 +5760,23 @@ class PremaDispatchJob(models.Model):
                     "gps_stamp_lng":  data.get("lng", 0),
                     "gps_stamp_time": fields.Datetime.now(),
                 })
+                # §9 feed: physical arrival + pickup service start.
+                stop.job_id._emit_feed(
+                    "stop_arrival", stop=stop,
+                    message=f"Arrived at {stop.address or stop.stop_type}")
+                if stop.stop_type == "pickup":
+                    stop.job_id._emit_feed(
+                        "pickup_start", stop=stop,
+                        message=f"Pickup started at {stop.address or stop.stop_type}")
             elif action == "completed":
                 stop.action_mark_completed()
+                # §9 feed: pickup / delivery completion by stop type.
+                stop.job_id._emit_feed(
+                    "pickup_complete" if stop.stop_type == "pickup"
+                    else "delivery_complete",
+                    stop=stop,
+                    message=f"{'Pickup' if stop.stop_type == 'pickup' else 'Delivery'} "
+                            f"completed at {stop.address or stop.stop_type}")
             elif action in ("delayed", "issue"):
                 stop.write({"status": "issue"})
                 if data.get("delay_reason"):
@@ -5716,8 +5804,16 @@ class PremaDispatchJob(models.Model):
                     notes=stop.address or stop.stop_type,
                     stop=stop,
                 )
+                # §9 feed: stop skipped.
+                stop.job_id._emit_feed(
+                    "stop_skipped", stop=stop,
+                    message=f"Stop skipped: {stop.address or stop.stop_type}")
             elif action == "en_route":
                 stop.write({"status": "en_route"})
+                # §9 feed: en route.
+                stop.job_id._emit_feed(
+                    "en_route", stop=stop,
+                    message=f"En route to {stop.address or stop.stop_type}")
             elif action == "update_pin":
                 lat = data.get("lat")
                 lng = data.get("lng")
@@ -5741,6 +5837,10 @@ class PremaDispatchJob(models.Model):
                         stop.saved_location_id = loc.id
             elif action == "restore":
                 stop.action_restore_stop()
+                # §9 feed: stop restored.
+                stop.job_id._emit_feed(
+                    "stop_restored", stop=stop,
+                    message=f"Stop restored to the route: {stop.address or stop.stop_type}")
                 # Cancel Arrival on a consolidated physical visit undoes the
                 # WHOLE visit: arrive_physical_visit marked every linked stop
                 # arrived at once, so restore any peer that is still only
@@ -5802,6 +5902,10 @@ class PremaDispatchJob(models.Model):
             # Spec §34: propagate immediately to the tracking timeline.
             self._post_timeline(job, "route_started",
                                 notes=f"Route started by {self.env.user.name}.")
+            # §9 feed: route started.
+            job._emit_feed(
+                "route_started", severity="info",
+                message=f"Route started by {self.env.user.name}")
         return {
             "success": True,
             "job_id": job.id,

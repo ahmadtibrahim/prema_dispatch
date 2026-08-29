@@ -529,6 +529,8 @@ def _quote_error_context(kwargs, partner, pickup_fsa, delivery_fsa, error):
         "weight_lbs": weight_lbs, "shipment_type": kwargs.get("shipment_type") or "ltl",
         "temperature_mode": kwargs.get("temperature_mode") or "dry",
         "required_temperature_c": kwargs.get("required_temperature_c") or "",
+        "submitted_temperature_unit": (
+            kwargs.get("submitted_temperature_unit") or "c"),
         "total_weight_mode": kwargs.get("total_weight_mode") or "auto",
         "pallet_weight_mode": kwargs.get("pallet_weight_mode") or "auto",
         "pickup_stop_count": route_pickup_count or len(pickup_locs),
@@ -1490,14 +1492,23 @@ class LogisticsBookingPortal(http.Controller):
 
         shipment_type = kwargs.get("shipment_type") or "ltl"
         temperature_mode = kwargs.get("temperature_mode") or "dry"
-        from ..services.temperature_compat import parse_required_temperature_c
+        # Canonical Celsius intake (§3-§4): the form submits the RAW value in
+        # the customer's chosen unit (submitted_temperature_unit, default c);
+        # the server converts F→C BEFORE storing. JS only converts for live
+        # display — this line is the single conversion authority.
+        from ..services.temperature_service import parse_temperature
+        submitted_temperature_unit = (
+            (kwargs.get("submitted_temperature_unit") or "c").lower())
+        if submitted_temperature_unit not in ("c", "f"):
+            submitted_temperature_unit = "c"
         if temperature_mode != "reefer":
             # A Dry booking never carries a temperature requirement — drop any
             # stale value (the UI clears it too, this is the server authority).
             required_temperature_c = None
         else:
-            required_temperature_c = parse_required_temperature_c(
-                kwargs.get("required_temperature_c")
+            required_temperature_c = parse_temperature(
+                kwargs.get("required_temperature_c"),
+                unit=submitted_temperature_unit,
             )
         liftgate_pickup = _parse_bool(kwargs.get("liftgate_pickup"))
         liftgate_delivery = _parse_bool(kwargs.get("liftgate_delivery"))
@@ -1691,6 +1702,7 @@ class LogisticsBookingPortal(http.Controller):
                 "load_type": shipment_type,
                 "equipment_type": temperature_mode,
                 "required_temperature_c": required_temperature_c,
+                "submitted_temperature_unit": submitted_temperature_unit,
                 "pallets": physical_pallets,  # use physical pallets for pricing (NOT sum of per-stop)
                 "physical_pallets": physical_pallets,
                 "shared_pallet_mode": shared_pallet_mode,
@@ -1815,8 +1827,20 @@ class LogisticsBookingPortal(http.Controller):
             "pickups": [], "deliveries": [], "movements": [],
         }
 
+        # §4 dual-unit display on the confirm card: format_dual is the one
+        # authority for the string; existence comes from the in-memory parse
+        # output (None = not supplied, 0.0 = a real 0°C), never from a
+        # database read-back of the Float.
+        from ..services.temperature_service import format_dual
+        temperature_display_dual = (
+            format_dual(required_temperature_c)
+            if temperature_mode == "reefer"
+            and required_temperature_c is not None
+            else "")
+
         return request.render("prema_logistics_booking.portal_step3_result", {
             "session": session,
+            "temperature_display_dual": temperature_display_dual,
             "pickup_fsa": pickup_fsa, "delivery_fsa": delivery_fsa,
             "pickup_loc": pickup_loc,
             "delivery_stops": _allocated_stop_weights(session, delivery_stops),

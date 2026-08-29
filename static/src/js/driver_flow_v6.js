@@ -250,6 +250,96 @@
         }
     }
 
+    function renderTemperatureInstruction() {
+        // 18-section §4-§6: dynamic reefer instruction card. The payload's
+        // per-job `temperature` block is authoritative (server-computed
+        // setpoint/range/state in BOTH units); the app never computes a
+        // setpoint. Ack buttons POST /dispatch/driver/reefer-ack.
+        const jobs = S.jobs || [];
+        const tJob = jobs.find(j => j.temperature && j.temperature.required);
+        const week = $("#weekDays");
+        if (!week?.parentNode) return;
+        let card = $("#v6TempInstruction");
+        if (!card) {
+            card = document.createElement("div");
+            card.id = "v6TempInstruction";
+            week.insertAdjacentElement("afterend", card);
+        }
+        if (!tJob) {
+            card.style.display = "none";
+            if (card.innerHTML !== "") card.innerHTML = "";
+            return;
+        }
+        const t = tJob.temperature;
+        const state = t.state || "none";
+        let cls = "da-v6-temp da-v6-temp-info";
+        let label = "";
+        if (state === "conflict") {
+            cls = "da-v6-temp da-v6-temp-conflict";
+            label = "⚠️ " + (t.instruction || "TEMPERATURE CONFLICT — DISPATCH REVIEW REQUIRED");
+        } else if (state === "precool") {
+            cls = "da-v6-temp da-v6-temp-precool";
+            label = t.instruction || "PRE-COOL REEFER REQUIRED";
+        } else if (state === "on") {
+            cls = "da-v6-temp da-v6-temp-on";
+            label = t.instruction || "REEFER — SET TEMPERATURE " + (t.setpoint || "");
+        } else if (state === "off") {
+            cls = "da-v6-temp da-v6-temp-off";
+            label = t.instruction || "REEFER OFF";
+        } else {
+            card.style.display = "none";
+            return;
+        }
+        let html = `<div class="${cls}">
+            <div class="da-v6-temp-label">${esc(label)}</div>`;
+        if (t.setpoint) html += `<div class="da-v6-temp-setpoint">🌡 Set to <strong>${esc(t.setpoint)}</strong></div>`;
+        if (t.range) html += `<div class="da-v6-temp-range">Safe range: ${esc(t.range)}</div>`;
+        if (state === "conflict" && t.conflict_review) {
+            html += `<div class="da-v6-temp-conflict-note">${esc(t.conflict_review)}</div>`;
+            if (t.last_override) html += `<div class="da-v6-temp-range">Last authorized: ${esc(t.last_override)}</div>`;
+            html += `<div class="da-v6-temp-actions"><button class="da-btn da-btn-secondary" id="v6TempContactDispatch">📞 Contact dispatch</button></div>`;
+        } else if (state === "on" || state === "precool") {
+            if (!t.setpoint_acknowledged) {
+                html += `<div class="da-v6-temp-actions"><button class="da-btn da-btn-green" id="v6TempAckBtn">✔ Reefer setpoint acknowledged</button></div>`;
+            } else {
+                html += `<div class="da-v6-temp-actions da-v6-temp-acked">✔ Setpoint acknowledged</div>`;
+            }
+        } else if (state === "off") {
+            if (!t.reefer_off_acknowledged) {
+                html += `<div class="da-v6-temp-actions"><button class="da-btn da-btn-secondary" id="v6TempOffAckBtn">✔ Reefer switched off</button></div>`;
+            } else {
+                html += `<div class="da-v6-temp-actions da-v6-temp-acked">✔ Switch-off acknowledged</div>`;
+            }
+        }
+        html += `</div>`;
+        card.style.display = "";
+        if (card.innerHTML !== html) card.innerHTML = html;
+        const jobId = tJob.id;
+        $("#v6TempAckBtn")?.addEventListener("click", () => ackReefer(jobId, "setpoint"));
+        $("#v6TempOffAckBtn")?.addEventListener("click", () => ackReefer(jobId, "off"));
+        $("#v6TempContactDispatch")?.addEventListener("click", () => {
+            if (typeof window.APP !== "undefined" && window.APP.openChat) window.APP.openChat();
+        });
+    }
+
+    function ackReefer(jobId, ackType) {
+        if (typeof S === "undefined") return;
+        S.loading = true;
+        rpc("/dispatch/driver/reefer-ack", { job_id: jobId, ack_type: ackType })
+            .then(res => {
+                S.loading = false;
+                if (res && res.success) {
+                    if (typeof APP !== "undefined" && APP.refreshNow) APP.refreshNow();
+                } else {
+                    toast((res && res.error) || "Acknowledgment failed — try again", "error");
+                }
+            })
+            .catch(err => {
+                S.loading = false;
+                toast("Acknowledgment failed — check connection", "error");
+            });
+    }
+
     function renderTripRequirements() {
         let stops = [];
         try { stops = S.stops || []; } catch (_) { return; }
@@ -332,6 +422,7 @@
         if (loadChip) loadChip.style.display = "none";
         const start = $("#startWorkCard");
         if (start && S?.dayData?.is_today) start.style.display = "";
+        renderTemperatureInstruction();
         renderTripRequirements();
         renderWorkPrimaryAction();
     }

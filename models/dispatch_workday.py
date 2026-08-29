@@ -157,6 +157,15 @@ class DriverWorkday(models.Model):
                 job._post_timeline(
                     job, "route_started",
                     notes=f"Route started by {self.env.user.name}.")
+            # §9 feed: day-level start, anchored to the driver's first
+            # active job of the day (the feed rows always name a job).
+            active = jobs.filtered(
+                lambda j: not j.stage_id.is_completed
+                and not j.stage_id.is_cancelled)
+            if active:
+                active[0]._emit_feed(
+                    "workday_start", driver=self.driver_id,
+                    message=f"Driver started work — {self.work_started_at and fields.Datetime.context_timestamp(self, self.work_started_at).strftime('%I:%M %p') or ''}")
         return self._payload()
 
     def action_end_day(self):
@@ -248,6 +257,13 @@ class DriverWorkday(models.Model):
                       f"{metrics['stops_count']} stops, "
                       f"{metrics['pallets_handled']} pallets handled",
             )
+        # §9 feed: day-level end, anchored to the driver's first job.
+        if jobs:
+            jobs[0]._emit_feed(
+                "workday_ended", driver=self.driver_id,
+                message=f"Workday ended by {self.env.user.name} — "
+                        f"{metrics['stops_count']} stops, "
+                        f"{metrics['pallets_handled']} pallets handled")
         return {"success": True, "workday": self._payload()}
 
     # ── Summary metrics ──────────────────────────────────────────

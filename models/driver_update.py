@@ -1,4 +1,5 @@
 import logging
+import uuid
 
 from markupsafe import Markup, escape
 
@@ -7,11 +8,46 @@ from odoo import api, exceptions, fields, models
 _logger = logging.getLogger(__name__)
 
 
-_UPDATE_TYPES = [
+# ── Event types (§9) ───────────────────────────────────────────────────────
+# Alert types are actionable (open → acknowledged → resolved/dismissed) and
+# drive the Driver Updates alert list. Feed types are chronological
+# operational events (recorded closed, status="resolved") that drive the
+# Activity feed; they are never actionable alerts.
+_ALERT_TYPES = [
     ("pickup_variance", "Pickup Pallet Variance"),
     ("stop_exception", "Stop Problem / Exception"),
     ("stop_deferred", "Come Back Later / Delay"),
 ]
+
+_FEED_TYPES = [
+    ("workday_start", "Driver Started Work"),
+    ("route_started", "Route Started"),
+    ("hub_arrival", "Arrived at Hub"),
+    ("pretrip_complete", "Pre-Trip Completed"),
+    ("hub_departure", "Departed Hub"),
+    ("en_route", "En Route"),
+    ("stop_arrival", "Physical Arrival"),
+    ("pickup_start", "Pickup Started"),
+    ("pickup_complete", "Pickup Completed"),
+    ("pallet_loaded", "Pallet Loaded"),
+    ("position_assigned", "Position Assigned"),
+    ("evidence_pop", "POP Uploaded"),
+    ("evidence_popp", "POPP Uploaded"),
+    ("delivery_start", "Delivery Started"),
+    ("delivery_complete", "Delivery Completed"),
+    ("evidence_pod", "POD Uploaded"),
+    ("scan_uploaded", "Document Scan Uploaded"),
+    ("stop_skipped", "Stop Skipped"),
+    ("stop_restored", "Stop Restored"),
+    ("temperature_changed", "Temperature Instruction Changed"),
+    ("temperature_conflict", "Temperature Conflict"),
+    ("reefer_ack", "Reefer Acknowledgment"),
+    ("reefer_off_ack", "Reefer-Off Acknowledgment"),
+    ("route_completed", "Route Completed"),
+    ("workday_ended", "Workday Ended"),
+]
+
+_UPDATE_TYPES = _ALERT_TYPES + _FEED_TYPES
 
 _SEVERITIES = [
     ("info", "Info"),
@@ -83,9 +119,33 @@ class PremaDispatchDriverUpdate(models.Model):
     item_id = fields.Many2one(
         "prema.dispatch.item", string="Pallet / Item", ondelete="set null", index=True
     )
+    # ── §9 feed identifiers: every chronological event identifies its
+    # truck, physical visit, customer (dispatch-authorized) and evidence.
+    vehicle_id = fields.Many2one(
+        "fleet.vehicle", string="Truck", ondelete="set null", index=True
+    )
+    visit_id = fields.Many2one(
+        "prema.dispatch.route.visit", string="Physical Visit",
+        ondelete="set null", index=True,
+    )
+    customer_id = fields.Many2one(
+        "res.partner", string="Customer", ondelete="set null", index=True
+    )
+    evidence_id = fields.Many2one(
+        "prema.dispatch.evidence", string="Evidence",
+        ondelete="set null", index=True,
+    )
     driver_id = fields.Many2one(
         "res.partner", string="Driver", ondelete="set null", index=True
     )
+    is_alert = fields.Boolean(
+        compute="_compute_is_alert", string="Alert (Actionable)")
+    _ALERT_CODES = {code for code, _label in _ALERT_TYPES}
+
+    @api.depends("update_type")
+    def _compute_is_alert(self):
+        for rec in self:
+            rec.is_alert = rec.update_type in self._ALERT_CODES
     update_type = fields.Selection(_UPDATE_TYPES, required=True, index=True)
     reason_code = fields.Char(index=True)
     title = fields.Char(required=True)
@@ -333,6 +393,89 @@ class PremaDispatchDriverUpdate(models.Model):
         update._mirror_to_invoice()
         return update
 
+    # ------------------------------------------------------------------
+    # Chronological feed events (§9)
+    # ------------------------------------------------------------------
+
+    @api.model
+    def _record_event(self, job, event_type, *, stop=None, item=None,
+                      driver=None, vehicle=None, visit=None, customer=None,
+                      evidence=None, severity="info", title=None, message=""):
+        """Record a chronological operational feed event (§9).
+
+        Observability-only: never raises — a feed record must never roll
+        back the driver action it accompanies. Feed rows are closed
+        (status=resolved): they populate the Activity feed but are NOT
+        actionable alerts, so the open/acknowledged alert list is
+        untouched. `vehicle`/`customer` default to the job's own when
+        omitted; pass False explicitly to leave them empty.
+        """
+        try:
+            job = job.sudo()
+            now = fields.Datetime.now()
+            # Recordsets are TRUTHY even for nonexistent ids (len(ids) is
+            # checked, existence is not) — every optional identifier must be
+            # narrowed with .exists() or a stale browse(999999) becomes an FK
+            # violation that poisons the very driver action the feed records.
+            stop = stop and stop.exists()
+            item = item and item.exists()
+            visit = visit and visit.exists()
+            evidence = evidence and evidence.exists()
+            driver = driver and driver.exists()
+            vehicle = vehicle and vehicle.exists()
+            customer = customer and customer.exists()
+            if not job.exists():
+                return False
+            vals = {
+                "event_key": (
+                    f"feed:{event_type}:{job.id}:{(stop and stop.id) or 0}:"
+                    f"{(item and item.id) or 0}:"
+                    f"{now.strftime('%Y%m%d%H%M%S%f')}:{uuid.uuid4().hex[:8]}"
+                ),
+                "job_id": job.id,
+                "update_type": event_type,
+                "severity": severity,
+                "status": "resolved",
+                "title": title or dict(_UPDATE_TYPES).get(
+                    event_type, event_type),
+                "message": message or "",
+                "reported_at": now,
+                "driver_id": (
+                    (driver.id if driver else job.driver_id.id) or False),
+            }
+            if stop:
+                vals["stop_id"] = stop.id
+            if item:
+                vals["item_id"] = item.id
+            if vehicle is not False and (vehicle or job.vehicle_id):
+                vals["vehicle_id"] = (vehicle or job.vehicle_id).id
+            if visit:
+                vals["visit_id"] = visit.id
+            if customer is not False and (customer or job.partner_id):
+                vals["customer_id"] = (customer or job.partner_id).id
+            if evidence:
+                vals["evidence_id"] = evidence.id
+            self.sudo().create(vals)
+            return True
+        except Exception:
+            _logger.warning(
+                "Could not record feed event %s for job %s",
+                event_type, job.id, exc_info=True,
+            )
+            return False
+
+    @api.model
+    def get_feed(self, limit=60):
+        """Chronological operational feed (§9) — all event types, recent
+        first. Dispatch staff only; the alert panel (get_live_updates)
+        remains the actionable-open list."""
+        self._require_dispatch_staff()
+        updates = self.sudo().search(
+            [], order="reported_at desc, id desc",
+            limit=min(int(limit or 60), 200),
+        )
+        return {"updates": [u._live_payload() for u in updates]}
+
     @api.model
     def record_pickup_variance(self, job, stop, expected, actual, notes, author_partner_id=False):
         event_key = f"pickup_variance:{job.id}:{stop.id}"
@@ -476,6 +619,13 @@ class PremaDispatchDriverUpdate(models.Model):
             "reported_at": reported,
             "acknowledged_by": self.acknowledged_by.name or "",
             "last_reply": self.last_reply or "",
+            # §9 feed identifiers — chronological event context.
+            "vehicle_name": self.vehicle_id.name or "",
+            "visit_id": self.visit_id.id if self.visit_id else False,
+            "customer_name": self.customer_id.name or "",
+            "evidence_count": 1 if self.evidence_id else 0,
+            "evidence_id": self.evidence_id.id if self.evidence_id else False,
+            "is_alert": self.is_alert,
         }
 
     @api.model
@@ -565,6 +715,16 @@ class PremaDispatchJobDriverUpdateBridge(models.Model):
     driver_update_ids = fields.One2many(
         "prema.dispatch.driver.update", "job_id", string="Driver Updates", copy=False
     )
+
+    def _emit_feed(self, event_type, *, stop=None, item=None, driver=None,
+                   vehicle=None, visit=None, customer=None, evidence=None,
+                   severity="info", title=None, message=""):
+        """§9 chronological feed bridge — best-effort, never raises."""
+        return self.env["prema.dispatch.driver.update"].sudo()._record_event(
+            self, event_type, stop=stop, item=item, driver=driver,
+            vehicle=vehicle, visit=visit, customer=customer,
+            evidence=evidence, severity=severity, title=title, message=message,
+        )
 
     @api.model
     def driver_confirm_pickup_actuals(self, stop_id, values=None):

@@ -171,6 +171,16 @@ class LogisticsRequestQuote(http.Controller):
             if o["capacity_label"] == "SOLD_OUT" and not first_sold_out:
                 first_sold_out = o
 
+        # §4 dual-unit display on the options page: same authority as the
+        # live /my/booking flow (format_dual); existence from the in-memory
+        # parse output (None = not supplied, 0.0 = a real 0°C).
+        from ..services.temperature_service import format_dual
+        temperature_display_dual = (
+            format_dual(required_temperature_c)
+            if temperature_mode == "reefer"
+            and required_temperature_c is not None
+            else "")
+
         return request.render("prema_logistics_booking.portal_booking_step3_options", {
             "pickup_fsa": pickup_fsa,
             "delivery_fsa": delivery_fsa,
@@ -179,6 +189,7 @@ class LogisticsRequestQuote(http.Controller):
             "pallets": pallets,
             "weight_lbs": weight_lbs,
             "temperature_mode": temperature_mode,
+            "temperature_display_dual": temperature_display_dual,
             "required_temperature_c": required_temperature_c if required_temperature_c is not None else "",
             "liftgate_pickup": liftgate_pickup,
             "liftgate_delivery": liftgate_delivery,
@@ -209,9 +220,19 @@ class LogisticsRequestQuote(http.Controller):
         except ValueError:
             pallets, weight_lbs = 1, 800.0
 
-        from ..services.temperature_compat import to_canonical_temperature_mode, parse_required_temperature_c
+        from ..services.temperature_compat import to_canonical_temperature_mode
+        from ..services.temperature_service import parse_temperature
         temperature_mode = to_canonical_temperature_mode(kwargs.get("temperature_mode") or "dry")
-        required_temperature_c = parse_required_temperature_c(kwargs.get("required_temperature_c"))
+        # Canonical Celsius intake (§3-§4): raw value in the submitted unit
+        # (default c); F is converted to C BEFORE storage.
+        submitted_temperature_unit = (
+            (kwargs.get("submitted_temperature_unit") or "c").lower())
+        if submitted_temperature_unit not in ("c", "f"):
+            submitted_temperature_unit = "c"
+        required_temperature_c = parse_temperature(
+            kwargs.get("required_temperature_c"),
+            unit=submitted_temperature_unit,
+        )
         liftgate_pickup = _parse_bool(kwargs.get("liftgate_pickup"))
         liftgate_delivery = _parse_bool(kwargs.get("liftgate_delivery"))
         appointment = _parse_bool(kwargs.get("appointment"))

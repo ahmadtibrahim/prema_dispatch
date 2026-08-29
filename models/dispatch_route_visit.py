@@ -280,6 +280,14 @@ class PremaDispatchRouteVisit(models.Model):
             stop.write({"gps_stamp_lat": lat or 0.0, "gps_stamp_lng": lng or 0.0,
                         "gps_stamp_time": fields.Datetime.now()})
         visit.write({"status": "arrived", "planned_arrival": visit.planned_arrival or fields.Datetime.now()})
+        # §9 feed: one physical-arrival event per underlying job, each
+        # carrying the shared visit identifier (never a combined bucket).
+        for job in stops.mapped("job_id"):
+            job._emit_feed(
+                "stop_arrival", stop=stops.filtered(lambda s: s.job_id.id == job.id)[:1],
+                visit=visit,
+                message=f"Physical arrival at {visit.address or f'Visit #{visit.id}'}"
+            )
         return {"success": True, "stop_ids": stops.ids, "route_visit_id": visit.id}
 
 class PremaDispatchRouteVisitStop(models.Model):

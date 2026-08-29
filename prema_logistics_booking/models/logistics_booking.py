@@ -8,7 +8,7 @@ import pytz
 from psycopg2.errors import UniqueViolation
 
 from odoo import _, api, fields, models
-from odoo.exceptions import AccessError, UserError
+from odoo.exceptions import AccessError, UserError, ValidationError
 
 from ..constants import SERVICE_MODE, LOAD_TYPE, EQUIPMENT_REQUIREMENT
 from ..services.pricing_service import PricingService
@@ -308,6 +308,97 @@ class LogisticsBooking(models.Model):
              "Notification Time.")
     required_temperature = fields.Char(string="Required Temperature (display)", help="e.g. '-18°C', '+4°C'. For backward compatibility.")
     required_temperature_c = fields.Float(string="Required Temperature °C", help="Numeric temperature in Celsius. e.g. -18.0, 4.0")
+    # ── Canonical temperature model (18-section work order §3-§4) ──────
+    # target_temperature_c is the CURRENT canonical target: a stored mirror
+    # of the legacy required_temperature_c, kept in sync at the create/write
+    # BOUNDARY (a stored `related` cannot do it — Odoo 18 recomputes stored
+    # related fields over any write, so a mirrored write never propagates
+    # to the source). Legacy code writing required_temperature_c lands here
+    # through the write override; new code writes the target and the
+    # override fans it back to the legacy field. 0°C is a valid value and
+    # is never treated as "not set" — temperature_supplied is the ONLY
+    # sanctioned existence check and distinguishes False (unset) from 0.0.
+    target_temperature_c = fields.Float(
+        string="Target Temperature (°C)", copy=True,
+        help="Canonical target setpoint in Celsius (mirror of the legacy "
+             "required_temperature_c). 0.0 is a valid target and is never "
+             "treated as not set.",
+    )
+    minimum_temperature_c = fields.Float(
+        string="Minimum Temperature (°C)",
+        help="Optional lower bound of the acceptable range. Leave empty to "
+             "apply the tolerance (or the exact target). 0.0 is a valid bound.",
+    )
+    maximum_temperature_c = fields.Float(
+        string="Maximum Temperature (°C)",
+        help="Optional upper bound of the acceptable range. Leave empty to "
+             "apply the tolerance (or the exact target). 0.0 is a valid bound.",
+    )
+    temperature_tolerance_c = fields.Float(
+        string="Tolerance (±°C)",
+        help="Optional symmetrical tolerance applied to the target when no "
+             "explicit minimum/maximum is configured. 0.0 = exact target.",
+    )
+    # Supplied-flags — the ONLY sanctioned existence checks. Odoo 18 reads
+    # an unset Float back as 0.0 (Float.convert_to_record: None → 0.0), so
+    # `0.0 is False` is never true: a value's presence CANNOT be inferred
+    # from the float itself. The flags are written at the create/write
+    # boundary from the RAW vals (where unset arrives as False/None/'' and
+    # a typed 0 arrives as 0.0) — see create()/write() below. 0°C is real
+    # whenever its flag is True.
+    temperature_supplied = fields.Boolean(
+        string="Temperature Supplied", default=False, copy=True,
+        help="True when a numeric temperature requirement exists (0.0 counts).",
+    )
+    minimum_temperature_supplied = fields.Boolean(
+        string="Minimum Supplied", default=False, copy=True)
+    maximum_temperature_supplied = fields.Boolean(
+        string="Maximum Supplied", default=False, copy=True)
+    submitted_temperature_unit = fields.Selection(
+        [("c", "°C"), ("f", "°F")], string="Submitted In",
+        default="c", copy=True,
+        help="The unit the customer submitted the requirement in. Storage is "
+             "always canonical Celsius — this only records the intake unit.",
+    )
+    temperature_requirement_source = fields.Selection(
+        [("customer", "Customer"), ("dispatcher", "Dispatcher"),
+         ("system", "System"), ("legacy", "Legacy")],
+        string="Temperature Source", default="customer", copy=True,
+    )
+    # Conflict/override state (Section 5): set by the temperature engine or
+    # the dispatcher when an authorized override is required.
+    temperature_override_required = fields.Boolean(
+        string="Override Required",
+        help="Route conflict needs an authorized dispatch override before "
+             "automatic route release is allowed.")
+    temperature_override_reason = fields.Char(string="Override Reason")
+    temperature_override_user_id = fields.Many2one(
+        "res.users", string="Override By", readonly=True, copy=False)
+    temperature_override_at = fields.Datetime(
+        string="Override At", readonly=True, copy=False)
+    # Pre-cool (Section 6): configured duration/target for this booking's
+    # reefer pickup. No hardcoded minutes anywhere.
+    reefer_pre_cool_required = fields.Boolean(
+        string="Pre-cool Required", default=True,
+        help="This reefer booking requires the truck to pre-cool before "
+             "its pickup. Unchecked only when the dispatcher waives it.")
+    reefer_pre_cool_temperature_c = fields.Float(
+        default=lambda self: None,  # NULL, never backfill 0.0
+        string="Pre-cool Temperature (°C)",
+        help="Optional pre-cool target; empty = the shipment target.")
+    reefer_pre_cool_minutes = fields.Integer(
+        default=lambda self: None,  # NULL → configured default
+        string="Pre-cool Duration (minutes)",
+        help="How long before the pickup service the pre-cool must begin. "
+             "Empty = the company default (Settings).")
+    temperature_display = fields.Char(
+        string="Temperature (dual-unit)", compute="_compute_temperature_display",
+        help="'2°C / 35.6°F' — both units on every customer/quote/confirmation "
+             "surface.")
+    temperature_range_display = fields.Char(
+        string="Temperature Range (dual-unit)",
+        compute="_compute_temperature_display",
+        help="'1°C – 3°C (33.8°F – 37.4°F)' for quote/confirmation surfaces.")
     po_number = fields.Char(string="PO Number")
     customer_reference = fields.Char(string="Customer Reference")
     commodity = fields.Char(string="Commodity")
@@ -342,6 +433,97 @@ class LogisticsBooking(models.Model):
     def _compute_name(self):
         for rec in self:
             rec.name = rec.booking_number or f"Booking {rec.id}"
+
+    # ── supplied-flag maintenance (create/write boundary) ─────────────
+    # In `vals`, an unset temperature arrives as False/None/'' and a typed
+    # 0 arrives as 0.0 — the ONE place both are distinguishable. The flags
+    # are the only sanctioned existence checks downstream (engine,
+    # constraint, display); the floats themselves are never identity-tested.
+
+    @staticmethod
+    def _raw_supplied(raw_value):
+        from ..services.temperature_service import _temp_supplied
+        return _temp_supplied(raw_value)
+
+    @staticmethod
+    def _sync_temperature_mirror(vals):
+        """Keep target_temperature_c ↔ required_temperature_c in sync.
+        The canonical field is required_temperature_c; target_temperature_c
+        is the new-code mirror. Writing either field fans out to the other
+        (raw boundary values, so 0.0 never gets lost)."""
+        if "target_temperature_c" in vals and "required_temperature_c" not in vals:
+            vals["required_temperature_c"] = vals["target_temperature_c"]
+        elif "required_temperature_c" in vals:
+            vals["target_temperature_c"] = vals["required_temperature_c"]
+
+    @api.model_create_multi
+    def create(self, vals_list):
+        for vals in vals_list:
+            self._sync_temperature_mirror(vals)
+            target = vals.get("required_temperature_c")
+            if target is None:
+                target = vals.get("target_temperature_c", False)
+            vals.setdefault("temperature_supplied",
+                            self._raw_supplied(target))
+            vals.setdefault("minimum_temperature_supplied",
+                            self._raw_supplied(vals.get("minimum_temperature_c")))
+            vals.setdefault("maximum_temperature_supplied",
+                            self._raw_supplied(vals.get("maximum_temperature_c")))
+        return super().create(vals_list)
+
+    def write(self, vals):
+        self._sync_temperature_mirror(vals)
+        if "required_temperature_c" in vals or "target_temperature_c" in vals:
+            target = vals.get("required_temperature_c", vals.get(
+                "target_temperature_c", False))
+            vals["temperature_supplied"] = self._raw_supplied(target)
+        if "minimum_temperature_c" in vals:
+            vals["minimum_temperature_supplied"] = self._raw_supplied(
+                vals["minimum_temperature_c"])
+        if "maximum_temperature_c" in vals:
+            vals["maximum_temperature_supplied"] = self._raw_supplied(
+                vals["maximum_temperature_c"])
+        return super().write(vals)
+
+    @api.depends("required_temperature_c", "target_temperature_c",
+                 "minimum_temperature_c", "maximum_temperature_c",
+                 "temperature_tolerance_c", "temperature_supplied",
+                 "minimum_temperature_supplied",
+                 "maximum_temperature_supplied")
+    def _compute_temperature_display(self):
+        from ..services.temperature_service import (
+            format_dual, range_dual, validate_range)
+        for rec in self:
+            # The supplied-flag is the sanctioned existence check — Odoo 18
+            # reads an unset Float back as 0.0, so an unguarded format_dual
+            # would paint a dry booking as "0°C / 32°F". A SUPPLIED 0.0
+            # (a real 0°C requirement) renders normally.
+            rec.temperature_display = (
+                format_dual(rec.target_temperature_c)
+                if rec.temperature_supplied else "")
+            _errors, effective = validate_range(
+                rec.target_temperature_c, rec.minimum_temperature_c,
+                rec.maximum_temperature_c, rec.temperature_tolerance_c,
+                target_supplied=rec.temperature_supplied,
+                minimum_supplied=rec.minimum_temperature_supplied,
+                maximum_supplied=rec.maximum_temperature_supplied)
+            rec.temperature_range_display = (
+                range_dual(effective[0], effective[1]) if effective else "")
+
+    @api.constrains("required_temperature_c", "target_temperature_c",
+                    "minimum_temperature_c", "maximum_temperature_c",
+                    "temperature_tolerance_c")
+    def _check_temperature_boundaries(self):
+        from ..services.temperature_service import validate_range
+        for rec in self:
+            errors, _effective = validate_range(
+                rec.target_temperature_c, rec.minimum_temperature_c,
+                rec.maximum_temperature_c, rec.temperature_tolerance_c,
+                target_supplied=rec.temperature_supplied,
+                minimum_supplied=rec.minimum_temperature_supplied,
+                maximum_supplied=rec.maximum_temperature_supplied)
+            if errors:
+                raise ValidationError(" ".join(errors))
 
     @api.depends("stop_ids.sequence", "stop_ids.stop_type", "stop_ids.city")
     def _compute_booking_name(self):
@@ -849,6 +1031,8 @@ class LogisticsBooking(models.Model):
                 if session.temperature_mode == "reefer"
                 else None
             ),
+            "submitted_temperature_unit": session.submitted_temperature_unit,
+            "temperature_requirement_source": "customer",
             "pallets": session.physical_pallets or session.pallets,
             "physical_pallets": session.physical_pallets or session.pallets,
             "shared_pallet_mode": session.shared_pallet_mode or False,

@@ -136,6 +136,17 @@ class EtaEngine:
             self.compute_job_eta(job, source=source)
         except Exception:
             _logger.exception("ETA recompute failed for job %s", job.id)
+        # Dynamic reefer state (§5-§6) recomputes on the SAME trigger set
+        # (pickup/delivery completion, restore, skip, reorder, transfer,
+        # refresh). Same failure envelope: temperature is advisory state,
+        # never a crash source. Lazy import keeps the dependency direction
+        # one-way (eta_engine → temperature_engine).
+        try:
+            from odoo.addons.prema_logistics_booking.services.temperature_engine import (
+                TemperatureEngine)
+            TemperatureEngine(self.env).recalc(job)
+        except Exception:
+            _logger.exception("Temperature recalc failed for job %s", job.id)
 
     # ── Start profile ────────────────────────────────────────────────
 

@@ -26,6 +26,9 @@ TIMELINE_EVENTS = [
     ("job_reopened",       "Job Reopened"),
     ("exception",          "Exception / Issue"),
     ("note",               "Note"),
+    ("temperature",        "Reefer / Temperature"),
+    ("temperature_conflict", "Temperature Conflict"),
+    ("temperature_override", "Temperature Override"),
 ]
 
 
@@ -48,6 +51,30 @@ class PremaDispatchTimelineEvent(models.Model):
     stop_id = fields.Many2one(
         "prema.dispatch.stop", string="Stop", ondelete="set null",
     )
+    # ── §10 timeline identifiers: every event names the physical visit,
+    # pallet/item and evidence it refers to — a shared physical visit
+    # must never combine evidence into an ambiguous shared bucket.
+    visit_id = fields.Many2one(
+        "prema.dispatch.route.visit", string="Physical Visit",
+        ondelete="set null", index=True,
+    )
+    pallet_id = fields.Many2one(
+        "prema.dispatch.item", string="Pallet / Item",
+        ondelete="set null", index=True,
+    )
+    evidence_id = fields.Many2one(
+        "prema.dispatch.evidence", string="Evidence",
+        ondelete="set null", index=True,
+    )
+    customer_id = fields.Many2one(
+        "res.partner", string="Customer",
+        related="job_id.partner_id", readonly=True,
+    )
+    # booking_id is intentionally NOT here: its source (job_id.
+    # logistics_booking_id) is defined by prema_logistics_booking, which
+    # loads AFTER prema_dispatch — a related or computed definition here
+    # would fail setup or recompute before the extension field exists.
+    # prema_logistics_booking adds it via models/dispatch_timeline_extension.py.
     notes = fields.Char(string="Detail")
     event_type_label = fields.Char(
         compute="_compute_label", string="Event",

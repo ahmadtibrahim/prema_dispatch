@@ -73,6 +73,11 @@ class LogisticsPricingSession(models.TransientModel):
         string="Required Temperature °C",
         help="Numeric required temperature for Reefer quotes. 0.0 is a valid value.",
     )
+    submitted_temperature_unit = fields.Selection(
+        [("c", "°C"), ("f", "°F")], string="Submitted In", default="c",
+        help="Intake unit from the portal form. Storage is always canonical "
+             "Celsius — this only records what the customer typed.",
+    )
     pallets = fields.Integer(required=True)
     physical_pallets = fields.Integer(
         string="Physical Pallets", default=1, required=True,

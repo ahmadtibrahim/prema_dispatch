@@ -21,17 +21,24 @@ patch(DispatchLiveMap.prototype, {
             driverUpdatesError: null,
             replyOpenId: null,
             replyDraft: "",
+            // §9 chronological operational feed (activity tab).
+            activityFeed: [],
+            activityUrgentCount: 0,
+            activityLoading: false,
+            activityError: null,
         });
     },
 
     async _init() {
         await super._init(...arguments);
         await this._refreshDriverUpdates();
+        await this._refreshActivityFeed();
     },
 
     async _refreshData() {
         await super._refreshData(...arguments);
         await this._refreshDriverUpdates();
+        await this._refreshActivityFeed();
     },
 
     async _refreshDriverUpdates() {
@@ -56,9 +63,39 @@ patch(DispatchLiveMap.prototype, {
     },
 
     showSidebarTab(tab) {
-        this.state.sidebarTab = tab === "updates" ? "updates" : "fleet";
+        this.state.sidebarTab = (tab === "updates" || tab === "activity") ? tab : "fleet";
         this.state.replyOpenId = null;
         this.state.replyDraft = "";
+    },
+
+    /**
+     * §9 Activity feed: every chronological operational event, recent
+     * first. Observability-only — this refresh failing must never take
+     * down the map, exactly like the alerts panel.
+     */
+    async _refreshActivityFeed() {
+        this.state.activityLoading = true;
+        try {
+            const data = await this.orm.call(
+                "prema.dispatch.driver.update",
+                "get_feed",
+                [60]
+            );
+            this.state.activityFeed = data?.updates || [];
+            this.state.activityUrgentCount = this.state.activityFeed.filter(
+                (u) => u.severity === "urgent" && !u.is_alert
+            ).length;
+            this.state.activityError = null;
+        } catch (error) {
+            this.state.activityError = error?.message || "Could not load the activity feed.";
+            console.warn("Activity feed refresh failed", error);
+        } finally {
+            this.state.activityLoading = false;
+        }
+    },
+
+    feedSeverityIcon(severity) {
+        return severity === "urgent" ? "🚨" : severity === "warning" ? "⚠" : "●";
     },
 
     async acknowledgeDriverUpdate(updateId) {

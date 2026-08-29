@@ -566,6 +566,12 @@ class PremaDispatchLoadPlan(models.Model):
             raise UserError(f"Position {pos.position_code} is reserved for a future pickup — un-reserve it before assigning freight there.")
         item.write({"position_id": pos.id})
         self._log_event("pallet_assigned", item=item, to_position=pos)
+        # §9 feed: position assignment is an operational event (never
+        # combined with another job's freight in the activity feed).
+        if item.job_id:
+            item.job_id._emit_feed(
+                "position_assigned", item=item,
+                message=f"Pallet {item.name} assigned to position {pos.position_code}")
         self._bump_version()
         return self.get_load_plan()
 
@@ -598,6 +604,12 @@ class PremaDispatchLoadPlan(models.Model):
             raise UserError(f"Position {pos.position_code} is reserved for a future pickup — un-reserve it before moving freight there.")
         item.write({"position_id": pos.id})
         self._log_event("pallet_moved", item=item, from_position=old_pos, to_position=pos)
+        # §9 feed: a move re-anchors the pallet's position at photo time —
+        # logged separately, never silently merged with the assignment.
+        if item.job_id:
+            item.job_id._emit_feed(
+                "position_assigned", item=item,
+                message=f"Pallet {item.name} moved to position {pos.position_code}")
         self._bump_version()
         return self.get_load_plan()
 

@@ -38,7 +38,9 @@ from . import logistics_booking_portal_bridge
 from . import logistics_booking_price_adjustment
 from . import account_move_booking
 from . import logistics_corridor
+from . import res_users_temperature_preference
 from . import dispatch_job_extension
+from . import dispatch_timeline_extension
 from . import dispatch_load_plan_extension
 from . import dispatch_stop_extension
 from . import dispatch_item_extension
@@ -56,3 +58,4 @@ from . import logistics_carrier_lane_rate
 from . import logistics_booking_leg_carrier_offer
 from . import purchase_order_freight
 from . import res_partner_carrier
+from . import temperature_override

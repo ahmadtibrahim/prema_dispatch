@@ -69,7 +69,25 @@ class DriverAppController(http.Controller):
 
     @http.route("/dispatch/driver/stops", type="json", auth="user", methods=["POST"])
     def driver_stops_by_date(self, date_str=None, **kwargs):
-        return request.env["prema.dispatch.job"].get_driver_stops_for_date(date_str)
+        payload = request.env["prema.dispatch.job"].get_driver_stops_for_date(date_str)
+        # §8 Live Map heartbeat: stamp the vehicle's app-sync time so the
+        # dispatcher's truck panel shows when the driver last polled.
+        # Throttled to one write per 60s per truck (the app polls every
+        # 15s) — the timestamp, never route data, is what the map reads.
+        try:
+            vid = (payload.get("truck") or {}).get("id")
+            if vid:
+                vehicle = request.env["fleet.vehicle"].sudo().browse(vid)
+                last = vehicle.x_driver_app_last_sync
+                from datetime import datetime, timedelta, timezone
+                now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+                if not last or now_utc - last >= timedelta(minutes=1):
+                    vehicle.write({"x_driver_app_last_sync": now_utc})
+        except Exception:
+            # Non-fatal: the heartbeat is display metadata; the stop
+            # payload itself is the deliverable.
+            pass
+        return payload
 
     @http.route("/dispatch/driver/evidence/add", type="json", auth="user", methods=["POST"])
     def add_evidence(self, stop_id, ev_type, data_b64, filename="photo.jpg", extra=None, **kwargs):
@@ -217,6 +235,68 @@ class DriverAppController(http.Controller):
     @http.route("/dispatch/driver/job/finish", type="json", auth="user", methods=["POST"])
     def finish_job(self, job_id, **kwargs):
         return request.env["prema.dispatch.job"].driver_finish_job(job_id)
+
+    @http.route("/dispatch/driver/reefer-ack", type="json", auth="user", methods=["POST"])
+    def driver_reefer_ack(self, job_id, ack_type="setpoint", **kwargs):
+        """Driver acknowledges the reefer instruction (§6). ack_type:
+        'setpoint' (Reefer setpoint acknowledged) or 'off' (Reefer
+        switched off). Both are recorded in the job timeline. The driver
+        NEVER decides freight safety — the acknowledgment only confirms
+        they read the instruction and acted on it."""
+        from odoo.addons.prema_dispatch.services.dispatch_auth import (
+            check_job_access)
+        job = request.env["prema.dispatch.job"].browse(int(job_id))
+        if not job.exists():
+            return {"success": False, "error": "Job not found"}
+        try:
+            check_job_access(request.env, job)
+        except Exception:
+            return {"success": False, "error": "Not authorized for this job"}
+        try:
+            if ack_type == "off":
+                if job.temperature_state not in ("off",):
+                    return {
+                        "success": False,
+                        "error": "Reefer is not in the switched-off state.",
+                    }
+                job.write({
+                    "reefer_off_acknowledged": True,
+                    "reefer_off_ack_at": fields.Datetime.now(),
+                    "reefer_off_ack_user_id": request.env.user.id,
+                })
+                job._post_timeline(
+                    job, "temperature",
+                    notes="Driver acknowledged: reefer switched off",
+                )
+                job._emit_feed(
+                    "reefer_off_ack",
+                    message=f"Driver acknowledged reefer switched off — {request.env.user.name}")
+            else:
+                if job.temperature_state not in ("on", "precool", "conflict"):
+                    return {
+                        "success": False,
+                        "error": "No reefer instruction is active on this job.",
+                    }
+                job.write({
+                    "reefer_acknowledged": True,
+                    "reefer_ack_at": fields.Datetime.now(),
+                    "reefer_ack_user_id": request.env.user.id,
+                })
+                override = request.env["prema.dispatch.temperature.override"].sudo().search(
+                    [("job_id", "=", job.id), ("state", "=", "applied")],
+                    order="id desc", limit=1)
+                if override:
+                    override.action_driver_acknowledged()
+                job._post_timeline(
+                    job, "temperature",
+                    notes="Driver acknowledged reefer setpoint",
+                )
+                job._emit_feed(
+                    "reefer_ack",
+                    message=f"Driver acknowledged reefer setpoint — {request.env.user.name}")
+            return {"success": True}
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
 
     @http.route("/dispatch/driver/job/start-route", type="json", auth="user", methods=["POST"])
     def start_route(self, job_id, **kwargs):

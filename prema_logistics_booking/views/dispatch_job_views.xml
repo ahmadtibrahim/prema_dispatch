@@ -1,0 +1,143 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- ── §10 Progress page (Booking Board → job form) ────────────────
+         Booking summary + per-stop + per-pallet + timeline progress with
+         full identifiers. Lives in the BOOKING module because it reads
+         booking-side fields (temperature state, booking number) — a
+         base-module view would be validated before those fields exist. -->
+    <record id="view_dispatch_job_form_progress10" model="ir.ui.view">
+        <field name="name">prema.dispatch.job.form.progress10</field>
+        <field name="model">prema.dispatch.job</field>
+        <field name="inherit_id" ref="prema_dispatch.view_dispatch_job_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//page[@name='timeline']" position="before">
+                <page string="Progress" name="progress10"
+                      invisible="not stop_ids">
+                    <!-- BOOKING SUMMARY -->
+                    <group string="Booking Summary">
+                        <group>
+                            <field name="logistics_booking_id" readonly="1"
+                                   string="Booking"/>
+                            <field name="partner_id" readonly="1"
+                                   string="Customer"/>
+                            <field name="stage_id" readonly="1"
+                                   string="Current Status"/>
+                            <field name="physical_route_text" readonly="1"
+                                   string="Physical Route"/>
+                        </group>
+                        <group>
+                            <field name="vehicle_id" readonly="1"
+                                   string="Assigned Truck"/>
+                            <field name="driver_id" readonly="1"
+                                   string="Assigned Driver"/>
+                            <field name="approximate_skids" readonly="1"
+                                   string="Pallet Count"/>
+                            <field name="total_weight_lbs" readonly="1"
+                                   string="Weight (lbs)"/>
+                            <field name="temperature_state" readonly="1"
+                                   string="Temp State"
+                                   invisible="temperature_state in ('none', False)"/>
+                            <field name="temperature_message" readonly="1"
+                                   string="Temp Instruction (C+F)"
+                                   invisible="temperature_state in ('none', False)"/>
+                        </group>
+                    </group>
+
+                    <!-- STOP PROGRESS -->
+                    <group string="Stop Progress"
+                           invisible="not stop_ids">
+                        <field name="stop_ids" readonly="1">
+                            <list string="Stop Progress" create="false"
+                                  edit="false" delete="false">
+                                <field name="sequence" widget="handle"/>
+                                <field name="stop_type" string="Type"/>
+                                <field name="status" widget="badge"
+                                       decoration-info="status == 'en_route'"
+                                       decoration-warning="status == 'arrived'"
+                                       decoration-success="status == 'completed'"
+                                       decoration-danger="status in ('issue','cancelled')"/>
+                                <field name="address" string="Facility"/>
+                                <field name="scheduled_time" string="Scheduled"/>
+                                <field name="eta_live" string="ETA" optional="show"/>
+                                <field name="actual_arrival_time"
+                                       string="Actual Arrival" optional="show"/>
+                                <field name="actual_departure_time"
+                                       string="Actual Departure" optional="show"/>
+                                <field name="service_time_minutes" string="Planned Svc (min)"
+                                       optional="show"/>
+                                <field name="actual_service_minutes"
+                                       string="Actual Svc (min)" optional="show"/>
+                                <field name="pallets_in" string="Pallets Collected"
+                                       optional="show"/>
+                                <field name="pallets_out" string="Pallets Delivered"
+                                       optional="show"/>
+                                <field name="evidence_status_text"
+                                       string="Evidence Status" optional="show"/>
+                                <field name="pop_count" column_invisible="1"/>
+                                <field name="pod_count" column_invisible="1"/>
+                            </list>
+                        </field>
+                    </group>
+
+                    <!-- PALLET PROGRESS -->
+                    <group string="Pallet Progress"
+                           invisible="not item_ids">
+                        <field name="item_ids" readonly="1">
+                            <list string="Pallet Progress" create="false"
+                                  edit="false" delete="false">
+                                <field name="name" string="Pallet ID"/>
+                                <field name="pickup_stop_id" string="Pickup Origin"/>
+                                <field name="delivery_stop_id" string="Destination"/>
+                                <field name="position_id" string="Truck Position"/>
+                                <field name="current_custody_type" string="Custody"/>
+                                <field name="popp_status_text" string="POPP Status"/>
+                                <field name="pod_status_text" string="Delivery POD"/>
+                            </list>
+                        </field>
+                    </group>
+
+                    <!-- TIMELINE — every event identifies customer, booking,
+                         job, physical visit, logical stop, pallet, evidence. -->
+                    <group string="Timeline" invisible="not timeline_event_ids">
+                        <field name="timeline_event_ids" readonly="1">
+                            <list string="Timeline" create="false"
+                                  edit="false" delete="false"
+                                  decoration-success="event_type in ('delivered','all_stops_done','invoice_completed')"
+                                  decoration-warning="event_type == 'exception'"
+                                  decoration-danger="event_type == 'temperature_conflict'">
+                                <field name="occurred_at" string="When"/>
+                                <field name="event_type" column_invisible="1"/>
+                                <field name="event_type_label" string="Event"/>
+                                <field name="customer_id" string="Customer" optional="show"/>
+                                <field name="booking_id" string="Booking" optional="show"/>
+                                <field name="visit_id" string="Physical Visit" optional="show"/>
+                                <field name="stop_id" string="Stop" optional="show"/>
+                                <field name="pallet_id" string="Pallet" optional="show"/>
+                                <field name="evidence_id" string="Evidence" optional="show"/>
+                                <field name="user_id" string="By"/>
+                                <field name="notes" string="Detail"/>
+                            </list>
+                        </field>
+                    </group>
+                </page>
+            </xpath>
+        </field>
+    </record>
+
+    <!-- §10: the existing Timeline page's list also gains the identifiers,
+         so every timeline view identifies the same entities. -->
+    <record id="view_dispatch_job_form_progress10_timeline_cols" model="ir.ui.view">
+        <field name="name">prema.dispatch.job.form.progress10.timeline_cols</field>
+        <field name="model">prema.dispatch.job</field>
+        <field name="inherit_id" ref="prema_dispatch.view_dispatch_job_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//page[@name='timeline']//field[@name='timeline_event_ids']/list" position="inside">
+                <field name="customer_id" string="Customer" optional="show"/>
+                <field name="booking_id" string="Booking" optional="show"/>
+                <field name="visit_id" string="Physical Visit" optional="show"/>
+                <field name="pallet_id" string="Pallet" optional="show"/>
+                <field name="evidence_id" string="Evidence" optional="show"/>
+            </xpath>
+        </field>
+    </record>
+</odoo>

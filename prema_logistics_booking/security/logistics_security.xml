@@ -113,6 +113,22 @@
             <field name="perm_create">0</field>
             <field name="perm_unlink">0</field>
         </record>
+        <!-- §11 CUSTOMER TRACKING ISOLATION (18.0.13.46.0): pricing session
+             stops carry the portal's route-builder payload (customer
+             locations!) and group_logistics_customer holds READ+WRITE on
+             the model — without an ownership rule a portal user could RPC
+             any customer's session stops. Scoped to the owning session's
+             commercial partner, mirroring the parent session rule. -->
+        <record id="rule_logistics_pricing_session_stop_customer_own" model="ir.rule">
+            <field name="name">Pricing Session Stop: customer sees only own company's stops</field>
+            <field name="model_id" ref="model_logistics_pricing_session_stop"/>
+            <field name="domain_force">[('session_id.partner_id.commercial_partner_id', '=', user.partner_id.commercial_partner_id.id)]</field>
+            <field name="groups" eval="[(4, ref('group_logistics_customer'))]"/>
+            <field name="perm_read">1</field>
+            <field name="perm_write">1</field>
+            <field name="perm_create">1</field>
+            <field name="perm_unlink">0</field>
+        </record>
 
         <!-- SAVED LOCATION CONSOLIDATION 18.0.13.25.0: the legacy
              logistics.saved.location / .hours record rules were removed

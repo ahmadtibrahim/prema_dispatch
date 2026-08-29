@@ -286,6 +286,7 @@ function showApp() {
 
 function applyDay(day) {
     S.dayData=day; S.stops=day.stops||[];
+    S.jobs=day.jobs||[];
     S.workday=day.workday||null;
     S.loadPlan=null; S.lpSelectedCode=null; // stale for the previous date/truck
     const dn=q("#hDriverName"), tn=q("#hTruckName");
@@ -301,6 +302,14 @@ function applyDay(day) {
 function stopTemperatureRequirement(stop){
     if(!stop?.requires_reefer && stop?.equipment_type!="reefer" &&
        !stop?.job_summary?.requires_reefer) return "";
+    // §4: prefer the per-job temperature block — the server-computed,
+    // driver-preference dual-unit setpoint ("2°C / 35.6°F" or F-first).
+    // The app never computes units or a setpoint itself.
+    const tJob=(S.jobs||[]).find(j=>j.id===stop.job_id);
+    const t=tJob?.temperature;
+    if(t && t.required && t.setpoint){
+        return `REEFER — SET TEMPERATURE TO ${t.setpoint}`;
+    }
     const temp=stop.required_temperature_c ?? stop.job_summary?.required_temperature_c;
     // Do not use truthiness here: 0°C is a valid reefer setpoint.
     if(temp!==false && temp!==null && temp!==undefined && temp!==""){
@@ -366,6 +375,15 @@ function renderTodaySummary(){
     },0);
     // Spec §9: Jobs / Stops / Pickups / Deliveries / Pallets / Distance /
     // Estimated duration — the compact TODAY'S WORK strip on HOME.
+    // §7 adds: route finish ETA (last open stop's service start + service
+    // time) and the last-sync stamp.
+    const openStops=S.stops.filter(s=>!["completed","skipped","cancelled"].includes(s.status));
+    let finishLabel="";
+    if(openStops.length){
+        const last=openStops[openStops.length-1];
+        const t=last.customer_eta_at||last.facility_service_start_at||last.estimated_arrival||last.scheduled_time;
+        if(t) finishLabel=`${fmtStopTime(t,last.tz_name)} +${last.service_time_min||15}m`;
+    }
     el.innerHTML=(requirements.length?`<div class="da-special-requirements"><strong>⚠ SPECIAL REQUIREMENTS</strong>${requirements.map(r=>`<div>${esc(r)}</div>`).join("")}</div>`:"")+`
         <div class="da-sum-card"><div class="da-sum-val">${jobIds.size}</div><div class="da-sum-label">Jobs</div></div>
         <div class="da-sum-card"><div class="da-sum-val">${S.stops.length}</div><div class="da-sum-label">Stops</div></div>
@@ -374,6 +392,8 @@ function renderTodaySummary(){
         <div class="da-sum-card"><div class="da-sum-val">${pallets}</div><div class="da-sum-label">Pallets</div></div>
         <div class="da-sum-card"><div class="da-sum-val">${r?r.km.toFixed(0)+" km":"—"}</div><div class="da-sum-label">Distance</div></div>
         <div class="da-sum-card"><div class="da-sum-val">${r?fmtDur(r.totalMin):"—"}</div><div class="da-sum-label">Est. Time</div></div>
+        <div class="da-sum-card"><div class="da-sum-val">${esc(finishLabel)||"—"}</div><div class="da-sum-label">Finish ETA</div></div>
+        <div class="da-sum-card"><div class="da-sum-val">${S.lastSync?esc(fmtStopTime(S.lastSync,"America/Toronto")):"—"}</div><div class="da-sum-label">Last sync</div></div>
     `;
 }
 function fmtDur(mins){ const h=Math.floor(mins/60),m=Math.round(mins%60); return h?`${h}h ${m}m`:`${m}m`; }
@@ -530,6 +550,10 @@ async function refreshRouteNow(force=false) {
             if (typeof window.__v7GuideRefresh === "function") window.__v7GuideRefresh();
             toast("🔄 Route refreshed");
         }
+        // §7 Driver Home: "last sync" stamp (any successful fetch, poll or
+        // manual) and re-render the summary strip with the updated time.
+        S.lastSync = new Date().toISOString();
+        renderTodaySummary();
     } catch(e) {
         // Never silent: after two consecutive failed polls flag the day as
         // stale so the driver knows the board may be outdated (offline).
@@ -969,11 +993,33 @@ function buildPhysicalVisitRow(visit){
         `${s.pop_required?` · POP ${s.pop_count?"✓":"required"}`:""}`+
         `${s.pod_required?` · POD ${s.pod_count?"✓":"required"}`:""}`+
         `${s.requires_reefer?` · ${esc(s.temperature_requirement||"REEFER")}`:""}</div>`).join("");
+    // §7 completed-visit detail strip: arrival / departure / service
+    // duration / evidence / issue — derived from the underlying stop
+    // payloads (the flat serializer carries actual_* times and attachment
+    // counts; the visit summary only has shipment-level pallets/POP/POD).
+    const tz=stops[0]?.tz_name||"America/Toronto";
+    const arrivals=stops.map(s=>s.actual_arrival_time).filter(Boolean);
+    const departures=stops.map(s=>s.actual_departure_time).filter(Boolean);
+    const arr=arrivals.length?Math.min(...arrivals.map(t=>new Date(t).getTime())):0;
+    const dep=departures.length?Math.max(...departures.map(t=>new Date(t).getTime())):0;
+    const durationMin=(arr&&dep&&dep>=arr)?Math.round((dep-arr)/60000):0;
+    const evCount=stops.reduce((n,s)=>n+(s.pop_attachments?.length||0)+(s.pod_attachments?.length||0),0);
+    const issueStop=stops.some(s=>s.status==="issue");
+    const skippedStop=stops.some(s=>s.status==="skipped");
+    const meta=[];
+    if(arr)meta.push(`<span class="da-vm">📥 ${esc(fmtStopTime(new Date(arr).toISOString(),tz))}</span>`);
+    if(dep)meta.push(`<span class="da-vm">📤 ${esc(fmtStopTime(new Date(dep).toISOString(),tz))}</span>`);
+    if(durationMin)meta.push(`<span class="da-vm">⏱ ${durationMin} min</span>`);
+    if(evCount)meta.push(`<span class="da-vm">📎 ${evCount}</span>`);
+    const badge=issueStop?`<span class="da-stop-badge red">⚠ ISSUE</span>`
+        :skippedStop?`<span class="da-stop-badge">⏭ Skipped</span>`
+        :open?"":"<span class=\"da-stop-badge green\">✓ All linked shipments complete</span>";
     ct.innerHTML=`<div class="da-stop-type ${pickup?"pickup":""}">${esc(visit.type_label||"Visit")} · <span style="opacity:.7">${stops.length} shipment stop${stops.length===1?"":"s"}</span></div>`+
         `<div class="da-stop-name">${esc(visit.company_name||"Physical visit")}</div>`+
         `<div class="da-stop-addr">${esc(visit.address||"")}</div>`+
         `<div class="da-physical-shipments">${shipments}</div>`+
-        (open?"":"<span class=\"da-stop-badge green\">✓ All linked shipments complete</span>");
+        badge+
+        (meta.length?`<div class="da-completed-visit-meta">${meta.join("")}</div>`:"");
     ct.onclick=()=>openStop(stops[0]);
     row.append(tl,ct);
     return row;

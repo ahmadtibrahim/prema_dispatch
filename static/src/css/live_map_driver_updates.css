@@ -171,3 +171,98 @@
     min-height: 68px;
     font-size: 11px;
 }
+
+/* ── §9 Activity feed (chronological operational events) ─────────── */
+.o_driver_updates_count.urgent {
+    background: #b0413e;
+}
+
+.o_activity_panel_head {
+    font-size: 10px;
+    color: #5a6472;
+    line-height: 1.35;
+    background: #fbfbf8;
+}
+
+.o_activity_event {
+    padding: 8px 10px;
+    border-bottom: 1px solid #edf0f4;
+}
+
+.o_activity_event.severity-urgent {
+    background: #fdf3f2;
+    border-left: 3px solid #b0413e;
+}
+
+.o_activity_event.severity-warning {
+    background: #fffaf0;
+    border-left: 3px solid #d9a13b;
+}
+
+.o_activity_event.severity-info {
+    border-left: 3px solid #cfd6df;
+}
+
+.o_activity_event_head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.o_activity_event_icon {
+    width: 14px;
+    text-align: center;
+    font-size: 11px;
+    color: #8a94a2;
+}
+
+.o_activity_event.severity-urgent .o_activity_event_icon {
+    color: #b0413e;
+}
+
+.o_activity_event.severity-warning .o_activity_event_icon {
+    color: #d9a13b;
+}
+
+.o_activity_event_title {
+    flex: 1 1 auto;
+    font-weight: 600;
+    font-size: 11px;
+    color: #2d3742;
+}
+
+.o_activity_event_time {
+    font-size: 10px;
+    color: #8a94a2;
+    white-space: nowrap;
+}
+
+.o_activity_event_job {
+    font-size: 10px;
+    color: #5a6472;
+    margin-top: 2px;
+}
+
+.o_activity_event_message {
+    font-size: 10.5px;
+    color: #3c4550;
+    margin-top: 3px;
+    line-height: 1.35;
+}
+
+.o_activity_event_meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 4px;
+    font-size: 10px;
+    color: #6b7480;
+}
+
+.o_activity_event_evidence {
+    color: #0b6e4f;
+}
+
+.o_activity_event_evidence .fa-camera {
+    color: #0b6e4f;
+}

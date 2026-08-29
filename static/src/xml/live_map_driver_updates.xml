@@ -22,6 +22,15 @@
                     <span class="o_driver_updates_count"><t t-esc="state.driverUpdateOpenCount"/></span>
                 </t>
             </button>
+            <button type="button"
+                    t-attf-class="o_driver_updates_tab #{state.sidebarTab === 'activity' ? 'active' : ''}"
+                    t-on-click="() => this.showSidebarTab('activity')"
+                    title="Chronological operational events — work starts, stops, evidence, temperature, conflicts">
+                Activity
+                <t t-if="state.activityUrgentCount">
+                    <span class="o_driver_updates_count urgent"><t t-esc="state.activityUrgentCount"/></span>
+                </t>
+            </button>
         </div>
     </xpath>
 
@@ -125,6 +134,74 @@
 
     <xpath expr="//div[@class='px-3 py-2 border-top bg-light flex-shrink-0']" position="attributes">
         <attribute name="t-if">!state.sidebarTab || state.sidebarTab === 'fleet'</attribute>
+    </xpath>
+
+    <xpath expr="//div[@class='px-3 py-2 border-top bg-light flex-shrink-0']" position="after">
+        <div t-if="state.sidebarTab === 'activity'"
+             class="o_activity_panel overflow-auto flex-grow-1">
+            <div class="px-3 py-2 border-bottom o_activity_panel_head">
+                <i class="fa fa-list-ul me-1"/>
+                Operational feed — every event names its job, driver, stop,
+                physical visit, pallet and evidence. A shared physical visit
+                never merges evidence into an ambiguous bucket.
+            </div>
+            <t t-if="state.activityLoading and !state.activityFeed.length">
+                <div class="p-3 text-center text-muted o_activity_empty">
+                    <i class="fa fa-spinner fa-spin me-1"/>Loading activity…
+                </div>
+            </t>
+            <t t-elif="state.activityError and !state.activityFeed.length">
+                <div class="p-3 text-danger o_activity_empty">
+                    <i class="fa fa-exclamation-triangle me-1"/>
+                    <t t-esc="state.activityError"/>
+                </div>
+            </t>
+            <t t-elif="!state.activityFeed.length">
+                <div class="p-3 text-center text-muted o_activity_empty">
+                    <i class="fa fa-check-circle-o d-block mb-2"/>
+                    No operational events yet.
+                </div>
+            </t>
+            <t t-foreach="state.activityFeed" t-as="ev" t-key="ev.id">
+                <article t-attf-class="o_activity_event severity-#{ev.severity}">
+                    <div class="o_activity_event_head">
+                        <span class="o_activity_event_icon" t-att-title="ev.severity">
+                            <t t-esc="this.feedSeverityIcon(ev.severity)"/>
+                        </span>
+                        <span class="o_activity_event_title text-truncate"><t t-esc="ev.title"/></span>
+                        <span class="o_activity_event_time"><t t-esc="ev.reported_at"/></span>
+                    </div>
+                    <div class="o_activity_event_job">
+                        <i class="fa fa-truck me-1"/><t t-esc="ev.job_name"/>
+                        <t t-if="ev.driver_name">
+                            <i class="fa fa-user ms-2 me-1"/><t t-esc="ev.driver_name"/>
+                        </t>
+                        <t t-if="ev.vehicle_name">
+                            <i class="fa fa-car ms-2 me-1"/><t t-esc="ev.vehicle_name"/>
+                        </t>
+                    </div>
+                    <div t-if="ev.message" class="o_activity_event_message"><t t-esc="ev.message"/></div>
+                    <div class="o_activity_event_meta">
+                        <t t-if="ev.customer_name">
+                            <span><i class="fa fa-building-o me-1"/><t t-esc="ev.customer_name"/></span>
+                        </t>
+                        <t t-if="ev.stop_name">
+                            <span><i class="fa fa-map-marker me-1"/><t t-esc="ev.stop_name"/></span>
+                        </t>
+                        <t t-if="ev.visit_id">
+                            <span title="Physical visit — shared visit events stay isolated per job">
+                                <i class="fa fa-flag-o me-1"/>Visit #<t t-esc="ev.visit_id"/>
+                            </span>
+                        </t>
+                        <t t-if="ev.evidence_id">
+                            <span class="o_activity_event_evidence" title="Linked evidence record">
+                                <i class="fa fa-camera me-1"/>Evidence #<t t-esc="ev.evidence_id"/>
+                            </span>
+                        </t>
+                    </div>
+                </article>
+            </t>
+        </div>
     </xpath>
 
 </t>

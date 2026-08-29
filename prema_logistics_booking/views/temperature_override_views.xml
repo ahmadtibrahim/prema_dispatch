@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_temperature_override_form" model="ir.ui.view">
+        <field name="name">prema.dispatch.temperature.override.form</field>
+        <field name="model">prema.dispatch.temperature.override</field>
+        <field name="arch" type="xml">
+            <form string="Authorize Temperature Override">
+                <group>
+                    <group string="Route">
+                        <field name="job_id"/>
+                        <field name="vehicle_id"/>
+                        <field name="driver_id"/>
+                    </group>
+                    <group string="Authorization">
+                        <field name="selected_setpoint_c"
+                               readonly="state != 'draft'"/>
+                        <field name="reason" placeholder="Required — why is this setpoint safe?"
+                               required="state == 'draft'"/>
+                        <field name="state"/>
+                        <field name="override_user_id"/>
+                        <field name="override_at"/>
+                    </group>
+                </group>
+                <group string="Affected Pallets / Bookings">
+                    <field name="affected_item_ids" widget="many2many_tags"/>
+                    <field name="affected_booking_count"/>
+                    <field name="original_requirements_json"
+                           invisible="original_requirements_json == False"/>
+                </group>
+                <group string="Driver Acknowledgment">
+                    <field name="driver_acknowledged"/>
+                    <field name="driver_ack_at"/>
+                    <field name="driver_ack_user_id"/>
+                </group>
+                <footer>
+                    <button name="action_apply" type="object" string="Authorize &amp; Apply"
+                            class="btn-primary"
+                            invisible="state != 'draft'"/>
+                    <button name="action_cancel" type="object" string="Cancel Override"
+                            class="btn-danger"
+                            invisible="state != 'applied'"/>
+                    <button string="Close" class="btn-secondary" special="cancel"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+
+    <record id="view_temperature_override_tree" model="ir.ui.view">
+        <field name="name">prema.dispatch.temperature.override.tree</field>
+        <field name="model">prema.dispatch.temperature.override</field>
+        <field name="arch" type="xml">
+            <list string="Temperature Overrides" editable="bottom">
+                <field name="name"/>
+                <field name="job_id"/>
+                <field name="vehicle_id"/>
+                <field name="selected_setpoint_c"/>
+                <field name="state"/>
+                <field name="override_user_id"/>
+                <field name="override_at"/>
+                <field name="driver_acknowledged"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="action_temperature_override" model="ir.actions.act_window">
+        <field name="name">Temperature Overrides</field>
+        <field name="res_model">prema.dispatch.temperature.override</field>
+        <field name="view_mode">tree,form</field>
+        <field name="domain">[]</field>
+    </record>
+</odoo>

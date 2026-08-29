@@ -49,6 +49,32 @@ class PremaDispatchItem(models.Model):
         for item in self:
             item.evidence_count = Evidence.search_count([("pallet_id", "=", item.id)])
 
+    # ── §10 Progress page: pallet-level POPP and delivery-POD status.
+    # POPP belongs to THIS pallet (popp_attachment_ids); the delivery POD
+    # is the pallet's delivery stop's POD — read directly, never merged
+    # across a shared visit's other jobs.
+    popp_status_text = fields.Char(
+        string="POPP Status", compute="_compute_popp_status_text")
+    pod_status_text = fields.Char(
+        string="POD Status", compute="_compute_popp_status_text")
+
+    @api.depends("popp_attachment_ids", "delivery_stop_id.pod_attachment_ids")
+    def _compute_popp_status_text(self):
+        for item in self:
+            popp_n = len(item.popp_attachment_ids)
+            item.popp_status_text = (
+                f"{popp_n} photo{'' if popp_n == 1 else 's'}" if popp_n else "None")
+            pod_stop = item.delivery_stop_id
+            pod_n = len(pod_stop.pod_attachment_ids) if pod_stop else 0
+            if not pod_stop:
+                item.pod_status_text = "—"
+            elif pod_n:
+                item.pod_status_text = "POD ✓"
+            elif pod_stop.status == "completed":
+                item.pod_status_text = "POD ⚠ MISSING"
+            else:
+                item.pod_status_text = "Pending"
+
     def action_open_evidence(self):
         self.ensure_one()
         return {

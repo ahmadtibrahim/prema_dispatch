@@ -97,6 +97,9 @@ class NormalizedBookingRequest:
         self.equipment_type = to_canonical_temperature_mode(data.get("equipment_type", "dry"))
         self.required_temperature_c = data.get("required_temperature_c")
         self.required_temperature = data.get("required_temperature", "")
+        self.submitted_temperature_unit = data.get("submitted_temperature_unit", "c")
+        self.temperature_requirement_source = data.get(
+            "temperature_requirement_source", "customer")
 
         self.pickup_stops = data.get("pickup_stops", [])
         self.delivery_stops = data.get("delivery_stops", [])
@@ -761,8 +764,9 @@ class BookingOrchestrationService:
                 "required_temperature_c": (
                     normalized_request.required_temperature_c
                     if normalized_request.required_temperature_c is not None
-                    else 0.0
+                    else None
                 ),
+                "submitted_temperature_unit": normalized_request.submitted_temperature_unit,
                 "pallets": normalized_request.physical_pallets,  # physical pallets for pricing/capacity
                 "physical_pallets": normalized_request.physical_pallets,
                 "shared_pallet_mode": normalized_request.shared_pallet_mode,
@@ -1037,8 +1041,9 @@ class BookingOrchestrationService:
             "required_temperature_c": (
                 normalized_request.required_temperature_c
                 if normalized_request.required_temperature_c is not None
-                else 0.0
+                else None
             ),
+            "submitted_temperature_unit": normalized_request.submitted_temperature_unit,
             "pallets": normalized_request.physical_pallets,
             "physical_pallets": normalized_request.physical_pallets,
             "shared_pallet_mode": normalized_request.shared_pallet_mode,
@@ -1280,11 +1285,15 @@ class BookingOrchestrationService:
             "shipment_type": normalized_request.load_type,
             "temperature_mode": normalized_request.equipment_type,
             "required_temperature": normalized_request.required_temperature or "",
+            # NULL (never 0.0) when unset: 0.0 is a REAL temperature under
+            # the canonical model (18-section §3) — the 0°C-vs-missing trap.
             "required_temperature_c": (
                 normalized_request.required_temperature_c
                 if normalized_request.required_temperature_c is not None
-                else 0.0
+                else None
             ),
+            "submitted_temperature_unit": normalized_request.submitted_temperature_unit,
+            "temperature_requirement_source": normalized_request.temperature_requirement_source,
             "pallets": normalized_request.physical_pallets,
             "physical_pallets": normalized_request.physical_pallets,
             "shared_pallet_mode": normalized_request.shared_pallet_mode,

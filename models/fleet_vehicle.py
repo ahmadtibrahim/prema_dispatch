@@ -33,6 +33,14 @@ class FleetVehicle(models.Model):
         string="Home → Hub Drive (min)", default=30,
         help="Estimated drive from the driver's home to the hub/yard — "
              "only relevant when Driver Start Mode = Driver Home.")
+    # ── Live Map heartbeat (§8) ──────────────────────────────────────
+    # Stamped by the driver app's polling loop (throttled server-side to
+    # ≥60s); the Live Map truck panel shows it as "App sync" alongside
+    # the GeoTab GPS timestamp. A plain timestamp — never a binary.
+    x_driver_app_last_sync = fields.Datetime(
+        string="Driver App Last Sync",
+        help="Last time the driver app polled its route (heartbeat). "
+             "Shown on the Live Map truck panel.")
     straight_pallet_capacity = fields.Integer(default=12)
     pin_wheel_pallet_capacity = fields.Integer(default=13)
     turned_pallet_capacity = fields.Integer(default=14)

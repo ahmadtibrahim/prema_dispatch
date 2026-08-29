@@ -55,6 +55,150 @@ function truckFill(ageMin) {
     return CLR_GPS_NO;
 }
 
+// ── §8 truck popup — structured progress panel ─────────────────────────────
+// Everything the dispatcher needs at a glance; payload is counts/statuses/
+// timestamps only (evidence stays lazy — the stop drill-down fetches files).
+
+function liveEsc(s) {
+    return String(s ?? "").replace(/[&<>"']/g, c => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+    }[c]));
+}
+
+function fmtLiveTime(iso) {
+    if (!iso) return "";
+    try {
+        const d = new Date(iso);
+        if (isNaN(d.getTime())) return "";
+        return new Intl.DateTimeFormat("en-US", {
+            hour: "numeric", minute: "2-digit", hour12: true,
+            timeZone: "America/Toronto",
+        }).format(d);
+    } catch { return ""; }
+}
+
+function fmtLiveDur(min) {
+    if (min === null || min === undefined || min === "") return "";
+    return `${Math.round(min)} min`;
+}
+
+function liveStopType(type) {
+    return String(type || "").replaceAll("_", " ").toUpperCase() || "STOP";
+}
+
+function buildTruckPopupHtml(truck) {
+    const p = truck.progress || {};
+    const ageMin = truck.gps_age_min;
+    const gpsTxt = (ageMin !== null && ageMin !== undefined)
+        ? `${ageMin} min ago` : "No GPS data";
+    const gpsTs = fmtLiveTime(p.gps_at);
+    const stateTxt = (p.moving_state || "").toUpperCase();
+    const stateClr = p.moving_state === "offline" ? CLR_GPS_NO
+        : (p.moving_state === "moving" ? "#34a853" : "#8d6e63");
+    const total = p.total_visits || 0;
+    const pct = total ? Math.round(((p.completed_visits || 0) / total) * 100) : 0;
+    const bars = [];
+    const cells = (label, val, color) => bars.push(
+        `<div style="flex:1;min-width:86px;background:#f6f8fa;border-radius:8px;padding:5px 7px;margin:2px;">
+            <div style="font-size:9.5px;color:#888;text-transform:uppercase;letter-spacing:.04em;">${label}</div>
+            <div style="font-size:13px;font-weight:700;${color ? `color:${color};` : ""}">${val}</div>
+        </div>`);
+
+    const delay = p.delay_minutes;
+    cells("Visits", `${p.completed_visits || 0}/${total}`);
+    cells("Actions", `${p.completed_actions || 0}/${p.total_actions || 0}`);
+    cells("Finish ETA", fmtLiveTime(p.finish_eta) || "—");
+    cells("Delay", delay ? `<span style="color:#d93025">+${delay}m</span>` : "—");
+
+    // ROUTE progress bar — visits, not actions (physical units).
+    const progressBar = total ? `
+        <div style="height:8px;background:#e9ecef;border-radius:5px;overflow:hidden;margin:4px 0 2px;">
+            <div style="height:100%;width:${pct}%;background:${truckColor(truck.id)};border-radius:5px;"></div>
+        </div>
+        <div style="font-size:10px;color:#777;margin-bottom:4px;">${pct}% of physical visits complete</div>`
+        : "";
+
+    const current = p.current;
+    const currentBlock = current ? `
+        <div style="background:${current.issue ? "#fdf0ef" : "#f2f6fc"};border-left:3px solid ${current.issue ? CLR_FAILED : "#1a73e8"};border-radius:6px;padding:6px 8px;margin:4px 0;">
+            <div style="font-size:10px;color:#777;text-transform:uppercase;letter-spacing:.04em;">
+                CURRENT WORK — ${liveStopType(current.type)} ${current.issue ? '<span style="color:#d93025;font-weight:800;">⚠ ISSUE</span>' : ""}</div>
+            <div style="font-weight:600;font-size:12.5px;margin:2px 0;">${liveEsc(current.address || "Stop")}</div>
+            <div style="font-size:11px;color:#555;">
+                ${liveEsc((current.status || "").replaceAll("_", " "))}
+                ${fmtLiveTime(current.arrival_at) ? ` · arr ${fmtLiveTime(current.arrival_at)}` : ""}
+                ${current.service_elapsed_min !== null && current.service_elapsed_min !== undefined ? ` · <b>${current.service_elapsed_min} min</b> elapsed` : ""}
+                ${current.pallets ? ` · <b>${current.pallets}</b> pallet${current.pallets === 1 ? "" : "s"}` : ""}
+            </div>
+        </div>` : "";
+
+    const next = p.next;
+    let nextBlock = "";
+    if (next) {
+        const riskTxt = next.appointment_risk === "risk"
+            ? '<span style="color:#d93025;font-weight:700;">APPT AT RISK</span>'
+            : (next.appointment_risk === "ok"
+                ? '<span style="color:#188038;font-weight:700;">APPT OK</span>' : "");
+        nextBlock = `
+        <div style="background:#fafafa;border-left:3px solid #34a853;border-radius:6px;padding:6px 8px;margin:4px 0;">
+            <div style="font-size:10px;color:#777;text-transform:uppercase;letter-spacing:.04em;">NEXT STOP — ${liveStopType(next.type)} ${riskTxt}</div>
+            <div style="font-weight:600;font-size:12.5px;margin:2px 0;">${liveEsc(next.address || "Stop")}</div>
+            <div style="font-size:11px;color:#555;">
+                ETA <b>${fmtLiveTime(next.eta) || "—"}</b>
+                ${next.opening ? ` · Open ${liveEsc(next.opening)}` : ""}
+                ${next.distance_km !== null && next.distance_km !== undefined ? ` · <b>${next.distance_km} km</b>` : ""}
+                ${next.appointment_required ? "" : ""}
+            </div>
+        </div>`;
+    }
+
+    const pal = p.pallets || {};
+    const ev = p.evidence || {};
+    const reefer = p.reefer;
+    const reeferBlock = reefer ? `
+        <div style="background:${reefer.conflict ? "#fdf0ef" : "#eef7ee"};border-left:3px solid ${reefer.conflict ? CLR_FAILED : "#188038"};border-radius:6px;padding:6px 8px;margin:4px 0;">
+            <div style="font-size:10px;color:#777;text-transform:uppercase;letter-spacing:.04em;">
+                ${reefer.conflict ? 'REEFER CONFLICT <span style="color:#d93025;font-weight:800;">⚠</span>' : "REEFER"}</div>
+            <div style="font-size:12px;font-weight:600;margin:2px 0;">❄ ${liveEsc(reefer.instruction || "Reefer required")}</div>
+            <div style="font-size:11px;color:#555;">
+                ${reefer.setpoint ? `Set <b>${liveEsc(reefer.setpoint)}</b>` : ""}
+                ${reefer.range ? ` · range ${liveEsc(reefer.range)}` : ""}
+                ${reefer.onboard_reefer_pallets ? ` · <b>${reefer.onboard_reefer_pallets}</b> reef pallet${reefer.onboard_reefer_pallets === 1 ? "" : "s"} onboard` : ""}
+            </div>
+        </div>` : "";
+
+    const appSync = fmtLiveTime(p.app_last_sync);
+    return `
+        <div style="font:13px Arial,sans-serif;width:300px;padding:2px 0;">
+            <div style="font-size:15px;font-weight:700;margin-bottom:2px;">
+                ${liveEsc(truck.name)}
+                ${truck.license_plate ? `<span style="color:#666;font-size:11px;margin-left:6px;">${liveEsc(truck.license_plate)}</span>` : ""}
+            </div>
+            <div style="color:#444;font-size:12px;margin-bottom:4px;">
+                <b>Driver:</b> ${liveEsc(truck.driver || "—")}
+                ${truck.job_name ? ` · <span style="color:#1a73e8;">${liveEsc(truck.job_name)}</span>` : ""}
+            </div>
+            <div style="display:flex;gap:4px;margin-bottom:6px;flex-wrap:wrap;">
+                <span style="background:${truckFill(ageMin)}22;color:${truckFill(ageMin)};font-size:10px;font-weight:700;padding:2px 8px;border-radius:10px;">GPS ${liveEsc(gpsTxt)}${gpsTs ? ` · ${gpsTs}` : ""}</span>
+                <span style="background:${stateClr}22;color:${stateClr};font-size:10px;font-weight:700;padding:2px 8px;border-radius:10px;">${stateTxt}</span>
+                ${appSync ? `<span style="background:#e8eaed;color:#5f6368;font-size:10px;font-weight:700;padding:2px 8px;border-radius:10px;">APP SYNC ${appSync}</span>` : ""}
+            </div>
+            ${truck.address ? `<div style="color:#888;font-size:11px;margin-bottom:4px;">📍 ${liveEsc(truck.address)}</div>` : ""}
+            <div style="font-size:9.5px;color:#888;text-transform:uppercase;letter-spacing:.05em;margin:6px 0 2px;">Route Progress</div>
+            ${progressBar}
+            <div style="display:flex;flex-wrap:wrap;gap:2px;">${bars.join("")}</div>
+            ${currentBlock}
+            ${nextBlock}
+            <div style="font-size:9.5px;color:#888;text-transform:uppercase;letter-spacing:.05em;margin:6px 0 2px;">Pallets &amp; Evidence</div>
+            <div style="font-size:11px;color:#444;line-height:1.7;">
+                Onboard <b>${pal.onboard ?? "—"}</b> · Delivered <b>${pal.delivered ?? "—"}</b> · Remaining pickup <b>${pal.remaining_pickup ?? "—"}</b><br>
+                Positioned <b>${pal.positioned ?? "—"}</b> · POPP <b>${pal.popp ?? "—"}</b><br>
+                Evidence: POP <b>${ev.pop ?? 0}</b> · POPP <b>${ev.popp ?? 0}</b> · POD <b>${ev.pod ?? 0}</b> · scans <b>${ev.scans_pending ?? 0}</b> pending · <b>${ev.failed ?? 0}</b> failed
+            </div>
+            ${reeferBlock}
+        </div>`;
+}
+
 // ── OWL Component ───────────────────────────────────────────────────────────
 
 export class DispatchLiveMap extends Component {
@@ -296,10 +440,7 @@ export class DispatchLiveMap extends Component {
             // ── Truck GPS marker ──────────────────────────────────────
             if (!truck.lat || !truck.lng) return;
             hasGps = true;
-            const fill    = truckFill(truck.gps_age_min);
-            const ageText = (truck.gps_age_min !== null && truck.gps_age_min !== undefined)
-                ? `${truck.gps_age_min} min ago`
-                : "No GPS data";
+            const fill = truckFill(truck.gps_age_min);
 
             const tm = new G.Marker({
                 position: { lat: truck.lat, lng: truck.lng },
@@ -317,30 +458,32 @@ export class DispatchLiveMap extends Component {
                 zIndex: 200,
             });
 
-            const popup = `
-                <div style="font:14px Arial,sans-serif;min-width:210px;padding:2px 0;">
-                    <div style="font-size:16px;font-weight:700;margin-bottom:4px;">
-                        ${truck.name}
-                        ${truck.license_plate ? `<span style="color:#666;font-size:12px;margin-left:6px;">${truck.license_plate}</span>` : ""}
-                    </div>
-                    <div style="color:#444;margin-bottom:2px;">
-                        <b>Driver:</b> ${truck.driver || "—"}
-                    </div>
-                    ${truck.job_name ? `<div style="color:#1a73e8;margin-bottom:2px;"><b>Job:</b> ${truck.job_name}</div>` : ""}
-                    ${truck.customer  ? `<div style="color:#444;margin-bottom:2px;"><b>Customer:</b> ${truck.customer}</div>` : ""}
-                    ${truck.address   ? `<div style="color:#888;font-size:12px;margin-bottom:4px;">${truck.address}</div>` : ""}
-                    <div style="color:${fill};font-weight:600;font-size:12px;">
-                        GPS: ${ageText}
-                    </div>
-                </div>`;
-
+            // §8 structured progress panel — built from truck.progress
+            // (counts/statuses/timestamps only; the dispatch board's
+            // drill-down fetches evidence files lazily, never here).
             tm.addListener("click", () => {
-                this._infoWindow.setContent(popup);
+                this._infoWindow.setContent(buildTruckPopupHtml(truck));
                 this._infoWindow.open(this._map, tm);
             });
             this._markers[`truck_${truck.id}`] = tm;
             bounds.extend({ lat: truck.lat, lng: truck.lng });
         });
+
+        // §8 keep the selected truck's panel live: every poll rebuilds the
+        // markers, so re-anchor the open info window to the fresh marker
+        // with the fresh progress payload. If the truck left today's
+        // fleet (job ended/cancelled), close the panel instead.
+        if (this.state.selectedId) {
+            const sel = trucks.find(t => t.id === this.state.selectedId);
+            const tm2 = sel && sel.lat ? this._markers[`truck_${sel.id}`] : null;
+            if (tm2) {
+                this._infoWindow.setContent(buildTruckPopupHtml(sel));
+                this._infoWindow.open(this._map, tm2);
+            } else {
+                this.state.selectedId = null;
+                this._infoWindow.close();
+            }
+        }
 
         // Auto-fit on first render (no truck selected yet)
         if (!this.state.selectedId) {

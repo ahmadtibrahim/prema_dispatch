@@ -601,6 +601,47 @@ class PremaDispatchStop(models.Model):
         for stop in self:
             stop.pod_uploaded = bool(stop.pod_attachment_ids)
 
+    # ── §10 Progress page: one-line evidence status per stop. The POP/POD
+    # counts are direct stop attachments (never combined across jobs — a
+    # shared physical visit keeps per-logical-stop evidence).
+    evidence_status_text = fields.Char(
+        string="Evidence", compute="_compute_evidence_status_text")
+    pop_count = fields.Integer(
+        string="POP Count", compute="_compute_evidence_status_text")
+    pod_count = fields.Integer(
+        string="POD Count", compute="_compute_evidence_status_text")
+
+    # §10 Progress page: actual dwell at the dock = departure − arrival.
+    actual_service_minutes = fields.Integer(
+        string="Actual Service (min)",
+        compute="_compute_actual_service_minutes")
+
+    @api.depends("actual_arrival_time", "actual_departure_time")
+    def _compute_actual_service_minutes(self):
+        for stop in self:
+            if (stop.actual_arrival_time and stop.actual_departure_time
+                    and stop.actual_departure_time >= stop.actual_arrival_time):
+                stop.actual_service_minutes = int(round(
+                    (stop.actual_departure_time - stop.actual_arrival_time)
+                    .total_seconds() / 60.0))
+            else:
+                stop.actual_service_minutes = 0
+
+    @api.depends("pop_attachment_ids", "pod_attachment_ids",
+                 "pop_required", "pod_required")
+    def _compute_evidence_status_text(self):
+        for stop in self:
+            pop_n = len(stop.pop_attachment_ids)
+            pod_n = len(stop.pod_attachment_ids)
+            stop.pop_count = pop_n
+            stop.pod_count = pod_n
+            parts = []
+            if stop.pop_required or pop_n:
+                parts.append(f"POP {pop_n}{' ✓' if pop_n else (' ⚠' if stop.status == 'completed' else '')}")
+            if stop.pod_required or pod_n:
+                parts.append(f"POD {pod_n}{' ✓' if pod_n else (' ⚠' if stop.status == 'completed' else '')}")
+            stop.evidence_status_text = " · ".join(parts) or "—"
+
 
     def _apply_saved_location(self, location):
         """Apply a saved location to this stop — SUPPLEMENT, never replace.

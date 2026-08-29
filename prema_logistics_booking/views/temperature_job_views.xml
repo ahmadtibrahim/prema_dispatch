@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- Dynamic reefer state (18-section §5-§6): engine-written, read-only
+         here. Lives in the BOOKING module (not prema_dispatch) because the
+         fields are defined by prema_logistics_booking's model extension —
+         a base-module view would be validated before the fields exist. -->
+    <record id="view_dispatch_job_form_temperature" model="ir.ui.view">
+        <field name="name">prema.dispatch.job.form.temperature</field>
+        <field name="model">prema.dispatch.job</field>
+        <field name="inherit_id" ref="prema_dispatch.view_dispatch_job_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//field[@name='temp_requirement']" position="after">
+                <field name="temperature_state"
+                       readonly="1"
+                       invisible="temperature_state in ('none', False)"/>
+                <field name="temperature_instruction_c"
+                       readonly="1"
+                       string="Reefer Setpoint (°C)"
+                       invisible="temperature_state in ('none', False)"/>
+                <field name="temperature_range_min_c" readonly="1"
+                       string="Safe Range Min (°C)"
+                       invisible="temperature_state in ('none', False)"/>
+                <field name="temperature_range_max_c" readonly="1"
+                       string="Safe Range Max (°C)"
+                       invisible="temperature_state in ('none', False)"/>
+                <field name="temperature_conflict" readonly="1"
+                       string="Temperature Conflict"
+                       invisible="temperature_state in ('none', False)"/>
+                <field name="temperature_message" readonly="1"
+                       string="Reefer Instruction"
+                       invisible="temperature_state in ('none', False)"/>
+                <field name="reefer_acknowledged" readonly="1"
+                       string="Setpoint Acknowledged"
+                       invisible="temperature_state in ('none', False)"/>
+                <field name="reefer_off_acknowledged" readonly="1"
+                       string="Switch-off Acknowledged"
+                       invisible="temperature_state in ('none', False)"/>
+                <field name="temperature_override_count" readonly="1"
+                       string="Temperature Overrides"
+                       invisible="temperature_state in ('none', False)"/>
+                <button name="action_new_temperature_override"
+                        type="object"
+                        string="Authorize Override"
+                        class="btn btn-link p-0"
+                        icon="fa-warning"
+                        invisible="temperature_state in ('none', False)"
+                        help="Dispatch-authorized setpoint override (records original requirements, reason, authorizer). Driver is never asked to decide freight safety."/>
+            </xpath>
+        </field>
+    </record>
+</odoo>

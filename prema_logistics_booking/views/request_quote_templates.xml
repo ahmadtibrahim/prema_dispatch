@@ -104,12 +104,38 @@
                         </select>
                     </div>
                     <div class="mb-3" id="required_temperature_row" style="display:none">
-                        <label class="form-label">Required Temperature (°C)</label>
-                        <input type="number" name="required_temperature_c" id="required_temperature_c_input"
-                               class="form-control" step="0.5"/>
-                        <div class="form-text">Required for Reefer shipments. 0°C is a valid setting.</div>
+                        <label class="form-label">Required Temperature</label>
+                        <div class="input-group">
+                            <input type="number" name="required_temperature_c" id="required_temperature_c_input"
+                                   class="form-control" step="0.5" oninput="updateReqTempLive()"/>
+                            <select name="submitted_temperature_unit" id="required_temperature_unit"
+                                    class="form-select" style="max-width:88px" onchange="updateReqTempLive()">
+                                <option value="c" selected="selected">°C</option>
+                                <option value="f">°F</option>
+                            </select>
+                        </div>
+                        <div class="form-text" id="required_temperature_dual">
+                            Required for Reefer shipments. 0°C / 32°F is a valid setting.
+                        </div>
                     </div>
                     <script>
+                        function updateReqTempLive() {
+                            var input = document.getElementById('required_temperature_c_input');
+                            var unit = document.getElementById('required_temperature_unit');
+                            var dual = document.getElementById('required_temperature_dual');
+                            if (!input || !unit || !dual) { return; }
+                            if (input.value === '') {
+                                dual.textContent = 'Required for Reefer shipments. 0°C / 32°F is a valid setting.';
+                                return;
+                            }
+                            var num = parseFloat(input.value);
+                            if (isNaN(num)) { return; }
+                            var other = unit.value === 'c' ? (num * 9 / 5 + 32) : ((num - 32) * 5 / 9);
+                            var shown = Math.round(other * 10) / 10;
+                            dual.textContent = unit.value === 'c'
+                                ? input.value + '°C = ' + shown + '°F'
+                                : input.value + '°F = ' + shown + '°C';
+                        }
                         function toggleRequiredTemperature() {
                             var sel = document.getElementById('temperature_mode_select');
                             var row = document.getElementById('required_temperature_row');
@@ -191,6 +217,7 @@
                     <strong t-esc="pickup_city"/> <t t-esc="pickup_fsa.region_id.name if pickup_fsa.region_id else ''"/>
                     → <strong t-esc="delivery_city"/> <t t-esc="delivery_fsa.region_id.name if delivery_fsa.region_id else ''"/>
                     · <t t-esc="pallets"/> pallet(s) · <t t-esc="temperature_mode"/>
+                    <t t-if="temperature_display_dual"> · <t t-esc="temperature_display_dual"/></t>
                 </div></div>
 
                 <!-- Scheduled Options with capacity labels -->
@@ -233,6 +260,7 @@
                                                 <input type="hidden" name="weight_lbs" t-att-value="weight_lbs"/>
                                                 <input type="hidden" name="temperature_mode" t-att-value="temperature_mode"/>
                                                 <input type="hidden" name="required_temperature_c" t-att-value="required_temperature_c"/>
+                                                <input type="hidden" name="submitted_temperature_unit" t-att-value="submitted_temperature_unit"/>
                                                 <input t-if="liftgate_pickup" type="hidden" name="liftgate_pickup" value="1"/>
                                                 <input t-if="liftgate_delivery" type="hidden" name="liftgate_delivery" value="1"/>
                                                 <input t-if="appointment" type="hidden" name="appointment" value="1"/>
@@ -392,7 +420,7 @@
                         <div class="col-6"><small class="text-muted">TO</small><br/><strong t-esc="booking.delivery_fsa_id.display_city or booking.delivery_fsa_id.fsa"/></div>
                         <div class="col-6 mt-2"><small class="text-muted">PICKUP</small><br/><strong t-esc="booking.pickup_date"/></div>
                         <div class="col-6 mt-2"><small class="text-muted">DELIVERY</small><br/><strong t-esc="booking.estimated_delivery_date"/></div>
-                        <div class="col-6 mt-2"><small class="text-muted">SHIPMENT</small><br/><t t-esc="booking.pallets"/> pallet(s) · <t t-esc="booking.temperature_mode"/></div>
+                        <div class="col-6 mt-2"><small class="text-muted">SHIPMENT</small><br/><t t-esc="booking.pallets"/> pallet(s) · <t t-esc="booking.temperature_mode"/><t t-if="booking.temperature_display"> · <t t-esc="booking.temperature_display"/></t></div>
                         <div class="col-6 mt-2"><small class="text-muted">TOTAL</small><br/><strong><t t-esc="booking.calculated_price"/> CAD</strong></div>
                     </div>
                 </div></div>

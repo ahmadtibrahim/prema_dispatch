@@ -9,5 +9,9 @@
             <field name="key">logistics_booking.public_test_mode</field>
             <field name="value">False</field>
         </record>
+        <record id="param_prema_dispatch_reefer_precool_minutes" model="ir.config_parameter">
+            <field name="key">prema_dispatch.reefer_precool_minutes</field>
+            <field name="value">40</field>
+        </record>
     </data>
 </odoo>
