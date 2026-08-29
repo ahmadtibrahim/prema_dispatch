@@ -235,9 +235,13 @@ class PremaDispatchJob(models.Model):
             "required": True,
             "conflict": bool(self.temperature_conflict),
             "instruction": self.temperature_message or "",
+            # Only on/precool carry a setpoint; the unset-Float read-back
+            # (stored NULL → 0.0) must never render a phantom 0 °C in the
+            # off/conflict/none states.
             "setpoint": (
                 format_dual(self.temperature_instruction_c, f_first=f_first)
-                if self.temperature_instruction_c is not None
+                if state in ("on", "precool")
+                and self.temperature_instruction_c is not None
                 else ""),
             "setpoint_c": self.temperature_instruction_c,
             "range": range_dual(

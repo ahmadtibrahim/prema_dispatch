@@ -341,11 +341,38 @@ class TemperatureEngine:
                     lambda b: b.temperature_override_required)
             if cleared:
                 cleared.write({"temperature_override_required": False})
+        def _norm_sp(state, value):
+            # Odoo 18 reads an unset Float back as 0.0 — a stored NULL
+            # setpoint (none/off/conflict states) must compare equal to
+            # the result's None, or every refresh would re-emit. Only
+            # on/precool carry a real setpoint (0.0 is a legit °C there).
+            if state in ("on", "precool") and value is not None:
+                return value
+            return None
+
         changed = (
             prev[0] != result["state"]
-            or prev[1] != result["setpoint_c"]
-            or result["conflict"]
+            or _norm_sp(result["state"], prev[1])
+            != _norm_sp(result["state"], result["setpoint_c"])
         )
+        if changed:
+            # §6: a CHANGED instruction supersedes the previous
+            # acknowledgment — a stale ack (old setpoint/state) must never
+            # be presented to the driver as current, so the driver is asked
+            # to re-confirm the new instruction. Recompute-only refreshes
+            # (no state/setpoint change) leave the ack intact. (The former
+            # `or result["conflict"]` term also re-emitted the conflict
+            # timeline event on every refresh while conflicted — state
+            # transitions already cover conflict entry/exit.)
+            if job.reefer_acknowledged or job.reefer_off_acknowledged:
+                job.write({
+                    "reefer_acknowledged": False,
+                    "reefer_off_acknowledged": False,
+                    "reefer_ack_at": False,
+                    "reefer_ack_user_id": False,
+                    "reefer_off_ack_at": False,
+                    "reefer_off_ack_user_id": False,
+                })
         if changed and not self.env.context.get("no_temperature_timeline"):
             if result["state"] == "conflict":
                 names = ", ".join(
