@@ -280,7 +280,7 @@
                             t-att-disabled="state.ai.busy">
                         <i class="fa fa-magic"/> Summarize thread
                     </button>
-                    <div t-if="state.detail.ai && state.detail.ai.extraction"
+                    <div t-if="state.detail.ai &amp;&amp; state.detail.ai.extraction"
                          class="o_inbox_ai_card">
                         <div class="fw-bold small">Shipment extraction</div>
                         <t t-foreach="Object.entries(state.detail.ai.extraction.fields || {})"
