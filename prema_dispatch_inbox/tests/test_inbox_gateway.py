@@ -72,10 +72,12 @@ class TestGatewayIngest(InboxTestCase):
         self.assertTrue(self.bus_rows("prema_inbox"))  # reply announced too
 
     def test_message_new_attachments_bound(self):
+        # Real gateway shape: namedtuple (fname, content, info) — three
+        # elements, content base64 or bytes (Odoo 18 mail_thread._Attachment)
         payload = base64.b64encode(b"hello world").decode()
         conv = self.Conversation.message_new(dict(
             MSG, message_id="<gateway-att@client.example>",
-            attachments=[("rates.pdf", payload)]))
+            attachments=[("rates.pdf", payload, {"mimetype": "application/pdf"})]))
         msg = conv.inbox_message_ids
         self.assertEqual(len(msg.attachment_ids), 1)
         att = msg.attachment_ids[0]
@@ -83,6 +85,17 @@ class TestGatewayIngest(InboxTestCase):
         self.assertEqual(att.res_model, "prema.inbox.message")
         self.assertEqual(att.res_id, msg.id)
         self.assertEqual(base64.b64decode(att.datas), b"hello world")
+
+    def test_message_new_attachment_bytes_three_tuple(self):
+        # fetchmail delivers raw bytes content in the info-position tuple;
+        # bytes content must round-trip into a decodable attachment.
+        conv = self.Conversation.message_new(dict(
+            MSG, message_id="<gateway-att2@client.example>",
+            attachments=[("manifest.xlsx", b"PK\x03\x04binary", {})]))
+        att = conv.inbox_message_ids.attachment_ids
+        self.assertEqual(len(att), 1)
+        self.assertEqual(att.name, "manifest.xlsx")
+        self.assertEqual(base64.b64decode(att.datas), b"PK\x03\x04binary")
 
     def test_message_new_load_board_detection(self):
         conv = self.Conversation.message_new(dict(
@@ -98,6 +111,58 @@ class TestGatewayIngest(InboxTestCase):
             references="<gateway-1@client.example>"))
         self.assertEqual(conv2.id, conv1.id)
         self.assertEqual(len(conv1.inbox_message_ids), 2)
+
+    def test_gateway_end_to_end_raw_rfc822(self):
+        """The REAL fetchmail path: raw RFC 822 bytes → message_process →
+        message_route → message_new. Odoo 18 parses attachments into
+        namedtuples (fname, content, info) — this test mirrors the actual
+        gateway shape (regression: 2-tuple unpack crash on prod).
+
+        message_route consults mail.alias BEFORE the model fallback, so to
+        exercise the production route the dispatcher alias is pointed at
+        the inbox model here (clone keeps polling off; the transaction
+        rollback restores the alias)."""
+        alias = self.env["mail.alias"].search([
+            ("alias_name", "=", "dispatcher"),
+            ("alias_domain_id.name", "=", "logistics.premafirm.com")],
+            limit=1)
+        self.assertTrue(alias, "dispatcher alias must exist (clone)")
+        alias.write({"alias_model_id": self.env["ir.model"].search(
+            [("model", "=", "prema.inbox.conversation")], limit=1).id})
+        raw = (b"From: Janet Carrier <janet@carrier.example>\r\n"
+               b"To: dispatcher@logistics.premafirm.com\r\n"
+               b"Subject: Rate quote: 8 pallets reefer\r\n"
+               b"Message-ID: <gateway-e2e@client.example>\r\n"
+               b"Date: Sat, 30 Aug 2026 04:20:00 -0400\r\n"
+               b"MIME-Version: 1.0\r\n"
+               b"Content-Type: multipart/mixed; boundary=bb\r\n"
+               b"\r\n"
+               b"--bb\r\n"
+               b"Content-Type: text/plain; charset=utf-8\r\n"
+               b"\r\n"
+               b"Pickup Toronto M5V, delivery Ottawa K1A, 8 pallets.\r\n"
+               b"--bb\r\n"
+               b"Content-Type: application/pdf; name=rates.pdf\r\n"
+               b"Content-Disposition: attachment; filename=rates.pdf\r\n"
+               b"Content-Transfer-Encoding: base64\r\n"
+               b"\r\n"
+               b"aGVsbG8gd29ybGQ=\r\n"
+               b"--bb--\r\n")
+        MailThread = self.env["mail.thread"]
+        # (this fork keeps with_context on recordsets, not on Environment)
+        res = MailThread.with_context(
+            fetchmail_cron_running=True,
+            default_fetchmail_server_id=10,
+        ).message_process("prema.inbox.conversation", raw,
+                          save_original=True, strip_attachments=False)
+        self.assertTrue(res, "message_process must return the thread id")
+        conv = self.Conversation.browse(res)
+        self.assertEqual(len(conv.inbox_message_ids), 1)
+        msg = conv.inbox_message_ids
+        self.assertEqual(msg.direction, "incoming")
+        self.assertEqual(msg.attachment_ids.name, "rates.pdf")
+        self.assertEqual(base64.b64decode(msg.attachment_ids.datas),
+                         b"hello world")
 
 
 class TestOutboundPipeline(InboxTestCase):

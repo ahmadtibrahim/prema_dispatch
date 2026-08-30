@@ -287,12 +287,16 @@ class InboxConversation(models.Model):
     def _attachments_from_msgdict(self, msg_dict):
         """Materialize msg_dict attachments as ir.attachment rows.
 
-        The gateway delivers (filename, content) pairs; content arrives
-        base64-encoded for fetchmail-parsed mail. Rows are created without
-        a res_id and rebound to the inbox message after it exists.
+        The real gateway (mail.message_process → _message_parse_extract_
+        payload) delivers namedtuples (fname, content, info) — three
+        elements, content possibly bytes — while the fetch-sim and tests
+        may deliver plain (name, content) pairs; both shapes are accepted.
+        Rows are created without a res_id and rebound to the inbox message
+        after it exists.
         """
         res = self.env["ir.attachment"]
-        for name, content in msg_dict.get("attachments") or []:
+        for item in msg_dict.get("attachments") or []:
+            name, content = item[0], item[1]
             if not name or not content:
                 continue
             data = content
