@@ -296,18 +296,25 @@ class InboxConversation(models.Model):
         return group.users if group else self.env["res.users"]
 
     def _broadcast(self, event_type, extra=None):
-        """Send one event per inbox-group user on prema_inbox:{uid}."""
-        payload = dict(extra or {})
-        payload.update({"type": event_type, "conversation_id": self.id})
-        for user in self._inbox_group_users():
-            counts = self.env["prema.inbox.message"]._unread_counts([user])
-            payload["unread_total"] = counts[user.id]["total"]
-            payload["muted"] = user.id in self.muted_user_ids.ids
-            payload["is_spam"] = self.is_spam
-            # Odoo 18 bus: _sendone(target, notification_type, message);
-            # buffered in cr.precommit, flushed after commit.
-            self.env["bus.bus"]._sendone(
-                "prema_inbox:%d" % user.id, "prema_inbox", dict(payload))
+        """Send one event per inbox-group user on prema_inbox:{uid}.
+
+        Recordset-safe: a multi-conversation read (e.g. mark_read over
+        messages from several conversations) emits one event per
+        conversation instead of crashing on a singleton read.
+        """
+        for conv in self:
+            payload = dict(extra or {})
+            payload.update({"type": event_type, "conversation_id": conv.id})
+            for user in self._inbox_group_users():
+                counts = self.env["prema.inbox.message"]._unread_counts(
+                    [user])
+                payload["unread_total"] = counts[user.id]["total"]
+                payload["muted"] = user.id in conv.muted_user_ids.ids
+                payload["is_spam"] = conv.is_spam
+                # Odoo 18 bus: _sendone(target, notification_type, message);
+                # buffered in cr.precommit, flushed after commit.
+                self.env["bus.bus"]._sendone(
+                    "prema_inbox:%d" % user.id, "prema_inbox", dict(payload))
         return True
 
     def _broadcast_new_message(self, message):
