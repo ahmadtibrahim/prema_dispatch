@@ -1,13 +1,17 @@
 /** @odoo-module **/
-// Top-bar envelope with live unread badge (design §1/§3).
-// Anchored before the navbar breadcrumbs (beside the app title) via a
-// NavBar template extension + components patch — community and enterprise
-// navbar both resolve it. Server truth wins: reconcile on mount, on
-// focus, and on every bus event.
+// Top-bar envelope with live unread badge (design §1/§3), mounted as a
+// native Odoo 18 systray item (registry.category("systray"), sequence 10)
+// so it sits top-right on every screen. Server truth wins: reconcile on
+// mount, on focus, and on every bus event.
+//
+// The dropdown is Odoo's own Dropdown component (bottom-end, auto-flip,
+// viewport-clamped) — no manual coordinates. The anchor button is the
+// Dropdown target: Odoo wires open/close and aria-expanded on it.
 
 import { Component, useState, onMounted, onWillUnmount } from "@odoo/owl";
-import { patch } from "@web/core/utils/patch";
-import { NavBar } from "@web/webclient/navbar/navbar";
+import { registry } from "@web/core/registry";
+import { Dropdown } from "@web/core/dropdown/dropdown";
+import { useDropdownState } from "@web/core/dropdown/dropdown_hooks";
 import { useService } from "@web/core/utils/hooks";
 import { user } from "@web/core/user";
 // Odoo 18 removed the "rpc" service — raw JSON-RPC must be imported
@@ -20,6 +24,7 @@ const LS_EVENT = "prema_inbox.event."; // + event_id → multi-tab dedupe
 
 export class InboxBadge extends Component {
     static template = "prema_dispatch_inbox.InboxBadge";
+    static components = { Dropdown };
     static props = {};
 
     setup() {
@@ -29,9 +34,9 @@ export class InboxBadge extends Component {
         // Odoo 18: uid lives on the @web/core/user module export (no "user"
         // service; env.userId is undefined). See inbox_app.js.
         this.channel = `prema_inbox:${user.userId}`;
+        this.dropdown = useDropdownState();
         this.state = useState({
             total: 0, spam: 0, pulse: false,
-            popover: false,
             animations: localStorage.getItem(LS_ANIM) !== "off",
             sound: localStorage.getItem(LS_SOUND) === "on",
         });
@@ -141,13 +146,6 @@ export class InboxBadge extends Component {
         }
     }
 
-    togglePopover() {
-        this.state.popover = !this.state.popover;
-        if (!this.state.popover) {
-            this.reconcile();
-        }
-    }
-
     toggleAnimations() {
         this.state.animations = !this.state.animations;
         localStorage.setItem(LS_ANIM, this.state.animations ? "on" : "off");
@@ -159,17 +157,19 @@ export class InboxBadge extends Component {
     }
 
     openInbox() {
-        this.state.popover = false;
+        this.dropdown.close();
         this.action.doAction("prema_dispatch_inbox.action_prema_inbox_main");
     }
 }
 
-// Approved placement (design §1): the envelope sits BESIDE the app title,
-// immediately before the breadcrumbs — not in the systray. OWL resolves
-// <InboxBadge/> in the navbar template through the rendering component's
-// constructor.components; web_enterprise.EnterpriseNavBar extends NavBar
-// and inherits this map (no own `components` static), so one patch covers
-// both navbar flavours.
-patch(NavBar, {
-    components: { ...NavBar.components, InboxBadge },
-});
+// Native Odoo 18 systray registration — the navbar renders this registry
+// inside .o_menu_systray (top-right, ms-auto), ordered by sequence
+// (displayed left→right = sequence descending; 0 = far right).
+// Sequence 10 sits between mail activities (20) and the Prema Estimator
+// (5), matching the approved order: presence, phone, messages, activities,
+// Dispatch Inbox, Estimator, tools, company/user.
+registry.category("systray").add(
+    "prema_dispatch_inbox.inbox_badge",
+    { Component: InboxBadge },
+    { sequence: 10 }
+);

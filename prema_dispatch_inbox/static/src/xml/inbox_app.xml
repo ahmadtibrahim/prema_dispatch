@@ -1,65 +1,57 @@
 <?xml version="1.0" encoding="utf-8"?>
 <odoo>
 
-<!-- ============ NAVBAR ANCHOR (design §1: envelope beside the title) ============ -->
-<!-- Extended into web.NavBar (the web_enterprise EnterpriseNavBar template
-     inherits it, keeping this anchor) — the envelope renders immediately
-     before the breadcrumbs, i.e. beside the app title. -->
-<!-- GOTCHA (found 2026-08-30 in UAT): web_enterprise.EnterpriseNavBar is a
-     t-inherit-mode="primary" copy of web.NavBar. When the browser compiles it,
-     the parent lookup is done with the primary template's blockId, and the
-     template loader SKIPS extensions registered in later blocks
-     ("if (blockId && otherBlockId > blockId) break"). An extension to
-     web.NavBar alone therefore never reaches the enterprise navbar — the badge
-     must be extended into BOTH template names. -->
-<t t-name="web.NavBar" t-inherit="web.NavBar" t-inherit-mode="extension" owl="1">
-    <xpath expr="//div[hasclass('o_navbar_breadcrumbs')]" position="before">
-        <InboxBadge/>
-    </xpath>
-</t>
-<t t-name="web_enterprise.EnterpriseNavBar" t-inherit="web_enterprise.EnterpriseNavBar" t-inherit-mode="extension" owl="1">
-    <xpath expr="//div[hasclass('o_navbar_breadcrumbs')]" position="before">
-        <InboxBadge/>
-    </xpath>
-</t>
-
-<!-- ============================== BADGE ============================== -->
+<!-- ============================== BADGE (systray) ============================== -->
+<!-- Native Odoo 18 systray item: registered in registry.category("systray")
+     (see inbox_badge.js, sequence 10). The navbar renders the registry in
+     .o_menu_systray (top-right). The anchor button is the Dropdown target —
+     Odoo wires the open/close toggle, aria-expanded and the caret-free
+     .o-dropdown classes on it. The menu is Odoo's DropdownPopover:
+     bottom-end, auto-flip, viewport-clamped — no manual coordinates. -->
 <t t-name="prema_dispatch_inbox.InboxBadge" owl="1">
-    <div class="o_inbox_badge" t-on-click="togglePopover">
-        <span class="o_inbox_badge_env">
-            <i class="fa fa-envelope" t-att-class="{ 'o-inbox-pulse': state.pulse }"/>
-            <span t-if="state.total" class="o_inbox_badge_count"
-                  t-att-class="{ 'o-inbox-anim': state.animations }">
-                <t t-esc="state.total &gt; 99 ? '99+' : state.total"/>
-            </span>
-        </span>
-        <div t-if="state.popover" class="o_inbox_popover" t-on-click.stop="">
-            <div class="o_inbox_popover_head">
-                <strong>Dispatch Inbox</strong>
-                <span t-if="state.spam" class="o_inbox_spam_count">
-                    <i class="fa fa-shield"/> <t t-esc="state.spam"/> spam
+    <!-- OWL 2: component-tag attributes are expressions — string literals
+         need explicit quotes (menuClass="o_inbox_badge_menu" would resolve
+         as this.o_inbox_badge_menu → undefined, silently dropping the class). -->
+    <Dropdown position="'bottom-end'" state="dropdown" menuClass="'o_inbox_badge_menu'">
+        <button type="button" class="o_inbox_badge">
+            <span class="o_inbox_badge_env">
+                <i class="fa fa-envelope" t-att-class="{ 'o-inbox-pulse': state.pulse }"
+                   role="img" aria-label="Dispatch Inbox"/>
+                <span t-if="state.total" class="o_inbox_badge_count"
+                      t-att-class="{ 'o-inbox-anim': state.animations }">
+                    <t t-esc="state.total &gt; 99 ? '99+' : state.total"/>
                 </span>
+            </span>
+        </button>
+        <t t-set-slot="content">
+            <div class="o_inbox_popover">
+                <div class="o_inbox_popover_head">
+                    <strong>Dispatch Inbox</strong>
+                    <span t-if="state.spam" class="o_inbox_spam_count">
+                        <i class="fa fa-shield"/> <t t-esc="state.spam"/> spam
+                    </span>
+                </div>
+                <button class="btn btn-primary btn-sm w-100"
+                        t-on-click="() => this.openInbox()">
+                    Open Dispatch Inbox
+                </button>
+                <label class="o_inbox_popover_row">
+                    <input type="checkbox" t-att-checked="state.animations"
+                           t-on-change="() => this.toggleAnimations()"/>
+                    Disable animation
+                </label>
+                <label class="o_inbox_popover_row">
+                    <input type="checkbox" t-att-checked="state.sound"
+                           t-on-change="() => this.toggleSound()"/>
+                    Sound for new messages
+                </label>
+                <div class="text-muted small o_inbox_popover_note">
+                    Badge counts messages only you haven't read. Notifications
+                    require the browser tab to be open.
+                </div>
             </div>
-            <button class="btn btn-primary btn-sm w-100"
-                    t-on-click="openInbox">
-                Open Dispatch Inbox
-            </button>
-            <label class="o_inbox_popover_row">
-                <input type="checkbox" t-att-checked="state.animations"
-                       t-on-change="toggleAnimations"/>
-                Disable animation
-            </label>
-            <label class="o_inbox_popover_row">
-                <input type="checkbox" t-att-checked="state.sound"
-                       t-on-change="toggleSound"/>
-                Sound for new messages
-            </label>
-            <div class="text-muted small o_inbox_popover_note">
-                Badge counts messages only you haven't read. Notifications
-                require the browser tab to be open.
-            </div>
-        </div>
-    </div>
+        </t>
+    </Dropdown>
 </t>
 
 <!-- ============================== APP ============================== -->

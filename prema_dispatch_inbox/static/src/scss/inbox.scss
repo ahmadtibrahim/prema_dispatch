@@ -7,26 +7,18 @@ $inbox-muted: #8a93a6;
 $inbox-accent: #017e84;
 
 // ----------------------------------------------------------------------
-// Badge (systray)
+// Badge (systray — registry.category("systray"), sequence 10)
 // ----------------------------------------------------------------------
-.o_navbar .o_inbox_badge {
-    // sits before the breadcrumbs, beside the app title — keep it on the
-    // navbar baseline, clickable like a nav item
-    margin-right: 8px;
-    line-height: normal;
-    color: inherit;
-    &:hover { opacity: 0.8; }
-}
-
-.o_inbox_chip_failed {
-    background: #dc3545 !important;
-    color: #fff;
-}
-
 .o_inbox_badge {
     position: relative;
     cursor: pointer;
     padding: 0 6px;
+    background: transparent;
+    border: 0;
+    color: inherit;
+    line-height: normal;
+
+    &:hover { opacity: 0.8; }
 
     .o_inbox_badge_env {
         position: relative;
@@ -54,43 +46,42 @@ $inbox-accent: #017e84;
     .o-inbox-pulse {
         animation: o-inbox-pulse 1.2s ease-out 2;
     }
+}
 
-    .o_inbox_popover {
-        position: absolute;
-        right: 0;
-        top: calc(100% + 8px);
-        width: 280px;
-        padding: 12px;
-        background: #fff;
-        border: 1px solid $inbox-border;
-        border-radius: 8px;
-        box-shadow: 0 8px 24px rgba(20, 30, 55, 0.18);
-        z-index: 1080;
+.o_inbox_chip_failed {
+    background: #dc3545 !important;
+    color: #fff;
+}
 
-        .o_inbox_popover_head {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 8px;
-        }
+// Odoo's native Dropdown menu wrapping the badge popover (bottom-end,
+// auto-flip, viewport-clamped by web's DropdownPopover).
+.o_inbox_badge_menu {
+    width: 280px;
+    padding: 12px;
 
-        .o_inbox_spam_count {
-            color: $inbox-muted;
-            font-size: 12px;
-        }
+    .o_inbox_popover_head {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 8px;
+    }
 
-        .o_inbox_popover_row {
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            margin-top: 8px;
-            font-size: 13px;
-        }
+    .o_inbox_spam_count {
+        color: $inbox-muted;
+        font-size: 12px;
+    }
 
-        .o_inbox_popover_note {
-            margin-top: 8px;
-            font-size: 11px;
-        }
+    .o_inbox_popover_row {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin-top: 8px;
+        font-size: 13px;
+    }
+
+    .o_inbox_popover_note {
+        margin-top: 8px;
+        font-size: 11px;
     }
 }
 
