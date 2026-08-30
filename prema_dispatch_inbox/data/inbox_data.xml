@@ -1,22 +1,26 @@
 <?xml version="1.0" encoding="utf-8"?>
 <odoo>
 
-    <!-- Safe runtime defaults. uat_mode is deliberately NOT set here — it
-         is armed by hand on the UAT clone only (the simulate endpoints
-         refuse to run without it). -->
-    <record id="inbox_icp_intercept_outgoing" model="ir.config_parameter">
+    <!-- Safe runtime defaults, applied on FIRST install only (noupdate).
+         uat_mode is deliberately NOT set here — it is armed by hand on
+         the UAT clone only (the simulate endpoints refuse to run without
+         it). Production flips ai_mode=live and intercept_outgoing=0 at
+         cutover; without noupdate the module upgrade would re-apply the
+         mock/intercept defaults on every -u and silently disable live AI
+         and real sending. -->
+    <record id="inbox_icp_intercept_outgoing" model="ir.config_parameter" noupdate="1">
         <field name="key">prema_inbox.intercept_outgoing</field>
         <field name="value">1</field>
     </record>
-    <record id="inbox_icp_ai_mode" model="ir.config_parameter">
+    <record id="inbox_icp_ai_mode" model="ir.config_parameter" noupdate="1">
         <field name="key">prema_inbox.ai_mode</field>
         <field name="value">mock</field>
     </record>
-    <record id="inbox_icp_ai_max_tokens" model="ir.config_parameter">
+    <record id="inbox_icp_ai_max_tokens" model="ir.config_parameter" noupdate="1">
         <field name="key">prema_inbox.ai_max_tokens</field>
         <field name="value">1024</field>
     </record>
-    <record id="inbox_icp_spam_filter_active" model="ir.config_parameter">
+    <record id="inbox_icp_spam_filter_active" model="ir.config_parameter" noupdate="1">
         <field name="key">prema_inbox.spam_filter_active</field>
         <field name="value">0</field>
     </record>
