@@ -5,7 +5,19 @@
 <!-- Extended into web.NavBar (the web_enterprise EnterpriseNavBar template
      inherits it, keeping this anchor) — the envelope renders immediately
      before the breadcrumbs, i.e. beside the app title. -->
+<!-- GOTCHA (found 2026-08-30 in UAT): web_enterprise.EnterpriseNavBar is a
+     t-inherit-mode="primary" copy of web.NavBar. When the browser compiles it,
+     the parent lookup is done with the primary template's blockId, and the
+     template loader SKIPS extensions registered in later blocks
+     ("if (blockId && otherBlockId > blockId) break"). An extension to
+     web.NavBar alone therefore never reaches the enterprise navbar — the badge
+     must be extended into BOTH template names. -->
 <t t-name="web.NavBar" t-inherit="web.NavBar" t-inherit-mode="extension" owl="1">
+    <xpath expr="//div[hasclass('o_navbar_breadcrumbs')]" position="before">
+        <InboxBadge/>
+    </xpath>
+</t>
+<t t-name="web_enterprise.EnterpriseNavBar" t-inherit="web_enterprise.EnterpriseNavBar" t-inherit-mode="extension" owl="1">
     <xpath expr="//div[hasclass('o_navbar_breadcrumbs')]" position="before">
         <InboxBadge/>
     </xpath>
@@ -60,7 +72,7 @@
             <div t-foreach="state.folders" t-as="f" t-key="f.key"
                  class="o_inbox_folder"
                  t-att-class="{ 'active': state.folder === f.key }"
-                 t-on-click="selectFolder(f.key)">
+                 t-on-click="() => this.selectFolder(f.key)">
                 <span class="o_inbox_folder_label">
                     <t t-esc="f.label"/>
                 </span>
@@ -81,7 +93,16 @@
                    placeholder="Search sender, subject, body, customer…"
                    t-model="state.search" t-on-input="onSearch"/>
             <div class="o_inbox_convs">
-                <t t-if="!state.conversations.length">
+                <t t-if="state.loadError">
+                    <div class="o_inbox_empty">
+                        <div t-esc="state.loadError"/>
+                        <button class="btn btn-sm btn-primary mt-2"
+                                t-on-click="() => this.retryLoad()">
+                            Retry
+                        </button>
+                    </div>
+                </t>
+                <t t-elif="!state.conversations.length">
                     <div class="o_inbox_empty">Nothing here.</div>
                 </t>
                 <div t-foreach="state.conversations" t-as="c" t-key="c.id"
@@ -90,7 +111,7 @@
                         'active': state.selectedId === c.id,
                         'o-inbox-unread': c.unread_count &gt; 0,
                      }"
-                     t-on-click="openConversation(c.id)">
+                     t-on-click="() => this.openConversation(c.id)">
                     <div class="o_inbox_conv_top">
                         <span class="o_inbox_conv_from"
                               t-esc="c.partner_name || '(no customer)'"/>
@@ -101,7 +122,7 @@
                     <div class="o_inbox_conv_meta">
                         <span class="badge o_inbox_cat"
                               t-att-class="'o_inbox_cat_' + c.category">
-                            <t t-esc="InboxApp.CATEGORY_LABELS[c.category] || c.category"/>
+                            <t t-esc="this.CATEGORY_LABELS[c.category] || c.category"/>
                         </span>
                         <span t-if="c.priority === 'urgent'" class="fa fa-flag text-warning"/>
                         <span t-if="c.priority === 'emergency'" class="fa fa-flag text-danger"/>
@@ -125,7 +146,7 @@
             <t t-else="">
                 <div class="o_inbox_col_head">
                     <button class="btn btn-sm btn-light d-lg-none me-2"
-                            t-on-click="backTo('list')"><i class="fa fa-arrow-left"/></button>
+                            t-on-click="() => this.backTo('list')"><i class="fa fa-arrow-left"/></button>
                     <div class="o_inbox_thread_title">
                         <div t-esc="state.detail.conversation.name"/>
                         <div class="text-muted small"
@@ -141,14 +162,14 @@
                         <i class="fa fa-bell-slash-o"/>
                     </button>
                     <button class="btn btn-sm btn-outline-secondary"
-                            t-on-click="markUnread(state.detail.conversation.id)">
+                            t-on-click="() => this.markUnread(state.detail.conversation.id)">
                         <i class="fa fa-envelope-o"/> Unread
                     </button>
                 </div>
                 <div t-if="state.assignCandidates" class="o_inbox_assign">
                     <div t-foreach="state.assignCandidates" t-as="u" t-key="u.id"
                          class="o_inbox_assign_row"
-                         t-on-click="doAssign(u.id)">
+                         t-on-click="() => this.doAssign(u.id)">
                         <t t-esc="u.login || u.name"/>
                     </div>
                 </div>
@@ -157,15 +178,15 @@
                 <div class="o_inbox_thread_meta">
                     <select class="form-select form-select-sm o_inbox_sel"
                             t-att-value="state.detail.conversation.category"
-                            t-on-change="setCategory($event.target.value)">
-                        <t t-foreach="InboxApp.CATEGORY_OPTIONS" t-as="cat" t-key="cat.value">
+                            t-on-change="(ev) => this.setCategory(ev.target.value)">
+                        <t t-foreach="this.CATEGORY_OPTIONS" t-as="cat" t-key="cat.value">
                             <option t-att-value="cat.value" t-esc="cat.label"/>
                         </t>
                     </select>
                     <select class="form-select form-select-sm o_inbox_sel"
                             t-att-value="state.detail.conversation.workflow_state"
-                            t-on-change="setState($event.target.value)">
-                        <t t-foreach="InboxApp.STATE_OPTIONS" t-as="st" t-key="st.value">
+                            t-on-change="(ev) => this.setState(ev.target.value)">
+                        <t t-foreach="this.STATE_OPTIONS" t-as="st" t-key="st.value">
                             <option t-att-value="st.value" t-esc="st.label"/>
                         </t>
                     </select>
@@ -179,18 +200,18 @@
                         <span t-if="state.detail.conversation.opportunity_id"
                               class="o_inbox_chip">Opp <t t-esc="state.detail.conversation.opportunity_id"/></span>
                         <button class="btn btn-link btn-sm p-0"
-                                t-on-click="searchLinks('booking')">+ booking</button>
+                                t-on-click="() => this.searchLinks('booking')">+ booking</button>
                         <button class="btn btn-link btn-sm p-0"
-                                t-on-click="searchLinks('job')">+ job</button>
+                                t-on-click="() => this.searchLinks('job')">+ job</button>
                         <button class="btn btn-link btn-sm p-0"
-                                t-on-click="searchLinks('invoice')">+ invoice</button>
+                                t-on-click="() => this.searchLinks('invoice')">+ invoice</button>
                         <button class="btn btn-link btn-sm p-0"
-                                t-on-click="searchLinks('opportunity')">+ opp</button>
+                                t-on-click="() => this.searchLinks('opportunity')">+ opp</button>
                     </div>
                     <div t-if="state.linkCandidates" class="o_inbox_linkpick">
                         <div t-foreach="state.linkCandidates.records" t-as="r" t-key="r.id"
                              class="o_inbox_assign_row"
-                             t-on-click="linkRecord(state.linkCandidates.model, r.id)">
+                             t-on-click="() => this.linkRecord(state.linkCandidates.model, r.id)">
                             <t t-esc="r.name"/>
                             <span t-if="r.state" class="text-muted"> · <t t-esc="r.state"/></span>
                         </div>
@@ -231,11 +252,11 @@
                 <div class="o_inbox_composer">
                     <div class="btn-group btn-group-sm mb-1">
                         <button class="btn btn-outline-primary"
-                                t-on-click="startComposer('reply')">Reply</button>
+                                t-on-click="() => this.startComposer('reply')">Reply</button>
                         <button class="btn btn-outline-primary"
-                                t-on-click="startComposer('compose')">New email</button>
+                                t-on-click="() => this.startComposer('compose')">New email</button>
                         <button class="btn btn-outline-secondary"
-                                t-on-click="startComposer('note')">Internal note</button>
+                                t-on-click="() => this.startComposer('note')">Internal note</button>
                     </div>
                     <t t-if="state.composer.mode">
                         <textarea class="form-control form-control-sm"
@@ -268,7 +289,7 @@
             <div class="o_inbox_col_head">
                 <span>AI Assistant</span>
                 <button class="btn btn-sm btn-link p-0 ms-auto d-lg-none"
-                        t-on-click="backTo('conversation')"><i class="fa fa-times"/></button>
+                        t-on-click="() => this.backTo('conversation')"><i class="fa fa-times"/></button>
             </div>
             <div t-if="!state.detail" class="o_inbox_empty">
                 Select a conversation to analyze.
@@ -276,7 +297,7 @@
             <t t-else="">
                 <div class="o_inbox_ai_section">
                     <button class="btn btn-sm btn-outline-primary w-100"
-                            t-on-click="aiAction('summarize')"
+                            t-on-click="() => this.aiAction('summarize')"
                             t-att-disabled="state.ai.busy">
                         <i class="fa fa-magic"/> Summarize thread
                     </button>
@@ -287,9 +308,7 @@
                            t-as="e" t-key="e[0]">
                             <div class="o_inbox_ai_row">
                                 <span class="o_inbox_ai_key" t-esc="e[0]"/>
-                                <span t-if="typeof e[1] === 'object'"
-                                      t-esc="JSON.stringify(e[1])"/>
-                                <span t-else="" t-esc="e[1]"/>
+                                <span t-esc="fmtValue(e[1])"/>
                                 <span class="o_inbox_ai_src" t-esc="state.detail.ai.extraction.sources[e[0]]?.provenance || ''"/>
                             </div>
                         </t>
@@ -303,12 +322,12 @@
                         </div>
                     </div>
                     <button class="btn btn-sm btn-outline-secondary w-100 mt-1"
-                            t-on-click="aiAction('extract')"
+                            t-on-click="() => this.aiAction('extract')"
                             t-att-disabled="state.ai.busy">
                         <i class="fa fa-database"/> Extract shipment
                     </button>
                     <button class="btn btn-sm btn-outline-secondary w-100 mt-1"
-                            t-on-click="aiAction('draft_reply')"
+                            t-on-click="() => this.aiAction('draft_reply')"
                             t-att-disabled="state.ai.busy">
                         <i class="fa fa-pencil"/> Draft reply
                     </button>
@@ -336,7 +355,7 @@
                                  class="small text-muted">
                                 <div t-foreach="state.detail.pricing.price_lines"
                                      t-as="pl" t-key="pl_index">
-                                    <t t-esc="pl.name || pl.label || JSON.stringify(pl)"/>
+                                    <t t-esc="pl.name || pl.label || fmtValue(pl)"/>
                                 </div>
                             </div>
                         </div>

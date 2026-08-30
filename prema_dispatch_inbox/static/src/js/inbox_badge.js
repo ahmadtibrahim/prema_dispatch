@@ -9,6 +9,10 @@ import { Component, useState, onMounted, onWillUnmount } from "@odoo/owl";
 import { patch } from "@web/core/utils/patch";
 import { NavBar } from "@web/webclient/navbar/navbar";
 import { useService } from "@web/core/utils/hooks";
+import { user } from "@web/core/user";
+// Odoo 18 removed the "rpc" service — raw JSON-RPC must be imported
+// directly (same pattern as @web/core/user.js / orm_service.js).
+import { rpc } from "@web/core/network/rpc";
 
 const LS_ANIM = "prema_inbox.animations";
 const LS_SOUND = "prema_inbox.sound";
@@ -19,11 +23,12 @@ export class InboxBadge extends Component {
     static props = {};
 
     setup() {
-        this.rpc = useService("rpc");
         this.busService = useService("bus_service");
         this.notification = useService("notification");
         this.action = useService("action");
-        this.channel = `prema_inbox:${this.env.userId}`;
+        // Odoo 18: uid lives on the @web/core/user module export (no "user"
+        // service; env.userId is undefined). See inbox_app.js.
+        this.channel = `prema_inbox:${user.userId}`;
         this.state = useState({
             total: 0, spam: 0, pulse: false,
             popover: false,
@@ -31,17 +36,36 @@ export class InboxBadge extends Component {
             sound: localStorage.getItem(LS_SOUND) === "on",
         });
         this._onFocus = () => this.reconcile();
+        // Arrow closure — see inbox_app.js: bus_service calls the callback
+        // as a plain function, so a prototype method would lose `this`.
+        this._premaEventCb = (payload) => {
+            this._onEvent(payload);
+        };
         onMounted(async () => {
             await this.reconcile();
-            await this.busService.addChannel(this.channel);
-            this.busService.subscribe(this.channel, (payload) => this._onEvent(payload));
+            try {
+                // A dead bus (websocket down, evented port unreachable) must
+                // never reject this lifecycle hook: an unhandled OWL error
+                // opens Odoo's technical modal and freezes the webclient.
+                await this.busService.addChannel(this.channel);
+                // Odoo 18 delivery model: bus._sendone(channel, notif_type,
+                // payload) arrives on the client's notificationBus keyed by
+                // notif_type — the channel name only routes it to the right
+                // websocket. So: addChannel("prema_inbox:{uid}") gates who
+                // receives, subscribe("prema_inbox") is the listener key.
+                this.busService.subscribe("prema_inbox", this._premaEventCb);
+                // bus worker reconnect → counts may have drifted while offline
+                this.busService.addEventListener("reconnect", this._onFocus);
+            } catch (e) {
+                console.error("inbox badge bus subscribe failed — live updates disabled:", e);
+            }
             window.addEventListener("focus", this._onFocus);
-            // bus worker reconnect → counts may have drifted while offline
-            this.busService.addEventListener("reconnect", this._onFocus);
         });
         onWillUnmount(() => {
             this.busService.deleteChannel(this.channel);
+            this.busService.unsubscribe("prema_inbox", this._premaEventCb);
             window.removeEventListener("focus", this._onFocus);
+            this.busService.removeEventListener("reconnect", this._onFocus);
         });
     }
 
@@ -49,7 +73,7 @@ export class InboxBadge extends Component {
         try {
             // Odoo refuses to call private model methods over call_kw —
             // the controller route is the public surface for this
-            const res = await this.rpc("/prema_inbox/unread_counts", {});
+            const res = await rpc("/prema_inbox/unread_counts", {});
             if (!res || !res.counts) {
                 return;
             }

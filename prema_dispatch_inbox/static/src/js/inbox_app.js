@@ -6,6 +6,7 @@
 import { Component, useState, onMounted, onWillUnmount } from "@odoo/owl";
 import { registry } from "@web/core/registry";
 import { useService } from "@web/core/utils/hooks";
+import { user } from "@web/core/user";
 import { standardActionServiceProps } from "@web/webclient/actions/action_service";
 
 const CATEGORY_LABELS = {
@@ -42,24 +43,68 @@ export class InboxApp extends Component {
             selectedId: null,
             detail: null,
             search: "",
+            loadError: null,
             composer: { mode: null, body: "", sending: false },
             ai: { busy: false, panelOpen: true },
             linkCandidates: null,
             assignCandidates: null,
             mobileScreen: "list", // list | conversation | ai (mobile stack)
         });
-        this.channel = `prema_inbox:${this.env.userId}`;
+        // Odoo 18: env.userId does NOT exist (Odoo 16 legacy) — the uid
+        // lives on the @web/core/user module export (there is no "user"
+        // service either). A wrong/undefined uid silently subscribes to
+        // "prema_inbox:undefined" while the server notifies
+        // "prema_inbox:{uid}" — the relay matches zero websockets and the
+        // inbox never updates live.
+        this.channel = `prema_inbox:${user.userId}`;
+        // Class-name identifiers do NOT resolve in OWL 2 template scope
+        // (proved in prod + UAT: "InboxApp" is undefined at render → TypeError
+        // → OwlError → technical modal). Templates must use `this.` instead.
+        this.CATEGORY_LABELS = InboxApp.CATEGORY_LABELS;
+        this.CATEGORY_OPTIONS = InboxApp.CATEGORY_OPTIONS;
+        this.STATE_OPTIONS = InboxApp.STATE_OPTIONS;
         this._timer = null;
+        this._searchTimer = null;
+        this._convsLoading = false;   // overlap guard: one list load at a time
+        this._convsQueued = false;    // coalesce: refresh once the current one ends
+        this._reconcileRunning = false;
+        this._reconcileQueued = false;
+        // Arrow closure: bus_service.subscribe wraps the callback in a plain
+        // function call (callback(payload, {id})), so a prototype method
+        // loses `this` (TypeError on this._onEvent). Same reference is used
+        // for unsubscribe — the service keys its wrapper map on the callback.
+        this._premaEventCb = (payload) => {
+            this._onEvent(payload);
+        };
         onMounted(async () => {
             await this.refreshFolders();
             await this.loadConversations();
-            await this.busService.addChannel(this.channel);
-            this.busService.subscribe(this.channel, (payload) => this._onEvent(payload));
             this._timer = setInterval(() => this.reconcile(), 60000);
+            try {
+                // A bus failure (websocket down) must never block the basic
+                // inbox rendering or the reconcile timer — live updates are
+                // a bonus, the mailbox itself is not.
+                await this.busService.addChannel(this.channel);
+                // Odoo 18 delivery model: bus._sendone(channel, notif_type,
+                // payload) arrives on the client's notificationBus keyed by
+                // notif_type — the channel name only routes it to the right
+                // websocket. So: addChannel("prema_inbox:{uid}") gates who
+                // receives, subscribe("prema_inbox") is the listener key.
+                this.busService.subscribe("prema_inbox", this._premaEventCb);
+            } catch (e) {
+                console.error("bus subscribe failed — live updates disabled:", e);
+            }
         });
         onWillUnmount(() => {
             clearInterval(this._timer);
-            this.busService.deleteChannel(this.channel);
+            clearTimeout(this._searchTimer);
+            this._timer = null;
+            try {
+                this.busService.deleteChannel(this.channel);
+                this.busService.unsubscribe("prema_inbox", this._premaEventCb);
+            } catch (e) {
+                // channel may never have been added — nothing to clean
+            }
         });
     }
 
@@ -70,21 +115,44 @@ export class InboxApp extends Component {
         try {
             this.state.folders = await this.orm.call(
                 "prema.inbox.conversation", "inbox_folders", []);
+            // NB: do NOT clear loadError here — it is the conversation-load
+            // error state; a folder refresh succeeding while the list load
+            // fails would otherwise hide the error panel (race on _onEvent).
         } catch (e) {
             console.error("folders failed:", e);
+            if (!this.state.folders.length) {
+                this.state.loadError =
+                    "Could not load the inbox — check your connection and retry.";
+            }
         }
     }
 
     async loadConversations() {
+        // Overlap guard + coalesce: a burst of triggers (events, folder
+        // switches) never stacks parallel requests — at most one in flight
+        // plus one queued refresh.
+        if (this._convsLoading) {
+            this._convsQueued = true;
+            return;
+        }
+        this._convsLoading = true;
         this.state.loading = true;
         try {
             this.state.conversations = await this.orm.call(
                 "prema.inbox.conversation", "inbox_conversations",
                 [this.state.folder, this.state.search || null]);
+            this.state.loadError = null;
         } catch (e) {
             console.error("conversations failed:", e);
+            this.state.loadError =
+                "Could not load conversations — check your connection and retry.";
         } finally {
             this.state.loading = false;
+            this._convsLoading = false;
+            if (this._convsQueued) {
+                this._convsQueued = false;
+                this.loadConversations();
+            }
         }
     }
 
@@ -97,6 +165,9 @@ export class InboxApp extends Component {
         try {
             const detail = await this.orm.call(
                 "prema.inbox.conversation", "inbox_conversation_detail", [id]);
+            if (this.state.selectedId !== id) {
+                return; // user moved on — ignore the stale response
+            }
             this.state.detail = detail;
             const msgs = detail.messages
                 .filter((m) => m.direction === "incoming" && !m.is_read)
@@ -112,13 +183,28 @@ export class InboxApp extends Component {
     }
 
     async reconcile() {
-        await this.refreshFolders();
-        if (this.state.selectedId) {
-            const detail = await this.orm.call(
-                "prema.inbox.conversation", "inbox_conversation_detail",
-                [this.state.selectedId]).catch(() => null);
-            if (detail) {
-                this.state.detail = detail;
+        // Coalesce concurrent reconciles (60s timer + bus events + actions
+        // can fire within the same tick) — one run at a time.
+        if (this._reconcileRunning) {
+            this._reconcileQueued = true;
+            return;
+        }
+        this._reconcileRunning = true;
+        try {
+            await this.refreshFolders();
+            if (this.state.selectedId) {
+                const detail = await this.orm.call(
+                    "prema.inbox.conversation", "inbox_conversation_detail",
+                    [this.state.selectedId]).catch(() => null);
+                if (detail && this.state.selectedId === detail.conversation?.id) {
+                    this.state.detail = detail;
+                }
+            }
+        } finally {
+            this._reconcileRunning = false;
+            if (this._reconcileQueued) {
+                this._reconcileQueued = false;
+                this.reconcile();
             }
         }
     }
@@ -146,6 +232,15 @@ export class InboxApp extends Component {
     }
 
     onSearch() {
+        // Debounce keystrokes — one RPC after typing pauses, never one per
+        // key. (t-model keeps state.search in sync; this fires the query.)
+        clearTimeout(this._searchTimer);
+        this._searchTimer = setTimeout(() => this.loadConversations(), 250);
+    }
+
+    retryLoad() {
+        this.state.loadError = null;
+        this.refreshFolders();
         this.loadConversations();
     }
 
@@ -186,9 +281,9 @@ export class InboxApp extends Component {
         const users = await this.orm.call(
             "res.users", "search_read",
             [[["share", "=", false]], ["id", "login", "name"], 0, 50]);
-        const self = users.find((u) => u.id === this.env.userId);
+        const self = users.find((u) => u.id === user.userId);
         if (!self) {
-            users.unshift({ id: this.env.userId, login: "me", name: "Me" });
+            users.unshift({ id: user.userId, login: "me", name: "Me" });
         }
         this.state.assignCandidates = users;
     }
@@ -346,6 +441,16 @@ export class InboxApp extends Component {
             style: "currency",
             currency: currency || "CAD",
         }).format(amount);
+    }
+
+    fmtValue(value) {
+        // OWL 2 template scope has no `JSON` global (only Math/Date/Object/
+        // RegExp/Array/... are whitelisted in the QWeb compiler) — any
+        // object value must be stringified from JS, not in the template.
+        if (value === null || value === undefined) {
+            return "";
+        }
+        return typeof value === "object" ? JSON.stringify(value) : value;
     }
 
     // ------------------------------------------------------------------
