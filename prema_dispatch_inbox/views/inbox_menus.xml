@@ -8,6 +8,7 @@
 
     <menuitem id="menu_prema_inbox_root"
               name="Dispatch Inbox"
+              parent="prema_dispatch.menu_prema_dispatch_root"
               action="action_prema_inbox_main"
               sequence="80"/>
 

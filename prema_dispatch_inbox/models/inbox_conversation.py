@@ -11,9 +11,11 @@ Real-time: every user of the inbox group subscribes to the bus channel
 prema_inbox:{uid}; new-message events and read-state changes are broadcast
 post-commit only.
 """
+import base64
 import re
 
 from odoo import api, fields, models
+from odoo.tools import email_split, html2plaintext
 
 _EMAIL_ADDR_RE = re.compile(r"<([^<>]+@[^<>]+)>")
 
@@ -157,7 +159,7 @@ class InboxConversation(models.Model):
     def _ingest_email(
             self, email_from, to_addrs, subject, body_html, body_plain,
             message_id, references=None, in_reply_to=None,
-            attachment_ids=None, is_load_board=False):
+            attachment_ids=None, is_load_board=False, date=None):
         """Create-or-thread an incoming message.
 
         Dedupe: message_id unique constraint on the message table (duplicate
@@ -199,7 +201,7 @@ class InboxConversation(models.Model):
         message = Message.create({
             "conversation_id": conversation.id,
             "direction": "incoming",
-            "date": fields.Datetime.now(),
+            "date": date or fields.Datetime.now(),
             "author_id": partner.id,
             "email_from": (email_from or "").strip(),
             "recipient_ids": [(6, 0, [p.id for p in
@@ -215,6 +217,104 @@ class InboxConversation(models.Model):
         })
         conversation._touch()
         return message, conversation, created
+
+    # ------------------------------------------------------------------
+    # fetchmail gateway — message_process route (mail.alias + object_id)
+    # ------------------------------------------------------------------
+    @api.model
+    def message_new(self, msg_dict, custom_values=None):
+        """Entry point for fetchmail (and the mail.alias route) ingestion.
+
+        The mail gateway's message_process parses the raw RFC 822 into a
+        msg_dict and routes here (message_route → _message_route_process).
+        Everything delegates to _ingest_email — same dedupe by Message-ID,
+        same threading by References, same categorization — so the fetch
+        path and the UAT fetch-sim produce identical inbox rows.
+
+        The bus broadcast is issued inside this transaction (bus._sendone
+        buffers in cr.precommit); the fetchmail cron commits per message,
+        which flushes the bus rows — mirrors the sim controller's
+        broadcast-then-commit pattern. Returns the conversation so
+        _message_route_process can post the ledger mail.message.
+        """
+        custom_values = custom_values or {}
+        subject = msg_dict.get("subject") or ""
+        body = msg_dict.get("body") or ""
+        message_id = msg_dict.get("message_id") or ""
+        attachments = self._attachments_from_msgdict(msg_dict)
+        # A message_id we already know → a duplicate delivery: ingest will
+        # no-op, and we must NOT announce it again. Anything else (new
+        # thread OR reply into an existing thread) is a real new message.
+        mid = (message_id or "").strip("<> ").strip()
+        known = self.env["prema.inbox.message"].search(
+            [("message_id", "=", mid)], limit=1)
+        msg, conv, created = self._ingest_email(
+            email_from=msg_dict.get("email_from") or "",
+            to_addrs=email_split(msg_dict.get("to") or ""),
+            subject=subject,
+            body_html=body,
+            body_plain=html2plaintext(body) if body else "",
+            message_id=message_id,
+            references=msg_dict.get("references") or "",
+            in_reply_to=msg_dict.get("in_reply_to") or "",
+            attachment_ids=[a.id for a in attachments],
+            is_load_board=self._looks_like_load_board(subject, body),
+            date=msg_dict.get("date") or None,
+        )
+        # Files are created before the message row (res_id unknown); now
+        # that the message exists, bind them to it.
+        if attachments:
+            attachments.write({"res_model": "prema.inbox.message",
+                               "res_id": msg.id})
+        if not known:
+            # New message — announce it (new thread or reply into an
+            # existing one). Dedupe re-deliveries never rebroadcast.
+            conv._broadcast_new_message(msg)
+        return conv
+
+    @api.model
+    def message_update(self, msg_dict, update_vals=None):
+        """Message threading a known thread: same ingest, same dedupe.
+
+        The message_route machinery already matched the References chain to
+        a ledger mail.message of this model; _ingest_email finds the same
+        conversation via _find_by_references (or dedupes an exact
+        re-delivery). Returns the conversation record.
+        """
+        return self.message_new(msg_dict, update_vals)
+
+    @api.model
+    def _attachments_from_msgdict(self, msg_dict):
+        """Materialize msg_dict attachments as ir.attachment rows.
+
+        The gateway delivers (filename, content) pairs; content arrives
+        base64-encoded for fetchmail-parsed mail. Rows are created without
+        a res_id and rebound to the inbox message after it exists.
+        """
+        res = self.env["ir.attachment"]
+        for name, content in msg_dict.get("attachments") or []:
+            if not name or not content:
+                continue
+            data = content
+            if isinstance(data, bytes):
+                data = base64.b64encode(data).decode("utf-8")
+            res = res.create({
+                "name": name,
+                "datas": data,
+                "res_model": False,
+                "res_id": False,
+            })
+        return res
+
+    @api.model
+    def _looks_like_load_board(self, subject, body):
+        """Conservative load-board heuristic (mirrors the fetch-sim).
+
+        Load-board alerts are machine traffic — the badge keeps them in
+        their own bucket, never in the personal unread count.
+        """
+        hay = ("%s %s" % (subject or "", body or "")).upper()
+        return "RMIS" in hay
 
     @api.model
     def _find_by_references(self, references=None, in_reply_to=None):

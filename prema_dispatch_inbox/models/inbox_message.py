@@ -182,7 +182,7 @@ class InboxMessage(models.Model):
             "email_from": "dispatcher@logistics.premafirm.com",
             "subject": subject or conversation.name,
             "body": body_html,
-            "message_id": "<%s@prema-inbox-uat>"
+            "message_id": "<%s@prema-inbox.premafirm.com>"
                           % uuid.uuid4().hex,
             "attachment_ids": [(6, 0, attachment_ids or [])],
             "outbound_state": "draft",
@@ -210,12 +210,20 @@ class InboxMessage(models.Model):
         return True
 
     def send(self):
-        """Safe send with UAT interception.
+        """Send via the production mail pipeline — or intercept in UAT.
 
-        Real outbound is never attempted here: in UAT the mail is recorded
-        as intercepted. In a future cutover the same guard flips to a real
-        mail.mail pipeline with the OPS relay and Message-ID preservation.
+        prema_inbox.intercept_outgoing = "1" (default, UAT) records the
+        message as intercepted and never touches SMTP. "0" (production)
+        builds a real mail.mail through the configured outgoing server,
+        From dispatcher@logistics.premafirm.com with Reply-To pinned to
+        the same address, preserving Message-ID / References so replies
+        thread back into this conversation.
+
+        Status is honest end to end: draft → pending (queued with the mail
+        gateway) → sent | failed. A message is 'sent' only after the SMTP
+        server accepted it; any exception maps to 'failed' with the reason.
         """
+        Mail = self.env["mail.mail"]
         for msg in self:
             if msg.direction != "outgoing":
                 continue
@@ -226,8 +234,53 @@ class InboxMessage(models.Model):
                 "prema_inbox.intercept_outgoing", "1")
             if intercept == "1":
                 msg._set_outbound_state("intercepted")
-            else:
-                # (cutover-only path, unreachable in this prototype)
+                continue
+            # Honest pre-flight: a message with nobody to send to is a
+            # failure, not a silent success.
+            missing = msg.recipient_ids.filtered(
+                lambda p: not (p.email or "").strip())
+            if not msg.recipient_ids:
+                msg._set_outbound_state(
+                    "failed", error="No recipient set — nothing was sent")
+                continue
+            if missing:
+                msg._set_outbound_state(
+                    "failed",
+                    error=("Recipient(s) without an email address: %s"
+                           % ", ".join(missing.mapped("name"))))
+                continue
+            try:
+                # Odoo 18 has no in_reply_to on mail.mail/mail.message —
+                # References alone carries the thread chain in the SMTP
+                # headers, and the reply-back path threads on it.
+                mail = Mail.create({
+                    "subject": msg.subject or "",
+                    "body_html": msg.body or "",
+                    "email_from": "dispatcher@logistics.premafirm.com",
+                    "reply_to": "dispatcher@logistics.premafirm.com",
+                    "recipient_ids": [(6, 0, msg.recipient_ids.ids)],
+                    "references": msg.references or "",
+                    "message_id": msg.message_id or "",
+                    "model": self._name,
+                    "res_id": msg.id,
+                    "auto_delete": False,
+                })
+                # Queued with the gateway — the honest intermediate state.
                 msg._set_outbound_state("pending")
+                mail.send(raise_exception=True)
+                if mail.state == "sent":
+                    msg._set_outbound_state("sent")
+                else:
+                    # e.g. no deliverable recipient → mail left 'outgoing'
+                    # or marked 'exception' by the gateway, no SMTP flight.
+                    msg._set_outbound_state(
+                        "failed",
+                        error=mail.failure_reason
+                        or ("mail.mail state %s — not delivered"
+                            % mail.state))
+            except Exception as exc:
+                # MailDeliveryException (connect/send) or anything else:
+                # the message was NOT delivered — say so, never 'sent'.
+                msg._set_outbound_state("failed", error=str(exc)[:1024])
         return True
 

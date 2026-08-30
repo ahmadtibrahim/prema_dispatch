@@ -9,6 +9,20 @@ $inbox-accent: #017e84;
 // ----------------------------------------------------------------------
 // Badge (systray)
 // ----------------------------------------------------------------------
+.o_navbar .o_inbox_badge {
+    // sits before the breadcrumbs, beside the app title — keep it on the
+    // navbar baseline, clickable like a nav item
+    margin-right: 8px;
+    line-height: normal;
+    color: inherit;
+    &:hover { opacity: 0.8; }
+}
+
+.o_inbox_chip_failed {
+    background: #dc3545 !important;
+    color: #fff;
+}
+
 .o_inbox_badge {
     position: relative;
     cursor: pointer;
@@ -17,7 +31,7 @@ $inbox-accent: #017e84;
     .o_inbox_badge_env {
         position: relative;
         display: inline-block;
-        color: #7c8695;
+        color: inherit;
 
         .o_inbox_badge_count {
             position: absolute;

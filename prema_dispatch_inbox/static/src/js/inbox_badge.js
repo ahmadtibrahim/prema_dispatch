@@ -1,10 +1,13 @@
 /** @odoo-module **/
-// Top-bar envelope with live unread badge (design §3).
-// Systray item → works identically in community and enterprise navbar.
-// Server truth wins: reconcile on mount, on focus, and on every bus event.
+// Top-bar envelope with live unread badge (design §1/§3).
+// Anchored before the navbar breadcrumbs (beside the app title) via a
+// NavBar template extension + components patch — community and enterprise
+// navbar both resolve it. Server truth wins: reconcile on mount, on
+// focus, and on every bus event.
 
 import { Component, useState, onMounted, onWillUnmount } from "@odoo/owl";
-import { registry } from "@web/core/registry";
+import { patch } from "@web/core/utils/patch";
+import { NavBar } from "@web/webclient/navbar/navbar";
 import { useService } from "@web/core/utils/hooks";
 
 const LS_ANIM = "prema_inbox.animations";
@@ -137,8 +140,12 @@ export class InboxBadge extends Component {
     }
 }
 
-registry.category("systray").add(
-    "prema.inbox.badge",
-    { Component: InboxBadge },
-    { sequence: 15 },
-);
+// Approved placement (design §1): the envelope sits BESIDE the app title,
+// immediately before the breadcrumbs — not in the systray. OWL resolves
+// <InboxBadge/> in the navbar template through the rendering component's
+// constructor.components; web_enterprise.EnterpriseNavBar extends NavBar
+// and inherits this map (no own `components` static), so one patch covers
+// both navbar flavours.
+patch(NavBar, {
+    components: { ...NavBar.components, InboxBadge },
+});

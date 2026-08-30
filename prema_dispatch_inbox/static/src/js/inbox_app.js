@@ -234,13 +234,20 @@ export class InboxApp extends Component {
             const subject = mode === "reply"
                 ? `Re: ${this.state.detail?.conversation?.name || "No subject"}`
                 : body.split("\n")[0].slice(0, 100) || "No subject";
-            await this.orm.call(
+            const res = await this.orm.call(
                 "prema.inbox.message", "compose_and_send",
                 [this.state.selectedId, subject, body, kind, sendNow]);
             this.state.composer = { mode: null, body: "", sending: false };
+            const stateLabel = {
+                sent: "Message sent via the configured mail server.",
+                pending: "Message queued for delivery.",
+                failed: "Delivery failed — see the message status.",
+                intercepted: "Outbound intercepted (never sent).",
+            }[res?.outbound_state];
             this.notification.add(
-                sendNow ? "Outbound recorded (intercepted in UAT — never sent)."
-                        : "Draft saved to the Drafts folder.",
+                sendNow
+                    ? (stateLabel || "Outbound recorded.")
+                    : "Draft saved to the Drafts folder.",
                 { type: "info" });
             this.reconcile();
         } catch (e) {

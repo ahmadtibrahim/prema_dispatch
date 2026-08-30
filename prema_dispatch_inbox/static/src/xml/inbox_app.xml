@@ -1,6 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <odoo>
 
+<!-- ============ NAVBAR ANCHOR (design §1: envelope beside the title) ============ -->
+<!-- Extended into web.NavBar (the web_enterprise EnterpriseNavBar template
+     inherits it, keeping this anchor) — the envelope renders immediately
+     before the breadcrumbs, i.e. beside the app title. -->
+<t t-name="web.NavBar" t-inherit="web.NavBar" t-inherit-mode="extension" owl="1">
+    <xpath expr="//div[hasclass('o_navbar_breadcrumbs')]" position="before">
+        <InboxBadge/>
+    </xpath>
+</t>
+
 <!-- ============================== BADGE ============================== -->
 <t t-name="prema_dispatch_inbox.InboxBadge" owl="1">
     <div class="o_inbox_badge" t-on-click="togglePopover">
@@ -200,7 +210,8 @@
                             <span class="o_inbox_msg_time" t-esc="fmtDate(m.date)"/>
                             <span t-if="m.direction === 'outgoing'"
                                   class="o_inbox_chip"
-                                  t-esc="m.outbound_state === 'intercepted' ? 'intercepted (UAT)' : (m.outbound_state || 'outgoing')"/>
+                                  t-att-class="{'o_inbox_chip_failed': m.outbound_state === 'failed'}"
+                                  t-esc="m.outbound_state === 'intercepted' ? 'intercepted (never sent)' : (m.outbound_state || 'outgoing')"/>
                             <span t-if="m.direction === 'note'"
                                   class="o_inbox_chip o_inbox_chip_note">Internal note</span>
                         </div>
@@ -243,7 +254,7 @@
                             </button>
                             <span class="small text-muted align-self-center"
                                   t-if="state.composer.mode !== 'note'">
-                                UAT: outbound is intercepted, never sent over SMTP.
+                                Sent from dispatcher@logistics.premafirm.com.
                             </span>
                         </div>
                     </t>
