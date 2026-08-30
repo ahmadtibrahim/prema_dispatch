@@ -1,10 +1,30 @@
 /** @odoo-module **/
 // Prema Dispatch Inbox — single OWL client action (design §4).
 // C1 folders · C2 conversation list · C3 conversation · C4 AI assistant.
-// Below 900px the columns stack: list → conversation → AI panel.
+// Below 900px the columns stack: list → conversation → AI panel; between
+// 900px and 1199px the AI panel becomes a slide-over drawer.
+//
+// Every visible control in this app maps to ONE backend RPC (the wiring
+// matrix in the manual / audit report):
+//   folders / list / detail  → inbox_folders / inbox_conversations /
+//                              inbox_conversation_detail
+//   category / state selects → write (t-model bound, then persisted)
+//   assign dropdown          → inbox_assign_candidates / action_assign
+//   mute                     → action_toggle_mute
+//   link picker (Dropdown)   → inbox_link_candidates / action_link_record /
+//                              action_unlink_record
+//   composer (all modes)     → prema.inbox.conversation.compose_and_send
+//                              (ONE method — reply, reply-all, forward,
+//                              new email, internal note, draft resume)
+//   draft discard / retry    → discard_draft / retry_send
+//   AI panel                 → inbox_ai_action / inbox_calculate_price
+//   attachments              → /prema_inbox/attachment/<id>/<name> route
+//   badge                    → /prema_inbox/unread_counts (inbox_badge.js)
 
 import { Component, useState, onMounted, onWillUnmount } from "@odoo/owl";
 import { registry } from "@web/core/registry";
+import { Dropdown } from "@web/core/dropdown/dropdown";
+import { useDropdownState } from "@web/core/dropdown/dropdown_hooks";
 import { useService } from "@web/core/utils/hooks";
 import { user } from "@web/core/user";
 import { standardActionServiceProps } from "@web/webclient/actions/action_service";
@@ -26,15 +46,34 @@ const STATE_LABELS = {
 const PRIORITY_LABELS = {
     normal: "Normal", urgent: "Urgent", emergency: "Emergency",
 };
+const LINK_MODELS = {
+    booking: "logistics.booking",
+    job: "prema.dispatch.job",
+    invoice: "account.move",
+    opportunity: "crm.lead",
+};
+const LINK_LABELS = {
+    booking: "Booking", job: "Job",
+    invoice: "Invoice", opportunity: "Opportunity",
+};
+const OUTBOUND_LABELS = {
+    sent: "Sent",
+    pending: "Queued for delivery",
+    failed: "Send failed",
+    intercepted: "Intercepted (never sent)",
+    draft: "Draft",
+};
 
 export class InboxApp extends Component {
     static template = "prema_dispatch_inbox.InboxApp";
     static props = { ...standardActionServiceProps };
+    static components = { Dropdown };
 
     setup() {
         this.orm = useService("orm");
         this.busService = useService("bus_service");
         this.notification = useService("notification");
+        this.action = useService("action");
         this.state = useState({
             loading: true,
             folders: [],
@@ -44,35 +83,47 @@ export class InboxApp extends Component {
             detail: null,
             search: "",
             loadError: null,
-            composer: { mode: null, body: "", sending: false },
-            ai: { busy: false, panelOpen: true },
-            linkCandidates: null,
+            composer: {
+                mode: null, body: "", to: "", cc: "", subject: "",
+                attachments: [], draftId: null, sending: false,
+            },
+            ai: { busy: false, panelOpen: true, conflictsOpen: false },
+            linkCandidates: null,   // {model, records, manual}
+            linkSearch: "",
             assignCandidates: null,
-            mobileScreen: "list", // list | conversation | ai (mobile stack)
+            formattedMsg: null,     // per-message "view formatted HTML" toggle
+            mobileScreen: "list",   // list | conversation | ai (mobile stack)
         });
         // Odoo 18: env.userId does NOT exist (Odoo 16 legacy) — the uid
-        // lives on the @web/core/user module export (there is no "user"
-        // service either). A wrong/undefined uid silently subscribes to
-        // "prema_inbox:undefined" while the server notifies
-        // "prema_inbox:{uid}" — the relay matches zero websockets and the
-        // inbox never updates live.
+        // lives on the @web/core/user module export. A wrong/undefined uid
+        // silently subscribes to "prema_inbox:undefined" while the server
+        // notifies "prema_inbox:{uid}" — the relay matches zero websockets.
         this.channel = `prema_inbox:${user.userId}`;
-        // Class-name identifiers do NOT resolve in OWL 2 template scope
-        // (proved in prod + UAT: "InboxApp" is undefined at render → TypeError
-        // → OwlError → technical modal). Templates must use `this.` instead.
+        // Class-name identifiers do NOT resolve in OWL 2 template scope —
+        // templates must use `this.` instead.
         this.CATEGORY_LABELS = InboxApp.CATEGORY_LABELS;
         this.CATEGORY_OPTIONS = InboxApp.CATEGORY_OPTIONS;
         this.STATE_OPTIONS = InboxApp.STATE_OPTIONS;
+        this.OUTBOUND_LABELS = InboxApp.OUTBOUND_LABELS;
+        this.userId = user.userId;
         this._timer = null;
         this._searchTimer = null;
+        this._linkTimer = null;
         this._convsLoading = false;   // overlap guard: one list load at a time
         this._convsQueued = false;    // coalesce: refresh once the current one ends
         this._reconcileRunning = false;
         this._reconcileQueued = false;
+        // Seed the picker on EVERY open: state.linkCandidates starts null
+        // and is only set by searchLinks (whose tab buttons live INSIDE the
+        // t-if on linkCandidates) — without this the Link picker opened as
+        // an empty panel and could never be used (stuck state).
+        this.linkDropdown = useDropdownState({
+            onOpen: () => this.searchLinks(
+                this.state.linkCandidates?.model || "booking"),
+        });
+        this.assignDropdown = useDropdownState();
         // Arrow closure: bus_service.subscribe wraps the callback in a plain
-        // function call (callback(payload, {id})), so a prototype method
-        // loses `this` (TypeError on this._onEvent). Same reference is used
-        // for unsubscribe — the service keys its wrapper map on the callback.
+        // function call, so a prototype method would lose `this`.
         this._premaEventCb = (payload) => {
             this._onEvent(payload);
         };
@@ -98,6 +149,7 @@ export class InboxApp extends Component {
         onWillUnmount(() => {
             clearInterval(this._timer);
             clearTimeout(this._searchTimer);
+            clearTimeout(this._linkTimer);
             this._timer = null;
             try {
                 this.busService.deleteChannel(this.channel);
@@ -115,9 +167,6 @@ export class InboxApp extends Component {
         try {
             this.state.folders = await this.orm.call(
                 "prema.inbox.conversation", "inbox_folders", []);
-            // NB: do NOT clear loadError here — it is the conversation-load
-            // error state; a folder refresh succeeding while the list load
-            // fails would otherwise hide the error panel (race on _onEvent).
         } catch (e) {
             console.error("folders failed:", e);
             if (!this.state.folders.length) {
@@ -129,8 +178,7 @@ export class InboxApp extends Component {
 
     async loadConversations() {
         // Overlap guard + coalesce: a burst of triggers (events, folder
-        // switches) never stacks parallel requests — at most one in flight
-        // plus one queued refresh.
+        // switches) never stacks parallel requests.
         if (this._convsLoading) {
             this._convsQueued = true;
             return;
@@ -168,7 +216,18 @@ export class InboxApp extends Component {
             if (this.state.selectedId !== id) {
                 return; // user moved on — ignore the stale response
             }
+            if (!detail || !detail.conversation) {
+                // The conversation vanished (deleted/merged) — never crash.
+                this.state.selectedId = null;
+                this.state.detail = null;
+                this.notification.add("Conversation no longer exists.", {
+                    type: "warning",
+                });
+                this.loadConversations();
+                return;
+            }
             this.state.detail = detail;
+            this.loadAssignCandidates();
             const msgs = detail.messages
                 .filter((m) => m.direction === "incoming" && !m.is_read)
                 .map((m) => m.id);
@@ -183,8 +242,6 @@ export class InboxApp extends Component {
     }
 
     async reconcile() {
-        // Coalesce concurrent reconciles (60s timer + bus events + actions
-        // can fire within the same tick) — one run at a time.
         if (this._reconcileRunning) {
             this._reconcileQueued = true;
             return;
@@ -232,8 +289,6 @@ export class InboxApp extends Component {
     }
 
     onSearch() {
-        // Debounce keystrokes — one RPC after typing pauses, never one per
-        // key. (t-model keeps state.search in sync; this fires the query.)
         clearTimeout(this._searchTimer);
         this._searchTimer = setTimeout(() => this.loadConversations(), 250);
     }
@@ -245,8 +300,6 @@ export class InboxApp extends Component {
     }
 
     async markUnread(id) {
-        // Personal read state — the conversation's incoming messages become
-        // unread for me again (folder "Unread" picks it up).
         const detail = await this.orm.call(
             "prema.inbox.conversation", "inbox_conversation_detail", [id]);
         const incoming = detail.messages
@@ -258,7 +311,7 @@ export class InboxApp extends Component {
     }
 
     // ------------------------------------------------------------------
-    // conversation actions (C3)
+    // thread header: category / state / mute / assignment
     // ------------------------------------------------------------------
     async setCategory(category) {
         if (!this.state.detail) {
@@ -270,46 +323,120 @@ export class InboxApp extends Component {
         this.reconcile();
     }
 
-    async setState(state) {
-        await this.orm.call(
-            "prema.inbox.conversation", "write",
-            [[this.state.selectedId], { workflow_state: state }]);
-        this.reconcile();
-    }
-
-    async assignUser() {
-        const users = await this.orm.call(
-            "res.users", "search_read",
-            [[["share", "=", false]], ["id", "login", "name"], 0, 50]);
-        const self = users.find((u) => u.id === user.userId);
-        if (!self) {
-            users.unshift({ id: user.userId, login: "me", name: "Me" });
+    async setState(workflowState) {
+        if (!this.state.detail) {
+            return;
         }
-        this.state.assignCandidates = users;
-    }
-
-    async doAssign(userId) {
         await this.orm.call(
             "prema.inbox.conversation", "write",
-            [[this.state.selectedId], { assignee_id: userId }]);
-        this.state.assignCandidates = null;
+            [[this.state.selectedId], { workflow_state: workflowState }]);
         this.reconcile();
     }
 
     async toggleMute() {
         await this.orm.call(
-            "prema.inbox.conversation", "action_toggle_mute", [this.state.selectedId]);
+            "prema.inbox.conversation", "action_toggle_mute",
+            [this.state.selectedId]);
         this.reconcile();
     }
 
-    async startComposer(mode) {
-        this.state.composer = { mode, body: "", sending: false };
-        if (mode === "reply") {
-            // prefill with the last message quoted (plain)
-            const msgs = this.state.detail?.messages || [];
-            const last = [...msgs].reverse().find((m) => m.direction === "incoming");
-            this.state.composer.body = last ? `\n\nOn ${last.date}, ${last.author_name} wrote:\n${last.body_plain || ""}` : "";
+    async loadAssignCandidates() {
+        // Group-filtered candidates — never the whole directory.
+        try {
+            this.state.assignCandidates = await this.orm.call(
+                "prema.inbox.conversation", "inbox_assign_candidates", []);
+        } catch (e) {
+            console.error("assign candidates failed:", e);
+            this.state.assignCandidates = [];
         }
+    }
+
+    async doAssign(userId) {
+        try {
+            await this.orm.call(
+                "prema.inbox.conversation", "action_assign",
+                [this.state.selectedId, userId]);
+        } catch (e) {
+            this.notification.add(this._rpcError(e, "Could not assign."), {
+                type: "danger",
+            });
+        }
+        this.assignDropdown.close();
+        // reconcile() refreshes folders + detail (the thread header) but NOT
+        // the conversation list — the assignee chip on the row would go
+        // stale until the next folder switch / bus event. Reload it now.
+        this.loadConversations();
+        this.reconcile();
+    }
+
+    async doUnassign() {
+        try {
+            await this.orm.call(
+                "prema.inbox.conversation", "action_assign",
+                [this.state.selectedId, false]);
+        } catch (e) {
+            this.notification.add(this._rpcError(e, "Could not unassign."), {
+                type: "danger",
+            });
+        }
+        this.assignDropdown.close();
+        this.loadConversations();
+        this.reconcile();
+    }
+
+    // ------------------------------------------------------------------
+    // composer (C3) — ONE RPC: prema.inbox.conversation.compose_and_send
+    // ------------------------------------------------------------------
+    startComposer(mode, opts = {}) {
+        const detail = this.state.detail;
+        const conv = detail?.conversation;
+        const defaults = detail?.reply_defaults || { to: [], subject: "" };
+        const toEmails = (arr) => (arr || []).map((p) => p.email).join(", ");
+        let composer = {
+            mode, body: "", to: "", cc: "", subject: "",
+            attachments: [], draftId: null, sending: false,
+        };
+        if (mode === "reply" || mode === "reply_all") {
+            // reply_all carries its OWN to/cc defaults (sender + external
+            // To/cc) — reading reply_defaults.to here would silently drop
+            // the external To recipients of the incoming email.
+            const replyDefaults = mode === "reply_all"
+                ? (detail?.reply_all_defaults || defaults) : defaults;
+            composer.to = toEmails(replyDefaults.to);
+            composer.cc = mode === "reply_all"
+                ? toEmails(detail.reply_all_defaults?.cc) : "";
+            composer.subject = replyDefaults.subject || "";
+            const last = [...(detail?.messages || [])]
+                .reverse().find((m) => m.direction === "incoming");
+            composer.body = last
+                ? `\n\nOn ${this.fmtDate(last.date)}, ${last.author_name} wrote:\n${last.body_plain || ""}`
+                : "";
+        } else if (mode === "forward") {
+            composer.subject = conv ? `Fwd: ${conv.name}` : "";
+            const last = [...(detail?.messages || [])]
+                .reverse().find((m) => m.direction === "incoming");
+            composer.body = last
+                ? `\n\nOn ${this.fmtDate(last.date)}, ${last.author_name} wrote:\n${last.body_plain || ""}`
+                : "";
+        } else if (mode === "compose") {
+            composer.to = conv?.partner_email || "";
+        }
+        if (opts.body !== undefined) {
+            composer.body = opts.body;
+        }
+        this.state.composer = composer;
+        this._scrollComposer();
+    }
+
+    async addNote() {
+        if (this.state.composer.sending) {
+            return;
+        }
+        if (!(this.state.composer.body || "").trim()) {
+            this.notification.add("The note is empty.", { type: "warning" });
+            return;
+        }
+        await this._compose(true, "note");
     }
 
     async saveDraft() {
@@ -320,54 +447,261 @@ export class InboxApp extends Component {
         await this._compose(true);
     }
 
-    async _compose(sendNow) {
-        const { mode, body } = this.state.composer;
-        this.state.composer.sending = true;
-        try {
-            const kind = mode === "note" ? "note"
-                : mode === "compose" ? "compose" : "reply";
-            const subject = mode === "reply"
-                ? `Re: ${this.state.detail?.conversation?.name || "No subject"}`
-                : body.split("\n")[0].slice(0, 100) || "No subject";
-            const res = await this.orm.call(
-                "prema.inbox.message", "compose_and_send",
-                [this.state.selectedId, subject, body, kind, sendNow]);
-            this.state.composer = { mode: null, body: "", sending: false };
-            const stateLabel = {
-                sent: "Message sent via the configured mail server.",
-                pending: "Message queued for delivery.",
-                failed: "Delivery failed — see the message status.",
-                intercepted: "Outbound intercepted (never sent).",
-            }[res?.outbound_state];
+    async _compose(sendNow, forceKind = null) {
+        const c = this.state.composer;
+        const kind = forceKind || c.mode;
+        if (!kind) {
+            return;
+        }
+        // Client-side validation mirrors the server: a Send without any
+        // recipient is refused here, before the RPC, with the same message.
+        if (sendNow && kind !== "note" && !this._parseRecipients(c.to).length) {
             this.notification.add(
-                sendNow
-                    ? (stateLabel || "Outbound recorded.")
-                    : "Draft saved to the Drafts folder.",
-                { type: "info" });
-            this.reconcile();
+                "No recipient — add the customer's email address before sending.",
+                { type: "danger" });
+            return;
+        }
+        c.sending = true;
+        try {
+            const res = await this.orm.call(
+                "prema.inbox.conversation", "compose_and_send",
+                [this.state.selectedId, c.subject, c.body, kind, sendNow],
+                {
+                    to_partner_ids: this._parseRecipients(c.to),
+                    cc_partner_ids: kind === "compose" || kind === "reply_all"
+                        ? this._parseRecipients(c.cc) : [],
+                    attachment_ids: c.attachments.map((a) => a.id),
+                    draft_id: c.draftId,
+                });
+            if (res?.conversation_id
+                    && kind === "compose"
+                    && res.conversation_id !== this.state.selectedId) {
+                // New email → its OWN conversation: select it.
+                this.state.selectedId = res.conversation_id;
+                this.state.detail = null;
+                await this.openConversation(res.conversation_id);
+                this.loadConversations();
+            }
+            const wasDraft = Boolean(c.draftId);
+            if (!sendNow || kind === "note") {
+                // Draft saved — keep the composer open so the user keeps
+                // editing; remember the id so the next Save edits the SAME
+                // message (a resumed draft never becomes a second row).
+                c.draftId = res?.id || c.draftId;
+                c.sending = false;
+                this.notification.add(
+                    kind === "note"
+                        ? "Internal note added to the thread."
+                        : (wasDraft ? "Draft updated." : "Draft saved to the Drafts folder."),
+                    { type: "info" });
+            } else {
+                const label = OUTBOUND_LABELS[res?.outbound_state] || "Recorded";
+                if (res?.outbound_state === "failed") {
+                    this.notification.add(
+                        `${label} — ${res.send_error || "see the message status."}`,
+                        { type: "danger" });
+                } else {
+                    this.notification.add(
+                        res?.outbound_state === "intercepted"
+                            ? "Outbound intercepted (never sent) — UAT mode."
+                            : `Message ${label.toLowerCase()}.`,
+                        { type: "info" });
+                }
+                this.state.composer = {
+                    mode: null, body: "", to: "", cc: "", subject: "",
+                    attachments: [], draftId: null, sending: false,
+                };
+            }
+            await this.reconcile();
         } catch (e) {
             console.error("compose failed:", e);
-            this.state.composer.sending = false;
-            this.notification.add("Could not save the message.", { type: "danger" });
+            c.sending = false;
+            this.notification.add(
+                this._rpcError(
+                    e,
+                    sendNow ? "Could not send the message." : "Could not save the message."),
+                { type: "danger" });
         }
     }
 
+    resumeDraft(draft) {
+        const kind = ["reply", "reply_all", "forward", "compose"]
+            .includes(draft.kind) ? draft.kind : "compose";
+        this.state.composer = {
+            mode: kind,
+            body: draft.body_plain || draft.body || "",
+            to: draft.to.map((p) => p.email).join(", "),
+            cc: draft.cc.map((p) => p.email).join(", "),
+            subject: draft.subject || "",
+            attachments: draft.attachments || [],
+            draftId: draft.id,
+            sending: false,
+        };
+        this._scrollComposer();
+    }
+
+    async discardDraft(draftId) {
+        if (!window.confirm("Discard this draft? It cannot be recovered.")) {
+            return;
+        }
+        try {
+            await this.orm.call(
+                "prema.inbox.conversation", "discard_draft",
+                [this.state.selectedId, draftId]);
+            if (this.state.composer.draftId === draftId) {
+                this.state.composer = {
+                    mode: null, body: "", to: "", cc: "", subject: "",
+                    attachments: [], draftId: null, sending: false,
+                };
+            }
+            this.notification.add("Draft discarded.", { type: "info" });
+            await this.reconcile();
+        } catch (e) {
+            this.notification.add(this._rpcError(e, "Could not discard the draft."), {
+                type: "danger",
+            });
+        }
+    }
+
+    async retrySend(messageId) {
+        try {
+            const res = await this.orm.call(
+                "prema.inbox.conversation", "retry_send",
+                [this.state.selectedId, messageId]);
+            const label = OUTBOUND_LABELS[res?.outbound_state] || "Recorded";
+            if (res?.outbound_state === "failed") {
+                this.notification.add(`${label} — ${res.send_error || ""}`, {
+                    type: "danger",
+                });
+            } else {
+                this.notification.add(`Retry: ${label.toLowerCase()}.`, { type: "info" });
+            }
+            await this.reconcile();
+        } catch (e) {
+            this.notification.add(this._rpcError(e, "Retry failed."), {
+                type: "danger",
+            });
+        }
+    }
+
+    _parseRecipients(text) {
+        // Accept partner ids (numeric) or raw email strings; the server
+        // resolves both through the canonical partner resolver.
+        return (text || "").split(/[,;]/)
+            .map((s) => s.trim())
+            .filter(Boolean)
+            .map((token) => (/^\d+$/.test(token) ? parseInt(token, 10) : token));
+    }
+
+    async onFileSelected(ev) {
+        const files = [...(ev.target.files || [])];
+        ev.target.value = "";
+        for (const file of files) {
+            try {
+                const b64 = await this._fileToBase64(file);
+                const created = await this.orm.create("ir.attachment", {
+                    name: file.name,
+                    datas: b64,
+                    mimetype: file.type || "",
+                });
+                this.state.composer.attachments.push({
+                    id: created[0],
+                    name: file.name,
+                    size: file.size,
+                });
+            } catch (e) {
+                console.error("attachment upload failed:", e);
+                this.notification.add(
+                    `Could not upload attachment ${file.name}.`, { type: "danger" });
+            }
+        }
+    }
+
+    removeAttachment(attId) {
+        this.state.composer.attachments = this.state.composer.attachments
+            .filter((a) => a.id !== attId);
+    }
+
+    _fileToBase64(file) {
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => {
+                const dataUrl = reader.result || "";
+                resolve(dataUrl.split(",")[1] || "");
+            };
+            reader.onerror = reject;
+            reader.readAsDataURL(file);
+        });
+    }
+
     // ------------------------------------------------------------------
-    // links
+    // business links (C3) — native Dropdown picker
     // ------------------------------------------------------------------
     async searchLinks(model) {
-        const res = await this.orm.call(
-            "prema.inbox.conversation", "inbox_link_candidates",
-            [model, this.state.selectedId, ""]);
-        this.state.linkCandidates = { model, records: res };
+        const manual = this.state.linkCandidates?.manual || false;
+        let records = [];
+        try {
+            records = await this.orm.call(
+                "prema.inbox.conversation", "inbox_link_candidates",
+                [model, this.state.selectedId, this.state.linkSearch || "", manual]);
+        } catch (e) {
+            console.error("link candidates failed:", e);
+        }
+        this.state.linkCandidates = { model, records, manual };
+        // opening is owned by the Dropdown's target toggle (and the
+        // onOpen seeding above) — calling open() here would recurse
+    }
+
+    onLinkSearch() {
+        clearTimeout(this._linkTimer);
+        this._linkTimer = setTimeout(
+            () => this.searchLinks(this.state.linkCandidates?.model || "booking"), 250);
+    }
+
+    async toggleManualLinkSearch(checked) {
+        this.state.linkCandidates.manual = checked;
+        await this.searchLinks(this.state.linkCandidates?.model || "booking");
     }
 
     async linkRecord(model, recordId) {
-        await this.orm.call(
-            "prema.inbox.conversation", "action_link_record",
-            [this.state.selectedId, model, recordId]);
+        try {
+            await this.orm.call(
+                "prema.inbox.conversation", "action_link_record",
+                [this.state.selectedId, model, recordId, this.state.linkSearch || ""]);
+        } catch (e) {
+            this.notification.add(this._rpcError(e, "Could not link the record."), {
+                type: "danger",
+            });
+            return;
+        }
+        this.linkDropdown.close();
         this.state.linkCandidates = null;
-        this.reconcile();
+        this.state.linkSearch = "";
+        await this.reconcile();
+    }
+
+    async unlinkRecord(model) {
+        await this.orm.call(
+            "prema.inbox.conversation", "action_unlink_record",
+            [this.state.selectedId, model]);
+        await this.reconcile();
+    }
+
+    openLinkedRecord(model, recordId) {
+        const resModel = LINK_MODELS[model];
+        if (!resModel || !recordId) {
+            return;
+        }
+        this.action.doAction({
+            type: "ir.actions.act_window",
+            res_model: resModel,
+            res_id: recordId,
+            views: [[false, "form"]],
+        });
+    }
+
+    linkTypeLabel(model) {
+        return LINK_LABELS[model] || model;
     }
 
     // ------------------------------------------------------------------
@@ -379,9 +713,18 @@ export class InboxApp extends Component {
             const res = await this.orm.call(
                 "prema.inbox.conversation", "inbox_ai_action",
                 [this.state.selectedId, action]);
-            if (action === "extract" || action === "summarize" || action === "draft_reply") {
-                this.reconcile();
+            if (action === "draft_reply" && res?.text) {
+                // The reply lands in the composer as an EDITABLE DRAFT —
+                // AI never sends anything.
+                this.startComposer("reply", { body: res.text });
+                if (window.innerWidth < 900) {
+                    this.state.mobileScreen = "conversation";
+                }
+                this.notification.add(
+                    "Draft reply placed in the composer — review and edit before sending.",
+                    { type: "info" });
             }
+            await this.reconcile();
             this.state.ai.busy = false;
             return res;
         } catch (e) {
@@ -401,12 +744,12 @@ export class InboxApp extends Component {
                 "prema.inbox.conversation", "inbox_calculate_price",
                 [this.state.selectedId]);
             this.state.ai.busy = false;
-            if (res && !res.available && res.reason) {
+            if (res && !res.available) {
                 this.notification.add(
-                    `Pricing engine: ${res.reason} — no quote invented.`,
+                    res.reason_text || `${res.reason} — no quote invented.`,
                     { type: "warning" });
             }
-            this.reconcile();
+            await this.reconcile();
             return res;
         } catch (e) {
             console.error("pricing failed:", e);
@@ -415,11 +758,120 @@ export class InboxApp extends Component {
         }
     }
 
+    toggleAiPanel() {
+        this.state.ai.panelOpen = !this.state.ai.panelOpen;
+    }
+
+    toggleConflicts() {
+        this.state.ai.conflictsOpen = !this.state.ai.conflictsOpen;
+    }
+
+    isMine(uid) {
+        return uid === this.userId;
+    }
+
+    linkedRows() {
+        const c = this.state.detail?.conversation;
+        if (!c) {
+            return [];
+        }
+        const rows = [];
+        for (const [model, id, name] of [
+            ["booking", c.booking_id, c.booking_name],
+            ["job", c.job_id, c.job_name],
+            ["invoice", c.invoice_id, c.invoice_name],
+            ["opportunity", c.opportunity_id, c.opportunity_name],
+        ]) {
+            if (id) {
+                rows.push({ model, id, name, label: LINK_LABELS[model] });
+            }
+        }
+        return rows;
+    }
+
+    toLine(m) {
+        return (m.to || []).map((p) => p.email).join(", ");
+    }
+
+    // Formatted extraction — never raw JSON in the panel. Pickup/Delivery
+    // rows carry their own "Postal/FSA: missing" marker.
+    extractionRows() {
+        const ex = this.state.detail?.ai?.extraction;
+        if (!ex) {
+            return [];
+        }
+        const f = ex.fields || {};
+        const rows = [];
+        const addStop = (label, key) => {
+            const stop = f[key] || {};
+            const city = [stop.city, stop.province].filter(Boolean).join(", ");
+            const postal = (stop.postal_code || "").trim();
+            const fsa = postal.split(" ")[0] || "";
+            rows.push({
+                label,
+                value: city || stop.address || "",
+                fsa,
+                missing: !fsa,
+            });
+        };
+        addStop("Pickup", "pickup");
+        addStop("Delivery", "delivery");
+        const scalar = (label, key, fmt = (v) => v) => {
+            if (f[key] !== undefined && f[key] !== null && f[key] !== "") {
+                rows.push({ label, value: fmt(f[key]) });
+            }
+        };
+        scalar("Pallets", "pallets", (v) => `${v} pallet${v === 1 ? "" : "s"}`);
+        scalar("Weight", "weight_lbs", (v) => `${Number(v).toLocaleString()} lbs`);
+        scalar("Equipment", "equipment");
+        scalar("Temperature", "temperature_c", (v) => `${v} °C`);
+        scalar("Accessorials", "accessorials", (v) =>
+            Array.isArray(v) ? v.join(", ") : v);
+        scalar("Reference numbers", "reference_numbers", (v) =>
+            Array.isArray(v) ? v.join(", ") : v);
+        return rows;
+    }
+
+    extractionMissing() {
+        return this.state.detail?.ai?.extraction?.missing || [];
+    }
+
+    extractionConflicts() {
+        return this.state.detail?.ai?.extraction?.conflicting || [];
+    }
+
+    toggleFormatted(messageId) {
+        this.state.formattedMsg =
+            this.state.formattedMsg === messageId ? null : messageId;
+    }
+
     // ------------------------------------------------------------------
     // helpers
     // ------------------------------------------------------------------
     folderLabel(key) {
         return this.state.folders.find((f) => f.key === key)?.label || "";
+    }
+
+    attIcon(mimetype) {
+        const m = (mimetype || "").toLowerCase();
+        if (m.includes("pdf")) {
+            return "fa-file-pdf-o";
+        }
+        if (m.startsWith("image/")) {
+            return "fa-file-image-o";
+        }
+        if (m.startsWith("text/")) {
+            return "fa-file-text-o";
+        }
+        return "fa-file-o";
+    }
+
+    attHref(att) {
+        return `/prema_inbox/attachment/${att.id}/${encodeURIComponent(att.name)}`;
+    }
+
+    attDownloadHref(att) {
+        return `${this.attHref(att)}?download=1`;
     }
 
     fmtDate(iso) {
@@ -444,17 +896,22 @@ export class InboxApp extends Component {
     }
 
     fmtValue(value) {
-        // OWL 2 template scope has no `JSON` global (only Math/Date/Object/
-        // RegExp/Array/... are whitelisted in the QWeb compiler) — any
-        // object value must be stringified from JS, not in the template.
+        // OWL 2 template scope has no `JSON` global — any object value must
+        // be stringified from JS, not in the template.
         if (value === null || value === undefined) {
             return "";
         }
         return typeof value === "object" ? JSON.stringify(value) : value;
     }
 
+    _rpcError(e, fallback) {
+        // The server's ValidationError text is the honest message — never
+        // mask it behind the generic "Could not save the message."
+        return e?.data?.message || e?.message || fallback;
+    }
+
     // ------------------------------------------------------------------
-    // mobile stack
+    // mobile stack + layout
     // ------------------------------------------------------------------
     backTo(kind) {
         if (kind === "list") {
@@ -465,11 +922,21 @@ export class InboxApp extends Component {
             this.state.mobileScreen = "ai";
         }
     }
+
+    _scrollComposer() {
+        // Bring the composer into view on small screens.
+        requestAnimationFrame(() => {
+            const el = this.el?.querySelector(".o_inbox_composer");
+            el?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+        });
+    }
 }
 
 InboxApp.CATEGORY_LABELS = CATEGORY_LABELS;
 InboxApp.STATE_LABELS = STATE_LABELS;
 InboxApp.PRIORITY_LABELS = PRIORITY_LABELS;
+InboxApp.LINK_LABELS = LINK_LABELS;
+InboxApp.OUTBOUND_LABELS = OUTBOUND_LABELS;
 InboxApp.CATEGORY_OPTIONS = Object.entries(CATEGORY_LABELS).map(
     ([value, label]) => ({ value, label }));
 InboxApp.STATE_OPTIONS = Object.entries(STATE_LABELS).map(

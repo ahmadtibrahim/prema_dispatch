@@ -14,10 +14,48 @@ post-commit only.
 import base64
 import re
 
-from odoo import api, fields, models
+from odoo import _, api, fields, models
+from odoo.exceptions import ValidationError
 from odoo.tools import email_split, html2plaintext
+from odoo.tools.mail import html_sanitize
 
 _EMAIL_ADDR_RE = re.compile(r"<([^<>]+@[^<>]+)>")
+
+# PremaFirm-internal email suffixes. Recipient defaults (reply / reply all)
+# and internal-address exclusion are decided on these — a PremaFirm address
+# is never a reply recipient, and the dispatcher's own address never lands
+# back in To/Cc.
+_INTERNAL_EMAIL_SUFFIXES = ("@premafirm.com", "@logistics.premafirm.com")
+
+# Remote-content strip: tracking pixels and remote images must not load
+# from an email (mixed content / privacy). Anything not a data: URI is
+# removed from the sanitized HTML.
+_REMOTE_IMG_SRC = re.compile(r'src\s*=\s*("(?!(?:data:))[^"]*"|\'(?!(?:data:))[^\']*\')', re.I)
+_REMOTE_BG_SRC = re.compile(r'background(-image)?\s*:\s*url\([^)]*\)', re.I)
+
+
+def _sanitize_email_html(src):
+    """Server-side sanitizer for UNTRUSTED incoming email HTML.
+
+    html_sanitize removes scripts, event handlers (on*), javascript:/data:
+    hrefs, <style> content and forms. On top of that, any img src that is
+    not an embedded data: URI is stripped (remote tracking pixels must not
+    load) and CSS background-image url() rules are dropped. The result is
+    the ONLY form in which incoming HTML is stored or rendered.
+    """
+    if not src:
+        return ""
+    cleaned = html_sanitize(
+        src, sanitize_attributes=True, strip_style=True, strip_classes=True)
+    cleaned = _REMOTE_IMG_SRC.sub("", cleaned)
+    cleaned = _REMOTE_BG_SRC.sub("", cleaned)
+    return cleaned
+
+
+def _html_to_plain(html):
+    """Safe plain-text fallback for quoting/display when body_plain is
+    missing — never echoes raw HTML."""
+    return (html2plaintext(html or "") or "").strip()
 
 # Keyword → category guess at ingest. Deliberately conservative: anything
 # that does not match stays "other" and the AI assistant / dispatcher can
@@ -111,6 +149,11 @@ class InboxConversation(models.Model):
         help="Muted conversations keep their unread count but suppress "
              "toast/sound for these users.")
     ai_extraction = fields.Json(string="AI extraction")
+    ai_summary = fields.Text(
+        string="AI summary",
+        help="Latest thread summary produced by the AI assistant. Stored on "
+             "the conversation so the summary survives page reloads and is "
+             "visible in the panel without re-running the model.")
     ai_status = fields.Selection([
         ("none", "Not processed"),
         ("processing", "Processing"),
@@ -197,7 +240,10 @@ class InboxConversation(models.Model):
                 "is_spam": self._is_spam_email(partner),
             })
 
-        # 5) the message itself
+        # 5) the message itself — body_html is UNTRUSTED email content and
+        # is sanitized ONCE at ingest; only the sanitized form is ever
+        # stored, served, or rendered (no scripts / on* / javascript: hrefs
+        # / remote images / tracking pixels).
         message = Message.create({
             "conversation_id": conversation.id,
             "direction": "incoming",
@@ -207,7 +253,7 @@ class InboxConversation(models.Model):
             "recipient_ids": [(6, 0, [p.id for p in
                                       self._resolve_partners(to_addrs)])],
             "subject": subject,
-            "body": body_html or "",
+            "body": _sanitize_email_html(body_html or ""),
             "body_plain": body_plain or "",
             "message_id": mid,
             "references": references or "",
@@ -549,6 +595,7 @@ class InboxConversation(models.Model):
             "name": conv.name,
             "partner_id": conv.partner_id.id,
             "partner_name": conv.partner_id.name,
+            "partner_email": conv.partner_id.email or "",
             "category": conv.category,
             "priority": conv.priority,
             "workflow_state": conv.workflow_state,
@@ -560,16 +607,25 @@ class InboxConversation(models.Model):
             "is_load_board": conv.is_load_board,
             "has_attachment": bool(conv.inbox_message_ids.attachment_ids),
             "booking_id": conv.booking_id.id,
+            "booking_name": conv.booking_id.name or "",
             "job_id": conv.job_id.id,
+            "job_name": conv.job_id.name or "",
             "invoice_id": conv.invoice_id.id,
+            "invoice_name": conv.invoice_id.name or "",
             "opportunity_id": conv.opportunity_id.id,
+            "opportunity_name": conv.opportunity_id.name or "",
         }
 
     @api.model
     def inbox_conversation_detail(self, conversation_id):
-        """One conversation with its full message history (the C3 pane)."""
+        """One conversation with its full message history (the C3 pane).
+
+        Returns {} when the conversation no longer exists (or the caller is
+        not in the inbox group) — the frontend shows "Conversation no longer
+        exists." instead of crashing.
+        """
         conv = self.browse(conversation_id)
-        if not conv or not self.env.user.has_group(
+        if not conv.exists() or not self.env.user.has_group(
                 "prema_dispatch_inbox.group_dispatch_inbox"):
             return {}
         msgs = []
@@ -585,71 +641,221 @@ class InboxConversation(models.Model):
                 "body_plain": m.body_plain or "",
                 "is_read": m.is_read,
                 "outbound_state": m.outbound_state,
+                "send_error": m.send_error or "",
+                "to": [{"id": p.id, "email": p.email or p.name}
+                       for p in m.recipient_ids],
+                "cc": [{"id": p.id, "email": p.email or p.name}
+                       for p in m.cc_ids],
                 "attachments": [{"id": a.id, "name": a.name,
                                  "mimetype": a.mimetype}
                                 for a in m.attachment_ids],
             })
+        drafts = conv.inbox_message_ids.filtered(
+            lambda m: m.direction == "outgoing"
+            and m.outbound_state == "draft").sorted(key=lambda m: m.date)
+        # defaults are computed on the CONVERSATION (not the empty model
+        # recordset — self here is @api.model)
+        to_default, cc_default = conv._default_reply_recipients("reply")
+        to_default_all, cc_default_all = conv._default_reply_recipients(
+            "reply_all")
         return {
             "conversation": self._conversation_row(conv),
             "messages": msgs,
+            "drafts": [{
+                "id": d.id,
+                "kind": d.kind or "compose",
+                "subject": d.subject or "",
+                "body": d.body or "",
+                "body_plain": d.body_plain or "",
+                "to": [{"id": p.id, "email": p.email or p.name}
+                       for p in d.recipient_ids],
+                "cc": [{"id": p.id, "email": p.email or p.name}
+                       for p in d.cc_ids],
+                "attachments": [{"id": a.id, "name": a.name,
+                                 "mimetype": a.mimetype}
+                                for a in d.attachment_ids],
+                "date": d.date.isoformat(),
+            } for d in drafts],
+            "reply_defaults": {
+                "to": [{"id": p.id, "email": p.email or p.name}
+                       for p in conv.env["res.partner"].browse(to_default)],
+                "cc": [],
+                "subject": "Re: %s" % conv.name,
+            },
+            "reply_all_defaults": {
+                "to": [{"id": p.id, "email": p.email or p.name}
+                       for p in conv.env["res.partner"].browse(to_default_all)],
+                "cc": [{"id": p.id, "email": p.email or p.name}
+                       for p in conv.env["res.partner"].browse(cc_default_all)],
+                "subject": "Re: %s" % conv.name,
+            },
+            "muted": self.env.user.id in conv.muted_user_ids.ids,
             "ai": {
                 "status": conv.ai_status,
+                "summary": conv.ai_summary or "",
                 "extraction": conv.ai_extraction,
             },
             "pricing": conv.price_snapshot,
         }
 
     @api.model
-    def inbox_link_candidates(self, model, conversation_id, search=None):
-        """Explicit business-link search: logistics.booking | prema.dispatch.job
-        | account.move | crm.lead — read-only, never auto-created."""
-        conv = self.browse(conversation_id)
-        partner = conv.partner_id
-        allowed = {
+    def _link_authorized_models(self):
+        return {
             "booking": "logistics.booking",
             "job": "prema.dispatch.job",
             "invoice": "account.move",
             "opportunity": "crm.lead",
         }
-        model_name = allowed.get(model)
-        if not model_name:
-            return []
-        domain = []
-        if search:
-            domain.append(("name", "ilike", search))
-        if model == "opportunity":
-            domain = [("partner_id", "=", partner.id)]
-            if search:
-                domain.append(("name", "ilike", search))
-        else:
-            domain.insert(0, ("partner_id", "=", partner.id))
-        records = self.env[model_name].search(
-            domain, limit=20,
-            order="create_date desc" if model != "invoice" else "invoice_date desc nulls last")
-        return [{"id": r.id, "name": r.name,
-                 "state": getattr(r, "state", None)}
-                for r in records]
 
-    def action_link_record(self, model, record_id):
-        field = {
+    @api.model
+    def _link_field_map(self):
+        return {
             "booking": "booking_id", "job": "job_id",
             "invoice": "invoice_id", "opportunity": "opportunity_id",
-        }.get(model)
+        }
+
+    @api.model
+    def _link_legitimate_partner_ids(self, conv):
+        """Partner ids the conversation is legitimately about: the
+        conversation partner itself PLUS its commercial partner / parent
+        company (a contact at a company links to records of the company,
+        and vice versa)."""
+        ids = set()
+        partner = conv.partner_id
+        if partner:
+            ids.add(partner.id)
+            if partner.commercial_partner_id:
+                ids.add(partner.commercial_partner_id.id)
+        return ids
+
+    @api.model
+    def inbox_link_candidates(
+            self, model, conversation_id, search=None, manual=False):
+        """Business-link candidates for the picker.
+
+        Automatic scope: records whose partner (or commercial partner /
+        parent company) is the conversation's partner hierarchy — a contact
+        at a company sees the company's bookings, invoices, jobs and
+        opportunities. No domain auto-association: the inbox never guesses
+        records for a partner the customer did not identify as theirs.
+
+        manual=True (checkbox, dispatcher-authorized): free text search
+        across record names AND customer names — the explicit escape hatch
+        for genuinely cross-customer lookups. The picker shows
+        "No records found for this contact/company." when both come up
+        empty.
+        """
+        conv = self.browse(conversation_id)
+        if not conv.exists():
+            return []
+        model_name = self._link_authorized_models().get(model)
+        if not model_name:
+            return []
+        q = (search or "").strip()
+        if manual and q:
+            # dispatcher-authorized manual search: record name OR any
+            # customer whose name contains the text
+            customers = self.env["res.partner"].search(
+                [("name", "ilike", q)])
+            domain = ["|", "|",
+                      ("name", "ilike", q),
+                      ("partner_id", "in", customers.ids),
+                      ("partner_id.commercial_partner_id", "in",
+                       customers.ids)]
+        else:
+            partner_ids = self._link_legitimate_partner_ids(conv)
+            if not partner_ids:
+                return []
+            domain = ["|",
+                      ("partner_id", "in", list(partner_ids)),
+                      ("partner_id.commercial_partner_id", "in",
+                       list(partner_ids))]
+            if q:
+                domain = [domain, ("name", "ilike", q)]
+        records = self.env[model_name].search(
+            domain, limit=20,
+            order="create_date desc" if model != "invoice"
+            else "invoice_date desc nulls last")
+        return [{
+            "id": r.id, "name": r.name or "%s #%s" % (model, r.id),
+            "partner_id": r.partner_id.id,
+            "partner_name": r.partner_id.name or "",
+            "state": getattr(r, "state", None),
+        } for r in records]
+
+    def action_link_record(self, model, record_id, search=None):
+        """Link a record to the conversation — authorized server-side.
+
+        The record must (a) be one of the whitelisted link models, (b)
+        still exist, (c) be readable by the caller under record rules, and
+        (d) belong to the conversation's partner hierarchy OR have been
+        surfaced by an authorized manual search that actually matches it.
+        There is no path for arbitrary RPC linking.
+        """
+        field = self._link_field_map().get(model)
+        model_name = self._link_authorized_models().get(model)
+        if not field or not model_name:
+            raise ValidationError(_("Unsupported link type: %s") % model)
+        rec = self.env[model_name].browse(int(record_id))
+        if not rec.exists():
+            raise ValidationError(_("The record no longer exists."))
+        try:
+            rec.check_access_rights("read")
+            rec.check_access_rule("read")
+        except Exception:
+            raise ValidationError(
+                _("You do not have access to this record."))
+        conv = self[0] if self else self.env["prema.inbox.conversation"]
+        partner_ids = self._link_legitimate_partner_ids(conv)
+        rec_partner_ids = {rec.partner_id.id}
+        if rec.partner_id.commercial_partner_id:
+            rec_partner_ids.add(rec.partner_id.commercial_partner_id.id)
+        legitimate = bool(partner_ids & rec_partner_ids)
+        if not legitimate:
+            q = (search or "").strip()
+            # Mirror the picker's manual-search domain (inbox_link_candidates
+            # matches record name OR partner / commercial partner name) —
+            # otherwise a cross-customer record surfaced by CUSTOMER name
+            # (e.g. "Other Produce" → booking B-UAT-OTHER) could be shown
+            # in the picker but rejected on link. The query must still
+            # actually match the record: no blind linking.
+            ql = (q or "").lower()
+            names = ((rec.name or ""), (rec.partner_id.name or ""),
+                     (rec.partner_id.commercial_partner_id.name or ""))
+            if not ql or not any(ql in n.lower() for n in names):
+                raise ValidationError(
+                    _("Not a valid candidate for this conversation — use "
+                      "the picker search to find records first."))
+        self.write({field: rec.id})
+        self._broadcast_read_change()
+        return True
+
+    def action_unlink_record(self, model):
+        """Remove a business link (the X on the chip)."""
+        field = self._link_field_map().get(model)
         if not field:
             return False
-        self.write({field: record_id})
+        self.write({field: False})
+        self._broadcast_read_change()
         return True
 
     # ------------------------------------------------------------------
     # AI / pricing entry points (thin RPC wrappers for the frontend)
     # ------------------------------------------------------------------
     def inbox_ai_action(self, action, instruction=None):
-        """summarize | draft_reply | extract | suggest_follow_up"""
+        """summarize | draft_reply | extract | suggest_follow_up
+
+        AI NEVER sends: summarize persists the text to the conversation
+        (visible in the panel), draft_reply returns text the dispatcher
+        pastes/edits in the composer, extract persists normalized fields.
+        """
         ai = self.env["prema.inbox.ai"]
         if action == "extract":
             return ai.extract_shipment(self)
         if action == "summarize":
-            return {"text": ai.summarize(self)}
+            text = ai.summarize(self)
+            self.write({"ai_summary": text})
+            return {"text": text}
         if action == "draft_reply":
             return {"text": ai.draft_reply(self, instruction or "")}
         if action == "suggest_follow_up":
@@ -666,21 +872,256 @@ class InboxConversation(models.Model):
             self.env["prema.inbox.ai"].extract_shipment(self)
         return self.env["prema.inbox.pricing"].calculate_price(self)
 
-    def compose_and_send(self, subject, body, kind, send_now=False):
-        """One RPC for the composer: create (+ optionally send) an outbound.
+    # ------------------------------------------------------------------
+    # composer — the SINGLE RPC behind every composer action
+    # ------------------------------------------------------------------
+    @api.model
+    def _is_internal_recipient(self, partner):
+        """True for PremaFirm addresses and for partners without an email.
+
+        Reply recipients default to the external counterparty — internal
+        addresses and empty partners are never reply defaults."""
+        email = (partner.email or "").strip().lower()
+        if not email:
+            return True
+        return email.endswith(_INTERNAL_EMAIL_SUFFIXES)
+
+    def _latest_incoming(self):
+        """The newest incoming message of this thread (the thing a Reply
+        answers)."""
+        return self.inbox_message_ids.filtered(
+            lambda m: m.direction == "incoming"
+        ).sorted(key=lambda m: m.date, reverse=True)[:1]
+
+    def _default_reply_recipients(self, kind):
+        """(to_ids, cc_ids) for reply / reply_all, computed from the latest
+        incoming message — the canonical sender, plus (for reply_all) the
+        external To/Cc recipients. Internal PremaFirm addresses and the
+        dispatcher's own address are always excluded."""
+        to_ids, cc_ids = [], []
+        last = self._latest_incoming()
+        if not last:
+            return to_ids, cc_ids
+        if last.author_id and not self._is_internal_recipient(last.author_id):
+            to_ids.append(last.author_id.id)
+        if kind == "reply_all":
+            for p in last.recipient_ids:
+                if p.id not in to_ids and not self._is_internal_recipient(p):
+                    to_ids.append(p.id)
+            for p in last.cc_ids:
+                if p.id not in to_ids and not self._is_internal_recipient(p):
+                    cc_ids.append(p.id)
+        return to_ids, cc_ids
+
+    def compose_and_send(
+            self, subject, body, kind, send_now=False,
+            to_partner_ids=None, cc_partner_ids=None, attachment_ids=None,
+            draft_id=None):
+        """One RPC for the whole composer: reply / reply-all / forward /
+        compose (new email) / internal note, as a draft or sent immediately.
 
         kind: compose | reply | reply_all | forward | note
-        send_now=False → draft (lands in the Drafts folder, autosaved).
-        send_now=True → immediately runs the safe send (intercepted in UAT).
+
+        * REPLY / REPLY ALL: recipients default to the sender (+ external
+          To/Cc) of the latest incoming email — internal PremaFirm
+          addresses are excluded. The caller may override with
+          to_partner_ids / cc_partner_ids (partner ids OR email strings).
+        * COMPOSE (New email): always creates its OWN conversation — it is
+          never silently attached to the currently selected thread.
+        * INTERNAL NOTE: direction=note, zero mail.mail, zero SMTP.
+        * DRAFT: pass draft_id to resume/update the SAME message — editing
+          a draft never creates a second message.
+        * SEND: rejects an empty recipient with a clear ValidationError
+          (client and server both validate).
+
+        Returns {id, conversation_id, outbound_state} for the created/
+        updated message.
         """
-        parent = self.inbox_message_ids.sorted(
-            key=lambda m: m.date, reverse=True)[:1]
-        msg = self.env["prema.inbox.message"]._new_outbound(
-            self, subject=subject, body_html=body,
-            parent=parent or None, kind=kind)
+        if kind not in ("compose", "reply", "reply_all", "forward", "note"):
+            raise ValidationError(_("Unknown composer action: %s") % kind)
+
+        # ---- resume vs fresh ----------------------------------------
+        message = self.env["prema.inbox.message"]
+        if draft_id:
+            message = message.browse(int(draft_id))
+            if not message.exists():
+                raise ValidationError(_("Draft no longer exists."))
+            if message.direction != "outgoing" \
+                    or message.outbound_state != "draft":
+                raise ValidationError(
+                    _("This message is no longer a draft."))
+            if message.author_internal.id != self.env.user.id:
+                raise ValidationError(_("Only the author can edit this draft."))
+        else:
+            message = self.env["prema.inbox.message"]
+
+        # ---- internal note: immediate, never emailed -----------------
+        if kind == "note":
+            if not (body or "").strip():
+                raise ValidationError(_("The note is empty."))
+            if message:
+                message.write({"body": body or "", "outbound_state": "note"})
+            else:
+                message = self.env["prema.inbox.message"]._new_outbound(
+                    self, subject="", body_html=body,
+                    parent=None, kind="note")
+                # _new_outbound always creates a draft; a note is its own
+                # terminal state (never drafted, never sent)
+                message.outbound_state = "note"
+            self._touch()
+            self._broadcast_read_change()
+            return {"id": message.id, "conversation_id": self.id,
+                    "outbound_state": message.outbound_state}
+
+        # ---- recipients (ids or email strings, client-validated too) -
+        to_ids = self._normalize_recipient_list(to_partner_ids or [])
+        cc_ids = self._normalize_recipient_list(cc_partner_ids or [])
+        if kind in ("reply", "reply_all") and not to_ids:
+            to_ids, cc_ids = self._default_reply_recipients(kind)
+        if send_now and not to_ids:
+            raise ValidationError(
+                _("No recipient — add the customer's email address before sending."))
+
+        # ---- subject defaults ---------------------------------------
+        subject = (subject or "").strip()
+        if not subject and kind in ("reply", "reply_all"):
+            subject = "Re: %s" % self.name
+        elif not subject and kind == "forward":
+            subject = "Fwd: %s" % self.name
+
+        # ---- quoted body (only when not already quoted) --------------
+        body = (body or "").rstrip()
+        last_in = self._latest_incoming()
+        if kind in ("reply", "reply_all", "forward") and last_in \
+                and "wrote:" not in body:
+            body = "%s\n\nOn %s, %s wrote:\n%s" % (
+                body, last_in.date.strftime("%a, %b %d, %Y %H:%M")
+                if last_in.date else "a previous message",
+                last_in.author_id.name or last_in.email_from,
+                last_in.body_plain or _html_to_plain(last_in.body))
+
+        # ---- conversation: compose makes its OWN thread --------------
+        # New email NEVER attaches to the currently selected conversation —
+        # it always gets a fresh thread (resuming a draft keeps the draft's
+        # own conversation via `message`).
+        if kind == "compose" and not message:
+            conv = self.create({
+                "name": subject or "(no subject)",
+                "partner_id": to_ids[0] if to_ids else False,
+            })
+        else:
+            conv = self
+
+        # ---- save (update-in-place for drafts) or create -------------
+        if message:
+            message.write({
+                "subject": subject,
+                "body": body,
+                # the thread renders body_plain — without this, editing a
+                # resumed draft shows the ORIGINAL text after send (the
+                # stored body_plain is never refreshed)
+                "body_plain": _html_to_plain(body),
+                "recipient_ids": [(6, 0, to_ids)],
+                "cc_ids": [(6, 0, cc_ids)],
+                "attachment_ids": [(6, 0, attachment_ids or [])],
+                "outbound_state": "draft",
+            })
+            message._rebind_attachments()
+        else:
+            parent = conv._latest_incoming() if kind in ("reply", "reply_all") \
+                else None
+            message = self.env["prema.inbox.message"]._new_outbound(
+                conv, subject=subject, body_html=body,
+                to_partners=to_ids, cc_partners=cc_ids,
+                attachment_ids=attachment_ids, parent=parent, kind=kind)
+
         if send_now:
-            msg.send()
-        return {"id": msg.id, "outbound_state": msg.outbound_state}
+            message.send()
+        conv._touch()
+        return {"id": message.id, "conversation_id": conv.id,
+                "outbound_state": message.outbound_state}
+
+    @api.model
+    def _normalize_recipient_list(self, values):
+        """Accept partner ids (int) or email strings; resolve emails via the
+        canonical partner resolver. Returns partner ids."""
+        ids = []
+        for value in values or []:
+            if isinstance(value, int):
+                ids.append(value)
+                continue
+            email = _email_of(str(value))
+            if not email:
+                continue
+            ids.append(self._resolve_partner(email).id)
+        return [i for i in dict.fromkeys(ids) if i]
+
+    def discard_draft(self, message_id):
+        """Delete a draft message (author only). Returns True."""
+        msg = self.env["prema.inbox.message"].browse(int(message_id))
+        if not msg.exists() or msg.direction != "outgoing" \
+                or msg.outbound_state != "draft":
+            return False
+        if msg.author_internal.id != self.env.user.id:
+            raise ValidationError(_("Only the author can discard this draft."))
+        conv = msg.conversation_id
+        msg.unlink()
+        if conv and not conv.inbox_message_ids:
+            conv.unlink()  # an empty shell has nothing to follow up
+        return True
+
+    def retry_send(self, message_id):
+        """Re-run the safe send for one failed message — idempotent
+        (a message already sent is never re-sent)."""
+        msg = self.env["prema.inbox.message"].browse(int(message_id))
+        if not msg.exists() or msg.direction != "outgoing":
+            raise ValidationError(_("Message no longer exists."))
+        if msg.outbound_state in ("sent", "intercepted"):
+            return {"id": msg.id, "outbound_state": msg.outbound_state}
+        if not msg.recipient_ids:
+            raise ValidationError(
+                _("No recipient — add the customer's email address before sending."))
+        msg.send()
+        return {"id": msg.id, "outbound_state": msg.outbound_state,
+                "send_error": msg.send_error or ""}
+
+    # ------------------------------------------------------------------
+    # assignment — inbox responsibility only (never crm.lead.user_id)
+    # ------------------------------------------------------------------
+    @api.model
+    def inbox_assign_candidates(self):
+        """Dispatchers who may own inbox responsibility: members of the
+        inbox group first, internal users as fallback. Never a full
+        directory dump."""
+        group = self.env.ref(
+            "prema_dispatch_inbox.group_dispatch_inbox", raise_if_not_found=False)
+        users = group.users if group else self.env["res.users"]
+        if not users:
+            users = self.env["res.users"].search([("share", "=", False)])
+        return [{
+            "id": u.id,
+            "name": u.name or u.login,
+            "login": u.login,
+        } for u in users.sorted(key=lambda u: (u.name or u.login).lower())]
+
+    def action_assign(self, user_id=None):
+        """Set/clear the inbox assignee. ONLY the conversation's
+        assignee_id changes — crm.lead.user_id is never touched. Every
+        change is audited as an internal note on the thread."""
+        user_id = int(user_id) if user_id else False
+        assignee = self.env["res.users"].browse(user_id).exists() \
+            if user_id else self.env["res.users"]
+        for conv in self:
+            changed = conv.assignee_id.id != (assignee.id if assignee else False)
+            conv.write({"assignee_id": assignee.id if assignee else False})
+            if changed:
+                conv.message_post(
+                    body=_("Inbox assignee → <b>%s</b> (set by %s).") % (
+                        assignee.name or "unassigned",
+                        self.env.user.name),
+                    subtype_xmlid="mail.mt_note")
+        self._broadcast_read_change()
+        return True
 
     # ------------------------------------------------------------------
     # state helpers

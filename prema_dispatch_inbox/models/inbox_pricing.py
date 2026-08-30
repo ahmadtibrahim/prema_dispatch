@@ -51,7 +51,12 @@ class InboxPricing(models.Model):
            schedule, delivery_date_estimate, manual_review_required,
            recommend_ftl, snapshot_saved, missing}
         Persists conversation.price_snapshot when the engine returns a
-        usable result (available OR manual-review path).
+        usable result (available OR manual-review path) AND for the
+        deterministic fsa_unresolved verdict — the panel renders the
+        side-aware reason_text from the stored snapshot (the warn branch
+        of the pricing card is dead without it), so the explanation
+        survives a reload and the UI is never left with just a toast.
+        engine_unavailable stays ephemeral (transient; retry will fix).
         """
         extraction = conversation.ai_extraction or {}
         fields_ = extraction.get("fields") or {}
@@ -60,10 +65,36 @@ class InboxPricing(models.Model):
         pickup_fsa = self._resolve_fsa(fields_.get("pickup"))
         delivery_fsa = self._resolve_fsa(fields_.get("delivery"))
         if not pickup_fsa or not delivery_fsa:
+            # Dispatcher-friendly, side-aware explanation — the UI shows
+            # reason_text and which side(s) are missing instead of the raw
+            # "fsa_unresolved" code.
+            missing_sides = {
+                "pickup": not pickup_fsa,
+                "delivery": not delivery_fsa,
+            }
+            side_text = ", ".join(
+                name for side, name in
+                (("pickup", "pickup location"), ("delivery", "delivery location"))
+                if missing_sides[side])
+            verdict = {
+                "available": False,
+                "reason": "fsa_unresolved",
+                "reason_text": (
+                    "Pricing unavailable — %s: the postal code / FSA could "
+                    "not be resolved to a serviceable region." % side_text
+                    if side_text else
+                    "Pricing unavailable — pickup and delivery locations "
+                    "are missing; run Extract shipment first."),
+                "missing_sides": missing_sides,
+                "calculated_at": fields.Datetime.now().isoformat(),
+            }
+            conversation.write({"price_snapshot": _json_safe(verdict)})
             return {
                 "available": False,
                 "reason": "fsa_unresolved",
-                "snapshot_saved": False,
+                "reason_text": verdict["reason_text"],
+                "missing_sides": missing_sides,
+                "snapshot_saved": True,
                 "missing": missing,
                 "manual_review_required": False,
                 "recommend_ftl": False,
@@ -100,6 +131,9 @@ class InboxPricing(models.Model):
             return {
                 "available": False,
                 "reason": "engine_unavailable",
+                "reason_text": (
+                    "Pricing engine unavailable right now — %s. No price "
+                    "was invented; try again shortly." % str(exc)[:200]),
                 "error": str(exc)[:500],
                 "snapshot_saved": False,
                 "missing": missing,

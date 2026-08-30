@@ -1,6 +1,6 @@
 {
     "name": "Prema Dispatch Inbox",
-    "version": "18.0.1.7.0",
+    "version": "18.0.1.8.0",
     "summary": "Shared dispatch inbox for dispatcher@logistics.premafirm.com — conversations, follow-ups, CRM/booking/invoice links, AI assistant, pricing engine integration",
     "category": "Logistics",
     "description": """
@@ -16,7 +16,7 @@ available inside Prema Dispatch on erp.premafirm.com.
 * One canonical conversation per thread (dedupe by Message-ID, threading by
   References/In-Reply-To). Per-message, per-user read state — personal unread
   is separate from the shared workflow state (Open / Waiting / Completed).
-* Top-bar envelope beside the app title with live unread badge (bus
+* Envelope in the native top-right systray with a live unread badge (bus
   websocket), gentle pulse (respects prefers-reduced-motion), non-blocking
   toast, optional sound; separate spam count; load-board alerts can be
   muted while keeping their count.

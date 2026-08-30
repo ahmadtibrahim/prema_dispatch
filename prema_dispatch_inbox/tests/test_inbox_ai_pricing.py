@@ -5,6 +5,8 @@ ai_mode stays 'mock' for hermetic tests — extraction comes from the canned
 mock responses, pricing runs the REAL deterministic engine against the
 clone's real FSA/corridor data (928 FSA rows).
 """
+from unittest import mock
+
 from .common import InboxTestCase
 
 
@@ -100,11 +102,32 @@ class TestInboxAIPricing(InboxTestCase):
                            "engine_unavailable"])
             self.assertFalse(conv.price_snapshot)
 
-    def test_engine_fail_no_invented_quote(self):
-        """A conversation with no extraction → no quote, clear state."""
+    def test_missing_extraction_persists_human_explanation(self):
+        """A conversation with no extraction → fsa_unresolved verdict,
+        PERSISTED with the human reason_text. The AI panel's pricing-card
+        warn branch renders from the stored snapshot, so a toast-only
+        result would leave the card dead after reconcile."""
         _, conv, _ = self.ingest(subject="Hello there", body="How are you?")
         result = conv.inbox_calculate_price()
         self.assertFalse(result["available"])
+        self.assertTrue(result["snapshot_saved"])
+        self.assertEqual(conv.price_snapshot["reason"], "fsa_unresolved")
+        self.assertIn("Pricing unavailable", conv.price_snapshot["reason_text"])
+        # never an invented number
+        self.assertNotIn("calculated_price", conv.price_snapshot)
+
+    def test_engine_fail_never_invents_number(self):
+        """Engine exception → engine_unavailable, NOT persisted (transient;
+        a retry may succeed — persisting an exception string is noise)."""
+        from odoo.addons.prema_logistics_booking.services.pricing_service import (
+            PricingService)
+        conv = self._seed_extraction()
+        with mock.patch.object(PricingService, "calculate",
+                               side_effect=Exception("boom")):
+            result = conv.inbox_calculate_price()
+        self.assertFalse(result["available"])
+        self.assertEqual(result["reason"], "engine_unavailable")
+        self.assertTrue(result["reason_text"])
         self.assertFalse(conv.price_snapshot)
 
     def test_summarize_returns_text(self):

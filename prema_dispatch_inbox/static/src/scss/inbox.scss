@@ -100,12 +100,17 @@ $inbox-accent: #017e84;
 }
 
 // ----------------------------------------------------------------------
-// App — 4 columns
+// App — 4 columns (8px outer gutter, rounded frame)
 // ----------------------------------------------------------------------
 .o_inbox_app {
     display: flex;
-    height: 100%;
+    position: relative;
+    margin: 8px;
+    height: calc(100% - 16px);
     min-height: 0;
+    border: 1px solid $inbox-border;
+    border-radius: 8px;
+    overflow: hidden;
 
     .o_inbox_col {
         min-height: 0;
@@ -129,6 +134,7 @@ $inbox-accent: #017e84;
 
     .o_inbox_thread {
         flex: 1 1 auto;
+        min-width: 320px;
     }
 
     .o_inbox_ai {
@@ -136,6 +142,27 @@ $inbox-accent: #017e84;
         flex-shrink: 0;
         border-left: 1px solid $inbox-border;
         background: $inbox-ai-bg;
+        transition: width 0.18s ease;
+
+        // Collapsed (desktop): only the head survives until the thread-head
+        // AI toggle reopens it.
+        &.o-inbox-ai-closed {
+            width: 0;
+            border-left: 0;
+
+            .o_inbox_col_head { visibility: hidden; }
+        }
+    }
+
+    .o_inbox_ai_body {
+        flex: 1 1 auto;
+        overflow-y: auto;
+        min-height: 0;
+    }
+
+    .o_inbox_ai_toggle {
+        // Reopen button for a collapsed AI panel — always available.
+        display: inline-flex;
     }
 
     .o_inbox_col_head {
@@ -353,10 +380,63 @@ $inbox-accent: #017e84;
         }
 
         .o_inbox_msg_author { font-weight: 700; font-size: 12px; }
+        .o_inbox_msg_to {
+            font-size: 11px;
+            color: $inbox-muted;
+            max-width: 45%;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
         .o_inbox_msg_time { font-size: 11px; color: $inbox-muted; margin-left: auto; }
         .o_inbox_msg_body { word-break: break-word; }
         .o_inbox_plain { white-space: pre-wrap; }
+        .o_inbox_msg_fmt { margin-top: 2px; }
+        .o_inbox_html {
+            margin-top: 6px;
+            padding-top: 6px;
+            border-top: 1px dashed $inbox-border;
+
+            img { max-width: 100%; }
+        }
         .o_inbox_att { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 4px; }
+
+        .o_inbox_att_row {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 3px 8px;
+            background: #f0f2f6;
+            border-radius: 6px;
+            font-size: 12px;
+        }
+        .o_inbox_att_link {
+            color: $inbox-accent;
+            text-decoration: none;
+            max-width: 240px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+
+            &:hover { text-decoration: underline; }
+        }
+        .o_inbox_att_dl { color: $inbox-muted; &:hover { color: $inbox-accent; } }
+    }
+
+    // ----- drafts banner -----
+    .o_inbox_draftbar {
+        border-bottom: 1px dashed #e0b98c;
+        background: #fff8ee;
+        padding: 6px 12px;
+        flex-shrink: 0;
+
+        .o_inbox_draftbar_row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 12px;
+            margin-top: 4px;
+        }
     }
 
     .o_inbox_composer {
@@ -364,7 +444,55 @@ $inbox-accent: #017e84;
         padding: 8px 12px;
         flex-shrink: 0;
         background: #fff;
+
+        .o_inbox_comp_row {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            margin-bottom: 4px;
+
+            label {
+                font-size: 11px;
+                font-weight: 600;
+                color: $inbox-muted;
+                min-width: 46px;
+                text-align: right;
+                margin: 0;
+            }
+
+            input { flex: 1 1 auto; min-width: 0; }
+        }
+
+        .o_inbox_comp_att {
+            margin-bottom: 4px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px;
+        }
     }
+
+    // ----- link chips + picker -----
+    .o_inbox_linkchip {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        background: #e7f1ff;
+        color: #0b5ed7;
+
+        .o_inbox_linkchip_label {
+            text-transform: uppercase;
+            font-size: 9px;
+            opacity: 0.75;
+        }
+        .o_inbox_linkchip_name { cursor: pointer; &:hover { text-decoration: underline; } }
+        .o_inbox_linkchip_x { color: inherit; opacity: 0.6; &:hover { opacity: 1; } }
+    }
+
+    .o_inbox_linkbtn { color: $inbox-accent; }
+
+    // ----- assign dropdown -----
+    .o_inbox_assign_me { border-color: $inbox-accent; color: $inbox-accent; }
+    .o_inbox_muted_btn { border-color: #b02a37; color: #b02a37; }
 
     // ----- AI panel -----
     .o_inbox_ai_section {
@@ -406,6 +534,22 @@ $inbox-accent: #017e84;
         font-size: 11px;
     }
 
+    .o_inbox_ai_summary {
+        margin-top: 6px;
+        font-size: 12px;
+        white-space: pre-wrap;
+    }
+
+    .o_inbox_ai_conflicts {
+        margin-top: 4px;
+        padding: 6px 8px;
+        border-radius: 6px;
+        background: #fdf6ec;
+    }
+
+    .o_inbox_ai_val { word-break: break-word; }
+    .o_inbox_ai_miss { color: #b02a37; font-weight: 700; }
+
     .o_inbox_price {
         font-size: 20px;
         font-weight: 700;
@@ -418,6 +562,108 @@ $inbox-accent: #017e84;
         color: $inbox-muted;
         border-top: 1px solid $inbox-border;
         margin-top: auto;
+    }
+}
+
+// ----------------------------------------------------------------------
+// Dropdown menus inside the app (assign + link picker) — these render in
+// Odoo's own DropdownPopover, so the sizing lives on the menuClass divs.
+// ----------------------------------------------------------------------
+.o_inbox_assign_dd {
+    min-width: 220px;
+    max-height: 320px;
+    overflow-y: auto;
+    padding: 4px;
+
+    .o_inbox_assign_row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 10px;
+        border-radius: 6px;
+        font-size: 13px;
+        cursor: pointer;
+
+        &:hover { background: #f0f2f6; }
+
+        .o_inbox_assign_ico { width: 16px; color: $inbox-muted; }
+    }
+}
+
+.o_inbox_picker {
+    width: 320px;
+    padding: 8px;
+
+    .o_inbox_picker_head {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 6px;
+        font-size: 13px;
+    }
+
+    .o_inbox_picker_types { display: flex; gap: 4px; flex-wrap: wrap; }
+
+    .o_inbox_picker_manual {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin-top: 6px;
+        font-size: 11px;
+        color: $inbox-muted;
+        cursor: pointer;
+        user-select: none;
+    }
+
+    .o_inbox_picker_results {
+        margin-top: 6px;
+        max-height: 260px;
+        overflow-y: auto;
+    }
+
+    .o_inbox_picker_row {
+        padding: 6px 8px;
+        border-radius: 6px;
+        cursor: pointer;
+
+        &:hover { background: #f0f2f6; }
+    }
+
+    .o_inbox_picker_empty {
+        padding: 12px 8px;
+        color: $inbox-muted;
+        font-size: 12px;
+    }
+}
+
+// ----------------------------------------------------------------------
+// Responsive: 900–1199px — AI panel becomes a slide-over drawer so the
+// thread never gets crushed between the fixed columns.
+// ----------------------------------------------------------------------
+@media (min-width: 900px) and (max-width: 1199.98px) {
+    .o_inbox_app {
+        .o_inbox_ai {
+            position: absolute;
+            top: 0;
+            right: 0;
+            bottom: 0;
+            width: 340px;
+            z-index: 30;
+            box-shadow: -6px 0 18px rgba(20, 30, 55, 0.18);
+            transition: transform 0.18s ease;
+            transform: translateX(0);
+
+            &.o-inbox-ai-closed {
+                width: 340px;
+                border-left: 1px solid $inbox-border;
+                transform: translateX(105%);
+                box-shadow: none;
+
+                .o_inbox_col_head { visibility: visible; }
+            }
+        }
+
+        .o_inbox_thread { min-width: 0; }
     }
 }
 

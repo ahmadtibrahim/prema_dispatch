@@ -41,7 +41,7 @@
 <div class="dm-wrap">
 
 <h1 class="dm-title">Prema Dispatch — User Manual</h1>
-<p class="dm-subtitle">Version 6.0 - Updated August 26, 2026 - PremaFirm Logistics</p>
+<p class="dm-subtitle">Version 6.1 - Updated August 30, 2026 - PremaFirm Logistics</p>
 
 <div class="dm-toc">
     <h2>Table of Contents</h2>
@@ -84,6 +84,7 @@
         <li><a href="#missed-connections">26g. Missed Connections &amp; Carrier Decline</a></li>
         <li><a href="#invoicing">Invoice Review &amp; Accounting</a></li>
         <li><a href="#tracking">Customer Tracking</a></li>
+        <li><a href="#inbox">28a. Dispatcher Inbox</a></li>
         <li><a href="#settings">Settings</a></li>
         <li><a href="#security">Security Roles</a></li>
         <li><a href="#troubleshooting">Troubleshooting</a></li>
@@ -823,6 +824,110 @@
     <p>Status vocabulary (single authority, §26b): <b>Estimated Arrival → Updated ETA → In Transit → Out for Delivery → Delivered</b>.</p>
     <p><b>Never visible:</b> internal cost, NET PROFIT, margin, GPS coordinates, driver personal details, internal hub addresses, carrier/subcontract details, vendor bills, other customers' records.</p>
     <div class="dm-danger">The tracking token is a high-entropy random string. A booking number alone reveals nothing. This prevents anyone from guessing sequential booking numbers to see other shipments.</div>
+</div>
+
+<!-- ================================================================ -->
+<div class="dm-section" id="inbox">
+    <h2>28a. Dispatcher Inbox</h2>
+    <p>Route: Prema Dispatch → <b>Dispatcher Inbox</b></p>
+    <p>The shared dispatch inbox for <b>dispatcher@logistics.premafirm.com</b>.
+    Every customer email lands here as a <b>conversation</b>; every reply is
+    sent from here. The envelope in the top-right systray shows the live
+    unread count; click it to jump to the inbox.</p>
+    <ol>
+        <li><b>Folders (left column)</b> — 12 queues: Inbox, Unread,
+        Needs Review, Quote Requests, Load Opportunities, Active Shipments,
+        Waiting for Reply, Tasks, Drafts, Sent, Archived and
+        Spam/Quarantine, plus Rules &amp; Automation at the bottom. Each
+        folder is a live view — no refresh needed.</li>
+        <li><b>Conversation list (second column)</b> — one row per thread;
+        unread rows are bold with a dot. Click to open the thread; the list
+        and the thread scroll independently.</li>
+        <li><b>Thread (third column)</b> — full message history, newest at
+        the bottom. Each message shows the author, the To line, the time and
+        its status (sent / failed / internal note).</li>
+        <li><b>Category &amp; Status (thread header)</b> — pick a category
+        (Quote Request, Load Opportunity, …) and a workflow state
+        (Open / Waiting / Completed / Archived). Both persist immediately
+        and move the conversation into the matching folder.</li>
+        <li><b>Reply</b> — the To field is pre-filled with the sender of the
+        latest incoming email and the original is quoted; send when ready.</li>
+        <li><b>Reply All</b> — To = sender + the external recipients,
+        Cc = external Cc of the original. PremaFirm-internal addresses are
+        never auto-recipients.</li>
+        <li><b>New Email</b> — always creates a brand-new conversation. It
+        never attaches itself to the thread you are currently reading.</li>
+        <li><b>Forward</b> — quotes the original and starts an independent
+        chain to any recipient; the copy stays in the current thread.</li>
+        <li><b>Internal note</b> — the <span class="dm-btn">Add note</span>
+        button posts a note only your team sees: it is never emailed and
+        never appears to the customer.</li>
+        <li><b>To / Cc / Subject</b> — type a contact name or a raw email
+        address. Sending without any recipient is refused with a clear
+        message (both the screen and the server validate).</li>
+        <li><b>Attach files</b> — the paperclip in the composer; attached
+        files appear as chips with an × to remove them before sending.</li>
+        <li><b>Open / Preview / Download</b> — every attachment in a thread
+        opens in a new tab: images and PDFs preview inline, everything else
+        downloads. Files are served only to dispatchers through an
+        authorized route — there are no public file links.</li>
+        <li><b>Save draft</b> — keeps the composer open and adds the draft
+        to the banner above it and to the Drafts folder.</li>
+        <li><b>Resume draft</b> — click Resume on a draft in the banner;
+        editing resumes the <i>same</i> draft — it never creates a copy.
+        Only the author can edit or discard a draft.</li>
+        <li><b>Discard draft</b> — deletes the draft (and, if it was the
+        only message of a brand-new thread, the empty thread itself) after
+        asking you to confirm.</li>
+        <li><b>Honest send status</b> — every outgoing message shows its
+        real state: draft → sent, or failed with the reason.</li>
+        <li><b>Retry</b> — resends a failed message; a message that already
+        went out is never sent a second time.</li>
+        <li><b>Reading email safely</b> — messages render as plain text;
+        use <span class="dm-btn">View formatted</span> to see formatting.
+        Scripts never run, and remote images / tracking pixels are stripped
+        before storage — no email can reach out to the internet when you
+        read it.</li>
+        <li><b>Link Booking / Link Job / Link Invoice / Link Opportunity</b>
+        — the Link buttons in the thread header attach the related record to
+        the conversation.</li>
+        <li><b>Link picker</b> — shows matching records for the
+        conversation's contact <i>and</i> its company (a contact sees the
+        company's bookings and invoices). Tick <b>Manual search</b> to find
+        any record by name. When nothing matches, the picker says
+        <i>"No records found for this contact/company."</i></li>
+        <li><b>Linked-record chips</b> — linked records show as clickable
+        chips in the thread header: click the name to open the record, click
+        the × to unlink (the record itself is never deleted or changed).</li>
+        <li><b>Assign</b> — the Assign dropdown in the thread header lists
+        dispatchers only (Unassigned is always available; the current
+        assignee carries a ✓). Assignment is audited as a note on the thread
+        and lives in the Inbox only — it never changes the CRM
+        salesperson.</li>
+        <li><b>Mute</b> — the mute button silences the notification and
+        sound for one conversation without marking it read; toggle it again
+        to unmute.</li>
+        <li><b>AI panel (right)</b> — Summary, Extract shipment, Calculate
+        price, Draft reply and Follow-up suggestion. The summary persists
+        and survives reloads; extraction conflicts are expandable; a
+        pickup/delivery postal code the system cannot resolve shows as
+        <b>Postal/FSA: missing</b>.</li>
+        <li><b>Draft reply (AI)</b> — the AI's suggested reply is placed in
+        the composer as an editable draft and is <b>never sent
+        automatically</b> — review and edit before sending.</li>
+        <li><b>Pricing card</b> — only the deterministic pricing engine
+        produces numbers; the system never invents a price. A quote is sent
+        only when you confirm it to the customer in your own words.</li>
+        <li><b>Tasks folder</b> — follow-ups (mail.activity) on
+        conversations; open each task to complete it.</li>
+        <li><b>Spam / Quarantine</b> — suspicious mail lands here instead
+        of the Inbox; inspect before deciding.</li>
+    </ol>
+    <div class="dm-warn">Treat email content as untrusted: never click links
+    or open unexpected attachments inside incoming messages, even though the
+    inbox renders them safely. A thread that was deleted while you had it
+    open shows "Conversation no longer exists." — click Refresh to reload
+    the list.</div>
 </div>
 
 <!-- ================================================================ -->

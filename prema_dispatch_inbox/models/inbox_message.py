@@ -10,6 +10,7 @@ deliberately separate — reading is not completing.
 import uuid
 
 from odoo import api, fields, models
+from odoo.tools import html2plaintext
 
 
 class InboxMessage(models.Model):
@@ -62,6 +63,7 @@ class InboxMessage(models.Model):
         ("sent", "Sent"),
         ("failed", "Send failed"),
         ("intercepted", "Intercepted (UAT)"),
+        ("note", "Internal note"),
     ], string="Outbound state", default=False)
     send_error = fields.Text(string="Send error")
     read_user_ids = fields.Many2many(
@@ -70,6 +72,15 @@ class InboxMessage(models.Model):
     is_read = fields.Boolean(
         string="Read by me", compute="_compute_is_read",
         help="Whether env.user has read this message (incoming only).")
+    kind = fields.Selection([
+        ("compose", "New email"),
+        ("reply", "Reply"),
+        ("reply_all", "Reply all"),
+        ("forward", "Forward"),
+        ("note", "Internal note"),
+    ], string="Composer action",
+       help="The composer action that produced this message — a resumed "
+            "draft reopens the same kind of composer.")
 
     _sql_constraints = [
         ("message_id_unique", "UNIQUE(message_id)",
@@ -182,6 +193,8 @@ class InboxMessage(models.Model):
             "email_from": "dispatcher@logistics.premafirm.com",
             "subject": subject or conversation.name,
             "body": body_html,
+            "body_plain": html2plaintext(body_html or "") if body_html else "",
+            "kind": kind,
             "message_id": "%s@prema-inbox.premafirm.com"
                           % uuid.uuid4().hex,
             "attachment_ids": [(6, 0, attachment_ids or [])],
@@ -202,6 +215,17 @@ class InboxMessage(models.Model):
                                           for r in refs)
             vals["in_reply_to"] = "<%s>" % parent.message_id.strip("<>")
         return self.create(vals)
+
+    def _rebind_attachments(self):
+        """Bind composer-uploaded ir.attachment rows to this message (the
+        upload happens before the message exists)."""
+        for msg in self:
+            if msg.attachment_ids:
+                msg.attachment_ids.write({
+                    "res_model": "prema.inbox.message",
+                    "res_id": msg.id,
+                })
+        return True
 
     def _set_outbound_state(self, state, error=None):
         # "sent" always clears a stale failure reason (a message that
@@ -267,6 +291,9 @@ class InboxMessage(models.Model):
                     "email_from": "dispatcher@logistics.premafirm.com",
                     "reply_to": "dispatcher@logistics.premafirm.com",
                     "recipient_ids": [(6, 0, msg.recipient_ids.ids)],
+                    "email_cc": ", ".join(
+                        p.email or p.name for p in msg.cc_ids),
+                    "attachment_ids": [(6, 0, msg.attachment_ids.ids)],
                     "references": msg.references or "",
                     "message_id": msg.message_id or "",
                     "model": self._name,

@@ -83,7 +83,7 @@
             </div>
             <input class="form-control form-control-sm o_inbox_search"
                    placeholder="Search sender, subject, body, customer…"
-                   t-model="state.search" t-on-input="onSearch"/>
+                   t-model="state.search" t-on-input="(ev) => this.onSearch()"/>
             <div class="o_inbox_convs">
                 <t t-if="state.loadError">
                     <div class="o_inbox_empty">
@@ -119,9 +119,13 @@
                         <span t-if="c.priority === 'urgent'" class="fa fa-flag text-warning"/>
                         <span t-if="c.priority === 'emergency'" class="fa fa-flag text-danger"/>
                         <span t-if="c.has_attachment" class="fa fa-paperclip text-muted"/>
-                        <span t-if="c.booking_id || c.job_id || c.invoice_id"
+                        <span t-if="c.booking_id || c.job_id || c.invoice_id || c.opportunity_id"
                               class="o_inbox_chip">linked</span>
                         <span t-if="c.is_load_board" class="o_inbox_chip">load board</span>
+                        <span t-if="c.assignee_id" class="o_inbox_chip o_inbox_chip_assign"
+                              t-att-title="'Assigned to ' + (c.assignee_name || '')">
+                            <t t-esc="c.assignee_name || ''"/>
+                        </span>
                         <span t-if="c.unread_count" class="o_inbox_unread_dot"
                               t-att-title="c.unread_count"/>
                     </div>
@@ -135,6 +139,15 @@
             <div t-if="!state.detail" class="o_inbox_empty">
                 Select a conversation.
             </div>
+            <t t-elif="!state.detail.conversation">
+                <div class="o_inbox_empty">
+                    <div>Conversation no longer exists.</div>
+                    <button class="btn btn-sm btn-primary mt-2"
+                            t-on-click="() => this.loadConversations()">
+                        Refresh
+                    </button>
+                </div>
+            </t>
             <t t-else="">
                 <div class="o_inbox_col_head">
                     <button class="btn btn-sm btn-light d-lg-none me-2"
@@ -144,72 +157,167 @@
                         <div class="text-muted small"
                              t-esc="state.detail.conversation.partner_name"/>
                     </div>
-                    <button class="btn btn-sm btn-outline-secondary ms-auto"
-                            t-on-click="assignUser">
-                        <i class="fa fa-user-o"/> Assign
+                    <!-- assignment: native Dropdown, group-filtered -->
+                    <Dropdown state="assignDropdown" menuClass="'o_inbox_assign_dd'"
+                              t-on-open="() => this.loadAssignCandidates()">
+                        <button class="btn btn-sm btn-outline-secondary ms-auto"
+                                t-att-class="{ 'o_inbox_assign_me': isMine(state.detail.conversation.assignee_id) }">
+                            <i class="fa fa-user-o"/>
+                            <span t-if="state.detail.conversation.assignee_name"
+                                  t-esc="state.detail.conversation.assignee_name"/>
+                            <span t-else="">Assign</span>
+                        </button>
+                        <t t-set-slot="content">
+                            <div class="o_inbox_assign_menu">
+                                <div class="o_inbox_assign_row"
+                                     t-on-click="() => this.doUnassign()">
+                                    <i class="fa fa-user-times o_inbox_assign_ico"/> Unassigned
+                                    <i t-if="!state.detail.conversation.assignee_id"
+                                       class="fa fa-check ms-auto"/>
+                                </div>
+                                <div t-foreach="state.assignCandidates" t-as="u" t-key="u.id"
+                                     class="o_inbox_assign_row"
+                                     t-on-click="() => this.doAssign(u.id)">
+                                    <i class="fa fa-user o_inbox_assign_ico"/>
+                                    <span t-esc="u.name"/>
+                                    <i t-if="u.id === state.detail.conversation.assignee_id"
+                                       class="fa fa-check ms-auto"/>
+                                </div>
+                            </div>
+                        </t>
+                    </Dropdown>
+                    <button class="btn btn-sm btn-outline-secondary"
+                            t-on-click="() => this.toggleMute()"
+                            t-att-class="{ 'o_inbox_muted_btn': state.detail.muted }"
+                            t-att-title="state.detail.muted ? 'Muted — suppresses notification/sound; does NOT mark read' : 'Mute — suppresses notification/sound; does NOT mark read'">
+                        <i class="fa" t-att-class="state.detail.muted ? 'fa-bell-slash' : 'fa-bell-slash-o'"/>
                     </button>
                     <button class="btn btn-sm btn-outline-secondary"
-                            t-on-click="toggleMute"
-                            t-att-title="'Mute / unmute notifications'">
-                        <i class="fa fa-bell-slash-o"/>
-                    </button>
-                    <button class="btn btn-sm btn-outline-secondary"
-                            t-on-click="() => this.markUnread(state.detail.conversation.id)">
+                            t-on-click="() => this.markUnread(state.detail.conversation.id)"
+                            t-att-title="'Mark unread'">
                         <i class="fa fa-envelope-o"/> Unread
                     </button>
-                </div>
-                <div t-if="state.assignCandidates" class="o_inbox_assign">
-                    <div t-foreach="state.assignCandidates" t-as="u" t-key="u.id"
-                         class="o_inbox_assign_row"
-                         t-on-click="() => this.doAssign(u.id)">
-                        <t t-esc="u.login || u.name"/>
-                    </div>
+                    <button class="btn btn-sm btn-outline-secondary o_inbox_ai_toggle"
+                            t-on-click="() => this.toggleAiPanel()"
+                            t-att-title="'AI Assistant'">
+                        <i class="fa fa-magic"/>
+                    </button>
                 </div>
 
                 <!-- thread header: status/category/linked records -->
                 <div class="o_inbox_thread_meta">
                     <select class="form-select form-select-sm o_inbox_sel"
-                            t-att-value="state.detail.conversation.category"
+                            t-model="state.detail.conversation.category"
                             t-on-change="(ev) => this.setCategory(ev.target.value)">
                         <t t-foreach="this.CATEGORY_OPTIONS" t-as="cat" t-key="cat.value">
                             <option t-att-value="cat.value" t-esc="cat.label"/>
                         </t>
                     </select>
                     <select class="form-select form-select-sm o_inbox_sel"
-                            t-att-value="state.detail.conversation.workflow_state"
+                            t-model="state.detail.conversation.workflow_state"
                             t-on-change="(ev) => this.setState(ev.target.value)">
                         <t t-foreach="this.STATE_OPTIONS" t-as="st" t-key="st.value">
                             <option t-att-value="st.value" t-esc="st.label"/>
                         </t>
                     </select>
                     <div class="o_inbox_linked">
-                        <span t-if="state.detail.conversation.booking_id"
-                              class="o_inbox_chip">Booking #<t t-esc="state.detail.conversation.booking_id"/></span>
-                        <span t-if="state.detail.conversation.job_id"
-                              class="o_inbox_chip">Job <t t-esc="state.detail.conversation.job_id"/></span>
-                        <span t-if="state.detail.conversation.invoice_id"
-                              class="o_inbox_chip">Invoice <t t-esc="state.detail.conversation.invoice_id"/></span>
-                        <span t-if="state.detail.conversation.opportunity_id"
-                              class="o_inbox_chip">Opp <t t-esc="state.detail.conversation.opportunity_id"/></span>
-                        <button class="btn btn-link btn-sm p-0"
-                                t-on-click="() => this.searchLinks('booking')">+ booking</button>
-                        <button class="btn btn-link btn-sm p-0"
-                                t-on-click="() => this.searchLinks('job')">+ job</button>
-                        <button class="btn btn-link btn-sm p-0"
-                                t-on-click="() => this.searchLinks('invoice')">+ invoice</button>
-                        <button class="btn btn-link btn-sm p-0"
-                                t-on-click="() => this.searchLinks('opportunity')">+ opp</button>
+                        <!-- linked records: human-readable clickable chips -->
+                        <t t-foreach="linkedRows()" t-as="lr" t-key="lr.model">
+                            <span class="o_inbox_chip o_inbox_linkchip">
+                                <span class="o_inbox_linkchip_label" t-esc="lr.label"/>
+                                <a role="button" class="o_inbox_linkchip_name"
+                                   t-on-click="() => this.openLinkedRecord(lr.model, lr.id)"
+                                   t-att-title="'Open ' + lr.label">
+                                    <t t-esc="lr.name || ('#' + lr.id)"/>
+                                </a>
+                                <button type="button" class="btn btn-link btn-sm p-0 o_inbox_linkchip_x"
+                                        t-att-title="'Unlink ' + lr.label"
+                                        t-on-click="() => this.unlinkRecord(lr.model)">
+                                    <i class="fa fa-times"/>
+                                </button>
+                            </span>
+                        </t>
+                        <!-- link picker: one native Dropdown, four types,
+                             replaces its content on type switch -->
+                        <Dropdown state="linkDropdown" menuClass="'o_inbox_picker'">
+                            <button class="btn btn-link btn-sm p-0 o_inbox_linkbtn"
+                                    title="Link a booking, job, invoice or opportunity">
+                                <i class="fa fa-link"/> Link
+                            </button>
+                            <t t-set-slot="content">
+                                <div class="o_inbox_picker" t-if="state.linkCandidates">
+                                    <div class="o_inbox_picker_head">
+                                        <strong t-esc="'Link ' + linkTypeLabel(state.linkCandidates.model)"/>
+                                        <button type="button" class="btn btn-sm btn-link p-0"
+                                                t-on-click="() => this.linkDropdown.close()">
+                                            <i class="fa fa-times"/>
+                                        </button>
+                                    </div>
+                                    <div class="o_inbox_picker_types">
+                                        <button t-foreach="['booking', 'job', 'invoice', 'opportunity']"
+                                                t-as="ltype" t-key="ltype" class="btn btn-sm"
+                                                t-att-class="state.linkCandidates.model === ltype ? 'btn-primary' : 'btn-outline-primary'"
+                                                t-on-click="() => this.searchLinks(ltype)">
+                                            <t t-esc="linkTypeLabel(ltype)"/>
+                                        </button>
+                                    </div>
+                                    <input class="form-control form-control-sm mt-1 o_inbox_picker_search"
+                                           t-model="state.linkSearch"
+                                           placeholder="Number, name, customer…"
+                                           t-on-input="(ev) => this.onLinkSearch()"/>
+                                    <label class="o_inbox_picker_manual">
+                                        <input type="checkbox"
+                                               t-att-checked="state.linkCandidates.manual"
+                                               t-on-change="(ev) => this.toggleManualLinkSearch(ev.target.checked)"/>
+                                        Manual search (any customer)
+                                    </label>
+                                    <div class="o_inbox_picker_results">
+                                        <t t-if="state.linkCandidates.records.length">
+                                            <div t-foreach="state.linkCandidates.records"
+                                                 t-as="r" t-key="r.id"
+                                                 class="o_inbox_picker_row"
+                                                 t-on-click="() => this.linkRecord(state.linkCandidates.model, r.id)">
+                                                <div class="o_inbox_picker_row_name">
+                                                    <span class="fw-bold" t-esc="r.name"/>
+                                                    <span t-if="r.state"
+                                                          class="badge text-bg-secondary ms-1"
+                                                          t-esc="r.state"/>
+                                                </div>
+                                                <div class="small text-muted"
+                                                     t-esc="r.partner_name || ''"/>
+                                            </div>
+                                        </t>
+                                        <div t-else="" class="o_inbox_picker_empty">
+                                            No records found for this contact/company.
+                                        </div>
+                                    </div>
+                                </div>
+                            </t>
+                        </Dropdown>
                     </div>
-                    <div t-if="state.linkCandidates" class="o_inbox_linkpick">
-                        <div t-foreach="state.linkCandidates.records" t-as="r" t-key="r.id"
-                             class="o_inbox_assign_row"
-                             t-on-click="() => this.linkRecord(state.linkCandidates.model, r.id)">
-                            <t t-esc="r.name"/>
-                            <span t-if="r.state" class="text-muted"> · <t t-esc="r.state"/></span>
-                        </div>
-                        <div t-if="!state.linkCandidates.records.length" class="text-muted">
-                            No matches for this customer.
-                        </div>
+                </div>
+
+                <!-- drafts banner (resume edits the SAME message) -->
+                <div t-if="state.detail.drafts.length" class="o_inbox_draftbar">
+                    <div class="small fw-bold">
+                        <i class="fa fa-pencil-square-o"/> Draft in this thread
+                    </div>
+                    <div t-foreach="state.detail.drafts" t-as="d" t-key="d.id"
+                         class="o_inbox_draftbar_row">
+                        <span class="text-truncate" t-att-title="d.subject || d.body_plain">
+                            <t t-esc="d.subject || d.body_plain || '(no subject)'"/>
+                        </span>
+                        <span class="text-muted small ms-2" t-esc="fmtDate(d.date)"/>
+                        <span class="ms-auto d-flex gap-1">
+                            <button class="btn btn-sm btn-outline-primary"
+                                    t-on-click="() => this.resumeDraft(d)">
+                                Resume
+                            </button>
+                            <button class="btn btn-sm btn-outline-danger"
+                                    t-on-click="() => this.discardDraft(d.id)">
+                                Discard
+                            </button>
+                        </span>
                     </div>
                 </div>
 
@@ -220,55 +328,148 @@
                          t-att-class="'o_inbox_' + m.direction">
                         <div class="o_inbox_msg_head">
                             <span class="o_inbox_msg_author" t-esc="m.author_name"/>
+                            <span t-if="m.direction === 'outgoing' &amp;&amp; m.to.length"
+                                  class="o_inbox_msg_to"
+                                  t-att-title="'To: ' + toLine(m)">
+                                → <t t-esc="toLine(m)"/>
+                            </span>
                             <span class="o_inbox_msg_time" t-esc="fmtDate(m.date)"/>
                             <span t-if="m.direction === 'outgoing'"
                                   class="o_inbox_chip"
                                   t-att-class="{'o_inbox_chip_failed': m.outbound_state === 'failed'}"
-                                  t-esc="m.outbound_state === 'intercepted' ? 'intercepted (never sent)' : (m.outbound_state || 'outgoing')"/>
+                                  t-att-title="m.send_error || ''"
+                                  t-esc="m.outbound_state === 'intercepted' ? 'intercepted (never sent)' : (this.OUTBOUND_LABELS[m.outbound_state] || 'outgoing')"/>
                             <span t-if="m.direction === 'note'"
                                   class="o_inbox_chip o_inbox_chip_note">Internal note</span>
+                            <button t-if="m.direction === 'outgoing' &amp;&amp; m.outbound_state === 'failed'"
+                                    class="btn btn-sm btn-outline-danger ms-1"
+                                    t-on-click="() => this.retrySend(m.id)">
+                                Retry
+                            </button>
                         </div>
-                        <div t-if="m.body" class="o_inbox_msg_body" t-out="m.body"/>
-                        <div t-else="" class="o_inbox_msg_body o_inbox_plain"
+                        <!-- Incoming HTML is sanitized at ingest; the default
+                             view renders PLAIN TEXT (white-space: pre-wrap) so
+                             <p>/<pre> tags never show. "View formatted" opts
+                             into the server-sanitized HTML (no scripts, no
+                             remote images). -->
+                        <div class="o_inbox_msg_body o_inbox_plain"
                              t-esc="m.body_plain"/>
+                        <div class="o_inbox_msg_fmt">
+                            <button t-if="m.direction !== 'note' &amp;&amp; m.body"
+                                    class="btn btn-link btn-sm p-0"
+                                    t-on-click="() => this.toggleFormatted(m.id)">
+                                <t t-esc="state.formattedMsg === m.id ? 'Hide formatted' : 'View formatted'"/>
+                            </button>
+                        </div>
+                        <div t-if="state.formattedMsg === m.id &amp;&amp; m.direction !== 'note' &amp;&amp; m.body"
+                             class="o_inbox_msg_body o_inbox_html" t-raw="m.body"/>
+                        <!-- attachments: open / preview / download via the
+                             authenticated authorized route (inbox group) -->
                         <div t-if="m.attachments.length" class="o_inbox_att">
                             <span t-foreach="m.attachments" t-as="a" t-key="a.id"
-                                  class="o_inbox_chip"><i class="fa fa-paperclip"/>
-                                <t t-esc="a.name"/>
+                                  class="o_inbox_att_row">
+                                <i class="fa" t-att-class="attIcon(a.mimetype)"/>
+                                <a class="o_inbox_att_link" target="_blank" rel="noopener"
+                                   t-att-href="attHref(a)" t-att-title="a.name">
+                                    <t t-esc="a.name"/>
+                                </a>
+                                <a class="o_inbox_att_dl" t-att-href="attDownloadHref(a)"
+                                   t-att-title="'Download ' + a.name">
+                                    <i class="fa fa-download"/>
+                                </a>
                             </span>
                         </div>
                     </div>
                 </div>
 
-                <!-- composer -->
+                <!-- composer (C3) -->
                 <div class="o_inbox_composer">
                     <div class="btn-group btn-group-sm mb-1">
                         <button class="btn btn-outline-primary"
                                 t-on-click="() => this.startComposer('reply')">Reply</button>
+                        <button class="btn btn-outline-primary"
+                                t-on-click="() => this.startComposer('reply_all')">Reply all</button>
+                        <button class="btn btn-outline-secondary"
+                                t-on-click="() => this.startComposer('forward')">Forward</button>
                         <button class="btn btn-outline-primary"
                                 t-on-click="() => this.startComposer('compose')">New email</button>
                         <button class="btn btn-outline-secondary"
                                 t-on-click="() => this.startComposer('note')">Internal note</button>
                     </div>
                     <t t-if="state.composer.mode">
+                        <t t-if="state.composer.mode !== 'note'">
+                            <div class="o_inbox_comp_row">
+                                <label>To</label>
+                                <input class="form-control form-control-sm" type="text"
+                                       t-model="state.composer.to"
+                                       placeholder="customer@example.com"/>
+                            </div>
+                            <div class="o_inbox_comp_row"
+                                 t-if="state.composer.mode === 'reply_all' || state.composer.mode === 'compose'">
+                                <label>Cc</label>
+                                <input class="form-control form-control-sm" type="text"
+                                       t-model="state.composer.cc"
+                                       placeholder="cc@example.com"/>
+                            </div>
+                            <div class="o_inbox_comp_row">
+                                <label>Subject</label>
+                                <input class="form-control form-control-sm" type="text"
+                                       t-model="state.composer.subject"
+                                       placeholder="Subject"/>
+                            </div>
+                            <div t-if="state.composer.attachments.length"
+                                 class="o_inbox_comp_att">
+                                <span t-foreach="state.composer.attachments" t-as="a"
+                                      t-key="a.id" class="o_inbox_chip">
+                                    <i class="fa fa-paperclip"/> <t t-esc="a.name"/>
+                                    <button type="button" class="btn btn-link btn-sm p-0 ms-1"
+                                            t-att-title="'Remove ' + a.name"
+                                            t-on-click="() => this.removeAttachment(a.id)">
+                                        <i class="fa fa-times"/>
+                                    </button>
+                                </span>
+                            </div>
+                        </t>
                         <textarea class="form-control form-control-sm"
                                   rows="4" t-model="state.composer.body"
                                   t-att-placeholder="state.composer.mode === 'note' ? 'Internal note — never emailed.' : 'Draft…'"/>
-                        <div class="mt-1 d-flex gap-1">
-                            <button class="btn btn-sm btn-secondary"
-                                    t-on-click="saveDraft"
-                                    t-att-disabled="state.composer.sending">
-                                Save draft
+                        <div class="mt-1 d-flex gap-1 flex-wrap align-items-center">
+                            <t t-if="state.composer.mode !== 'note'">
+                                <button class="btn btn-sm btn-secondary"
+                                        t-on-click="() => this.saveDraft()"
+                                        t-att-disabled="state.composer.sending">
+                                    Save draft
+                                </button>
+                                <button class="btn btn-sm btn-primary"
+                                        t-on-click="() => this.sendNow()"
+                                        t-att-disabled="state.composer.sending">
+                                    Send
+                                </button>
+                                <label class="btn btn-sm btn-outline-secondary mb-0"
+                                       title="Attach a file">
+                                    <i class="fa fa-paperclip"/> Attach
+                                    <input type="file" multiple="multiple" class="d-none"
+                                           t-on-change="(ev) => this.onFileSelected(ev)"/>
+                                </label>
+                                <span class="small text-muted">
+                                    From dispatcher@logistics.premafirm.com.
+                                </span>
+                            </t>
+                            <t t-else="">
+                                <button class="btn btn-sm btn-primary"
+                                        t-on-click="() => this.addNote()"
+                                        t-att-disabled="state.composer.sending">
+                                    Add note
+                                </button>
+                                <span class="small text-muted">
+                                    Internal note — never emailed.
+                                </span>
+                            </t>
+                            <button t-if="state.composer.draftId"
+                                    class="btn btn-sm btn-outline-danger ms-auto"
+                                    t-on-click="() => this.discardDraft(state.composer.draftId)">
+                                <i class="fa fa-trash-o"/> Discard
                             </button>
-                            <button class="btn btn-sm btn-primary"
-                                    t-on-click="sendNow"
-                                    t-att-disabled="state.composer.sending">
-                                Send
-                            </button>
-                            <span class="small text-muted align-self-center"
-                                  t-if="state.composer.mode !== 'note'">
-                                Sent from dispatcher@logistics.premafirm.com.
-                            </span>
                         </div>
                     </t>
                 </div>
@@ -277,86 +478,131 @@
 
         <!-- C4 · AI Assistant -->
         <div class="o_inbox_col o_inbox_ai"
-             t-att-class="{ 'o-inbox-show': state.mobileScreen === 'ai' }">
+             t-att-class="{
+                'o-inbox-show': state.mobileScreen === 'ai',
+                'o-inbox-ai-closed': !state.ai.panelOpen,
+             }">
             <div class="o_inbox_col_head">
                 <span>AI Assistant</span>
-                <button class="btn btn-sm btn-link p-0 ms-auto d-lg-none"
+                <button class="btn btn-sm btn-link p-0 ms-auto"
+                        t-on-click="() => this.toggleAiPanel()"
+                        t-att-title="'Collapse / expand AI panel'">
+                    <i class="fa" t-att-class="state.ai.panelOpen ? 'fa-chevron-right' : 'fa-chevron-left'"/>
+                </button>
+                <button class="btn btn-sm btn-link p-0 d-lg-none"
                         t-on-click="() => this.backTo('conversation')"><i class="fa fa-times"/></button>
             </div>
-            <div t-if="!state.detail" class="o_inbox_empty">
+            <div t-if="!state.detail || !state.detail.conversation" class="o_inbox_empty">
                 Select a conversation to analyze.
             </div>
             <t t-else="">
-                <div class="o_inbox_ai_section">
-                    <button class="btn btn-sm btn-outline-primary w-100"
-                            t-on-click="() => this.aiAction('summarize')"
-                            t-att-disabled="state.ai.busy">
-                        <i class="fa fa-magic"/> Summarize thread
-                    </button>
-                    <div t-if="state.detail.ai &amp;&amp; state.detail.ai.extraction"
-                         class="o_inbox_ai_card">
-                        <div class="fw-bold small">Shipment extraction</div>
-                        <t t-foreach="Object.entries(state.detail.ai.extraction.fields || {})"
-                           t-as="e" t-key="e[0]">
-                            <div class="o_inbox_ai_row">
-                                <span class="o_inbox_ai_key" t-esc="e[0]"/>
-                                <span t-esc="fmtValue(e[1])"/>
-                                <span class="o_inbox_ai_src" t-esc="state.detail.ai.extraction.sources[e[0]]?.provenance || ''"/>
-                            </div>
-                        </t>
-                        <div t-if="(state.detail.ai.extraction.missing || []).length"
-                             class="o_inbox_ai_warn">
-                            Missing: <t t-esc="state.detail.ai.extraction.missing.join(', ')"/>
-                        </div>
-                        <div t-if="(state.detail.ai.extraction.conflicting || []).length"
-                             class="o_inbox_ai_warn">
-                            Conflicts: <t t-esc="state.detail.ai.extraction.conflicting.length"/>
+                <div class="o_inbox_ai_body" t-att-class="{ 'd-none': !state.ai.panelOpen }">
+                    <!-- summary (persisted server-side) -->
+                    <div t-if="state.detail.ai.summary" class="o_inbox_ai_section">
+                        <div class="o_inbox_ai_card">
+                            <div class="fw-bold small">Thread summary</div>
+                            <div class="o_inbox_ai_summary" t-esc="state.detail.ai.summary"/>
                         </div>
                     </div>
-                    <button class="btn btn-sm btn-outline-secondary w-100 mt-1"
-                            t-on-click="() => this.aiAction('extract')"
-                            t-att-disabled="state.ai.busy">
-                        <i class="fa fa-database"/> Extract shipment
-                    </button>
-                    <button class="btn btn-sm btn-outline-secondary w-100 mt-1"
-                            t-on-click="() => this.aiAction('draft_reply')"
-                            t-att-disabled="state.ai.busy">
-                        <i class="fa fa-pencil"/> Draft reply
-                    </button>
-                </div>
 
-                <!-- Prema Pricing Engine card -->
-                <div class="o_inbox_ai_section">
-                    <div class="o_inbox_ai_card o_inbox_price_card">
-                        <div class="fw-bold small">Prema Pricing Engine</div>
-                        <div class="text-muted small">
-                            Deterministic corridor pricing — never AI-invented.
-                        </div>
-                        <button class="btn btn-sm btn-primary w-100 mt-1"
-                                t-on-click="calculatePrice"
-                                t-att-disabled="state.ai.busy">
-                            <i class="fa fa-calculator"/> Review &amp; calculate quote
-                        </button>
-                        <div t-if="state.detail.pricing" class="mt-2">
-                            <div t-if="state.detail.pricing.available"
-                                 class="o_inbox_price"
-                                 t-esc="fmtMoney(state.detail.pricing.calculated_price, state.detail.pricing.currency)"/>
-                            <div t-else="" class="o_inbox_ai_warn"
-                                 t-esc="'Engine: ' + (state.detail.pricing.reason || 'unavailable')"/>
-                            <div t-if="state.detail.pricing.price_lines"
-                                 class="small text-muted">
-                                <div t-foreach="state.detail.pricing.price_lines"
-                                     t-as="pl" t-key="pl_index">
-                                    <t t-esc="pl.name || pl.label || fmtValue(pl)"/>
+                    <!-- formatted extraction — never raw JSON -->
+                    <div t-if="state.detail.ai.extraction" class="o_inbox_ai_section">
+                        <div class="o_inbox_ai_card">
+                            <div class="fw-bold small">Shipment extraction</div>
+                            <div t-foreach="extractionRows()" t-as="r" t-key="r.label"
+                                 class="o_inbox_ai_row">
+                                <span class="o_inbox_ai_key" t-esc="r.label"/>
+                                <span class="o_inbox_ai_val" t-esc="r.value"/>
+                                <span class="o_inbox_ai_src"
+                                      t-att-class="{ 'o_inbox_ai_miss': r.missing }">
+                                    Postal/FSA: <t t-esc="r.missing ? 'missing' : r.fsa"/>
+                                </span>
+                            </div>
+                            <div t-if="extractionMissing().length" class="o_inbox_ai_warn">
+                                Missing: <t t-esc="extractionMissing().join(', ')"/>
+                            </div>
+                            <div t-if="extractionConflicts().length" class="mt-1">
+                                <button class="btn btn-sm btn-outline-warning w-100"
+                                        t-on-click="() => this.toggleConflicts()">
+                                    <i class="fa fa-exclamation-triangle"/>
+                                    Conflicts: <t t-esc="extractionConflicts().length"/>
+                                </button>
+                                <div t-if="state.ai.conflictsOpen"
+                                     class="o_inbox_ai_conflicts">
+                                    <div t-foreach="extractionConflicts()" t-as="cfl"
+                                         t-key="cfl_index" class="o_inbox_ai_row">
+                                        <span class="o_inbox_ai_key" t-esc="cfl.field || 'field'"/>
+                                        <span class="small"
+                                              t-esc="cfl.reason || fmtValue(cfl)"/>
+                                    </div>
                                 </div>
                             </div>
                         </div>
                     </div>
-                </div>
 
-                <div class="o_inbox_ai_footer">
-                    Suggestions require approval — nothing is sent or booked
-                    automatically.
+                    <div class="o_inbox_ai_section">
+                        <button class="btn btn-sm btn-outline-primary w-100"
+                                t-on-click="() => this.aiAction('summarize')"
+                                t-att-disabled="state.ai.busy">
+                            <i class="fa fa-magic"/> Summarize thread
+                        </button>
+                        <button class="btn btn-sm btn-outline-secondary w-100 mt-1"
+                                t-on-click="() => this.aiAction('extract')"
+                                t-att-disabled="state.ai.busy">
+                            <i class="fa fa-database"/> Extract shipment
+                        </button>
+                        <button class="btn btn-sm btn-outline-secondary w-100 mt-1"
+                                t-on-click="() => this.aiAction('draft_reply')"
+                                t-att-disabled="state.ai.busy">
+                            <i class="fa fa-pencil"/> Draft reply
+                        </button>
+                    </div>
+
+                    <!-- Prema Pricing Engine card -->
+                    <div class="o_inbox_ai_section">
+                        <div class="o_inbox_ai_card o_inbox_price_card">
+                            <div class="fw-bold small">Prema Pricing Engine</div>
+                            <div class="text-muted small">
+                                Deterministic corridor pricing — never AI-invented.
+                            </div>
+                            <button class="btn btn-sm btn-primary w-100 mt-1"
+                                    t-on-click="() => this.calculatePrice()"
+                                    t-att-disabled="state.ai.busy">
+                                <i class="fa fa-calculator"/> Review &amp; calculate quote
+                            </button>
+                            <div t-if="state.detail.pricing" class="mt-2">
+                                <div t-if="state.detail.pricing.available"
+                                     class="o_inbox_price"
+                                     t-esc="fmtMoney(state.detail.pricing.calculated_price, state.detail.pricing.currency)"/>
+                                <div t-elif="state.detail.pricing.reason_text"
+                                     class="o_inbox_ai_warn"
+                                     t-esc="state.detail.pricing.reason_text"/>
+                                <div t-else="" class="o_inbox_ai_warn"
+                                     t-esc="'Engine: ' + (state.detail.pricing.reason || 'unavailable')"/>
+                                <div t-if="state.detail.pricing.missing_sides"
+                                     class="small text-muted mt-1">
+                                    <div t-if="state.detail.pricing.missing_sides.pickup">
+                                        <i class="fa fa-circle-o text-warning"/> Pickup location: postal code missing
+                                    </div>
+                                    <div t-if="state.detail.pricing.missing_sides.delivery">
+                                        <i class="fa fa-circle-o text-warning"/> Delivery location: postal code missing
+                                    </div>
+                                </div>
+                                <div t-if="state.detail.pricing.price_lines"
+                                     class="small text-muted">
+                                    <div t-foreach="state.detail.pricing.price_lines"
+                                         t-as="pl" t-key="pl_index">
+                                        <t t-esc="pl.name || pl.label || fmtValue(pl)"/>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="o_inbox_ai_footer">
+                        Suggestions require approval — nothing is sent or booked
+                        automatically.
+                    </div>
                 </div>
             </t>
         </div>

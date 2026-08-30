@@ -90,8 +90,14 @@ export class InboxBadge extends Component {
     }
 
     _onEvent(payload) {
-        if (!payload || payload.type === "read_change") {
-            return; // read changes: reconcile quietly
+        if (!payload) {
+            return;
+        }
+        if (payload.type === "read_change") {
+            // read changes: reconcile quietly — the total may have dropped
+            // because a conversation was opened here or in another tab
+            this.reconcile();
+            return;
         }
         this.reconcile();
         if (payload.is_spam) {
