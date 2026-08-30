@@ -16,7 +16,7 @@ export class InboxBadge extends Component {
     static props = {};
 
     setup() {
-        this.orm = useService("orm");
+        this.rpc = useService("rpc");
         this.busService = useService("bus_service");
         this.notification = useService("notification");
         this.action = useService("action");
@@ -44,13 +44,14 @@ export class InboxBadge extends Component {
 
     async reconcile() {
         try {
-            const res = await this.orm.call(
-                "prema.inbox.conversation", "_unread_counts_for_user", []);
-            if (!res || !res[this.env.userId]) {
+            // Odoo refuses to call private model methods over call_kw —
+            // the controller route is the public surface for this
+            const res = await this.rpc("/prema_inbox/unread_counts", {});
+            if (!res || !res.counts) {
                 return;
             }
-            this.state.total = res[this.env.userId].total || 0;
-            this.state.spam = res[this.env.userId].spam || 0;
+            this.state.total = res.counts.total || 0;
+            this.state.spam = res.counts.spam || 0;
         } catch (e) {
             console.error("inbox badge reconcile failed:", e);
         }
