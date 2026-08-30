@@ -6,3 +6,4 @@ from . import test_inbox_business_links
 from . import test_inbox_ai_pricing
 from . import test_inbox_rules
 from . import test_inbox_security
+from . import test_inbox_badge_route
