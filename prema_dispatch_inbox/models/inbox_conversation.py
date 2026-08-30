@@ -347,8 +347,14 @@ class InboxConversation(models.Model):
         ids.discard("")
         if not ids:
             return self.env["prema.inbox.conversation"]
+        # Match BOTH storage forms: incoming message_ids are stored bare,
+        # outgoing ones historically kept the angle brackets (fixed at
+        # _new_outbound) — replies to a sent message must still thread.
+        bare = sorted(ids)
+        bracketed = ["<%s>" % i for i in bare]
         msgs = self.env["prema.inbox.message"].search(
-            [("message_id", "in", sorted(ids))], limit=1)
+            ["|", ("message_id", "in", bare),
+             ("message_id", "in", bracketed)], limit=1)
         return msgs.conversation_id
 
     @api.model

@@ -103,6 +103,39 @@ class TestGatewayIngest(InboxTestCase):
             subject="RMIS load board — Mascouche to Belleville"))
         self.assertTrue(conv.inbox_message_ids.is_load_board)
 
+    def test_message_new_threads_reply_to_outbound(self):
+        # A customer reply whose References points at a SENT outbound
+        # message (stored with angle brackets on prod before the fix)
+        # must thread into the SAME conversation — never a new one.
+        conv1 = self.Conversation.message_new(dict(MSG))
+        out = self.Message._new_outbound(
+            conv1, subject="Re: Rate quote", body_html="<p>Sent</p>",
+            parent=conv1.inbox_message_ids, kind="reply")
+        self.assertEqual(out.outbound_state, "draft")
+        # bracketed form = what an RFC 5322 reply actually carries
+        conv2 = self.Conversation.message_new(dict(
+            MSG, message_id="<gateway-reply@client.example>",
+            subject="Re: Rate quote", body="<p>Thanks!</p>",
+            references="<7780523eb4684b2bac9bb16dd7902404@prema-inbox.premafirm.com>"
+                       " <%s>" % out.message_id))
+        self.assertEqual(conv2.id, conv1.id)
+        self.assertEqual(len(conv1.inbox_message_ids), 3)
+
+    def test_message_new_threads_reply_to_outbound_bare_form(self):
+        # post-fix storage is bare; a reply referencing the bare form
+        # must thread too (and bare vs bracketed never double-matches)
+        conv1 = self.Conversation.message_new(dict(MSG))
+        out = self.Message._new_outbound(
+            conv1, subject="Re: Rate quote", body_html="<p>Sent</p>",
+            parent=conv1.inbox_message_ids, kind="reply")
+        self.assertNotIn("<", out.message_id)  # stored bare after fix
+        conv2 = self.Conversation.message_new(dict(
+            MSG, message_id="<gateway-reply2@client.example>",
+            subject="Re: Rate quote", body="<p>Thanks!</p>",
+            references="<%s>" % out.message_id))
+        self.assertEqual(conv2.id, conv1.id)
+        self.assertEqual(len(conv1.inbox_message_ids), 3)
+
     def test_message_update_same_thread(self):
         conv1 = self.Conversation.message_new(dict(MSG))
         conv2 = self.Conversation.message_update(dict(
@@ -314,5 +347,6 @@ class TestOutboundPipeline(InboxTestCase):
         with self._stub_send(fake_send):
             msg.send()  # retry — no duplicate outbound row
         self.assertEqual(msg.outbound_state, "sent")
+        self.assertFalse(msg.send_error)  # success clears the stale failure
         self.assertEqual(self.Message.search_count(
             [("conversation_id", "=", msg.conversation_id.id)]), before)

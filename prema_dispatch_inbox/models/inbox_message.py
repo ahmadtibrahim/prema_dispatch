@@ -182,7 +182,7 @@ class InboxMessage(models.Model):
             "email_from": "dispatcher@logistics.premafirm.com",
             "subject": subject or conversation.name,
             "body": body_html,
-            "message_id": "<%s@prema-inbox.premafirm.com>"
+            "message_id": "%s@prema-inbox.premafirm.com"
                           % uuid.uuid4().hex,
             "attachment_ids": [(6, 0, attachment_ids or [])],
             "outbound_state": "draft",
@@ -204,8 +204,16 @@ class InboxMessage(models.Model):
         return self.create(vals)
 
     def _set_outbound_state(self, state, error=None):
+        # "sent" always clears a stale failure reason (a message that
+        # failed once then retried successfully must not still show the
+        # old error); other states preserve the previous error when none
+        # is passed so retry chains keep their context.
+        if state == "sent":
+            error = False
+        elif error is None:
+            error = self.send_error
         self.write({"outbound_state": state,
-                    "send_error": error or self.send_error})
+                    "send_error": error or False})
         self.conversation_id._broadcast_read_change()
         return True
 
