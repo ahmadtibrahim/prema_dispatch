@@ -1,0 +1,344 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+<!-- ============================== BADGE ============================== -->
+<t t-name="prema_dispatch_inbox.InboxBadge" owl="1">
+    <div class="o_inbox_badge" t-on-click="togglePopover">
+        <span class="o_inbox_badge_env">
+            <i class="fa fa-envelope" t-att-class="{ 'o-inbox-pulse': state.pulse }"/>
+            <span t-if="state.total" class="o_inbox_badge_count"
+                  t-att-class="{ 'o-inbox-anim': state.animations }">
+                <t t-esc="state.total &gt; 99 ? '99+' : state.total"/>
+            </span>
+        </span>
+        <div t-if="state.popover" class="o_inbox_popover" t-on-click.stop="">
+            <div class="o_inbox_popover_head">
+                <strong>Dispatch Inbox</strong>
+                <span t-if="state.spam" class="o_inbox_spam_count">
+                    <i class="fa fa-shield"/> <t t-esc="state.spam"/> spam
+                </span>
+            </div>
+            <button class="btn btn-primary btn-sm w-100"
+                    t-on-click="openInbox">
+                Open Dispatch Inbox
+            </button>
+            <label class="o_inbox_popover_row">
+                <input type="checkbox" t-att-checked="state.animations"
+                       t-on-change="toggleAnimations"/>
+                Disable animation
+            </label>
+            <label class="o_inbox_popover_row">
+                <input type="checkbox" t-att-checked="state.sound"
+                       t-on-change="toggleSound"/>
+                Sound for new messages
+            </label>
+            <div class="text-muted small o_inbox_popover_note">
+                Badge counts messages only you haven't read. Notifications
+                require the browser tab to be open.
+            </div>
+        </div>
+    </div>
+</t>
+
+<!-- ============================== APP ============================== -->
+<t t-name="prema_dispatch_inbox.InboxApp" owl="1">
+    <div class="o_inbox_app">
+        <!-- C1 · Folders -->
+        <div class="o_inbox_col o_inbox_folders"
+             t-att-class="{ 'o-inbox-show': state.mobileScreen === 'list' || state.selectedId === null }">
+            <div class="o_inbox_col_head">Dispatch Inbox</div>
+            <div t-foreach="state.folders" t-as="f" t-key="f.key"
+                 class="o_inbox_folder"
+                 t-att-class="{ 'active': state.folder === f.key }"
+                 t-on-click="selectFolder(f.key)">
+                <span class="o_inbox_folder_label">
+                    <t t-esc="f.label"/>
+                </span>
+                <span t-if="f.count" class="badge text-bg-secondary">
+                    <t t-esc="f.count"/>
+                </span>
+            </div>
+        </div>
+
+        <!-- C2 · Conversation list -->
+        <div class="o_inbox_col o_inbox_list"
+             t-att-class="{ 'o-inbox-show': state.mobileScreen === 'list' }">
+            <div class="o_inbox_col_head">
+                <span t-esc="folderLabel(state.folder)"/>
+                <span t-if="state.loading" class="spinner-border spinner-border-sm ms-2"/>
+            </div>
+            <input class="form-control form-control-sm o_inbox_search"
+                   placeholder="Search sender, subject, body, customer…"
+                   t-model="state.search" t-on-input="onSearch"/>
+            <div class="o_inbox_convs">
+                <t t-if="!state.conversations.length">
+                    <div class="o_inbox_empty">Nothing here.</div>
+                </t>
+                <div t-foreach="state.conversations" t-as="c" t-key="c.id"
+                     class="o_inbox_conv"
+                     t-att-class="{
+                        'active': state.selectedId === c.id,
+                        'o-inbox-unread': c.unread_count &gt; 0,
+                     }"
+                     t-on-click="openConversation(c.id)">
+                    <div class="o_inbox_conv_top">
+                        <span class="o_inbox_conv_from"
+                              t-esc="c.partner_name || '(no customer)'"/>
+                        <span class="o_inbox_conv_time"
+                              t-esc="fmtDate(c.last_message_date)"/>
+                    </div>
+                    <div class="o_inbox_conv_subject" t-esc="c.name"/>
+                    <div class="o_inbox_conv_meta">
+                        <span class="badge o_inbox_cat"
+                              t-att-class="'o_inbox_cat_' + c.category">
+                            <t t-esc="InboxApp.CATEGORY_LABELS[c.category] || c.category"/>
+                        </span>
+                        <span t-if="c.priority === 'urgent'" class="fa fa-flag text-warning"/>
+                        <span t-if="c.priority === 'emergency'" class="fa fa-flag text-danger"/>
+                        <span t-if="c.has_attachment" class="fa fa-paperclip text-muted"/>
+                        <span t-if="c.booking_id || c.job_id || c.invoice_id"
+                              class="o_inbox_chip">linked</span>
+                        <span t-if="c.is_load_board" class="o_inbox_chip">load board</span>
+                        <span t-if="c.unread_count" class="o_inbox_unread_dot"
+                              t-att-title="c.unread_count"/>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- C3 · Conversation -->
+        <div class="o_inbox_col o_inbox_thread"
+             t-att-class="{ 'o-inbox-show': state.mobileScreen === 'conversation' || state.mobileScreen === 'ai' }">
+            <div t-if="!state.detail" class="o_inbox_empty">
+                Select a conversation.
+            </div>
+            <t t-else="">
+                <div class="o_inbox_col_head">
+                    <button class="btn btn-sm btn-light d-lg-none me-2"
+                            t-on-click="backTo('list')"><i class="fa fa-arrow-left"/></button>
+                    <div class="o_inbox_thread_title">
+                        <div t-esc="state.detail.conversation.name"/>
+                        <div class="text-muted small"
+                             t-esc="state.detail.conversation.partner_name"/>
+                    </div>
+                    <button class="btn btn-sm btn-outline-secondary ms-auto"
+                            t-on-click="assignUser">
+                        <i class="fa fa-user-o"/> Assign
+                    </button>
+                    <button class="btn btn-sm btn-outline-secondary"
+                            t-on-click="toggleMute"
+                            t-att-title="'Mute / unmute notifications'">
+                        <i class="fa fa-bell-slash-o"/>
+                    </button>
+                    <button class="btn btn-sm btn-outline-secondary"
+                            t-on-click="markUnread(state.detail.conversation.id)">
+                        <i class="fa fa-envelope-o"/> Unread
+                    </button>
+                </div>
+                <div t-if="state.assignCandidates" class="o_inbox_assign">
+                    <div t-foreach="state.assignCandidates" t-as="u" t-key="u.id"
+                         class="o_inbox_assign_row"
+                         t-on-click="doAssign(u.id)">
+                        <t t-esc="u.login || u.name"/>
+                    </div>
+                </div>
+
+                <!-- thread header: status/category/linked records -->
+                <div class="o_inbox_thread_meta">
+                    <select class="form-select form-select-sm o_inbox_sel"
+                            t-att-value="state.detail.conversation.category"
+                            t-on-change="setCategory($event.target.value)">
+                        <t t-foreach="InboxApp.CATEGORY_OPTIONS" t-as="cat" t-key="cat.value">
+                            <option t-att-value="cat.value" t-esc="cat.label"/>
+                        </t>
+                    </select>
+                    <select class="form-select form-select-sm o_inbox_sel"
+                            t-att-value="state.detail.conversation.workflow_state"
+                            t-on-change="setState($event.target.value)">
+                        <t t-foreach="InboxApp.STATE_OPTIONS" t-as="st" t-key="st.value">
+                            <option t-att-value="st.value" t-esc="st.label"/>
+                        </t>
+                    </select>
+                    <div class="o_inbox_linked">
+                        <span t-if="state.detail.conversation.booking_id"
+                              class="o_inbox_chip">Booking #<t t-esc="state.detail.conversation.booking_id"/></span>
+                        <span t-if="state.detail.conversation.job_id"
+                              class="o_inbox_chip">Job <t t-esc="state.detail.conversation.job_id"/></span>
+                        <span t-if="state.detail.conversation.invoice_id"
+                              class="o_inbox_chip">Invoice <t t-esc="state.detail.conversation.invoice_id"/></span>
+                        <span t-if="state.detail.conversation.opportunity_id"
+                              class="o_inbox_chip">Opp <t t-esc="state.detail.conversation.opportunity_id"/></span>
+                        <button class="btn btn-link btn-sm p-0"
+                                t-on-click="searchLinks('booking')">+ booking</button>
+                        <button class="btn btn-link btn-sm p-0"
+                                t-on-click="searchLinks('job')">+ job</button>
+                        <button class="btn btn-link btn-sm p-0"
+                                t-on-click="searchLinks('invoice')">+ invoice</button>
+                        <button class="btn btn-link btn-sm p-0"
+                                t-on-click="searchLinks('opportunity')">+ opp</button>
+                    </div>
+                    <div t-if="state.linkCandidates" class="o_inbox_linkpick">
+                        <div t-foreach="state.linkCandidates.records" t-as="r" t-key="r.id"
+                             class="o_inbox_assign_row"
+                             t-on-click="linkRecord(state.linkCandidates.model, r.id)">
+                            <t t-esc="r.name"/>
+                            <span t-if="r.state" class="text-muted"> · <t t-esc="r.state"/></span>
+                        </div>
+                        <div t-if="!state.linkCandidates.records.length" class="text-muted">
+                            No matches for this customer.
+                        </div>
+                    </div>
+                </div>
+
+                <!-- message history -->
+                <div class="o_inbox_msgs">
+                    <div t-foreach="state.detail.messages" t-as="m" t-key="m.id"
+                         class="o_inbox_msg"
+                         t-att-class="'o_inbox_' + m.direction">
+                        <div class="o_inbox_msg_head">
+                            <span class="o_inbox_msg_author" t-esc="m.author_name"/>
+                            <span class="o_inbox_msg_time" t-esc="fmtDate(m.date)"/>
+                            <span t-if="m.direction === 'outgoing'"
+                                  class="o_inbox_chip"
+                                  t-esc="m.outbound_state === 'intercepted' ? 'intercepted (UAT)' : (m.outbound_state || 'outgoing')"/>
+                            <span t-if="m.direction === 'note'"
+                                  class="o_inbox_chip o_inbox_chip_note">Internal note</span>
+                        </div>
+                        <div t-if="m.body" class="o_inbox_msg_body" t-out="m.body"/>
+                        <div t-else="" class="o_inbox_msg_body o_inbox_plain"
+                             t-esc="m.body_plain"/>
+                        <div t-if="m.attachments.length" class="o_inbox_att">
+                            <span t-foreach="m.attachments" t-as="a" t-key="a.id"
+                                  class="o_inbox_chip"><i class="fa fa-paperclip"/>
+                                <t t-esc="a.name"/>
+                            </span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- composer -->
+                <div class="o_inbox_composer">
+                    <div class="btn-group btn-group-sm mb-1">
+                        <button class="btn btn-outline-primary"
+                                t-on-click="startComposer('reply')">Reply</button>
+                        <button class="btn btn-outline-primary"
+                                t-on-click="startComposer('compose')">New email</button>
+                        <button class="btn btn-outline-secondary"
+                                t-on-click="startComposer('note')">Internal note</button>
+                    </div>
+                    <t t-if="state.composer.mode">
+                        <textarea class="form-control form-control-sm"
+                                  rows="4" t-model="state.composer.body"
+                                  t-att-placeholder="state.composer.mode === 'note' ? 'Internal note — never emailed.' : 'Draft…'"/>
+                        <div class="mt-1 d-flex gap-1">
+                            <button class="btn btn-sm btn-secondary"
+                                    t-on-click="saveDraft"
+                                    t-att-disabled="state.composer.sending">
+                                Save draft
+                            </button>
+                            <button class="btn btn-sm btn-primary"
+                                    t-on-click="sendNow"
+                                    t-att-disabled="state.composer.sending">
+                                Send
+                            </button>
+                            <span class="small text-muted align-self-center"
+                                  t-if="state.composer.mode !== 'note'">
+                                UAT: outbound is intercepted, never sent over SMTP.
+                            </span>
+                        </div>
+                    </t>
+                </div>
+            </t>
+        </div>
+
+        <!-- C4 · AI Assistant -->
+        <div class="o_inbox_col o_inbox_ai"
+             t-att-class="{ 'o-inbox-show': state.mobileScreen === 'ai' }">
+            <div class="o_inbox_col_head">
+                <span>AI Assistant</span>
+                <button class="btn btn-sm btn-link p-0 ms-auto d-lg-none"
+                        t-on-click="backTo('conversation')"><i class="fa fa-times"/></button>
+            </div>
+            <div t-if="!state.detail" class="o_inbox_empty">
+                Select a conversation to analyze.
+            </div>
+            <t t-else="">
+                <div class="o_inbox_ai_section">
+                    <button class="btn btn-sm btn-outline-primary w-100"
+                            t-on-click="aiAction('summarize')"
+                            t-att-disabled="state.ai.busy">
+                        <i class="fa fa-magic"/> Summarize thread
+                    </button>
+                    <div t-if="state.detail.ai && state.detail.ai.extraction"
+                         class="o_inbox_ai_card">
+                        <div class="fw-bold small">Shipment extraction</div>
+                        <t t-foreach="Object.entries(state.detail.ai.extraction.fields || {})"
+                           t-as="e" t-key="e[0]">
+                            <div class="o_inbox_ai_row">
+                                <span class="o_inbox_ai_key" t-esc="e[0]"/>
+                                <span t-if="typeof e[1] === 'object'"
+                                      t-esc="JSON.stringify(e[1])"/>
+                                <span t-else="" t-esc="e[1]"/>
+                                <span class="o_inbox_ai_src" t-esc="state.detail.ai.extraction.sources[e[0]]?.provenance || ''"/>
+                            </div>
+                        </t>
+                        <div t-if="(state.detail.ai.extraction.missing || []).length"
+                             class="o_inbox_ai_warn">
+                            Missing: <t t-esc="state.detail.ai.extraction.missing.join(', ')"/>
+                        </div>
+                        <div t-if="(state.detail.ai.extraction.conflicting || []).length"
+                             class="o_inbox_ai_warn">
+                            Conflicts: <t t-esc="state.detail.ai.extraction.conflicting.length"/>
+                        </div>
+                    </div>
+                    <button class="btn btn-sm btn-outline-secondary w-100 mt-1"
+                            t-on-click="aiAction('extract')"
+                            t-att-disabled="state.ai.busy">
+                        <i class="fa fa-database"/> Extract shipment
+                    </button>
+                    <button class="btn btn-sm btn-outline-secondary w-100 mt-1"
+                            t-on-click="aiAction('draft_reply')"
+                            t-att-disabled="state.ai.busy">
+                        <i class="fa fa-pencil"/> Draft reply
+                    </button>
+                </div>
+
+                <!-- Prema Pricing Engine card -->
+                <div class="o_inbox_ai_section">
+                    <div class="o_inbox_ai_card o_inbox_price_card">
+                        <div class="fw-bold small">Prema Pricing Engine</div>
+                        <div class="text-muted small">
+                            Deterministic corridor pricing — never AI-invented.
+                        </div>
+                        <button class="btn btn-sm btn-primary w-100 mt-1"
+                                t-on-click="calculatePrice"
+                                t-att-disabled="state.ai.busy">
+                            <i class="fa fa-calculator"/> Review &amp; calculate quote
+                        </button>
+                        <div t-if="state.detail.pricing" class="mt-2">
+                            <div t-if="state.detail.pricing.available"
+                                 class="o_inbox_price"
+                                 t-esc="fmtMoney(state.detail.pricing.calculated_price, state.detail.pricing.currency)"/>
+                            <div t-else="" class="o_inbox_ai_warn"
+                                 t-esc="'Engine: ' + (state.detail.pricing.reason || 'unavailable')"/>
+                            <div t-if="state.detail.pricing.price_lines"
+                                 class="small text-muted">
+                                <div t-foreach="state.detail.pricing.price_lines"
+                                     t-as="pl" t-key="pl_index">
+                                    <t t-esc="pl.name || pl.label || JSON.stringify(pl)"/>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="o_inbox_ai_footer">
+                    Suggestions require approval — nothing is sent or booked
+                    automatically.
+                </div>
+            </t>
+        </div>
+    </div>
+</t>
+
+</odoo>

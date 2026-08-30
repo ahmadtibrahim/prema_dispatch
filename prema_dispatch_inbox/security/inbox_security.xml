@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <!-- Shared inbox group: dispatchers + admin. No record rules — the
+         inbox is shared by design; per-user state is the read m2m, not
+         record scoping. -->
+    <record id="group_dispatch_inbox" model="res.groups">
+        <field name="name">Dispatch Inbox</field>
+        <field name="category_id" ref="base.module_category_hidden"/>
+        <field name="implied_ids" eval="[(4, ref('base.group_user'))]"/>
+        <field name="users" eval="[(4, ref('base.user_admin'))]"/>
+    </record>
+
+</odoo>

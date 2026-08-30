@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <record id="action_prema_inbox_main" model="ir.actions.client">
+        <field name="name">Dispatch Inbox</field>
+        <field name="tag">prema_inbox_main</field>
+    </record>
+
+    <menuitem id="menu_prema_inbox_root"
+              name="Dispatch Inbox"
+              action="action_prema_inbox_main"
+              sequence="80"/>
+
+</odoo>

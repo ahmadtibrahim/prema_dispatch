@@ -1,0 +1,436 @@
+// Prema Dispatch Inbox — badge + 4-column app (design §3/§4).
+// Namespaced under o_inbox_*; the pulse respects prefers-reduced-motion.
+
+$inbox-ai-bg: #f7f7fb;
+$inbox-border: #e3e6ec;
+$inbox-muted: #8a93a6;
+$inbox-accent: #017e84;
+
+// ----------------------------------------------------------------------
+// Badge (systray)
+// ----------------------------------------------------------------------
+.o_inbox_badge {
+    position: relative;
+    cursor: pointer;
+    padding: 0 6px;
+
+    .o_inbox_badge_env {
+        position: relative;
+        display: inline-block;
+        color: #7c8695;
+
+        .o_inbox_badge_count {
+            position: absolute;
+            top: -6px;
+            right: -8px;
+            min-width: 16px;
+            height: 16px;
+            padding: 0 4px;
+            border-radius: 8px;
+            background: #dc3545;
+            color: #fff;
+            font-size: 10px;
+            line-height: 16px;
+            text-align: center;
+            font-weight: 700;
+        }
+    }
+
+    // gentle pulse when a new message lands (2 keyframes, ~1.2 s total)
+    .o-inbox-pulse {
+        animation: o-inbox-pulse 1.2s ease-out 2;
+    }
+
+    .o_inbox_popover {
+        position: absolute;
+        right: 0;
+        top: calc(100% + 8px);
+        width: 280px;
+        padding: 12px;
+        background: #fff;
+        border: 1px solid $inbox-border;
+        border-radius: 8px;
+        box-shadow: 0 8px 24px rgba(20, 30, 55, 0.18);
+        z-index: 1080;
+
+        .o_inbox_popover_head {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+
+        .o_inbox_spam_count {
+            color: $inbox-muted;
+            font-size: 12px;
+        }
+
+        .o_inbox_popover_row {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            margin-top: 8px;
+            font-size: 13px;
+        }
+
+        .o_inbox_popover_note {
+            margin-top: 8px;
+            font-size: 11px;
+        }
+    }
+}
+
+@keyframes o-inbox-pulse {
+    0% { transform: translateY(0) scale(1); }
+    25% { transform: translateY(-3px) scale(1.12); }
+    50% { transform: translateY(0) scale(1); }
+    75% { transform: translateY(-2px) scale(1.06); }
+    100% { transform: translateY(0) scale(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .o_inbox_badge .o-inbox-pulse {
+        animation: none;
+    }
+}
+
+// ----------------------------------------------------------------------
+// App — 4 columns
+// ----------------------------------------------------------------------
+.o_inbox_app {
+    display: flex;
+    height: 100%;
+    min-height: 0;
+
+    .o_inbox_col {
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+    }
+
+    .o_inbox_folders {
+        width: 200px;
+        flex-shrink: 0;
+        border-right: 1px solid $inbox-border;
+        background: #fafbfc;
+    }
+
+    .o_inbox_list {
+        width: 340px;
+        flex-shrink: 0;
+        border-right: 1px solid $inbox-border;
+    }
+
+    .o_inbox_thread {
+        flex: 1 1 auto;
+    }
+
+    .o_inbox_ai {
+        width: 300px;
+        flex-shrink: 0;
+        border-left: 1px solid $inbox-border;
+        background: $inbox-ai-bg;
+    }
+
+    .o_inbox_col_head {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 8px 10px;
+        font-weight: 600;
+        font-size: 13px;
+        border-bottom: 1px solid $inbox-border;
+        flex-shrink: 0;
+    }
+
+    .o_inbox_folder {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 6px 12px;
+        font-size: 13px;
+        cursor: pointer;
+        color: #3b4354;
+
+        &:hover { background: #f0f2f6; }
+
+        &.active {
+            background: #e3f0ef;
+            color: $inbox-accent;
+            font-weight: 600;
+            border-right: 2px solid $inbox-accent;
+        }
+    }
+
+    .o_inbox_search {
+        margin: 8px 10px;
+        width: calc(100% - 20px);
+        flex-shrink: 0;
+    }
+
+    .o_inbox_convs {
+        overflow-y: auto;
+        flex: 1 1 auto;
+        min-height: 0;
+    }
+
+    .o_inbox_empty {
+        padding: 24px 12px;
+        text-align: center;
+        color: $inbox-muted;
+        font-size: 13px;
+    }
+
+    .o_inbox_conv {
+        padding: 8px 12px;
+        border-bottom: 1px solid #eef0f4;
+        cursor: pointer;
+
+        &:hover { background: #f7f8fa; }
+        &.active { background: #eaf6f5; }
+
+        &.o-inbox-unread .o_inbox_conv_from,
+        &.o-inbox-unread .o_inbox_conv_subject {
+            font-weight: 700;
+        }
+
+        .o_inbox_conv_top {
+            display: flex;
+            justify-content: space-between;
+            gap: 6px;
+        }
+
+        .o_inbox_conv_from {
+            font-size: 13px;
+            color: #2b3446;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .o_inbox_conv_time {
+            font-size: 11px;
+            color: $inbox-muted;
+            flex-shrink: 0;
+        }
+
+        .o_inbox_conv_subject {
+            font-size: 12px;
+            color: #4a5266;
+            margin-top: 2px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .o_inbox_conv_meta {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            margin-top: 4px;
+            min-height: 16px;
+        }
+
+        .o_inbox_unread_dot {
+            width: 9px;
+            height: 9px;
+            border-radius: 50%;
+            background: $inbox-accent;
+            margin-left: auto;
+            flex-shrink: 0;
+        }
+    }
+
+    .o_inbox_cat {
+        font-size: 10px;
+        font-weight: 600;
+        background: #eef0f4;
+        color: #55607a;
+        &.o_inbox_cat_quote_request { background: #e7f1ff; color: #0b5ed7; }
+        &.o_inbox_cat_load_opportunity { background: #e9f7ef; color: #1a7f4e; }
+        &.o_inbox_cat_active_shipment { background: #fff4e0; color: #a05a00; }
+        &.o_inbox_cat_invoice_question { background: #fdeaea; color: #b02a37; }
+        &.o_inbox_cat_carrier_alert { background: #f0e8fd; color: #6f42c1; }
+        &.o_inbox_cat_needs_review { background: #fff0f0; color: #c0392b; }
+    }
+
+    .o_inbox_chip {
+        display: inline-block;
+        font-size: 10px;
+        font-weight: 600;
+        padding: 1px 6px;
+        border-radius: 4px;
+        background: #eef0f4;
+        color: #55607a;
+        &.o_inbox_chip_note { background: #ececf0; color: #6b6f7a; font-style: italic; }
+    }
+
+    .o_inbox_assign {
+        border-bottom: 1px solid $inbox-border;
+        max-height: 200px;
+        overflow-y: auto;
+
+        .o_inbox_assign_row {
+            padding: 5px 12px;
+            font-size: 13px;
+            cursor: pointer;
+            &:hover { background: #f0f2f6; }
+        }
+    }
+
+    .o_inbox_thread_meta {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 6px;
+        padding: 6px 12px;
+        border-bottom: 1px solid $inbox-border;
+        flex-shrink: 0;
+
+        .o_inbox_sel {
+            width: auto;
+            display: inline-block;
+        }
+
+        .o_inbox_linked {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .o_inbox_linkpick {
+            flex-basis: 100%;
+            border-top: 1px dashed $inbox-border;
+            padding-top: 4px;
+        }
+    }
+
+    .o_inbox_msgs {
+        flex: 1 1 auto;
+        overflow-y: auto;
+        min-height: 0;
+        padding: 10px 14px;
+        background: #fdfdfe;
+    }
+
+    .o_inbox_msg {
+        margin-bottom: 12px;
+        max-width: 85%;
+        border-radius: 10px;
+        padding: 8px 12px;
+        font-size: 13px;
+        box-shadow: 0 1px 2px rgba(20, 30, 55, 0.06);
+
+        &.o_inbox_incoming {
+            background: #fff;
+            border: 1px solid $inbox-border;
+            margin-right: auto;
+        }
+        &.o_inbox_outgoing {
+            background: #e2f2ef;
+            margin-left: auto;
+        }
+        &.o_inbox_note {
+            background: #f0f0f3;
+            border: 1px dashed #c9ccd6;
+            color: #5b6272;
+            margin-right: auto;
+            font-style: italic;
+        }
+
+        .o_inbox_msg_head {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 4px;
+        }
+
+        .o_inbox_msg_author { font-weight: 700; font-size: 12px; }
+        .o_inbox_msg_time { font-size: 11px; color: $inbox-muted; margin-left: auto; }
+        .o_inbox_msg_body { word-break: break-word; }
+        .o_inbox_plain { white-space: pre-wrap; }
+        .o_inbox_att { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 4px; }
+    }
+
+    .o_inbox_composer {
+        border-top: 1px solid $inbox-border;
+        padding: 8px 12px;
+        flex-shrink: 0;
+        background: #fff;
+    }
+
+    // ----- AI panel -----
+    .o_inbox_ai_section {
+        padding: 10px 12px;
+        border-bottom: 1px solid $inbox-border;
+    }
+
+    .o_inbox_ai_card {
+        margin-top: 8px;
+        padding: 10px;
+        background: #fff;
+        border: 1px solid $inbox-border;
+        border-radius: 8px;
+        font-size: 12px;
+
+        &.o_inbox_price_card { border-color: #bcd9d6; }
+    }
+
+    .o_inbox_ai_row {
+        display: flex;
+        gap: 6px;
+        margin-top: 4px;
+
+        .o_inbox_ai_key { font-weight: 600; min-width: 110px; }
+        .o_inbox_ai_src {
+            margin-left: auto;
+            font-size: 10px;
+            color: $inbox-muted;
+            text-transform: uppercase;
+        }
+    }
+
+    .o_inbox_ai_warn {
+        margin-top: 6px;
+        padding: 6px 8px;
+        border-radius: 6px;
+        background: #fff3e6;
+        color: #9a5b00;
+        font-size: 11px;
+    }
+
+    .o_inbox_price {
+        font-size: 20px;
+        font-weight: 700;
+        color: $inbox-accent;
+    }
+
+    .o_inbox_ai_footer {
+        padding: 8px 12px;
+        font-size: 11px;
+        color: $inbox-muted;
+        border-top: 1px solid $inbox-border;
+        margin-top: auto;
+    }
+}
+
+// ----------------------------------------------------------------------
+// Responsive: mobile stacks to sequential screens
+// ----------------------------------------------------------------------
+@media (max-width: 899.98px) {
+    .o_inbox_app {
+        .o_inbox_folders,
+        .o_inbox_list,
+        .o_inbox_thread,
+        .o_inbox_ai {
+            width: 100%;
+            flex: 1 1 100%;
+            display: none;
+            border: none;
+
+            &.o-inbox-show { display: flex; }
+        }
+    }
+}

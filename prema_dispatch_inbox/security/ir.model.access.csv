@@ -1,0 +1,10 @@
+id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
+access_prema_inbox_conversation,inbox conversation,model_prema_inbox_conversation,prema_dispatch_inbox.group_dispatch_inbox,1,1,1,1
+access_prema_inbox_message,inbox message,model_prema_inbox_message,prema_dispatch_inbox.group_dispatch_inbox,1,1,1,1
+access_prema_inbox_rule,inbox rule,model_prema_inbox_rule,prema_dispatch_inbox.group_dispatch_inbox,1,1,1,1
+access_prema_inbox_ai,inbox ai service,model_prema_inbox_ai,prema_dispatch_inbox.group_dispatch_inbox,1,0,0,0
+access_prema_inbox_ai_call,inbox ai call audit,model_prema_inbox_ai_call,prema_dispatch_inbox.group_dispatch_inbox,1,1,1,1
+access_prema_inbox_pricing,inbox pricing service,model_prema_inbox_pricing,prema_dispatch_inbox.group_dispatch_inbox,1,0,0,0
+access_prema_inbox_fetch_sim,inbox fetch sim,model_prema_inbox_fetch_sim,prema_dispatch_inbox.group_dispatch_inbox,1,1,1,1
+access_prema_inbox_account_move,inbox account move read,account.model_account_move,prema_dispatch_inbox.group_dispatch_inbox,1,0,0,0
+access_prema_inbox_crm_lead,inbox crm lead read,crm.model_crm_lead,prema_dispatch_inbox.group_dispatch_inbox,1,0,0,0
