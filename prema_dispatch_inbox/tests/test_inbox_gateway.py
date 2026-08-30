@@ -160,9 +160,32 @@ class TestGatewayIngest(InboxTestCase):
         self.assertEqual(len(conv.inbox_message_ids), 1)
         msg = conv.inbox_message_ids
         self.assertEqual(msg.direction, "incoming")
-        self.assertEqual(msg.attachment_ids.name, "rates.pdf")
+        names = msg.attachment_ids.mapped("name")
+        self.assertEqual(names, ["rates.pdf"])  # original_email.eml skipped
         self.assertEqual(base64.b64decode(msg.attachment_ids.datas),
                          b"hello world")
+
+    def test_message_new_plain_text_attachment_encoded(self):
+        # Regression: save_original appends 'original_email.eml' whose
+        # content is the raw RFC822 as a PLAIN STRING — storing it verbatim
+        # as datas crashed ir.attachment's base64 round-trip on prod
+        # (binascii "Incorrect padding"). Plain text (non-base64 str) must
+        # be encoded; base64 text passes through untouched.
+        conv = self.Conversation.message_new(dict(
+            MSG, message_id="<gateway-txt@client.example>",
+            attachments=[
+                ("original_email.eml",
+                 "From: x@y.z\r\nTo: dispatcher@logistics.premafirm.com\r\n",
+                 {}),
+                ("notes.txt", "hello dispatcher — plain text", {}),
+                ("rates.pdf",
+                 base64.b64encode(b"hello world").decode(), {}),
+            ]))
+        atts = conv.inbox_message_ids.attachment_ids
+        self.assertEqual(atts.mapped("name"), ["notes.txt", "rates.pdf"])
+        self.assertEqual(base64.b64decode(atts[0].datas).decode("utf-8"),
+                         "hello dispatcher — plain text")
+        self.assertEqual(base64.b64decode(atts[1].datas), b"hello world")
 
 
 class TestOutboundPipeline(InboxTestCase):

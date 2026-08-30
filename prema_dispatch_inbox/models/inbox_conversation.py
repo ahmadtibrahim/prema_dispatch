@@ -293,22 +293,37 @@ class InboxConversation(models.Model):
         may deliver plain (name, content) pairs; both shapes are accepted.
         Rows are created without a res_id and rebound to the inbox message
         after it exists.
+
+        Two content shapes need care:
+          * ``original_email.eml`` — appended by _message_parse_extract_
+            payload when the server has save_original set: its content is
+            the raw RFC822 source as a PLAIN STRING, not base64. Storing it
+            verbatim as ``datas`` crashes the attachment base64 round-trip
+            (binascii "Incorrect padding") and the ledger mail.message
+            already carries it, so it is skipped here.
+          * plain-text str content (fixtures/sim) — base64-encoded so it
+            survives the ``datas`` round-trip; a str that IS valid base64
+            (the fetch-sim shape) is stored as-is.
         """
-        res = self.env["ir.attachment"]
+        vals_list = []
         for item in msg_dict.get("attachments") or []:
             name, content = item[0], item[1]
             if not name or not content:
                 continue
+            if name == "original_email.eml":
+                continue  # core bookkeeping; see docstring
             data = content
             if isinstance(data, bytes):
                 data = base64.b64encode(data).decode("utf-8")
-            res = res.create({
+            elif not _looks_base64_text(data):
+                data = base64.b64encode(data.encode("utf-8")).decode("utf-8")
+            vals_list.append({
                 "name": name,
                 "datas": data,
                 "res_model": False,
                 "res_id": False,
             })
-        return res
+        return self.env["ir.attachment"].create(vals_list)
 
     @api.model
     def _looks_like_load_board(self, subject, body):
@@ -692,6 +707,22 @@ def _email_of(addr):
     if m:
         return m.group(1).strip().lower()
     return (addr or "").strip().lower()
+
+
+def _looks_base64_text(s):
+    """True when s is canonical base64 (decode → re-encode round-trips).
+
+    Attachment content from the fetch-sim is base64 text; raw RFC822 /
+    plain-text content is not — the distinction decides whether the value
+    can be stored verbatim as ``datas`` or must be encoded first.
+    """
+    if not s or len(s) % 4:
+        return False
+    try:
+        return (base64.b64encode(base64.b64decode(s, validate=True))
+                .decode("utf-8") == s)
+    except Exception:
+        return False
 
 
 def _synthetic_message_id():
