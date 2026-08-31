@@ -91,7 +91,7 @@ export class InboxApp extends Component {
             linkCandidates: null,   // {model, records, manual}
             linkSearch: "",
             assignCandidates: null,
-            formattedMsg: null,     // per-message "view formatted HTML" toggle
+            plainMsg: null,     // per-message "view plain text" opt-out
             mobileScreen: "list",   // list | conversation | ai (mobile stack)
         });
         // Odoo 18: env.userId does NOT exist (Odoo 16 legacy) — the uid
@@ -425,6 +425,17 @@ export class InboxApp extends Component {
             composer.body = opts.body;
         }
         this.state.composer = composer;
+        if (mode === "reply" || mode === "reply_all") {
+            if (!composer.to.trim()) {
+                // D-3: no automatic reply recipient resolved (sender
+                // internal or no external email) — the dispatcher must add
+                // one manually; the server refuses an empty send.
+                this.notification.add(
+                    "No automatic reply recipient was found (sender is "
+                    + "internal or has no external email) — verify the To field.",
+                    { type: "warning" });
+            }
+        }
         this._scrollComposer();
     }
 
@@ -455,9 +466,13 @@ export class InboxApp extends Component {
         }
         // Client-side validation mirrors the server: a Send without any
         // recipient is refused here, before the RPC, with the same message.
+        // Replies get the D-3 message — the sender had no resolvable
+        // external address; the recipient must be added manually.
         if (sendNow && kind !== "note" && !this._parseRecipients(c.to).length) {
             this.notification.add(
-                "No recipient — add the customer's email address before sending.",
+                kind === "reply" || kind === "reply_all"
+                    ? "No reply recipient — add the customer's email address manually before sending."
+                    : "No recipient — add the customer's email address before sending.",
                 { type: "danger" });
             return;
         }
@@ -700,6 +715,51 @@ export class InboxApp extends Component {
         });
     }
 
+    // ------------------------------------------------------------------
+    // D-4: partner resolution — deterministic, dispatcher-confirmed
+    // ------------------------------------------------------------------
+    openPartner() {
+        const conv = this.state.detail?.conversation;
+        if (!conv?.partner_id) {
+            return;
+        }
+        this.action.doAction({
+            type: "ir.actions.act_window",
+            res_model: "res.partner",
+            res_id: conv.partner_id,
+            views: [[false, "form"]],
+        });
+    }
+
+    async confirmPartner(partnerId) {
+        try {
+            await this.orm.call(
+                "prema.inbox.conversation", "action_confirm_partner",
+                [this.state.selectedId, partnerId]);
+            this.notification.add("Customer confirmed.", { type: "info" });
+        } catch (e) {
+            this.notification.add(
+                this._rpcError(e, "Could not confirm the customer."),
+                { type: "danger" });
+        }
+        await this.reconcile();
+        this.loadConversations();
+    }
+
+    async dismissProvisional() {
+        // "Leave unassigned" — clears the flag WITHOUT associating anything
+        // (a wrong customer is a high-severity error; never guess).
+        try {
+            await this.orm.call(
+                "prema.inbox.conversation", "action_confirm_partner",
+                [this.state.selectedId, false]);
+        } catch (e) {
+            /* keep the banner — the user decides next */
+        }
+        await this.reconcile();
+        this.loadConversations();
+    }
+
     linkTypeLabel(model) {
         return LINK_LABELS[model] || model;
     }
@@ -841,8 +901,10 @@ export class InboxApp extends Component {
     }
 
     toggleFormatted(messageId) {
-        this.state.formattedMsg =
-            this.state.formattedMsg === messageId ? null : messageId;
+        // D-2: incoming HTML (sanitized at ingest) is the DEFAULT view;
+        // this toggles OUT to the plain-text rendering.
+        this.state.plainMsg =
+            this.state.plainMsg === messageId ? null : messageId;
     }
 
     // ------------------------------------------------------------------

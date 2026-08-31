@@ -68,13 +68,15 @@ class InboxTestCase(TransactionCase):
     def ingest(self, email_from=DEMO_SENDER, subject="Rate quote: 6 pallets",
                body="Pickup Toronto M5V, delivery Belleville K8N, 6 pallets.",
                message_id=None,
-               references="", is_load_board=False, **kw):
+               references="", is_load_board=False, body_html=None, **kw):
         message_id = message_id or "<test-%d@prema-inbox>" % next(
             _msg_counter)
+        if body_html is None:
+            body_html = "<p>%s</p>" % body
         return self.Conversation._ingest_email(
             email_from=email_from,
             to_addrs=["dispatcher@logistics.premafirm.com"],
-            subject=subject, body_html="<p>%s</p>" % body,
+            subject=subject, body_html=body_html,
             body_plain=body, message_id=message_id,
             references=references, is_load_board=is_load_board, **kw)
 

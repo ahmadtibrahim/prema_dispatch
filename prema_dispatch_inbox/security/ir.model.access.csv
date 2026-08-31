@@ -8,3 +8,5 @@ access_prema_inbox_pricing,inbox pricing service,model_prema_inbox_pricing,prema
 access_prema_inbox_fetch_sim,inbox fetch sim,model_prema_inbox_fetch_sim,prema_dispatch_inbox.group_dispatch_inbox,1,1,1,1
 access_prema_inbox_account_move,inbox account move read,account.model_account_move,prema_dispatch_inbox.group_dispatch_inbox,1,0,0,0
 access_prema_inbox_crm_lead,inbox crm lead read,crm.model_crm_lead,prema_dispatch_inbox.group_dispatch_inbox,1,0,0,0
+access_prema_inbox_booking,inbox booking read,prema_logistics_booking.model_logistics_booking,prema_dispatch_inbox.group_dispatch_inbox,1,0,0,0
+access_prema_inbox_dispatch_job,inbox dispatch job read,prema_dispatch.model_prema_dispatch_job,prema_dispatch_inbox.group_dispatch_inbox,1,0,0,0

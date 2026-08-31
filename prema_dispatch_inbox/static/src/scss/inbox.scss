@@ -119,34 +119,41 @@ $inbox-accent: #017e84;
         overflow: hidden;
     }
 
+    // D-1: viewport-relative column sizing (CSS-only, no draggable
+    // splitters). Fixed widths are replaced by flex-basis clamps: each
+    // column takes vw-proportional space within min/max bounds, and the
+    // thread (email body — highest priority) absorbs everything left.
+    // Verified at 1920 / 1600 / 1366 / 1200 / 900 (drawer at ≤1200) +
+    // 150% zoom: the thread never drops below its readable minimum.
     .o_inbox_folders {
-        width: 200px;
-        flex-shrink: 0;
+        flex: 0 0 clamp(160px, 14vw, 220px);
+        min-width: 0;
         border-right: 1px solid $inbox-border;
         background: #fafbfc;
     }
 
     .o_inbox_list {
-        width: 340px;
-        flex-shrink: 0;
+        flex: 0 0 clamp(240px, 20vw, 340px);
+        min-width: 0;
         border-right: 1px solid $inbox-border;
     }
 
     .o_inbox_thread {
         flex: 1 1 auto;
-        min-width: 320px;
+        min-width: clamp(300px, 26vw, 420px);
     }
 
     .o_inbox_ai {
-        width: 300px;
-        flex-shrink: 0;
+        flex: 0 0 clamp(280px, 22vw, 340px);
+        min-width: 0;
         border-left: 1px solid $inbox-border;
         background: $inbox-ai-bg;
-        transition: width 0.18s ease;
+        transition: flex-basis 0.18s ease, width 0.18s ease;
 
         // Collapsed (desktop): only the head survives until the thread-head
         // AI toggle reopens it.
         &.o-inbox-ai-closed {
+            flex-basis: 0;
             width: 0;
             border-left: 0;
 
@@ -393,11 +400,59 @@ $inbox-accent: #017e84;
         .o_inbox_plain { white-space: pre-wrap; }
         .o_inbox_msg_fmt { margin-top: 2px; }
         .o_inbox_html {
-            margin-top: 6px;
-            padding-top: 6px;
-            border-top: 1px dashed $inbox-border;
+            // D-2: sanitized incoming HTML is the DEFAULT body view —
+            // readable email formatting (tables/lists/links) with no XSS.
+            // Sanitizer guarantees: no scripts / on* / javascript: hrefs /
+            // remote images / tracking pixels.
+            margin-top: 4px;
+            font-size: 13px;
+            line-height: 1.45;
 
             img { max-width: 100%; }
+            table { border-collapse: collapse; max-width: 100%; }
+            th, td {
+                border: 1px solid $inbox-border;
+                padding: 4px 8px;
+                font-size: 12.5px;
+            }
+            ul, ol { padding-left: 1.4em; }
+            a { word-break: break-all; }
+        }
+        // D-4: customer chip (opens the partner form) + provisional banner
+        .o_inbox_partner_chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            font-size: 12px;
+            font-weight: 500;
+            color: #2c5fa8;
+            background: rgba(44, 95, 168, 0.08);
+            border: 1px solid rgba(44, 95, 168, 0.25);
+            border-radius: 999px;
+            padding: 1px 9px;
+            margin-top: 2px;
+
+            &:hover { background: rgba(44, 95, 168, 0.16); }
+        }
+        .o_inbox_prov_ico {
+            color: #d97706;
+            font-size: 12px;
+            margin-right: 4px;
+        }
+        .o_inbox_prov {
+            margin: 8px 10px;
+            padding: 8px 10px;
+            border: 1px solid rgba(217, 119, 6, 0.45);
+            border-left: 3px solid #d97706;
+            border-radius: 6px;
+            background: rgba(217, 119, 6, 0.07);
+            flex-shrink: 0;
+        }
+        .o_inbox_prov_actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin-top: 6px;
         }
         .o_inbox_att { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 4px; }
 

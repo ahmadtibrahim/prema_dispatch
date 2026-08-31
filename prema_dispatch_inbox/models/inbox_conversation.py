@@ -15,11 +15,28 @@ import base64
 import re
 
 from odoo import _, api, fields, models
-from odoo.exceptions import ValidationError
-from odoo.tools import email_split, html2plaintext
+from odoo.exceptions import AccessError, ValidationError
+from odoo.tools import email_normalize, email_split, html2plaintext
 from odoo.tools.mail import html_sanitize
 
 _EMAIL_ADDR_RE = re.compile(r"<([^<>]+@[^<>]+)>")
+
+# RFC 5322 reply/forward subject prefixes (en/fr re, fwd, fw; de aw/antw;
+# sv sv/vs; pl odp; it rif; pt enc; no/da sv). Stacked prefixes collapse to
+# a single one — "Re: Re: quote" never grows "Re: Re: Re: …".
+_THREAD_PREFIX_RE = re.compile(
+    r"^\s*((re|fwd|fw|aw|sv|vs|antw|r|odp|rif|enc)\s*(\[[0-9]+\])?\s*:\s*)+",
+    re.I)
+
+
+def _normalize_thread_subject(subject):
+    """Strip stacked reply/forward prefixes — "Re: Re: quote" → "quote".
+
+    Used for reply subject defaults so repeated replies never stack
+    "Re: Re: Re: …". Non-prefixed subjects pass through verbatim.
+    """
+    cleaned = _THREAD_PREFIX_RE.sub("", subject or "").strip()
+    return cleaned or (subject or "").strip()
 
 # PremaFirm-internal email suffixes. Recipient defaults (reply / reply all)
 # and internal-address exclusion are decided on these — a PremaFirm address
@@ -98,7 +115,25 @@ class InboxConversation(models.Model):
     name = fields.Char(string="Subject", required=True)
     partner_id = fields.Many2one(
         "res.partner", string="Customer", index=True,
-        help="External counterparty. One canonical partner per conversation.")
+        help="External counterparty. One canonical partner per conversation. "
+             "When the customer is a company, this is the COMPANY "
+             "(commercial partner); the individual person goes on "
+             "contact_id — the same convention as crm.lead "
+             "(partner_id / logistics_contact_id).")
+    contact_id = fields.Many2one(
+        "res.partner", string="Contact", index=True,
+        help="The individual person when the customer is a company — the "
+             "commercial partner of partner_id. Set from the sender's exact "
+             "email match; never guessed.")
+    partner_provisional = fields.Boolean(
+        string="Customer not confirmed", default=False,
+        help="True when the sender's email matches MULTIPLE records — no "
+             "automatic association was made (a wrong customer is a "
+             "high-severity error). The dispatcher must confirm.")
+    partner_suggestions = fields.Json(
+        string="Ambiguous sender matches",
+        help="[{id, name, email, reason}] candidate partners when "
+             "partner_provisional is True.")
     category = fields.Selection([
         ("quote_request", "Quote Request"),
         ("load_opportunity", "Load Opportunity"),
@@ -202,7 +237,8 @@ class InboxConversation(models.Model):
     def _ingest_email(
             self, email_from, to_addrs, subject, body_html, body_plain,
             message_id, references=None, in_reply_to=None,
-            attachment_ids=None, is_load_board=False, date=None):
+            attachment_ids=None, is_load_board=False, date=None,
+            reply_to=None):
         """Create-or-thread an incoming message.
 
         Dedupe: message_id unique constraint on the message table (duplicate
@@ -210,6 +246,10 @@ class InboxConversation(models.Model):
         Threading: References/In-Reply-To are matched against existing
         inbox_message_ids — never by subject alone. Without a match a new
         conversation is created.
+
+        Partner: deterministic exact-email resolution (`_resolve_sender`) —
+        never a domain/name/address/tag/AI guess; an ambiguous match leaves
+        the conversation provisional for the dispatcher to confirm.
 
         Returns (message, conversation, created_bool). Broadcasts happen in
         the CALLER after commit (fetch-sim controller / future fetch path).
@@ -227,17 +267,32 @@ class InboxConversation(models.Model):
         # 2) thread-match by References / In-Reply-To
         conversation = self._find_by_references(references, in_reply_to)
 
-        # 3) partner resolution (display name + email)
-        partner = self._resolve_partner(email_from)
+        # 3) partner resolution — deterministic exact-email chain (D-4):
+        #    ambiguous → provisional, dispatcher confirms; never guessed.
+        resolved = self._resolve_sender(email_from)
+        partner = resolved["partner"]
+        contact = resolved["contact"]
 
         # 4) new conversation unless a thread matched
         created = not bool(conversation)
         if not conversation:
             conversation = self.create({
                 "name": subject or "(no subject)",
-                "partner_id": partner.id,
+                "partner_id": partner.id if partner else False,
+                "contact_id": contact.id if contact else False,
+                "partner_provisional": resolved["provisional"],
+                "partner_suggestions": resolved["suggestions"] or False,
                 "category": self._guess_category(subject or "", body_plain or ""),
-                "is_spam": self._is_spam_email(partner),
+                "is_spam": bool(partner) and self._is_spam_email(partner),
+            })
+        elif not conversation.partner_id and partner:
+            # a threaded reply into an as-yet-unidentified conversation can
+            # now resolve it — same deterministic chain, no guessing
+            conversation.write({
+                "partner_id": partner.id,
+                "contact_id": contact.id if contact else False,
+                "partner_provisional": resolved["provisional"],
+                "partner_suggestions": resolved["suggestions"] or False,
             })
 
         # 5) the message itself — body_html is UNTRUSTED email content and
@@ -248,8 +303,15 @@ class InboxConversation(models.Model):
             "conversation_id": conversation.id,
             "direction": "incoming",
             "date": date or fields.Datetime.now(),
-            "author_id": partner.id,
+            "author_id": partner.id if partner else False,
             "email_from": (email_from or "").strip(),
+            "reply_to_header": (reply_to or "").strip(),
+            # Reply-To identity is resolved HERE, at ingest, in the
+            # fetchmail/admin context — never inside the read-only reply
+            # composer RPC (a dispatcher without res.partner create rights
+            # must still be able to open a thread).
+            "reply_to_partner_id": (reply_to or "").strip()
+            and self._resolve_partner(reply_to).id or False,
             "recipient_ids": [(6, 0, [p.id for p in
                                       self._resolve_partners(to_addrs)])],
             "subject": subject,
@@ -288,24 +350,42 @@ class InboxConversation(models.Model):
         body = msg_dict.get("body") or ""
         message_id = msg_dict.get("message_id") or ""
         attachments = self._attachments_from_msgdict(msg_dict)
+        # Reply-To: Odoo 18's gateway msg_dict has NO reply_to key (verified
+        # mail_thread.py); the raw RFC 822 object survives as msg_dict["msg"]
+        # — parse the header there. The fetch-sim / tests may pass reply_to
+        # directly.
+        reply_to = msg_dict.get("reply_to") or ""
+        if not reply_to:
+            raw_msg = msg_dict.get("msg")
+            if raw_msg is not None and hasattr(raw_msg, "get"):
+                reply_to = raw_msg.get("Reply-To") or ""
         # A message_id we already know → a duplicate delivery: ingest will
         # no-op, and we must NOT announce it again. Anything else (new
         # thread OR reply into an existing thread) is a real new message.
         mid = (message_id or "").strip("<> ").strip()
         known = self.env["prema.inbox.message"].search(
             [("message_id", "=", mid)], limit=1)
+        # body_plain: the gateway's own text/plain part wins — it is what
+        # the MTA actually received (a message with NO html part carries
+        # only that plain text). When absent, derive the fallback from the
+        # SANITIZED html, never the raw body: the plain view must not echo
+        # script text that the sanitizer stripped from the html view.
+        plain = msg_dict.get("body_plain") or ""
+        if not plain.strip():
+            plain = html2plaintext(_sanitize_email_html(body))
         msg, conv, created = self._ingest_email(
             email_from=msg_dict.get("email_from") or "",
             to_addrs=email_split(msg_dict.get("to") or ""),
             subject=subject,
             body_html=body,
-            body_plain=html2plaintext(body) if body else "",
+            body_plain=plain,
             message_id=message_id,
             references=msg_dict.get("references") or "",
             in_reply_to=msg_dict.get("in_reply_to") or "",
             attachment_ids=[a.id for a in attachments],
             is_load_board=self._looks_like_load_board(subject, body),
             date=msg_dict.get("date") or None,
+            reply_to=reply_to,
         )
         # Files are created before the message row (res_id unknown); now
         # that the message exists, bind them to it.
@@ -404,14 +484,28 @@ class InboxConversation(models.Model):
         return msgs.conversation_id
 
     @api.model
+    def _find_partner_by_email(self, email, limit=None):
+        """Exact lookup on the NORMALIZED email — the canonical pattern used
+        across premafirm modules (prema_mail_tracking, crm_bulk_email).
+        Deterministic: the normalized address equals the partner's stored
+        normalized email. Never a domain / name / address similarity match."""
+        norm = email_normalize(email or "")
+        if not norm:
+            return self.env["res.partner"]
+        return self.env["res.partner"].search(
+            [("email_normalized", "=", norm)], limit=limit or 1)
+
+    @api.model
     def _resolve_partner(self, email_from):
-        """Find or create the res.partner for an RFC 5322 address."""
+        """Find-or-create the res.partner for a TYPED address (composer
+        To/Cc, message recipient list). Exact normalized-email match first,
+        else a NEW partner from the address itself — derived from the
+        address alone, never a domain/name/address/tag/AI guess."""
         email = _email_of(email_from)
         if not email:
             return self.env.ref("base.public_partner")
         display = re.sub(r"<[^<>]*>", "", email_from or "").strip(" \"'")
-        partner = self.env["res.partner"].search(
-            [("email", "=ilike", email)], limit=1)
+        partner = self._find_partner_by_email(email)
         if not partner:
             partner = self.env["res.partner"].create({
                 "name": display or email,
@@ -420,8 +514,121 @@ class InboxConversation(models.Model):
         return partner
 
     @api.model
+    def _partner_candidates_from_records(self, email):
+        """Deterministic partner evidence from raw-email records: prior
+        conversations and CRM leads carrying this EXACT email address.
+
+        No domain-only / name-similarity / address-similarity / tag / AI
+        evidence is ever considered — a wrong customer association is a
+        high-severity error.
+        """
+        candidates = self.env["res.partner"]
+        for m in self.env["prema.inbox.message"].search(
+                [("email_from", "ilike", email)], limit=200):
+            if _email_of(m.email_from or "") != email:
+                continue
+            if m.conversation_id.partner_id:
+                candidates |= m.conversation_id.partner_id
+        if "crm.lead" in self.env:
+            for lead in self.env["crm.lead"].search(
+                    [("email_from", "ilike", email)], limit=100):
+                if _email_of(lead.email_from or "") != email:
+                    continue
+                p = lead.partner_id or lead.logistics_contact_id
+                if p:
+                    candidates |= p
+        return candidates
+
+    @api.model
+    def _resolve_sender(self, email_from):
+        """Deterministic sender resolution for INCOMING mail (D-4).
+
+        Evidence chain — every step is an exact-email match on records that
+        carry this very address, in priority order:
+          1. a res.partner with the exact normalized email. A contact at a
+             company resolves to company + contact — the crm.lead
+             convention: partner_id = COMPANY, contact_id = the person.
+          2. prior inbox conversations whose messages carry this exact
+             email_from → their partner (the same person wrote before).
+          3. CRM leads whose email_from is exactly this address → their
+             partner / logistics contact.
+          4. nothing at all → a NEW partner from the sender's own display
+             name + email (derived from the message itself).
+
+        Multiple DISTINCT candidates → NO automatic association: partner
+        False + provisional True + suggestions for the dispatcher to
+        confirm (`action_confirm_partner`).
+
+        Returns {"partner", "contact", "provisional", "suggestions"}.
+        """
+        empty = {"partner": False, "contact": False,
+                 "provisional": False, "suggestions": False}
+        email = _email_of(email_from)
+        if not email:
+            return empty
+        display = re.sub(r"<[^<>]*>", "", email_from or "").strip(" \"'")
+        candidates = self._find_partner_by_email(email, limit=50)
+        if not candidates:
+            candidates = self._partner_candidates_from_records(email)
+        if len(candidates) == 1:
+            p = candidates
+            company = p.commercial_partner_id or p
+            return {
+                "partner": company,
+                "contact": p if company != p else False,
+                "provisional": False,
+                "suggestions": False,
+            }
+        if len(candidates) > 1:
+            return {
+                "partner": False,
+                "contact": False,
+                "provisional": True,
+                "suggestions": [{
+                    "id": p.id,
+                    "name": p.name or p.email,
+                    "email": p.email or email,
+                    "reason": ("Contact at %s" % p.parent_id.name)
+                              if p.parent_id and p.parent_id.name
+                              else "Partner",
+                } for p in candidates[:10]],
+            }
+        partner = self.env["res.partner"].create({
+            "name": display or email,
+            "email": email,
+        })
+        return {"partner": partner, "contact": False,
+                "provisional": False, "suggestions": False}
+
+    @api.model
     def _resolve_partners(self, addrs):
         return [self._resolve_partner(a) for a in addrs or []]
+
+    def action_confirm_partner(self, partner_id=None):
+        """Dispatcher resolves an ambiguous sender match (provisional).
+
+        partner_id False → "leave unassigned": clears the flag WITHOUT any
+        association. Otherwise sets partner (the company / commercial
+        partner) + contact (the confirmed record when it is a child
+        contact)."""
+        if partner_id:
+            partner = self.env["res.partner"].browse(int(partner_id))
+            if not partner.exists():
+                raise ValidationError(_("This partner no longer exists."))
+            company = partner.commercial_partner_id or partner
+            self.write({
+                "partner_id": company.id,
+                "contact_id": partner.id if company != partner else False,
+                "partner_provisional": False,
+                "partner_suggestions": False,
+            })
+        else:
+            self.write({
+                "partner_provisional": False,
+                "partner_suggestions": False,
+            })
+        self._broadcast_read_change()
+        return True
 
     @api.model
     def _guess_category(self, subject, body_plain):
@@ -587,6 +794,21 @@ class InboxConversation(models.Model):
         return rows
 
     @api.model
+    def _safe_link_name(self, record):
+        """Name of a linked business record, or "" when the caller lacks
+        read access to that model.
+
+        Odoo 18 raises the model-level ACL check even when reading the name
+        of a NULL link, so an unreadable link target would otherwise take
+        the WHOLE conversation list down with it ("Could not load
+        conversations"). The list must degrade per-link, never 500.
+        """
+        try:
+            return record.name or ""
+        except AccessError:
+            return ""
+
+    @api.model
     def _conversation_row(self, conv):
         last = conv.inbox_message_ids.sorted(
             key=lambda m: m.date, reverse=True)[:1]
@@ -596,6 +818,14 @@ class InboxConversation(models.Model):
             "partner_id": conv.partner_id.id,
             "partner_name": conv.partner_id.name,
             "partner_email": conv.partner_id.email or "",
+            "contact_id": conv.contact_id.id,
+            "contact_name": conv.contact_id.name or "",
+            "partner_provisional": conv.partner_provisional,
+            "partner_suggestions": conv.partner_suggestions or False,
+            "customer_label": (
+                "%s / %s" % (conv.partner_id.name, conv.contact_id.name)
+                if conv.partner_id and conv.contact_id
+                else (conv.partner_id.name or "")),
             "category": conv.category,
             "priority": conv.priority,
             "workflow_state": conv.workflow_state,
@@ -607,13 +837,13 @@ class InboxConversation(models.Model):
             "is_load_board": conv.is_load_board,
             "has_attachment": bool(conv.inbox_message_ids.attachment_ids),
             "booking_id": conv.booking_id.id,
-            "booking_name": conv.booking_id.name or "",
+            "booking_name": self._safe_link_name(conv.booking_id),
             "job_id": conv.job_id.id,
-            "job_name": conv.job_id.name or "",
+            "job_name": self._safe_link_name(conv.job_id),
             "invoice_id": conv.invoice_id.id,
-            "invoice_name": conv.invoice_id.name or "",
+            "invoice_name": self._safe_link_name(conv.invoice_id),
             "opportunity_id": conv.opportunity_id.id,
-            "opportunity_name": conv.opportunity_id.name or "",
+            "opportunity_name": self._safe_link_name(conv.opportunity_id),
         }
 
     @api.model
@@ -680,14 +910,14 @@ class InboxConversation(models.Model):
                 "to": [{"id": p.id, "email": p.email or p.name}
                        for p in conv.env["res.partner"].browse(to_default)],
                 "cc": [],
-                "subject": "Re: %s" % conv.name,
+                "subject": "Re: %s" % _normalize_thread_subject(conv.name),
             },
             "reply_all_defaults": {
                 "to": [{"id": p.id, "email": p.email or p.name}
                        for p in conv.env["res.partner"].browse(to_default_all)],
                 "cc": [{"id": p.id, "email": p.email or p.name}
                        for p in conv.env["res.partner"].browse(cc_default_all)],
-                "subject": "Re: %s" % conv.name,
+                "subject": "Re: %s" % _normalize_thread_subject(conv.name),
             },
             "muted": self.env.user.id in conv.muted_user_ids.ids,
             "ai": {
@@ -888,28 +1118,75 @@ class InboxConversation(models.Model):
 
     def _latest_incoming(self):
         """The newest incoming message of this thread (the thing a Reply
-        answers)."""
+        answers). Same-second messages tie on date — id breaks the tie, so
+        a reply answers the truly last message."""
         return self.inbox_message_ids.filtered(
             lambda m: m.direction == "incoming"
-        ).sorted(key=lambda m: m.date, reverse=True)[:1]
+        ).sorted(key=lambda m: (m.date, m.id), reverse=True)[:1]
 
     def _default_reply_recipients(self, kind):
-        """(to_ids, cc_ids) for reply / reply_all, computed from the latest
-        incoming message — the canonical sender, plus (for reply_all) the
-        external To/Cc recipients. Internal PremaFirm addresses and the
-        dispatcher's own address are always excluded."""
+        """(to_ids, cc_ids) for reply / reply_all — the D-3 safety chain.
+
+        Reply recipient resolution, in order:
+          1. the latest incoming message's Reply-To header — the sender's
+             EXPLICIT redirect — when the address is external;
+          2. the latest incoming message's external From author;
+          3. the conversation partner / contact — ONLY when that record has
+             an external email AND the relationship is unambiguous (the
+             sender is internal/unknown — a colleague forwarding on the
+             customer's behalf — or the sender's email IS this record).
+
+        If nothing resolves, [] is returned and compose_and_send refuses
+        with a clear error: the inbox NEVER guesses a recipient merely to
+        avoid an empty-recipient error.
+
+        reply_all: the resolved sender + the message's external To/Cc
+        recipients (internal PremaFirm addresses excluded, deduped).
+        """
         to_ids, cc_ids = [], []
         last = self._latest_incoming()
-        if not last:
-            return to_ids, cc_ids
-        if last.author_id and not self._is_internal_recipient(last.author_id):
-            to_ids.append(last.author_id.id)
+
+        sender_id = False
+        # 1) Reply-To header — the sender's explicit redirect. Identity was
+        #    resolved at ingest (reply_to_partner_id); for messages ingested
+        #    before that field existed, resolve EXISTING partners only —
+        #    this RPC is read-only and must never create one.
+        if last and (last.reply_to_header or "").strip():
+            rt = last.reply_to_partner_id or self._find_partner_by_email(
+                _email_of(last.reply_to_header))
+            if rt.id and not self._is_internal_recipient(rt):
+                sender_id = rt.id
+        # 2) external From author
+        if not sender_id and last and last.author_id \
+                and not self._is_internal_recipient(last.author_id):
+            sender_id = last.author_id.id
+        # 3) conversation partner/contact — external email AND unambiguous
+        #    relationship only (contact first: the person, then the company).
+        #    An empty thread has no sender to be ambiguous about — the
+        #    dispatcher's own association is the relationship.
+        if not sender_id:
+            candidate = self.contact_id or self.partner_id
+            sender_is_external = bool(
+                last and last.author_id
+                and not self._is_internal_recipient(last.author_id))
+            if candidate.id \
+                    and not self._is_internal_recipient(candidate) \
+                    and (not sender_is_external
+                         or last.author_id.id == candidate.id):
+                sender_id = candidate.id
+
+        if sender_id:
+            to_ids.append(sender_id)
         if kind == "reply_all":
+            seen = set(to_ids)
             for p in last.recipient_ids:
-                if p.id not in to_ids and not self._is_internal_recipient(p):
+                if p.id and p.id not in seen \
+                        and not self._is_internal_recipient(p):
                     to_ids.append(p.id)
+                    seen.add(p.id)
             for p in last.cc_ids:
-                if p.id not in to_ids and not self._is_internal_recipient(p):
+                if p.id and p.id not in seen \
+                        and not self._is_internal_recipient(p):
                     cc_ids.append(p.id)
         return to_ids, cc_ids
 
@@ -979,13 +1256,18 @@ class InboxConversation(models.Model):
         if kind in ("reply", "reply_all") and not to_ids:
             to_ids, cc_ids = self._default_reply_recipients(kind)
         if send_now and not to_ids:
+            if kind in ("reply", "reply_all"):
+                raise ValidationError(_(
+                    "No reply recipient — the sender has no resolvable "
+                    "external email address. Add the customer's email "
+                    "manually before sending."))
             raise ValidationError(
                 _("No recipient — add the customer's email address before sending."))
 
-        # ---- subject defaults ---------------------------------------
+        # ---- subject defaults (thread prefixes never stack) ---------
         subject = (subject or "").strip()
         if not subject and kind in ("reply", "reply_all"):
-            subject = "Re: %s" % self.name
+            subject = "Re: %s" % _normalize_thread_subject(self.name)
         elif not subject and kind == "forward":
             subject = "Fwd: %s" % self.name
 

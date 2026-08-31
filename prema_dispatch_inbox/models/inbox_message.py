@@ -39,6 +39,17 @@ class InboxMessage(models.Model):
         "res.users", string="Internal author",
         help="Set only when the author is an internal user (outgoing/notes).")
     email_from = fields.Char(string="From")
+    reply_to_header = fields.Char(
+        string="Reply-To",
+        help="The message's Reply-To header (RFC 5322) when present. Reply "
+             "recipient defaults prefer this address over the From header — "
+             "the sender's explicit redirect. Empty when the header was "
+             "absent.")
+    reply_to_partner_id = fields.Many2one(
+        "res.partner", string="Reply-To partner",
+        help="The partner resolved for the Reply-To address. Resolved ONCE "
+             "at ingest (where partner creation is allowed) — the reply "
+             "composer is a READ-only RPC and must never create partners.")
     recipient_ids = fields.Many2many(
         "res.partner", "prema_inbox_message_recipient_rel",
         "message_id", "partner_id", string="To")

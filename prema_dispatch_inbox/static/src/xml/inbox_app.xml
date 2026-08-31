@@ -106,7 +106,10 @@
                      t-on-click="() => this.openConversation(c.id)">
                     <div class="o_inbox_conv_top">
                         <span class="o_inbox_conv_from"
-                              t-esc="c.partner_name || '(no customer)'"/>
+                              t-esc="c.customer_label || '(no customer)'"/>
+                        <span t-if="c.partner_provisional"
+                              class="fa fa-exclamation-triangle o_inbox_prov_ico"
+                              t-att-title="'Customer not confirmed — open to review'"/>
                         <span class="o_inbox_conv_time"
                               t-esc="fmtDate(c.last_message_date)"/>
                     </div>
@@ -154,8 +157,14 @@
                             t-on-click="() => this.backTo('list')"><i class="fa fa-arrow-left"/></button>
                     <div class="o_inbox_thread_title">
                         <div t-esc="state.detail.conversation.name"/>
-                        <div class="text-muted small"
-                             t-esc="state.detail.conversation.partner_name"/>
+                        <a role="button" class="o_inbox_partner_chip"
+                           t-if="state.detail.conversation.partner_id"
+                           t-on-click="() => this.openPartner()"
+                           t-att-title="'Open customer record'">
+                            <i class="fa fa-building-o"/>
+                            <t t-esc="state.detail.conversation.customer_label"/>
+                        </a>
+                        <span t-else="" class="text-muted small">(no customer)</span>
                     </div>
                     <!-- assignment: native Dropdown, group-filtered -->
                     <Dropdown state="assignDropdown" menuClass="'o_inbox_assign_dd'"
@@ -297,6 +306,32 @@
                     </div>
                 </div>
 
+                <!-- D-4: ambiguous sender match — dispatcher MUST confirm.
+                     No automatic association is ever made for it. -->
+                <div t-if="state.detail.conversation.partner_provisional"
+                     class="o_inbox_prov">
+                    <div class="fw-bold small">
+                        <i class="fa fa-exclamation-triangle"/> Confirm customer
+                    </div>
+                    <div class="small">
+                        This sender's email matches multiple records — no
+                        customer was associated automatically.
+                    </div>
+                    <div class="o_inbox_prov_actions">
+                        <button t-foreach="state.detail.conversation.partner_suggestions || []"
+                                t-as="s" t-key="s.id"
+                                class="btn btn-sm btn-outline-primary"
+                                t-att-title="'Associate with ' + s.email"
+                                t-on-click="() => this.confirmPartner(s.id)">
+                            <t t-esc="s.name"/>
+                            <t t-if="s.reason"> · <t t-esc="s.reason"/></t>
+                        </button>
+                        <button class="btn btn-sm btn-link p-0"
+                                t-on-click="() => this.dismissProvisional()"
+                                title="Leave unassigned">Leave unassigned</button>
+                    </div>
+                </div>
+
                 <!-- drafts banner (resume edits the SAME message) -->
                 <div t-if="state.detail.drafts.length" class="o_inbox_draftbar">
                     <div class="small fw-bold">
@@ -347,22 +382,25 @@
                                 Retry
                             </button>
                         </div>
-                        <!-- Incoming HTML is sanitized at ingest; the default
-                             view renders PLAIN TEXT (white-space: pre-wrap) so
-                             <p>/<pre> tags never show. "View formatted" opts
-                             into the server-sanitized HTML (no scripts, no
-                             remote images). -->
-                        <div class="o_inbox_msg_body o_inbox_plain"
-                             t-esc="m.body_plain"/>
+                        <!-- Incoming HTML is sanitized ONCE at ingest
+                             (scripts / on* / javascript: hrefs / remote
+                             images / tracking pixels stripped; tables,
+                             lists and links kept). The default view renders
+                             that sanitized HTML — readable email formatting
+                             with no XSS surface. "View plain text" opts
+                             out. Outgoing/notes always render plain text
+                             (dispatcher-typed). -->
+                        <div t-if="m.direction === 'incoming' &amp;&amp; m.body &amp;&amp; state.plainMsg !== m.id"
+                             class="o_inbox_msg_body o_inbox_html" t-raw="m.body"/>
+                        <div t-else=""
+                             class="o_inbox_msg_body o_inbox_plain" t-esc="m.body_plain"/>
                         <div class="o_inbox_msg_fmt">
-                            <button t-if="m.direction !== 'note' &amp;&amp; m.body"
+                            <button t-if="m.direction === 'incoming' &amp;&amp; m.body"
                                     class="btn btn-link btn-sm p-0"
                                     t-on-click="() => this.toggleFormatted(m.id)">
-                                <t t-esc="state.formattedMsg === m.id ? 'Hide formatted' : 'View formatted'"/>
+                                <t t-esc="state.plainMsg === m.id ? 'View formatted' : 'View plain text'"/>
                             </button>
                         </div>
-                        <div t-if="state.formattedMsg === m.id &amp;&amp; m.direction !== 'note' &amp;&amp; m.body"
-                             class="o_inbox_msg_body o_inbox_html" t-raw="m.body"/>
                         <!-- attachments: open / preview / download via the
                              authenticated authorized route (inbox group) -->
                         <div t-if="m.attachments.length" class="o_inbox_att">

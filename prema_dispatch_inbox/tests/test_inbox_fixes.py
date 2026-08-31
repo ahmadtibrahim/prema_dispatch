@@ -151,20 +151,37 @@ class TestComposerContract(InboxTestCase):
         self.assertEqual(out.cc_ids.mapped("email"), ["alice@partner.test"])
 
     def test_reply_send_without_any_recipient_rejected(self):
-        """A conversation with no incoming mail has no reply defaults —
-        sending must be refused server-side with a clear message (the
-        client validates too, but the server is the boundary)."""
+        """A conversation with NO resolvable recipient must refuse a Send
+        server-side with a clear D-3 message (the client validates too, but
+        the server is the boundary). The partner has NO email → the
+        conversation-partner fallback is unavailable and the sender is
+        unknown — nothing may be guessed."""
         partner = self.env["res.partner"].create({
-            "name": "Nobody", "email": "nobody@test.local"})
+            "name": "Nobody", "email": ""})
         conv = self.Conversation.create({
             "name": "Empty thread", "partner_id": partner.id})
         with self.assertRaises(ValidationError) as cm:
             conv.compose_and_send("Re: x", "body", "reply", True)
-        self.assertIn("No recipient", str(cm.exception))
+        self.assertIn("No reply recipient", str(cm.exception))
+        self.assertIn("manually", str(cm.exception))
         # ...but saving as a draft is allowed (fill in recipients later)
         res = conv.compose_and_send("Re: x", "body", "reply", False)
         self.assertEqual(self.Message.browse(res["id"]).outbound_state,
                          "draft")
+
+    def test_reply_defaults_fallback_to_partner_with_email(self):
+        """D-3: a conversation partner WITH an external email is a valid
+        reply fallback when there is no incoming author (step 3 of the
+        safety chain — email exists + external + unambiguous)."""
+        partner = self.env["res.partner"].create({
+            "name": "Acme Logistics", "email": "ops@acme-logistics.test"})
+        conv = self.Conversation.create({
+            "name": "Empty thread", "partner_id": partner.id})
+        res = conv.compose_and_send("Re: x", "body", "reply", True)
+        out = self.Message.browse(res["id"])
+        self.assertEqual(out.recipient_ids.mapped("email"),
+                         ["ops@acme-logistics.test"])
+        self.assertEqual(out.outbound_state, "intercepted")
 
     def test_compose_email_always_creates_own_conversation(self):
         """New email must NEVER attach to the selected thread — even when
