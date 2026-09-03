@@ -12,12 +12,15 @@ prema_inbox:{uid}; new-message events and read-state changes are broadcast
 post-commit only.
 """
 import base64
+import logging
 import re
 
 from odoo import _, api, fields, models
 from odoo.exceptions import AccessError, ValidationError
 from odoo.tools import email_normalize, email_split, html2plaintext
 from odoo.tools.mail import html_sanitize
+
+_logger = logging.getLogger(__name__)
 
 _EMAIL_ADDR_RE = re.compile(r"<([^<>]+@[^<>]+)>")
 
@@ -200,6 +203,34 @@ class InboxConversation(models.Model):
         help="Immutable pricing result (price_lines + route_snapshot + "
              "calculated_price) from PricingService.calculate — the single "
              "pricing authority. Never AI-invented.")
+    # F-1 — dispatcher price adjustment. Engine price, dispatcher
+    # adjustment, final quoted price, quoted_by / quoted_at / reason are
+    # kept SEPARATELY: the snapshot (engine authority) is never overwritten
+    # by a dispatcher adjustment.
+    engine_calculated_price = fields.Float(
+        string="Engine price",
+        help="Copy of price_snapshot.calculated_price at snapshot time — "
+             "the system price stays visible even after the dispatcher "
+             "adjusts the quote.")
+    dispatcher_adjustment = fields.Float(
+        string="Dispatcher adjustment",
+        help="F-1: dispatcher-only price adjustment (e.g. goodwill, volume "
+             "deal). Applied on top of the engine price; the engine "
+             "snapshot is never modified.")
+    adjustment_reason = fields.Text(
+        string="Adjustment reason",
+        help="Why the dispatcher adjusted the price (optional).")
+    quoted_by = fields.Many2one(
+        "res.users", string="Quoted by",
+        help="Dispatcher who set the final quoted price.")
+    quoted_at = fields.Datetime(
+        string="Quoted at",
+        help="When the final quoted price was set.")
+    final_quoted_price = fields.Float(
+        string="Final quoted price", compute="_compute_final_quoted_price",
+        help="engine_calculated_price + dispatcher_adjustment — the number "
+             "the customer is actually quoted. 0.0 when no engine price "
+             "exists yet (never an invented quote).")
     inbox_message_ids = fields.One2many(
         "prema.inbox.message", "conversation_id", string="Messages")
     is_load_board = fields.Boolean(
@@ -627,6 +658,9 @@ class InboxConversation(models.Model):
                 "partner_provisional": False,
                 "partner_suggestions": False,
             })
+        # D-6 backfill: notes written before confirmation now have a
+        # partner to attach to — mirror each one independently.
+        self._backfill_mirrored_notes()
         self._broadcast_read_change()
         return True
 
@@ -925,7 +959,29 @@ class InboxConversation(models.Model):
                 "summary": conv.ai_summary or "",
                 "extraction": conv.ai_extraction,
             },
-            "pricing": conv.price_snapshot,
+            # D-10: state + breakdown derive from the immutable snapshot;
+            # F-1: quote state carries engine/adjustment/final separately.
+            "pricing": {
+                **(conv.price_snapshot or {}),
+                "state": self.env["prema.inbox.pricing"]
+                    .pricing_state(conv),
+                "breakdown": self.env["prema.inbox.pricing"]
+                    .price_breakdown(conv),
+                "quote": conv._quote_state(),
+            },
+            # F-3/F-5: booking state + acceptance follow-up banner.
+            "booking": {
+                "id": conv.booking_id.id or None,
+                "number": self._safe_link_name(conv.booking_id),
+                "url": ("/web#model=logistics.booking&id=%s"
+                        % conv.booking_id.id) if conv.booking_id else None,
+            },
+            "acceptance": {
+                "booking_linked": bool(conv.booking_id),
+                "customer_replied_after_booking":
+                    conv._customer_replied_after_booking(),
+                "hint": conv._acceptance_hint(),
+            },
         }
 
     @api.model
@@ -1006,12 +1062,96 @@ class InboxConversation(models.Model):
             domain, limit=20,
             order="create_date desc" if model != "invoice"
             else "invoice_date desc nulls last")
-        return [{
-            "id": r.id, "name": r.name or "%s #%s" % (model, r.id),
-            "partner_id": r.partner_id.id,
-            "partner_name": r.partner_id.name or "",
-            "state": getattr(r, "state", None),
-        } for r in records]
+        rows = []
+        for r in records:
+            row = {
+                "id": r.id, "name": r.name or "%s #%s" % (model, r.id),
+                "partner_id": r.partner_id.id,
+                "partner_name": r.partner_id.name or "",
+                "state": self._safe_attr(r, "state"),
+            }
+            # D-5: model-specific enrichment so the dispatcher recognizes
+            # the right record at a glance — every read is defensive
+            # (unreadable/missing fields degrade to ""/None, never crash).
+            if model == "booking":
+                row.update({
+                    "number": self._safe_attr(r, "booking_number")
+                              or self._safe_attr(r, "name"),
+                    "pickup": self._safe_attr(r, "pickup_address")
+                              or self._safe_attr(r, "pickup_city"),
+                    "delivery": self._safe_attr(r, "delivery_address")
+                                or self._safe_attr(r, "delivery_city"),
+                    "date": self._fmt_date_attr(r, "pickup_date"),
+                })
+            elif model == "job":
+                row.update({
+                    "number": self._safe_attr(r, "ref")
+                              or self._safe_attr(r, "name"),
+                    "route": self._safe_attr(r, "planned_route_name")
+                             or self._safe_attr(r, "planning_anchor_name"),
+                    "date": self._fmt_date_attr(r, "scheduled_pickup"),
+                })
+            elif model == "invoice":
+                row.update({
+                    "number": self._safe_attr(r, "name"),
+                    "date": self._fmt_date_attr(r, "invoice_date"),
+                    "total": r.amount_total,
+                    "payment_state": self._safe_attr(r, "payment_state"),
+                })
+            elif model == "opportunity":
+                row.update({
+                    "stage": self._safe_attr(r, "stage_id.name"),
+                    "salesperson": self._safe_attr(r, "user_id.name"),
+                    "activity": self._latest_activity_label(r),
+                })
+            rows.append(row)
+        return rows
+
+    @api.model
+    def _safe_attr(self, record, path):
+        """Read a field path ('stage_id.name') defensively — an unreadable
+        or missing field yields '' instead of raising (the list must never
+        500 because one candidate row has an odd ACL or schema)."""
+        try:
+            value = record
+            for part in path.split("."):
+                value = getattr(value, part, None)
+                if value is None:
+                    return ""
+            return value if isinstance(value, str) else str(value or "")
+        except AccessError:
+            return ""
+
+    @api.model
+    def _fmt_date_attr(self, record, field_name):
+        """Safe isoformat for a date/datetime field ('' when unreadable or
+        absent) — keeps candidate JSON plain and client-renderable."""
+        try:
+            value = getattr(record, field_name, None)
+        except AccessError:
+            return ""
+        if not value:
+            return ""
+        try:
+            return value.isoformat()
+        except Exception:
+            return ""
+
+    @api.model
+    def _latest_activity_label(self, lead):
+        """'summary · deadline' for the lead's latest mail.activity, or ''."""
+        try:
+            activities = lead.activity_ids.sorted(
+                key=lambda a: (a.date_deadline or a.create_date), reverse=True)
+        except AccessError:
+            return ""
+        if not activities:
+            return ""
+        act = activities[0]
+        bits = [b for b in
+                (act.summary or "", act.date_deadline
+                 and act.date_deadline.isoformat()) if b]
+        return " · ".join(bits)
 
     def action_link_record(self, model, record_id, search=None):
         """Link a record to the conversation — authorized server-side.
@@ -1056,9 +1196,96 @@ class InboxConversation(models.Model):
                 raise ValidationError(
                     _("Not a valid candidate for this conversation — use "
                       "the picker search to find records first."))
+        # D-5: the conversation's partner may be stamped onto the OPPORTUNITY
+        # ONLY when the lead has no partner yet (or already carries the same
+        # one) — a lead belonging to a DIFFERENT customer is never
+        # re-associated (wrong-customer = high severity). Never a silent
+        # partner change on bookings/jobs/invoices: those are link-only.
+        if model == "opportunity" and conv.partner_id:
+            lead_partner = rec.partner_id
+            if not lead_partner \
+                    or lead_partner.id == conv.partner_id.id \
+                    or (lead_partner.commercial_partner_id
+                        and lead_partner.commercial_partner_id.id
+                        == conv.partner_id.id):
+                if not lead_partner:
+                    try:
+                        rec.write({"partner_id": conv.partner_id.id})
+                    except Exception:  # noqa: BLE001 — never block the link
+                        _logger.warning(
+                            "inbox: could not stamp opportunity %s partner",
+                            rec.id)
         self.write({field: rec.id})
+        self._post_target_backlink(conv, model_name, rec)
         self._broadcast_read_change()
         return True
+
+    def _post_target_backlink(self, conv, model_name, record):
+        """Chatter note on the TARGET record: "Dispatch Inbox conversation
+        linked" + sender/subject/date + a deep-link back to the thread.
+
+        Authored by OdooBot as an internal mt_note — never emailed to the
+        customer. Models without a chatter widget (logistics.booking has
+        none) still get the mail.message row via the raw path so the
+        backlink exists for queries; supported models get message_post.
+        Every access is defensive — an unreadable target degrades to a
+        no-op, never a failure of the link itself.
+        """
+        try:
+            partner_name = (conv.partner_id.name or "") \
+                if conv.partner_id else "(no customer)"
+            last = conv._latest_incoming()
+            body = (
+                "Dispatch Inbox conversation linked → "
+                "<a href=\"%s\">%s</a><br/>"
+                "Sender: %s<br/>Subject: %s<br/>Last message: %s"
+                % (self._inbox_conv_url(conv.id),
+                   self._escape_note(conv.name or "(no subject)"),
+                   self._escape_note(last and last.email_from or "—"),
+                   self._escape_note(conv.name or "—"),
+                   (last and last.date
+                    and last.date.strftime("%Y-%m-%d %H:%M")) or "—"))
+            target = record.sudo()
+            if hasattr(target, "message_post"):
+                odoo_bot = self.env.ref(
+                    "base.partner_root", raise_if_not_found=False)
+                try:
+                    target.message_post(
+                        body=body,
+                        message_type="comment",
+                        subtype_xmlid="mail.mt_note",
+                        author_id=(
+                            odoo_bot.id if odoo_bot else self.env.user.id))
+                    return True
+                except Exception:  # noqa: BLE001 — fall through to raw row
+                    _logger.debug("inbox backlink: message_post failed", exc_info=True)
+            self.env["mail.message"].sudo().create({
+                "model": model_name,
+                "res_id": record.id,
+                "body": body,
+                "message_type": "comment",
+                "subtype_id": self.env.ref("mail.mt_note").id,
+                "author_id": self.env.ref(
+                    "base.partner_root", raise_if_not_found=False).id
+                    or self.env.user.partner_id.id,
+            })
+            return True
+        except Exception:  # noqa: BLE001 — backlink is best-effort
+            _logger.warning("inbox backlink note failed", exc_info=True)
+            return False
+
+    @api.model
+    def _inbox_conv_url(self, conversation_id):
+        """Deep link back to a conversation inside the client action —
+        consumed by the ?conv= handler (Phase 5)."""
+        return "/web#action=prema_inbox_main&conv=%s" % conversation_id
+
+    @api.model
+    def _escape_note(self, text):
+        """Escape text interpolated into a chatter note body (the sender
+        address is untrusted email data — never echo it raw into HTML)."""
+        import html as _html
+        return _html.escape(str(text or ""))
 
     def action_unlink_record(self, model):
         """Remove a business link (the X on the chip)."""
@@ -1100,7 +1327,243 @@ class InboxConversation(models.Model):
         """
         if self.ai_status == "none":
             self.env["prema.inbox.ai"].extract_shipment(self)
-        return self.env["prema.inbox.pricing"].calculate_price(self)
+        result = self.env["prema.inbox.pricing"].calculate_price(self)
+        snap = self.price_snapshot or {}
+        if snap.get("calculated_price"):
+            # D-10/F-1: keep the engine price visible even after a
+            # dispatcher adjustment — the snapshot itself is never touched.
+            self.engine_calculated_price = snap["calculated_price"]
+        return result
+
+    # ------------------------------------------------------------------
+    # F-1 — dispatcher price adjustment
+    # ------------------------------------------------------------------
+    @api.depends("engine_calculated_price", "dispatcher_adjustment")
+    def _compute_final_quoted_price(self):
+        for conv in self:
+            engine = conv.engine_calculated_price or 0.0
+            adj = conv.dispatcher_adjustment or 0.0
+            conv.final_quoted_price = engine + adj if engine else 0.0
+
+    def action_set_quoted_price(self, adjustment, reason=None):
+        """F-1: dispatcher sets/clears the price adjustment for a quote.
+
+        Keeps engine price and adjustment SEPARATE: only
+        dispatcher_adjustment / reason / quoted_by / quoted_at are written.
+        The engine snapshot is never overwritten — recalculating the price
+        later does not lose the dispatcher's number (it keeps applying
+        until cleared). Returns the quote state for the UI.
+        """
+        engine = self.engine_calculated_price or (
+            self.price_snapshot or {}).get("calculated_price") or 0.0
+        if not engine and not adjustment:
+            return {"error": "Run 'Review & calculate quote' first — there "
+                             "is no engine price to quote from."}
+        self.write({
+            "dispatcher_adjustment": adjustment or 0.0,
+            "adjustment_reason": reason or False,
+            "quoted_by": self.env.user.id,
+            "quoted_at": fields.Datetime.now(),
+        })
+        if not self.engine_calculated_price:
+            self.engine_calculated_price = engine
+        return self._quote_state()
+
+    def _quote_state(self):
+        """The F-1 quote state block for the detail payload."""
+        engine = self.engine_calculated_price or (
+            self.price_snapshot or {}).get("calculated_price") or 0.0
+        adj = self.dispatcher_adjustment or 0.0
+        return {
+            "engine_calculated_price": engine or None,
+            "dispatcher_adjustment": adj or None,
+            "final_quoted_price": (engine + adj) if engine else None,
+            "adjustment_reason": self.adjustment_reason or "",
+            "quoted_by": self.quoted_by.name if self.quoted_by else None,
+            "quoted_at": (self.quoted_at.isoformat()
+                          if self.quoted_at else None),
+            "currency": (self.price_snapshot or {}).get("currency")
+                        or self.env.company.currency_id.name,
+        }
+
+    # ------------------------------------------------------------------
+    # F-5 — acceptance follow-up (suggestion ONLY, dispatcher confirms)
+    # ------------------------------------------------------------------
+    def _customer_replied_after_booking(self):
+        """True when the newest incoming email landed after the booking
+        was created — i.e. the customer is actively replying to us."""
+        if not self.booking_id:
+            return False
+        booking_date = self.booking_id.create_date
+        if not booking_date:
+            return False
+        incoming = self.inbox_message_ids.filtered(
+            lambda m: m.direction == "incoming")
+        if not incoming:
+            return False
+        newest = incoming.sorted(key=lambda m: m.date, reverse=True)[0]
+        return bool(newest.date and newest.date > booking_date)
+
+    def _acceptance_hint(self):
+        """Deterministic keyword scan over the latest incoming message —
+        a SUGGESTION for the dispatcher, never an automated action.
+        Returns ("accept"|"decline"|"question"|None, matched text)."""
+        if not self.booking_id:
+            return (None, "")
+        incoming = self.inbox_message_ids.filtered(
+            lambda m: m.direction == "incoming")
+        if not incoming:
+            return (None, "")
+        latest = incoming.sorted(key=lambda m: m.date, reverse=True)[0]
+        text = html2plaintext(latest.body or "") if latest.body else (
+            latest.subject or "")
+        low = text.lower()
+        accept = ("confirm", "confirmed", "we accept", "accepted",
+                  "approved", "go ahead", "book it", "proceed",
+                  "yes, please", "perfect", "looks good")
+        decline = ("cancel", "decline", "cannot do", "can't do",
+                   "too expensive", "no thanks", "not interested")
+        for w in accept:
+            if w in low:
+                return ("accept", w)
+        for w in decline:
+            if w in low:
+                return ("decline", w)
+        if "?" in latest.subject or "?" in low:
+            return ("question", "?")
+        return (None, "")
+
+    # ------------------------------------------------------------------
+    # F-2 — Reply with Quote (deterministic template, NEVER auto-sent)
+    # ------------------------------------------------------------------
+    def action_quote_reply(self):
+        """Deterministic quote reply: shipment summary + engine breakdown
+        ± dispatcher adjustment = final quoted price.
+
+        Only values that exist in records/snapshot are used — no AI
+        calculation, no invented prices. Returns {subject, body, quote} and
+        the FRONTEND opens the composer with it (normal Reply threading,
+        dispatcher edits + sends — nothing is auto-sent).
+        """
+        if not self.partner_id:
+            return {"error": "Confirm the customer first — reply recipients "
+                             "are resolved from the confirmed partner."}
+        snap = self.price_snapshot or {}
+        ex = (self.ai_extraction or {}).get("fields") or {}
+        quote = self._quote_state()
+        if not quote["final_quoted_price"] and not snap:
+            return {"error": "No engine price yet — run 'Review & calculate "
+                             "quote' before quoting."}
+
+        def _stop(side):
+            return ex.get(side) or {}
+        pickup, delivery = _stop("pickup"), _stop("delivery")
+        lines = []
+        pallets = ex.get("pallets")
+        if pallets:
+            lines.append("%d pallet%s" % (pallets, "s" if pallets != 1 else ""))
+        if ex.get("weight_lbs"):
+            lines.append("%d lbs" % ex["weight_lbs"])
+        if ex.get("equipment"):
+            lines.append(str(ex["equipment"]))
+        if ex.get("temperature_c") is not None:
+            lines.append("%d C" % ex["temperature_c"])
+        shipment = ", ".join(lines) or "your shipment"
+
+        def _place(d):
+            return ", ".join(
+                str(d.get(k) or "").strip() for k in
+                ("city", "province", "postal_code")) or (
+                str(d.get("address") or "").strip())
+
+        body_lines = [
+            "Thank you for your inquiry — here is our quote:",
+            "",
+            "Shipment: %s" % shipment,
+            "Pickup:   %s" % (_place(pickup) or "to be confirmed"),
+            "Delivery: %s" % (_place(delivery) or "to be confirmed"),
+            "",
+        ]
+        for pl in (snap.get("price_lines") or []):
+            if isinstance(pl, dict) and pl.get("label") and pl.get("amount") is not None:
+                body_lines.append("- %s: %s %.2f"
+                                  % (pl["label"], quote["currency"],
+                                     pl["amount"]))
+        if quote["dispatcher_adjustment"]:
+            body_lines.append("- Dispatcher adjustment: %s %.2f"
+                              % (quote["currency"],
+                                 quote["dispatcher_adjustment"]))
+        body_lines += [
+            "",
+            "Total quoted price: %s %.2f"
+            % (quote["currency"], quote["final_quoted_price"]),
+            "",
+            "This quote reflects current corridor rates and availability. "
+            "We will confirm the final schedule with you before pickup.",
+        ]
+        return {
+            "subject": "Re: %s" % _normalize_thread_subject(self.name),
+            "body": "\n".join(body_lines),
+            "quote": quote,
+        }
+
+    # ------------------------------------------------------------------
+    # D-9 — editable shipment extraction (dispatcher overrides, no re-run)
+    # ------------------------------------------------------------------
+    def action_update_extraction(self, updates):
+        """Dispatcher edits extraction fields (D-9).
+
+        Validates against the canonical _EXTRACTION_SCHEMA (same schema the
+        AI is held to), merges into ai_extraction.fields, marks edited
+        fields provenance 'manual' (source_msg dropped), removes them from
+        missing. Never re-runs the AI, never re-prices automatically —
+        the dispatcher clicks calculate again after correcting.
+        """
+        from odoo.addons.prema_dispatch_inbox.models.inbox_ai import (
+            _EXTRACTION_SCHEMA)
+        if not isinstance(updates, dict) or not updates:
+            return {"error": "No updates provided."}
+        ex = dict(self.ai_extraction or {})
+        fields_ = dict(ex.get("fields") or {})
+        sources = dict(ex.get("sources") or {})
+        missing = list(ex.get("missing") or [])
+        conflicts = list(ex.get("conflicting") or [])
+        edits = {}
+
+        def _valid(flat_key, value):
+            if flat_key not in _EXTRACTION_SCHEMA:
+                return False
+            spec = _EXTRACTION_SCHEMA[flat_key]
+            if spec.get("type") == "integer":
+                try:
+                    return value is None or int(value) == value
+                except (TypeError, ValueError):
+                    return False
+            return True
+
+        for flat_key, value in updates.items():
+            if not isinstance(flat_key, str) or "." in flat_key:
+                # nested stop updates arrive as {pickup: {city: ...}} — the
+                # frontend only ever sends flat top-level keys today
+                continue
+            if not _valid(flat_key, value):
+                return {"error": "Invalid extraction field: %s" % flat_key}
+            fields_[flat_key] = value
+            sources[flat_key] = {"source_msg": None, "provenance": "manual"}
+            if flat_key in missing:
+                missing.remove(flat_key)
+            if flat_key in conflicts:
+                conflicts.remove(flat_key)
+            edits[flat_key] = value
+        if not edits:
+            return {"error": "No valid fields to update."}
+        ex.update({
+            "fields": fields_, "sources": sources, "missing": missing,
+            "conflicting": conflicts,
+            "edited_at": fields.Datetime.now().isoformat(),
+        })
+        self.write({"ai_extraction": ex})
+        return {"extraction": ex, "edited": list(edits)}
 
     # ------------------------------------------------------------------
     # composer — the SINGLE RPC behind every composer action
@@ -1245,6 +1708,12 @@ class InboxConversation(models.Model):
                 # _new_outbound always creates a draft; a note is its own
                 # terminal state (never drafted, never sent)
                 message.outbound_state = "note"
+            # D-6: mirror THIS note to the customer's chatter (mt_note,
+            # OdooBot author — never emailed). Per-note dedupe: the inbox
+            # message's partner_log_note_id is set once, so retries never
+            # duplicate, and a different note is never blocked.
+            if not message.partner_log_note_id:
+                self._mirror_note_to_partner(message)
             self._touch()
             self._broadcast_read_change()
             return {"id": message.id, "conversation_id": self.id,
@@ -1322,6 +1791,88 @@ class InboxConversation(models.Model):
         conv._touch()
         return {"id": message.id, "conversation_id": conv.id,
                 "outbound_state": message.outbound_state}
+
+    # ------------------------------------------------------------------
+    # D-6 — Internal Note → Partner Log Note (independent per-note mirror)
+    # ------------------------------------------------------------------
+    def _mirror_note_to_partner(self, note):
+        """Mirror ONE inbox internal note onto the customer's chatter as an
+        internal log note — mt_note, OdooBot author: never emailed, never
+        a customer notification.
+
+        Dedupe is PER-NOTE, not per-conversation: this inbox note's
+        partner_log_note_id is the linked partner mail_message id — set
+        once at mirror time. Retrying a note never creates a duplicate,
+        and a DIFFERENT note always mirrors independently (its own row,
+        its own key). No conversation-level Boolean anywhere.
+
+        Targets the conversation's partner (always the COMPANY /
+        commercial partner per the D-4 convention). Conversations without
+        a confirmed partner cannot mirror (nothing to attach to) — the
+        note stays inbox-only and the backfill on action_confirm_partner
+        mirrors it once a partner is confirmed.
+        """
+        if not note or note.direction != "note" or note.partner_log_note_id:
+            return False
+        partner = self.partner_id
+        if not partner:
+            return False
+        author = note.author_internal.name or self.env.user.name
+        sender = note.conversation_id._latest_incoming()
+        bits = [
+            "<b>Dispatch Inbox note</b> — %s · %s"
+            % (self._escape_note(author),
+               note.date.strftime("%Y-%m-%d %H:%M") if note.date else ""),
+            self._escape_note((note.body_plain or note.body or "").strip()),
+        ]
+        refs = []
+        if self.booking_id:
+            refs.append("Booking %s"
+                        % self._escape_note(
+                            self.booking_id.booking_number
+                            or self.booking_id.name))
+        if self.job_id:
+            refs.append("Job %s" % self._escape_note(self.job_id.name))
+        if self.invoice_id:
+            refs.append("Invoice %s"
+                        % self._escape_note(self.invoice_id.name))
+        if self.opportunity_id:
+            refs.append("Opportunity %s"
+                        % self._escape_note(self.opportunity_id.name))
+        if refs:
+            bits.append("Linked: " + ", ".join(refs))
+        if sender:
+            bits.append("Email: %s — %s"
+                        % (self._escape_note(sender.email_from or "—"),
+                           self._escape_note(sender.subject or "")))
+        bits.append('Source: <a href="%s">Dispatch Inbox conversation</a>'
+                    % self._inbox_conv_url(self.id))
+        body = "<br/>".join(bits)
+        try:
+            odoo_bot = self.env.ref(
+                "base.partner_root", raise_if_not_found=False)
+            posted = partner.message_post(
+                body=body,
+                message_type="comment",
+                subtype_xmlid="mail.mt_note",
+                author_id=odoo_bot.id if odoo_bot else self.env.user.id)
+        except Exception:  # noqa: BLE001 — mirroring is best-effort
+            _logger.warning(
+                "inbox: partner note mirror failed for note %s", note.id,
+                exc_info=True)
+            return False
+        note.write({"partner_log_note_id": posted.id})
+        return True
+
+    def _backfill_mirrored_notes(self):
+        """Mirror any notes that predate partner confirmation (a note
+        written while the sender was unassigned gets its mirror once the
+        dispatcher confirms the customer). Idempotent per note."""
+        for note in self.inbox_message_ids.filtered(
+                lambda m: m.direction == "note"
+                and not m.partner_log_note_id):
+            self._mirror_note_to_partner(note)
+        return True
 
     @api.model
     def _normalize_recipient_list(self, values):

@@ -68,13 +68,20 @@ class LocationExtractionService:
             return {}
 
     def _call_vision(self, image_bytes, mimetype, extraction_context):
-        from odoo.addons.premafirm_ai_engine.services.openai_utils import openai_chat, DEFAULT_MODEL
+        """Extract the address block from a photo — local tesseract OCR → DeepSeek.
 
-        ICP = self.env["ir.config_parameter"].sudo()
-        api_key = ICP.get_param("openai.api_key") or ICP.get_param("prema_ai.api_key")
-        if not api_key:
+        No vision API: the image is OCR'd locally and DeepSeek parses the text.
+        """
+        from odoo.addons.premafirm_ai_engine.services import document_extractor
+        from odoo.addons.premafirm_ai_engine.services.deepseek_utils import (
+            deepseek_chat,
+            get_api_key as _get_deepseek_key,
+            get_model as _get_deepseek_model,
+        )
+
+        if not _get_deepseek_key(self.env):
             raise UserError("extraction_not_configured")
-        model = ICP.get_param("prema_ai.fast_model") or DEFAULT_MODEL
+        model = _get_deepseek_model(self.env)
 
         if extraction_context == "ship_to":
             focus = (
@@ -102,18 +109,18 @@ class LocationExtractionService:
             "strings for anything ambiguous), raw_text (the raw text of the block you extracted)."
         )
 
-        b64 = base64.b64encode(image_bytes).decode()
-        content = [
-            {"type": "text", "text": "Extract the requested address block as JSON."},
-            {"type": "image_url", "image_url": {"url": f"data:{mimetype};base64,{b64}", "detail": "auto"}},
-        ]
-        raw = openai_chat(
+        ocr_text, _ocr_method = document_extractor.extract_text(
+            image_bytes, mimetype, 'location_extraction')
+        if not ocr_text or len(ocr_text) < 20:
+            return {}
+        raw = deepseek_chat(
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": content},
+                {"role": "user", "content": (
+                    "Extract the requested address block from the OCR text below as JSON.\n\n"
+                    f"OCR TEXT:\n{ocr_text[:6000]}")},
             ],
             max_tokens=800,
-            api_key=api_key,
             model=model,
             timeout=60,
         )
@@ -142,7 +149,7 @@ class LocationExtractionService:
             normalized = self.validate_payload(raw_payload, extraction_context)
             normalized = self.normalize_store_pattern(normalized)
             record.write({
-                "provider_name": "openai", "extracted_json": json.dumps(raw_payload),
+                "provider_name": "deepseek", "extracted_json": json.dumps(raw_payload),
                 "normalized_json": json.dumps(normalized),
                 "warnings": json.dumps(normalized.get("warnings") or []),
                 "status": "needs_review",

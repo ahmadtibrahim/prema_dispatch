@@ -42,6 +42,56 @@ class InboxPricing(models.Model):
     _name = "prema.inbox.pricing"
     _description = "Dispatch Inbox pricing bridge (stateless service)"
 
+    # ------------------------------------------------------------------
+    # D-10 — pricing state + breakdown (read-only authority over the
+    # snapshot; the engine price is NEVER overwritten here)
+    # ------------------------------------------------------------------
+    @api.model
+    def pricing_state(self, conversation):
+        """Human state label derived from the persisted snapshot only.
+
+        READY (engine verdict available) | NEEDS_INFORMATION (fsa_unresolved)
+        | PARTIAL_ESTIMATE (deterministic verdict but not bookable —
+        manual-review / no-service paths) | ENGINE_UNAVAILABLE (transient
+        exception, never persisted — derives from the snapshot if one was
+        kept) | NOT_PRICED (no snapshot yet). The UI renders a colored chip;
+        it never invents a number.
+        """
+        snap = conversation.price_snapshot or {}
+        if not snap:
+            return {"state": "NOT_PRICED", "label": "Not priced"}
+        reason = snap.get("reason")
+        if reason == "fsa_unresolved":
+            return {"state": "NEEDS_INFORMATION", "label": "Needs information"}
+        if reason == "engine_unavailable":
+            return {"state": "ENGINE_UNAVAILABLE",
+                    "label": "Engine unavailable"}
+        if snap.get("available"):
+            return {"state": "READY", "label": "Ready"}
+        return {"state": "PARTIAL_ESTIMATE", "label": "Partial estimate"}
+
+    @api.model
+    def price_breakdown(self, conversation):
+        """base engine lines (from price_lines) ± dispatcher adjustment =
+        final. Never sums AI-invented values — only snapshot lines and the
+        dispatcher's stored adjustment."""
+        lines = []
+        for pl in (conversation.price_snapshot or {}).get("price_lines") or []:
+            if not isinstance(pl, dict):
+                continue
+            lines.append({
+                "label": pl.get("label") or pl.get("name") or "Rate line",
+                "amount": pl.get("amount"),
+            })
+        adj = conversation.dispatcher_adjustment
+        if adj:
+            lines.append({
+                "label": "Dispatcher adjustment",
+                "amount": adj,
+                "kind": "adjustment",
+            })
+        return lines
+
     @api.model
     def calculate_price(self, conversation):
         """Run the deterministic engine for a conversation's extraction.

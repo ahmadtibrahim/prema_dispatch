@@ -294,6 +294,10 @@
                                                 </div>
                                                 <div class="small text-muted"
                                                      t-esc="r.partner_name || ''"/>
+                                                <!-- D-5: model-specific detail line
+                                                     (number/pickup/delivery/date/total) -->
+                                                <div class="small text-muted o_inbox_picker_row_detail"
+                                                     t-esc="linkDetail(r, state.linkCandidates.model)"/>
                                             </div>
                                         </t>
                                         <div t-else="" class="o_inbox_picker_empty">
@@ -550,11 +554,49 @@
                             <div t-foreach="extractionRows()" t-as="r" t-key="r.label"
                                  class="o_inbox_ai_row">
                                 <span class="o_inbox_ai_key" t-esc="r.label"/>
-                                <span class="o_inbox_ai_val" t-esc="r.value"/>
-                                <span class="o_inbox_ai_src"
-                                      t-att-class="{ 'o_inbox_ai_miss': r.missing }">
-                                    Postal/FSA: <t t-esc="r.missing ? 'missing' : r.fsa"/>
-                                </span>
+                                <!-- D-9: inline edit (postal code for
+                                     stop rows, value for scalars) -->
+                                <t t-if="state.ai.editingKey === r.key">
+                                    <span class="o_inbox_ai_val">
+                                        <input class="form-control form-control-sm"
+                                               t-model="state.ai.editValue"
+                                               t-on-keydown="(ev) => { if (ev.key === 'Enter') this.saveEditExtraction(); if (ev.key === 'Escape') this.cancelEditExtraction(); }"/>
+                                    </span>
+                                    <span class="o_inbox_ai_actions">
+                                        <button class="btn btn-sm btn-link p-0"
+                                                t-on-click="() => this.saveEditExtraction()"
+                                                title="Save">
+                                            <i class="fa fa-check"/>
+                                        </button>
+                                        <button class="btn btn-sm btn-link p-0 ms-1"
+                                                t-on-click="() => this.cancelEditExtraction()"
+                                                title="Cancel">
+                                            <i class="fa fa-times"/>
+                                        </button>
+                                    </span>
+                                </t>
+                                <t t-else="">
+                                    <span class="o_inbox_ai_val" t-esc="r.value"/>
+                                    <span class="o_inbox_ai_src"
+                                          t-att-class="{ 'o_inbox_ai_miss': r.missing }">
+                                        <t t-if="r.key === 'pickup' || r.key === 'delivery'">
+                                            Postal/FSA:
+                                            <t t-esc="r.missing ? 'missing' : r.fsa"/>
+                                            <button class="btn btn-link btn-sm p-0 ms-1 o_inbox_ai_edit"
+                                                    t-on-click="() => this.editExtraction(r.key)"
+                                                    title="Edit postal code">
+                                                <i class="fa fa-pencil"/>
+                                            </button>
+                                        </t>
+                                        <t t-else="">
+                                            <button class="btn btn-link btn-sm p-0 o_inbox_ai_edit"
+                                                    t-on-click="() => this.editExtraction(r.key)"
+                                                    title="Edit value">
+                                                <i class="fa fa-pencil"/>
+                                            </button>
+                                        </t>
+                                    </span>
+                                </t>
                             </div>
                             <div t-if="extractionMissing().length" class="o_inbox_ai_warn">
                                 Missing: <t t-esc="extractionMissing().join(', ')"/>
@@ -596,10 +638,16 @@
                         </button>
                     </div>
 
-                    <!-- Prema Pricing Engine card -->
+                    <!-- Prema Pricing Engine card (D-10 state + breakdown,
+                         F-1 dispatcher adjustment, F-2 Reply with Quote) -->
                     <div class="o_inbox_ai_section">
                         <div class="o_inbox_ai_card o_inbox_price_card">
-                            <div class="fw-bold small">Prema Pricing Engine</div>
+                            <div class="d-flex align-items-center gap-2">
+                                <div class="fw-bold small">Prema Pricing Engine</div>
+                                <span class="badge o_inbox_ps_badge"
+                                      t-att-class="pricingStateClass(pricingState().state)"
+                                      t-esc="pricingState().label"/>
+                            </div>
                             <div class="text-muted small">
                                 Deterministic corridor pricing — never AI-invented.
                             </div>
@@ -626,13 +674,68 @@
                                         <i class="fa fa-circle-o text-warning"/> Delivery location: postal code missing
                                     </div>
                                 </div>
-                                <div t-if="state.detail.pricing.price_lines"
-                                     class="small text-muted">
-                                    <div t-foreach="state.detail.pricing.price_lines"
-                                         t-as="pl" t-key="pl_index">
-                                        <t t-esc="pl.name || pl.label || fmtValue(pl)"/>
+
+                                <!-- D-10: engine breakdown ± adjustment = final -->
+                                <div t-if="quoteBreakdown().length"
+                                     class="small text-muted mt-1 o_inbox_price_breakdown">
+                                    <div t-foreach="quoteBreakdown()" t-as="pl"
+                                         t-key="pl_index"
+                                         t-att-class="{ 'o_inbox_adj_line': pl.kind === 'adjustment' }">
+                                        <span t-esc="pl.label"/>
+                                        <span class="float-end"
+                                              t-esc="fmtMoney(pl.amount, quoteState().currency)"/>
                                     </div>
                                 </div>
+                                <div t-if="quoteState().engine_calculated_price"
+                                     class="small o_inbox_price_total mt-1">
+                                    <span>Final quoted price</span>
+                                    <span class="float-end fw-bold"
+                                          t-esc="fmtMoney(quoteState().final_quoted_price, quoteState().currency)"/>
+                                </div>
+                                <div t-if="quoteState().quoted_by" class="small text-muted">
+                                    Quoted by <t t-esc="quoteState().quoted_by"/>
+                                    <t t-if="quoteState().quoted_at"
+                                       t-esc="' · ' + fmtDate(quoteState().quoted_at)"/>
+                                </div>
+                                <div t-if="quoteState().adjustment_reason"
+                                     class="small text-muted o_inbox_quote_reason"
+                                     t-esc="'Reason: ' + quoteState().adjustment_reason"/>
+
+                                <!-- F-1: dispatcher adjustment (engine price
+                                     untouched — separate quote state) -->
+                                <div t-if="quoteState().engine_calculated_price"
+                                     class="o_inbox_quote_adj mt-2">
+                                    <div class="small fw-semibold">Dispatcher price adjustment</div>
+                                    <div class="d-flex gap-1">
+                                        <input class="form-control form-control-sm"
+                                               type="number" step="0.01"
+                                               t-model="state.ai.adjInput"
+                                               placeholder="+/- amount"
+                                               t-on-keydown="(ev) => { if (ev.key === 'Enter') this.saveAdjustment(); }"/>
+                                        <input class="form-control form-control-sm"
+                                               t-model="state.ai.adjReason"
+                                               placeholder="Reason (optional)"/>
+                                    </div>
+                                    <div class="d-flex gap-1 mt-1">
+                                        <button class="btn btn-sm btn-outline-primary"
+                                                t-on-click="() => this.saveAdjustment()">
+                                            <i class="fa fa-check"/> Apply
+                                        </button>
+                                        <button t-if="quoteState().dispatcher_adjustment"
+                                                class="btn btn-sm btn-outline-secondary"
+                                                t-on-click="() => this.clearAdjustment()">
+                                            Reset to engine price
+                                        </button>
+                                    </div>
+                                </div>
+
+                                <!-- F-2: deterministic quote reply → composer,
+                                     dispatcher reviews + sends -->
+                                <button class="btn btn-sm btn-outline-primary w-100 mt-2"
+                                        t-on-click="() => this.quoteReply()"
+                                        t-att-disabled="state.ai.busy">
+                                    <i class="fa fa-paper-plane-o"/> Reply with Quote
+                                </button>
                             </div>
                         </div>
                     </div>

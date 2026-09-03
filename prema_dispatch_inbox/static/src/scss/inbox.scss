@@ -566,17 +566,32 @@ $inbox-accent: #017e84;
         &.o_inbox_price_card { border-color: #bcd9d6; }
     }
 
+    // D-8: extraction rows are a responsive grid — label clamps to
+    // 90–130px, the VALUE takes the remaining space (long addresses wrap,
+    // never overflow), and the provenance/FSA marker shrinks to fit.
+    // Narrow AI panels degrade gracefully: the value column compresses
+    // instead of pushing the row out of the card.
     .o_inbox_ai_row {
-        display: flex;
+        display: grid;
+        grid-template-columns: minmax(90px, 130px) minmax(0, 1fr) auto;
         gap: 6px;
+        align-items: baseline;
         margin-top: 4px;
 
-        .o_inbox_ai_key { font-weight: 600; min-width: 110px; }
+        .o_inbox_ai_key {
+            font-weight: 600;
+            color: #3b4354;
+        }
+        .o_inbox_ai_val {
+            word-break: break-word;
+            overflow-wrap: anywhere;
+            min-width: 0;
+        }
         .o_inbox_ai_src {
-            margin-left: auto;
             font-size: 10px;
             color: $inbox-muted;
             text-transform: uppercase;
+            white-space: nowrap;
         }
     }
 
@@ -610,6 +625,45 @@ $inbox-accent: #017e84;
         font-weight: 700;
         color: $inbox-accent;
     }
+
+    // D-10 — pricing state chip: color carries the meaning at a glance,
+    // the label text is the fallback for any future state.
+    .o_inbox_ps_badge { font-weight: 600; text-transform: uppercase; }
+    .o_inbox_ps_ready { background: #e2f3e4; color: #1d6f2e; }
+    .o_inbox_ps_warn { background: #fff3e0; color: #9a5b00; }
+    .o_inbox_ps_partial { background: #e3f0fa; color: #0b5da8; }
+    .o_inbox_ps_error { background: #fde8e8; color: #b02a37; }
+    .o_inbox_ps_muted { background: #eef0f2; color: #6c757d; }
+
+    // D-10 — engine breakdown ± dispatcher adjustment = final quoted price
+    .o_inbox_price_breakdown {
+        border-top: 1px dashed $inbox-border;
+        padding-top: 4px;
+        .o_inbox_adj_line { color: $inbox-accent; font-weight: 600; }
+    }
+    .o_inbox_price_total {
+        border-top: 1px solid $inbox-border;
+        padding-top: 4px;
+    }
+    .o_inbox_quote_reason {
+        font-style: italic;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+    }
+    .o_inbox_quote_adj {
+        padding: 6px;
+        border: 1px dashed $inbox-border;
+        border-radius: 6px;
+        background: #fafbfc;
+    }
+
+    // D-9 — extraction edit affordance
+    .o_inbox_ai_edit {
+        color: $inbox-muted;
+        font-size: 11px;
+        &:hover { color: $inbox-accent; }
+    }
+    .o_inbox_ai_actions { white-space: nowrap; }
 
     .o_inbox_ai_footer {
         padding: 8px 12px;
@@ -682,6 +736,13 @@ $inbox-accent: #017e84;
         cursor: pointer;
 
         &:hover { background: #f0f2f6; }
+
+        .o_inbox_picker_row_detail {
+            margin-top: 1px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
     }
 
     .o_inbox_picker_empty {

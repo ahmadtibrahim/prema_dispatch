@@ -39,6 +39,7 @@ SOURCE_CHANNELS = [
     ("recurring", "Recurring Agreement"),
     ("whatsapp", "WhatsApp Negotiation"),
     ("api", "External API"),
+    ("email", "Email Booking"),
 ]
 
 BOOKING_STATES = [

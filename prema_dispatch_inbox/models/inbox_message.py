@@ -68,6 +68,13 @@ class InboxMessage(models.Model):
         "ir.attachment", "prema_inbox_message_attachment_rel",
         "message_id", "attachment_id", string="Attachments")
     is_load_board = fields.Boolean(string="Load board alert", default=False)
+    partner_log_note_id = fields.Many2one(
+        "mail.message", string="Partner chatter note",
+        help="D-6: the mail.message row mirroring THIS inbox internal note "
+             "on the customer's chatter (mt_note, OdooBot author — never "
+             "emailed). Set once at mirror time: per-note dedupe — a retry "
+             "never duplicates, and a DIFFERENT note is never blocked "
+             "(each note carries its own row / key).")
     outbound_state = fields.Selection([
         ("draft", "Draft"),
         ("pending", "Pending send"),

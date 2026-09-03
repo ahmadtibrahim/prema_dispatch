@@ -87,7 +87,9 @@ export class InboxApp extends Component {
                 mode: null, body: "", to: "", cc: "", subject: "",
                 attachments: [], draftId: null, sending: false,
             },
-            ai: { busy: false, panelOpen: true, conflictsOpen: false },
+            ai: { busy: false, panelOpen: true, conflictsOpen: false,
+                  editingKey: null, editValue: "",
+                  adjInput: "", adjReason: "" },
             linkCandidates: null,   // {model, records, manual}
             linkSearch: "",
             assignCandidates: null,
@@ -423,6 +425,9 @@ export class InboxApp extends Component {
         }
         if (opts.body !== undefined) {
             composer.body = opts.body;
+        }
+        if (opts.subject !== undefined) {
+            composer.subject = opts.subject;   // F-2: quote reply subject
         }
         this.state.composer = composer;
         if (mode === "reply" || mode === "reply_all") {
@@ -764,6 +769,47 @@ export class InboxApp extends Component {
         return LINK_LABELS[model] || model;
     }
 
+    // D-5: model-specific detail line under each link candidate — the
+    // dispatcher recognizes the right record at a glance.
+    linkDetail(r, model) {
+        const parts = [];
+        if (r.number && r.number !== r.name) {
+            parts.push(r.number);
+        }
+        if (model === "booking") {
+            if (r.pickup && r.delivery) {
+                parts.push(`${r.pickup} → ${r.delivery}`);
+            } else if (r.pickup || r.delivery) {
+                parts.push(r.pickup || r.delivery);
+            }
+        } else if (model === "job") {
+            if (r.route) {
+                parts.push(r.route);
+            }
+        } else if (model === "invoice") {
+            if (r.total !== null && r.total !== undefined) {
+                parts.push(this.fmtMoney(r.total));
+            }
+            if (r.payment_state) {
+                parts.push(r.payment_state);
+            }
+        } else if (model === "opportunity") {
+            if (r.stage) {
+                parts.push(r.stage);
+            }
+            if (r.salesperson) {
+                parts.push(r.salesperson);
+            }
+            if (r.activity) {
+                parts.push(`activity: ${r.activity}`);
+            }
+        }
+        if (r.date) {
+            parts.push(this.fmtDate(r.date));
+        }
+        return parts.join(" · ");
+    }
+
     // ------------------------------------------------------------------
     // AI panel (C4)
     // ------------------------------------------------------------------
@@ -818,6 +864,141 @@ export class InboxApp extends Component {
         }
     }
 
+    // ------------------------------------------------------------------
+    // D-10 / F-1 / F-2 — pricing state, dispatcher adjustment, quote reply
+    // ------------------------------------------------------------------
+    pricingState() {
+        // {state, label} — server-derived from the immutable snapshot.
+        return this.state.detail?.pricing?.state ||
+            { state: "NOT_PRICED", label: "Not priced" };
+    }
+
+    pricingStateClass(state) {
+        return {
+            READY: "o_inbox_ps_ready",
+            NEEDS_INFORMATION: "o_inbox_ps_warn",
+            PARTIAL_ESTIMATE: "o_inbox_ps_partial",
+            ENGINE_UNAVAILABLE: "o_inbox_ps_error",
+            NOT_PRICED: "o_inbox_ps_muted",
+        }[state] || "o_inbox_ps_muted";
+    }
+
+    quoteState() {
+        return this.state.detail?.pricing?.quote || {};
+    }
+
+    quoteBreakdown() {
+        return this.state.detail?.pricing?.breakdown || [];
+    }
+
+    async saveAdjustment() {
+        const quote = this.quoteState();
+        if (!quote.engine_calculated_price) {
+            this.notification.add(
+                "Run 'Review & calculate quote' first — there is no engine "
+                + "price to adjust.",
+                { type: "warning" });
+            return;
+        }
+        const raw = (this.state.ai.adjInput ?? "").toString().trim();
+        const amount = raw === "" ? null : Number(raw);
+        if (amount !== null && !Number.isFinite(amount)) {
+            this.notification.add("Adjustment must be a number.", { type: "warning" });
+            return;
+        }
+        const res = await this.orm.call(
+            "prema.inbox.conversation", "action_set_quoted_price",
+            [this.state.selectedId, amount ?? 0, this.state.ai.adjReason || ""]);
+        this.state.ai.adjInput = "";
+        if (res?.error) {
+            this.notification.add(res.error, { type: "warning" });
+            return;
+        }
+        this.notification.add(
+            amount === 0
+                ? "Quote reset to the engine price."
+                : `Final quoted price updated to ${this.fmtMoney(res.final_quoted_price, res.currency)}.`,
+            { type: "info" });
+        await this.reconcile();
+    }
+
+    async clearAdjustment() {
+        this.state.ai.adjInput = "";
+        this.state.ai.adjReason = "";
+        await this.orm.call(
+            "prema.inbox.conversation", "action_set_quoted_price",
+            [this.state.selectedId, 0, ""]);
+        await this.reconcile();
+    }
+
+    async quoteReply() {
+        // F-2: deterministic template → composer (dispatcher edits + sends).
+        // NEVER auto-sends.
+        const res = await this.orm.call(
+            "prema.inbox.conversation", "action_quote_reply",
+            [this.state.selectedId]);
+        if (res?.error) {
+            this.notification.add(res.error, { type: "warning" });
+            return;
+        }
+        this.startComposer("reply", { subject: res.subject, body: res.body });
+        if (window.innerWidth < 900) {
+            this.state.mobileScreen = "conversation";
+        }
+        this.notification.add(
+            "Quote reply placed in the composer — review and send.",
+            { type: "info" });
+        await this.reconcile();
+    }
+
+    // ------------------------------------------------------------------
+    // D-9 — editable shipment extraction (inline, provenance 'manual')
+    // ------------------------------------------------------------------
+    editExtraction(key) {
+        const f = this.state.detail?.ai?.extraction?.fields || {};
+        const current = key === "pickup" || key === "delivery"
+            ? (f[key]?.postal_code || "")
+            : (f[key] ?? "");
+        this.state.ai.editingKey = key;
+        this.state.ai.editValue = String(current ?? "");
+    }
+
+    cancelEditExtraction() {
+        this.state.ai.editingKey = null;
+        this.state.ai.editValue = "";
+    }
+
+    async saveEditExtraction() {
+        const key = this.state.ai.editingKey;
+        const raw = (this.state.ai.editValue || "").trim();
+        const f = this.state.detail?.ai?.extraction?.fields || {};
+        let updates = {};
+        if (key === "pickup" || key === "delivery") {
+            // stop edit → postal code (the fix-critical value for pricing)
+            const stop = { ...(f[key] || {}) };
+            stop.postal_code = raw || null;
+            updates[key] = stop;
+        } else if (key === "pallets" || key === "weight_lbs"
+                   || key === "temperature_c") {
+            updates[key] = raw === "" ? null : Number(raw);
+        } else {
+            updates[key] = raw;
+        }
+        const res = await this.orm.call(
+            "prema.inbox.conversation", "action_update_extraction",
+            [this.state.selectedId, updates]);
+        this.cancelEditExtraction();
+        if (res?.error) {
+            this.notification.add(res.error, { type: "warning" });
+            return;
+        }
+        this.notification.add(
+            `Extraction updated (${Object.keys(updates).join(", ")}) — `
+            + "recalculate the quote to refresh pricing.",
+            { type: "info" });
+        await this.reconcile();
+    }
+
     toggleAiPanel() {
         this.state.ai.panelOpen = !this.state.ai.panelOpen;
     }
@@ -868,7 +1049,7 @@ export class InboxApp extends Component {
             const postal = (stop.postal_code || "").trim();
             const fsa = postal.split(" ")[0] || "";
             rows.push({
-                label,
+                label, key,
                 value: city || stop.address || "",
                 fsa,
                 missing: !fsa,
@@ -878,7 +1059,7 @@ export class InboxApp extends Component {
         addStop("Delivery", "delivery");
         const scalar = (label, key, fmt = (v) => v) => {
             if (f[key] !== undefined && f[key] !== null && f[key] !== "") {
-                rows.push({ label, value: fmt(f[key]) });
+                rows.push({ label, key, value: fmt(f[key]) });
             }
         };
         scalar("Pallets", "pallets", (v) => `${v} pallet${v === 1 ? "" : "s"}`);
