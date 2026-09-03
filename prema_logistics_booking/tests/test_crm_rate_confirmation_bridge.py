@@ -1,6 +1,16 @@
 from odoo.tests.common import TransactionCase
 from odoo.exceptions import UserError
 
+# Test fixture addresses are SYNTHETIC on purpose: real customer facilities
+# (e.g. "31 Mechanic St, Paris, ON N3L 1K1", city-only "Milton, ON") exist in
+# the production-derived test databases and collide with the location table's
+# unique address constraint / saved-location matching, making the tests
+# deterministic only on a clean database. These street names do not exist.
+PICKUP_ADDRESS = "1406 Test Line 8, Ayr, ON N0B 1E0"
+PICKUP_POSTAL = "N0B 1E0"
+DELIVERY_ADDRESS = "2277 Test Sideroad 15, Ayr, ON N0B 1E0"
+DELIVERY_POSTAL = "N0B 1E0"
+
 
 class TestCrmRateConfirmationBridge(TransactionCase):
 
@@ -72,11 +82,11 @@ class TestCrmRateConfirmationBridge(TransactionCase):
             "partner_id": self.partner.id,
             "crm_lead_id": self.lead.id,
             "source_text": (
-                "Pickup 31 Mechanic St, Paris, ON N3L 1K1; delivery to "
-                "Milton, ON L9T 6H7; 10 cases weighing 235 lbs; frozen."
+                "Pickup %s; delivery to %s; 10 cases weighing 235 lbs; "
+                "frozen." % (PICKUP_ADDRESS, DELIVERY_ADDRESS)
             ),
-            "pickup_postal_code": "N3L 1K1",
-            "delivery_postal_code": "L9T 6H7",
+            "pickup_postal_code": PICKUP_POSTAL,
+            "delivery_postal_code": DELIVERY_POSTAL,
         })
         action = wizard._apply_source_extraction({
             "service_type": "ltl",
@@ -85,8 +95,8 @@ class TestCrmRateConfirmationBridge(TransactionCase):
             "temp_requirement": None,
             "approximate_skids": 0,
             "stops": [
-                {"type": "pickup", "address": "31 Mechanic St, Paris, ON N3L 1K1"},
-                {"type": "dropoff", "address": "Milton, ON L9T 6H7"},
+                {"type": "pickup", "address": PICKUP_ADDRESS},
+                {"type": "dropoff", "address": DELIVERY_ADDRESS},
             ],
         })
 
@@ -127,18 +137,18 @@ class TestCrmRateConfirmationBridge(TransactionCase):
 
     def test_extraction_reuses_an_exact_saved_location(self):
         pickup = self.env["prema.dispatch.location"].create({
-            "name": "Existing Paris Pickup",
-            "address": "31 Mechanic St, Paris, ON N3L 1K1",
+            "name": "Existing Ayr Pickup",
+            "address": PICKUP_ADDRESS,
         })
         wizard = self.env["logistics.phone.booking"].create({
             "partner_id": self.partner.id,
             "crm_lead_id": self.lead.id,
-            "source_text": "Paris to Milton",
+            "source_text": "Ayr to Ayr",
         })
         wizard._apply_source_extraction({
             "stops": [
-                {"type": "pickup", "address": "31 Mechanic St, Paris, ON N3L 1K1"},
-                {"type": "dropoff", "address": "100 Main St, Milton, ON L9T 1A1"},
+                {"type": "pickup", "address": PICKUP_ADDRESS},
+                {"type": "dropoff", "address": DELIVERY_ADDRESS},
             ],
         })
 
@@ -149,12 +159,12 @@ class TestCrmRateConfirmationBridge(TransactionCase):
         wizard = self.env["logistics.phone.booking"].create({
             "partner_id": self.partner.id,
             "crm_lead_id": self.lead.id,
-            "pickup_company_name": "Link Street Sausage House",
-            "pickup_address": "31 Mechanic St, Paris, ON N3L 1K1",
-            "pickup_postal_code": "N3L 1K1",
-            "delivery_company_name": "Milton Receiver",
-            "delivery_address": "100 Main St, Milton, ON L9T 1A1",
-            "delivery_postal_code": "L9T 1A1",
+            "pickup_company_name": "Test Sausage House",
+            "pickup_address": PICKUP_ADDRESS,
+            "pickup_postal_code": PICKUP_POSTAL,
+            "delivery_company_name": "Test Receiver",
+            "delivery_address": DELIVERY_ADDRESS,
+            "delivery_postal_code": DELIVERY_POSTAL,
         })
         before = self.env["prema.dispatch.location"].search_count([])
 
@@ -174,12 +184,53 @@ class TestCrmRateConfirmationBridge(TransactionCase):
         self.assertEqual(len(access), 2)
 
     def test_city_only_address_is_not_saved_as_a_location(self):
+        # "Testville, ON" is synthetic — no real row can pre-exist. The
+        # guard must raise even when a postal-less city-only row is present
+        # in the database (driver-submitted rows like "Milton, ON" exist in
+        # production data and must never be reused as quote stops).
         wizard = self.env["logistics.phone.booking"].create({
             "partner_id": self.partner.id,
-            "pickup_address": "31 Mechanic St, Paris, ON N3L 1K1",
-            "pickup_postal_code": "N3L 1K1",
-            "delivery_address": "Milton, ON",
+            "pickup_address": PICKUP_ADDRESS,
+            "pickup_postal_code": PICKUP_POSTAL,
+            "delivery_address": "Testville, ON",
         })
 
         with self.assertRaises(UserError):
             wizard.action_match_save_locations()
+
+    def test_city_only_saved_row_is_never_matched_for_a_quote_stop(self):
+        self.env["prema.dispatch.location"].create({
+            "name": "Driver-Submitted City Row",
+            "address": "Testville, ON",
+        })
+        wizard = self.env["logistics.phone.booking"].create({
+            "partner_id": self.partner.id,
+            "crm_lead_id": self.lead.id,
+            "source_text": "Testville pickup",
+            "pickup_address": "Testville, ON",
+        })
+        wizard._apply_source_extraction({
+            "stops": [{"type": "pickup", "address": "Testville, ON"}],
+        })
+
+        self.assertFalse(wizard.pickup_location_id)
+
+    def test_unconfirmed_keyword_only_setpoint_blocks_pricing(self):
+        wizard = self.env["logistics.phone.booking"].create({
+            "partner_id": self.partner.id,
+            "crm_lead_id": self.lead.id,
+            "source_text": "Reefer shipment, frozen, 3 skids.",
+            "pickup_postal_code": PICKUP_POSTAL,
+            "delivery_postal_code": DELIVERY_POSTAL,
+        })
+        wizard._apply_source_extraction({
+            "requires_reefer": True,
+            "temp_requirement": None,
+            "approximate_skids": 3,
+            "stops": [],
+        })
+
+        self.assertTrue(wizard.temperature_mode == "reefer")
+        self.assertFalse(wizard.temperature_confirmed)
+        with self.assertRaises(UserError):
+            wizard._validate_quote_inputs()

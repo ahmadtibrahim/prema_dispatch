@@ -124,9 +124,6 @@ class LogisticsPhoneBooking(models.TransientModel):
         return parse_temperature(
             self.required_temperature_c,
             unit=self.submitted_temperature_unit or "c")
-    # Kept for compatibility with existing transient rows/views from older
-    # versions. The phone flow no longer needs a separate confirmation box;
-    # the canonical service validates the numeric temperature itself.
     temperature_confirmed = fields.Boolean(
         string="Numerical Setpoint Confirmed",
         default=False,
@@ -348,14 +345,29 @@ class LogisticsPhoneBooking(models.TransientModel):
         ).upper() if match else ""
 
     def _match_saved_location(self, address, postal_code):
-        """Return only a confident canonical-location match; create nothing."""
+        """Return only a confident canonical-location match; create nothing.
+
+        Quote stops must resolve to a facility with a postal code — either on
+        the row or inside its stored address. City-only rows (e.g.
+        driver-submitted "Milton, ON") carry no FSA to price against and are
+        never reusable as a pickup or delivery for a rate quote. The caller
+        keeps them unbounded (extraction) or raises (manual save).
+        """
         Location = self.env["prema.dispatch.location"].sudo()
-        if not (address or "").strip():
+        address = (address or "").strip()
+        if not address:
             return Location.browse()
+
+        def reusable(location):
+            return bool(
+                (location.postal_code or "").strip()
+                or self._postal_from_address(location.address)
+            )
+
         exact = Location.search([
             ("active", "=", True),
-            ("address", "=ilike", address.strip()),
-        ], limit=1)
+            ("address", "=ilike", address),
+        ], limit=1).filtered(reusable)
         if exact:
             return exact
         normalized = Location._normalize_address_street(address)
@@ -363,7 +375,7 @@ class LogisticsPhoneBooking(models.TransientModel):
             match = Location.search([
                 ("active", "=", True),
                 ("normalized_address", "=", normalized),
-            ], limit=1)
+            ], limit=1).filtered(reusable)
             if match:
                 return match
         postal = Location._normalize_postal(postal_code or "")
@@ -373,7 +385,10 @@ class LogisticsPhoneBooking(models.TransientModel):
                 ("postal_code", "=ilike", postal),
             ], limit=20)
             normalized_matches = candidates.filtered(
-                lambda location: location.normalized_address == normalized
+                lambda location: (
+                    location.normalized_address == normalized
+                    and reusable(location)
+                )
             )
             if len(normalized_matches) == 1:
                 return normalized_matches
