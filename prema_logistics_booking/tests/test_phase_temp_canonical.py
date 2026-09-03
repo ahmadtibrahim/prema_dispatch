@@ -145,18 +145,20 @@ class TestPhaseTempCanonical(TransactionCase):
     # ── §4: wizard unit intake ───────────────────────────────────────
 
     def test_d_phone_wizard_f_to_c_conversion(self):
-        """Phone booking: F intake converts to canonical C at both create
-        points; dry carries nothing."""
+        """Phone booking: a CONFIRMED F intake converts to canonical C;
+        unconfirmed reefer raises; dry carries nothing."""
         wizard = self.env["logistics.phone.booking"].new({
             "temperature_mode": "reefer",
             "required_temperature_c": 32.0,
             "submitted_temperature_unit": "f",
+            "temperature_confirmed": True,
         })
         self.assertEqual(wizard._canonical_required_temperature(), 0.0)
         wizard2 = self.env["logistics.phone.booking"].new({
             "temperature_mode": "reefer",
             "required_temperature_c": 33.8,
             "submitted_temperature_unit": "f",
+            "temperature_confirmed": True,
         })
         self.assertAlmostEqual(wizard2._canonical_required_temperature(), 1.0)
         dry = self.env["logistics.phone.booking"].new({
@@ -164,6 +166,14 @@ class TestPhaseTempCanonical(TransactionCase):
             "required_temperature_c": 5.0,
         })
         self.assertIsNone(dry._canonical_required_temperature())
+        # keyword-only reefer (no numerical setpoint) is never auto-priced
+        unconfirmed = self.env["logistics.phone.booking"].new({
+            "temperature_mode": "reefer",
+            "required_temperature_c": 0.0,
+            "submitted_temperature_unit": "c",
+        })
+        with self.assertRaises(UserError):
+            unconfirmed._canonical_required_temperature()
 
     def test_e_bookload_wizard_f_to_c_conversion(self):
         """Invoice book-load wizard: same unit intake; dry → None."""
