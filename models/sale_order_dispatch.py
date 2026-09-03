@@ -51,21 +51,41 @@ class SaleOrder(models.Model):
             "context": {"default_sale_order_id": self.id},
         }
 
+    @staticmethod
+    def _so_job_advisory_lock(env, so_id):
+        """Serialize concurrent 'create a dispatch job for this SO' clicks.
+
+        The dispatch_job_ids check below is not atomic by itself: two
+        simultaneous clicks (double-click, two tabs) can both pass it and
+        create two jobs. The advisory transaction lock forces the second
+        request to wait until the first commits, after which its re-check
+        finds the job and reuses it instead of duplicating it.
+        """
+        env.cr.execute(
+            "SELECT pg_advisory_xact_lock(hashtext(%s))",
+            ("dispatch_so_job_%d" % so_id,),
+        )
+
+    def _open_existing_job_action(self):
+        """Anti-duplication: open the existing booking(s) instead of creating."""
+        if len(self.dispatch_job_ids) == 1:
+            return {
+                "type": "ir.actions.act_window",
+                "name": "Dispatch Booking",
+                "res_model": "prema.dispatch.job",
+                "res_id": self.dispatch_job_ids.id,
+                "view_mode": "form",
+            }
+        return self.action_open_dispatch_jobs_prema()
+
     def action_book_load(self):
         """Book Load button — create a Prema Dispatch booking from this Sales Order."""
         self.ensure_one()
 
+        self._so_job_advisory_lock(self.env, self.id)
         # Anti-duplication: open existing booking if one exists
         if self.dispatch_job_ids:
-            if len(self.dispatch_job_ids) == 1:
-                return {
-                    "type": "ir.actions.act_window",
-                    "name": "Dispatch Booking",
-                    "res_model": "prema.dispatch.job",
-                    "res_id": self.dispatch_job_ids.id,
-                    "view_mode": "form",
-                }
-            return self.action_open_dispatch_jobs_prema()
+            return self._open_existing_job_action()
 
         draft_stage = self.env["prema.dispatch.stage"].search(
             [("stage_type", "=", "draft")], limit=1
@@ -93,6 +113,13 @@ class SaleOrder(models.Model):
             "view_mode": "form",
         }
 
+    @staticmethod
+    def _so_text_fingerprint(text):
+        """Stable dedupe key for 'generate from text': same pasted text on
+        the same SO is the same shipment, never a second booking."""
+        import hashlib
+        return hashlib.sha1((text or "").strip().encode("utf-8")).hexdigest()[:12]
+
     def action_generate_dispatch_from_text(self):
         """AI: Parse pasted customer text and create a dispatch booking with stops."""
         self.ensure_one()
@@ -100,6 +127,7 @@ class SaleOrder(models.Model):
             raise exceptions.UserError(
                 "Paste a customer message in the 'Generate from Text' tab first."
             )
+        fingerprint = self._so_text_fingerprint(self.x_so_text_input)
 
         from odoo.addons.premafirm_ai_engine.services.invoice_ai_service import InvoiceAIService
 
@@ -161,6 +189,39 @@ class SaleOrder(models.Model):
             if _re.match(r"^-?\d+(\.\d+)?$", temp_val.strip()):
                 temp_val = temp_val.strip() + " °C"
 
+        # Idempotency: same SO + same pasted text = the same shipment.
+        # Serialize concurrent clicks, then reuse the job created by the
+        # first request instead of duplicating it. Different text on the
+        # same SO may still create a separate job (legit second load).
+        self._so_job_advisory_lock(self.env, self.id)
+        existing = self.env["prema.dispatch.job"].search([
+            ("sale_order_id", "=", self.id),
+            ("source_model", "=", "sale.order"),
+            ("source_res_id", "=", self.id),
+            ("internal_notes", "=like", "%[fp:%s]%" % fingerprint),
+        ], limit=1)
+        if existing:
+            return {
+                "type": "ir.actions.client",
+                "tag": "display_notification",
+                "params": {
+                    "title": "Dispatch Booking Reused",
+                    "message": (
+                        f"{existing.name} already exists for this customer "
+                        "text — opening it instead of creating a duplicate."
+                    ),
+                    "type": "warning",
+                    "sticky": False,
+                    "next": {
+                        "type": "ir.actions.act_window",
+                        "name": "Dispatch Booking",
+                        "res_model": "prema.dispatch.job",
+                        "res_id": existing.id,
+                        "view_mode": "form",
+                    },
+                },
+            }
+
         job = self.env["prema.dispatch.job"].create({
             "sale_order_id": self.id,
             "partner_id": partner.id,
@@ -176,7 +237,10 @@ class SaleOrder(models.Model):
             "commodity": result.get("commodity") or "",
             "temp_requirement": temp_val,
             "approximate_skids": int(result.get("approximate_skids") or 0),
-            "internal_notes": f"AI generated from customer text on {self.name}.",
+            "internal_notes": (
+                f"AI generated from customer text on {self.name}. "
+                f"[fp:{fingerprint}]"
+            ),
         })
 
         # Create stops with correct pallets_in / pallets_out
