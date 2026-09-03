@@ -116,9 +116,13 @@ class SaleOrder(models.Model):
     @staticmethod
     def _so_text_fingerprint(text):
         """Stable dedupe key for 'generate from text': same pasted text on
-        the same SO is the same shipment, never a second booking."""
+        the same SO is the same shipment, never a second booking.
+        Whitespace runs are collapsed so paste layout differences (extra
+        spaces, line breaks) do not defeat the dedupe."""
         import hashlib
-        return hashlib.sha1((text or "").strip().encode("utf-8")).hexdigest()[:12]
+        import re as _re
+        normalized = _re.sub(r"\s+", " ", (text or "").strip())
+        return hashlib.sha1(normalized.encode("utf-8")).hexdigest()[:12]
 
     def action_generate_dispatch_from_text(self):
         """AI: Parse pasted customer text and create a dispatch booking with stops."""
@@ -198,7 +202,7 @@ class SaleOrder(models.Model):
             ("sale_order_id", "=", self.id),
             ("source_model", "=", "sale.order"),
             ("source_res_id", "=", self.id),
-            ("internal_notes", "=like", "%[fp:%s]%" % fingerprint),
+            ("internal_notes", "=like", "%[fp:" + fingerprint + "]%"),
         ], limit=1)
         if existing:
             return {
