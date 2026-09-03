@@ -22,6 +22,12 @@ class LogisticsPhoneBooking(models.TransientModel):
 
     # Customer
     partner_id = fields.Many2one("res.partner", string="Customer", required=True)
+    crm_lead_id = fields.Many2one(
+        "crm.lead",
+        string="CRM Opportunity",
+        readonly=True,
+        help="Opportunity that opened this draft rate calculation.",
+    )
 
     # Optional reuse of the canonical physical-location database. These are
     # read/select only in the phone flow; choosing one never creates a new
@@ -293,6 +299,7 @@ class LogisticsPhoneBooking(models.TransientModel):
         delivery = self._stop_values("delivery")
         vals = {
             "partner_id": self.partner_id.id,
+            "crm_lead_id": self.crm_lead_id.id or False,
             "company_name": self.partner_id.commercial_partner_id.name or self.partner_id.name,
             "contact_name": self.partner_id.name or "",
             "contact_email": self.partner_id.email or "",
@@ -317,7 +324,7 @@ class LogisticsPhoneBooking(models.TransientModel):
             "resolved_fsa_pickup": session.pickup_fsa_id.fsa if session.pickup_fsa_id else "",
             "resolved_fsa_delivery": session.delivery_fsa_id.fsa if session.delivery_fsa_id else "",
             "state": "quoted",
-            "source": "phone",
+            "source": "internal" if self.crm_lead_id else "phone",
             "notes": "\n".join(filter(None, [
                 f"Pickup instructions: {self.pickup_instructions}" if self.pickup_instructions else "",
                 f"Delivery instructions: {self.delivery_instructions}" if self.delivery_instructions else "",

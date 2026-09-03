@@ -27,6 +27,7 @@
                     <group>
                         <group string="Customer">
                             <field name="partner_id" required="1"/>
+                            <field name="crm_lead_id" readonly="1" invisible="not crm_lead_id"/>
                             <field name="requested_pickup_date"/>
                             <field name="available_pickup_dates" readonly="1"
                                    invisible="not available_pickup_dates"/>

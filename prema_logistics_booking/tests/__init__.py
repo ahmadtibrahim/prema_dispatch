@@ -20,3 +20,4 @@ from . import test_phase18_stop_grouping
 from . import test_phase19_routes_migration
 from . import test_phase20_security_personas
 from . import test_phase22_perf_baseline
+from . import test_crm_rate_confirmation_bridge
