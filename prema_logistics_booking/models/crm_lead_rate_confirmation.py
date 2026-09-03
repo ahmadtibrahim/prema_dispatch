@@ -1,5 +1,6 @@
 from odoo import _, api, fields, models
 from odoo.exceptions import UserError
+from odoo.tools import html2plaintext
 
 
 class CrmLead(models.Model):
@@ -51,8 +52,32 @@ class CrmLead(models.Model):
             "context": {
                 "default_partner_id": self.partner_id.id,
                 "default_crm_lead_id": self.id,
+                "default_source_text": self._dispatch_rate_source_text(),
             },
         }
+
+    def _dispatch_rate_source_text(self):
+        """Return customer-supplied freight text for editable extraction.
+
+        CRM descriptions are preferred.  The latest inbound customer email
+        is appended when available; staff-authored chatter is excluded so an
+        old internal assumption cannot silently become a shipment fact.
+        """
+        self.ensure_one()
+        snippets = []
+        description = html2plaintext(self.description or "").strip()
+        if description:
+            snippets.append(description)
+        inbound = self.message_ids.filtered(
+            lambda message: message.message_type == "email"
+            and message.body
+            and not message.author_id.user_ids
+        ).sorted("date", reverse=True)[:1]
+        if inbound:
+            body = html2plaintext(inbound.body or "").strip()
+            if body and body not in snippets:
+                snippets.append(body)
+        return "\n\n".join(snippets)[:8000]
 
     def action_open_dispatch_rate_confirmations(self):
         """Open persistent draft/quoted rate records linked to this lead."""

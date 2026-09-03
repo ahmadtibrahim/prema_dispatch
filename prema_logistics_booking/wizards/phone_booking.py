@@ -1,7 +1,11 @@
 import datetime
+import logging
+import re
 
 from odoo import _, api, fields, models
 from odoo.exceptions import UserError
+
+_logger = logging.getLogger(__name__)
 
 SHIPMENT_TYPES = [("ltl", "LTL"), ("ftl", "FTL")]
 TEMP_MODES = [("dry", "Dry"), ("reefer", "Reefer")]
@@ -28,6 +32,15 @@ class LogisticsPhoneBooking(models.TransientModel):
         readonly=True,
         help="Opportunity that opened this draft rate calculation.",
     )
+    source_text = fields.Text(
+        string="Customer Freight Request",
+        help="Customer-supplied CRM text. AI may extract shipment facts from "
+             "this text, but it never sets the customer price.",
+    )
+    extraction_summary = fields.Text(
+        string="Extraction Review",
+        readonly=True,
+    )
 
     # Optional reuse of the canonical physical-location database. These are
     # read/select only in the phone flow; choosing one never creates a new
@@ -47,11 +60,13 @@ class LogisticsPhoneBooking(models.TransientModel):
 
     # Shipment / one-off address fields. If no existing location is chosen,
     # these stay quote-only data and are not persisted as locations.
-    pickup_postal_code = fields.Char(string="Pickup Postal Code", required=True)
+    pickup_postal_code = fields.Char(string="Pickup Postal Code")
     pickup_address = fields.Char(string="Pickup Address")
+    pickup_company_name = fields.Char(string="Pickup Company")
     pickup_instructions = fields.Text(string="Pickup Instructions")
-    delivery_postal_code = fields.Char(string="Delivery Postal Code", required=True)
+    delivery_postal_code = fields.Char(string="Delivery Postal Code")
     delivery_address = fields.Char(string="Delivery Address")
+    delivery_company_name = fields.Char(string="Delivery Company")
     delivery_instructions = fields.Text(string="Delivery Instructions")
 
     requested_pickup_date = fields.Date(
@@ -100,6 +115,11 @@ class LogisticsPhoneBooking(models.TransientModel):
         for non-reefer). 0°C survives as 0.0."""
         if self.temperature_mode != "reefer":
             return None
+        if not self.temperature_confirmed:
+            raise UserError(_(
+                "Confirm the numerical reefer setpoint before calculating "
+                "a price. 'Frozen' or 'chilled' alone is not a setpoint."
+            ))
         from ..services.temperature_service import parse_temperature
         return parse_temperature(
             self.required_temperature_c,
@@ -107,7 +127,12 @@ class LogisticsPhoneBooking(models.TransientModel):
     # Kept for compatibility with existing transient rows/views from older
     # versions. The phone flow no longer needs a separate confirmation box;
     # the canonical service validates the numeric temperature itself.
-    temperature_confirmed = fields.Boolean(default=True)
+    temperature_confirmed = fields.Boolean(
+        string="Numerical Setpoint Confirmed",
+        default=False,
+        help="Required for reefer pricing. Select only after the customer or "
+             "authorized staff confirms the numerical setpoint.",
+    )
     shipment_type = fields.Selection(SHIPMENT_TYPES, default="ltl", required=True)
     liftgate_pickup = fields.Boolean()
     liftgate_delivery = fields.Boolean()
@@ -253,6 +278,10 @@ class LogisticsPhoneBooking(models.TransientModel):
         postal = self.pickup_postal_code if is_pickup else self.delivery_postal_code
         instructions = self.pickup_instructions if is_pickup else self.delivery_instructions
         payload.update({
+            "company_name": payload.get("company_name") or (
+                self.pickup_company_name if is_pickup
+                else self.delivery_company_name
+            ) or "",
             "formatted_address": payload.get("formatted_address") or address or "",
             "street": payload.get("street") or address or "",
             "postal_code": payload.get("postal_code") or postal or "",
@@ -291,6 +320,316 @@ class LogisticsPhoneBooking(models.TransientModel):
             "same_day_requested": self.same_day_requested,
             "idempotency_key": f"phone:{self.id}",
         }, source_channel="phone")
+
+    def _validate_quote_inputs(self):
+        """Require pricing inputs only when pricing, not before extraction."""
+        self.ensure_one()
+        missing = []
+        if not self.pickup_location_id and not (self.pickup_postal_code or "").strip():
+            missing.append(_("Pickup Postal Code"))
+        if not self.delivery_location_id and not (self.delivery_postal_code or "").strip():
+            missing.append(_("Delivery Postal Code"))
+        if missing:
+            raise UserError(_(
+                "Complete these fields before selecting Get Price: %s"
+            ) % ", ".join(missing))
+        self._canonical_required_temperature()
+
+    @staticmethod
+    def _postal_from_address(address):
+        match = re.search(
+            r"\b([ABCEGHJ-NPRSTVXY]\d[ABCEGHJ-NPRSTVWXYZ])\s*"
+            r"(\d[ABCEGHJ-NPRSTVWXYZ]\d)\b",
+            address or "",
+            re.IGNORECASE,
+        )
+        return (
+            "%s %s" % (match.group(1), match.group(2))
+        ).upper() if match else ""
+
+    def _match_saved_location(self, address, postal_code):
+        """Return only a confident canonical-location match; create nothing."""
+        Location = self.env["prema.dispatch.location"].sudo()
+        if not (address or "").strip():
+            return Location.browse()
+        exact = Location.search([
+            ("active", "=", True),
+            ("address", "=ilike", address.strip()),
+        ], limit=1)
+        if exact:
+            return exact
+        normalized = Location._normalize_address_street(address)
+        if normalized:
+            match = Location.search([
+                ("active", "=", True),
+                ("normalized_address", "=", normalized),
+            ], limit=1)
+            if match:
+                return match
+        postal = Location._normalize_postal(postal_code or "")
+        if postal:
+            candidates = Location.search([
+                ("active", "=", True),
+                ("postal_code", "=ilike", postal),
+            ], limit=20)
+            normalized_matches = candidates.filtered(
+                lambda location: location.normalized_address == normalized
+            )
+            if len(normalized_matches) == 1:
+                return normalized_matches
+        return Location.browse()
+
+    @staticmethod
+    def _manual_location_values(address, postal_code, company_name, stop_type):
+        """Build a reviewable master-facility row from a complete CA address."""
+        address = (address or "").strip()
+        postal_code = (postal_code or "").strip().upper()
+        if not address or not postal_code or not re.search(r"\b\d+[A-Za-z]?\b", address):
+            return None
+        parts = [part.strip() for part in address.split(",") if part.strip()]
+        province_match = re.search(
+            r"\b(AB|BC|MB|NB|NL|NS|NT|NU|ON|PE|QC|SK|YT)\b",
+            address,
+            re.IGNORECASE,
+        )
+        city = ""
+        if province_match and len(parts) >= 2:
+            province_index = next(
+                (index for index, part in enumerate(parts)
+                 if re.search(r"\b%s\b" % province_match.group(1), part, re.IGNORECASE)),
+                len(parts) - 1,
+            )
+            if province_index > 0:
+                city = parts[province_index - 1]
+        street = parts[0] if parts else address
+        return {
+            "name": (company_name or city or address)[:80],
+            "business_name": company_name or "",
+            "address": address,
+            "street": street,
+            "city": city,
+            "province_code": province_match.group(1).upper() if province_match else "",
+            "postal_code": postal_code,
+            "stop_type": stop_type,
+            "source_type": "dispatcher_manual",
+            "verification_state": "pending_review",
+        }
+
+    def _ensure_customer_location_access(self, location, stop_type, company_name=""):
+        commercial_partner = self.partner_id.commercial_partner_id
+        values = {}
+        if company_name:
+            values["customer_alias"] = company_name
+        values["can_pickup" if stop_type == "pickup" else "can_delivery"] = True
+        self.env["logistics.location.customer.access"].sudo().ensure_access(
+            location,
+            commercial_partner,
+            **values,
+        )
+
+    def _ensure_saved_location(self, stop_type):
+        self.ensure_one()
+        is_pickup = stop_type == "pickup"
+        selected = self.pickup_location_id if is_pickup else self.delivery_location_id
+        address = self.pickup_address if is_pickup else self.delivery_address
+        postal = self.pickup_postal_code if is_pickup else self.delivery_postal_code
+        company = self.pickup_company_name if is_pickup else self.delivery_company_name
+        location = selected or self._match_saved_location(address, postal)
+        if not location:
+            values = self._manual_location_values(
+                address, postal, company, stop_type)
+            if not values:
+                raise UserError(_(
+                    "The %s location needs a complete civic address and postal "
+                    "code before it can be saved. You may still prepare a "
+                    "city-to-city quote and add the location later."
+                ) % stop_type)
+            location = self.env["prema.dispatch.location"].sudo().create(values)
+        elif location.stop_type != "both" and location.stop_type != stop_type:
+            location.sudo().write({"stop_type": "both"})
+        self._ensure_customer_location_access(location, stop_type, company)
+        return location
+
+    def action_match_save_locations(self):
+        """Explicitly reuse or create reviewed Saved Locations for this quote."""
+        self.ensure_one()
+        # Validate both manual rows before writing either one, avoiding a
+        # partially saved pair when the other address is still city-only.
+        for stop_type in ("pickup", "delivery"):
+            selected = self.pickup_location_id if stop_type == "pickup" else self.delivery_location_id
+            address = self.pickup_address if stop_type == "pickup" else self.delivery_address
+            postal = self.pickup_postal_code if stop_type == "pickup" else self.delivery_postal_code
+            company = self.pickup_company_name if stop_type == "pickup" else self.delivery_company_name
+            if not selected and not self._match_saved_location(address, postal) \
+                    and not self._manual_location_values(address, postal, company, stop_type):
+                raise UserError(_(
+                    "The %s location needs a complete civic address and postal "
+                    "code before both locations can be saved."
+                ) % stop_type)
+        pickup = self._ensure_saved_location("pickup")
+        delivery = self._ensure_saved_location("delivery")
+        self.write({
+            "pickup_location_id": pickup.id,
+            "delivery_location_id": delivery.id,
+            "extraction_summary": _(
+                "Pickup and delivery were matched to Saved Locations. New "
+                "manual locations, if any, were saved as Pending Review. "
+                "Verify the facilities and then select Get Price."
+            ),
+        })
+        return self._quote_form_action()
+
+    def _weight_from_source_text(self):
+        matches = re.findall(
+            r"(\d[\d,]*(?:\.\d+)?)\s*(?:lb|lbs|pounds)\b",
+            self.source_text or "",
+            re.IGNORECASE,
+        )
+        if not matches:
+            return 0.0
+        return max(float(value.replace(",", "")) for value in matches)
+
+    @staticmethod
+    def _explicit_temperature(result):
+        raw = result.get("temp_requirement")
+        if raw in (None, False, ""):
+            return None
+        match = re.search(r"-?\d+(?:\.\d+)?", str(raw))
+        if not match:
+            return None
+        value = float(match.group(0))
+        if re.search(r"(?:°\s*F|\bFahrenheit\b)", str(raw), re.IGNORECASE):
+            value = (value - 32.0) * 5.0 / 9.0
+        return value
+
+    def _apply_source_extraction(self, result):
+        """Apply extracted facts to editable fields; never apply an AI rate."""
+        self.ensure_one()
+        stops = result.get("stops") if isinstance(result, dict) else []
+        stops = stops if isinstance(stops, list) else []
+        pickup = next(
+            (stop for stop in stops
+             if str(stop.get("type") or "").lower() == "pickup"),
+            stops[0] if stops else {},
+        )
+        deliveries = [
+            stop for stop in stops
+            if str(stop.get("type") or "").lower()
+            in ("dropoff", "delivery", "drop", "drop-off", "drop off")
+        ]
+        delivery = deliveries[-1] if deliveries else (stops[-1] if len(stops) > 1 else {})
+        pickup_address = (pickup.get("address") or "").strip()
+        delivery_address = (delivery.get("address") or "").strip()
+        pickup_company = (
+            pickup.get("company_name") or pickup.get("name") or ""
+        ).strip()
+        delivery_company = (
+            delivery.get("company_name") or delivery.get("name") or ""
+        ).strip()
+
+        pallets = int(
+            result.get("max_onboard_pallets")
+            or result.get("approximate_skids")
+            or pickup.get("pallets_in")
+            or pickup.get("pallets")
+            or self.pallets
+            or 1
+        )
+        load_type = str(result.get("service_type") or "").lower()
+        reefer = bool(result.get("requires_reefer")) or bool(re.search(
+            r"\b(?:frozen|chilled|reefer|refrigerated|temperature[- ]controlled)\b",
+            self.source_text or "",
+            re.IGNORECASE,
+        ))
+        explicit_temp = self._explicit_temperature(result)
+        scheduled_date = result.get("scheduled_date")
+        try:
+            scheduled_date = (
+                datetime.date.fromisoformat(str(scheduled_date)[:10])
+                if scheduled_date else False
+            )
+        except ValueError:
+            scheduled_date = False
+
+        self.write({
+            "pickup_location_id": False,
+            "pickup_address": pickup_address or self.pickup_address,
+            "pickup_company_name": pickup_company or self.pickup_company_name,
+            "pickup_postal_code": self._postal_from_address(pickup_address)
+                or self.pickup_postal_code,
+            "delivery_location_id": False,
+            "delivery_address": delivery_address or self.delivery_address,
+            "delivery_company_name": delivery_company or self.delivery_company_name,
+            "delivery_postal_code": self._postal_from_address(delivery_address)
+                or self.delivery_postal_code,
+            "pallets": max(pallets, 1),
+            "weight_lbs": self._weight_from_source_text() or self.weight_lbs,
+            "shipment_type": load_type if load_type in ("ltl", "ftl") else self.shipment_type,
+            "temperature_mode": "reefer" if reefer else "dry",
+            "required_temperature_c": explicit_temp if explicit_temp is not None else 0.0,
+            "temperature_confirmed": explicit_temp is not None if reefer else True,
+            "requested_pickup_date": scheduled_date or self.requested_pickup_date,
+            "liftgate_pickup": bool(pickup.get("liftgate")),
+            "liftgate_delivery": bool(delivery.get("liftgate")),
+            "price": 0.0,
+            "system_calculated_price": 0.0,
+            "customer_quoted_price": 0.0,
+            "quote_token": False,
+            "pickup_date": False,
+            "delivery_date": False,
+            "result_text": False,
+            "extraction_summary": _(
+                "Shipment details were extracted for review. Verify both "
+                "addresses, postal codes, pallets, weight, date, equipment, "
+                "and temperature before selecting Get Price. No rate was "
+                "generated and nothing was sent or booked."
+            ),
+        })
+        pickup_match = self._match_saved_location(
+            self.pickup_address, self.pickup_postal_code)
+        delivery_match = self._match_saved_location(
+            self.delivery_address, self.delivery_postal_code)
+        matched_values = {}
+        if pickup_match:
+            matched_values["pickup_location_id"] = pickup_match.id
+        if delivery_match:
+            matched_values["delivery_location_id"] = delivery_match.id
+        if matched_values:
+            self.write(matched_values)
+            self.extraction_summary += _(
+                " Existing Saved Locations were reused where an exact "
+                "address match was found."
+            )
+        return self._quote_form_action()
+
+    def action_extract_source_text(self):
+        """Use Prema AI for facts only, then return to the editable wizard."""
+        self.ensure_one()
+        if not self.crm_lead_id:
+            raise UserError(_("Open this quotation from a CRM opportunity first."))
+        if not (self.source_text or "").strip():
+            raise UserError(_("Paste or enter the customer's freight request first."))
+        from odoo.addons.premafirm_ai_engine.services.invoice_ai_service import (
+            InvoiceAIService,
+        )
+        try:
+            result = InvoiceAIService(self.env).analyze_from_text(
+                self.crm_lead_id,
+                self.source_text,
+                "",
+            )
+        except ValueError as exc:
+            raise UserError(str(exc)) from exc
+        except Exception as exc:
+            _logger.exception(
+                "CRM freight-request extraction failed for lead %s",
+                self.crm_lead_id.id,
+            )
+            raise UserError(_(
+                "The shipment details could not be extracted. The source "
+                "text is unchanged; enter the fields manually or try again."
+            )) from exc
+        return self._apply_source_extraction(result or {})
 
     def _sync_persistent_quote(self, session, quote):
         """Create/update the persistent phone quotation; never save locations."""
@@ -453,6 +792,8 @@ class LogisticsPhoneBooking(models.TransientModel):
     def action_get_price(self):
         self.ensure_one()
         from ..services.booking_orchestration_service import BookingOrchestrationService
+
+        self._validate_quote_inputs()
 
         # ── Requested-date validation ───────────────────────────────
         # A requested pickup date no scheduled departure can serve must
