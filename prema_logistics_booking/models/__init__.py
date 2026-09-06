@@ -63,3 +63,4 @@ from . import purchase_order_freight
 from . import res_partner_carrier
 from . import temperature_override
 from . import crm_lead_rate_confirmation
+from . import crm_lead_estimate_bridge
