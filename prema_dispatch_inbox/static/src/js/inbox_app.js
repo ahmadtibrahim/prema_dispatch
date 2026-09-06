@@ -51,10 +51,12 @@ const LINK_MODELS = {
     job: "prema.dispatch.job",
     invoice: "account.move",
     opportunity: "crm.lead",
+    custom_quote: "logistics.custom.quote",
 };
 const LINK_LABELS = {
     booking: "Booking", job: "Job",
     invoice: "Invoice", opportunity: "Opportunity",
+    custom_quote: "Rate confirmation",
 };
 const OUTBOUND_LABELS = {
     sent: "Sent",
@@ -94,6 +96,8 @@ export class InboxApp extends Component {
             linkSearch: "",
             assignCandidates: null,
             plainMsg: null,     // per-message "view plain text" opt-out
+            checkedIds: {},     // row checkboxes for bulk actions (by conv id)
+            trashRetentionDays: 30, // prema_inbox.trash_retention_days (UI)
             mobileScreen: "list",   // list | conversation | ai (mobile stack)
         });
         // Odoo 18: env.userId does NOT exist (Odoo 16 legacy) — the uid
@@ -132,6 +136,13 @@ export class InboxApp extends Component {
         onMounted(async () => {
             await this.refreshFolders();
             await this.loadConversations();
+            try {
+                const days = await this.orm.call(
+                    "prema.inbox.conversation", "trash_retention_days", []);
+                this.state.trashRetentionDays = Number(days) || 30;
+            } catch (e) {
+                // non-fatal: default of 30 stays in the purge prompt
+            }
             this._timer = setInterval(() => this.reconcile(), 60000);
             try {
                 // A bus failure (websocket down) must never block the basic
@@ -287,6 +298,212 @@ export class InboxApp extends Component {
         this.state.folder = key;
         this.state.selectedId = null;
         this.state.detail = null;
+        this.clearChecked();
+        this.loadConversations();
+    }
+
+    // ------------------------------------------------------------------
+    // Trash lifecycle (§19.2) — soft trash everywhere, permanent delete
+    // ONLY from the Trash folder with a typed "DELETE" confirmation.
+    // ------------------------------------------------------------------
+    toggleChecked(id) {
+        const next = { ...this.state.checkedIds };
+        if (next[id]) {
+            delete next[id];
+        } else {
+            next[id] = true;
+        }
+        this.state.checkedIds = next;
+    }
+
+    clearChecked() {
+        this.state.checkedIds = {};
+    }
+
+    checkedIdsList() {
+        return Object.keys(this.state.checkedIds).map(Number);
+    }
+
+    async trashConversation(id) {
+        // Single conversation — delete-to-Trash (soft).
+        if (!window.confirm("Move this conversation to Trash?")) {
+            return;
+        }
+        await this._trash([id]);
+    }
+
+    async trashChecked() {
+        const ids = this.checkedIdsList();
+        if (!ids.length) {
+            return;
+        }
+        // R2: exact bulk confirm text.
+        if (!window.confirm(
+                `Move ${ids.length} conversation${ids.length === 1 ? "" : "s"} to Trash?`)) {
+            return;
+        }
+        await this._trash(ids);
+    }
+
+    async _trash(ids) {
+        try {
+            await this.orm.call(
+                "prema.inbox.conversation", "action_trash", [ids]);
+            this.notification.add(
+                `Moved ${ids.length} conversation${ids.length === 1 ? "" : "s"} to Trash.`,
+                { type: "info" });
+            this._afterBulkAction();
+        } catch (e) {
+            this.notification.add(this._rpcError(e, "Could not move to Trash."), {
+                type: "danger",
+            });
+        }
+    }
+
+    async restoreConversation(id) {
+        if (!window.confirm("Restore this conversation from Trash?")) {
+            return;
+        }
+        await this._restore([id]);
+    }
+
+    async restoreChecked() {
+        const ids = this.checkedIdsList();
+        if (!ids.length) {
+            return;
+        }
+        if (!window.confirm(
+                `Restore ${ids.length} conversation${ids.length === 1 ? "" : "s"} from Trash?`)) {
+            return;
+        }
+        await this._restore(ids);
+    }
+
+    async _restore(ids) {
+        try {
+            await this.orm.call(
+                "prema.inbox.conversation", "action_restore", [ids]);
+            this.notification.add("Conversation restored.", { type: "info" });
+            this._afterBulkAction();
+        } catch (e) {
+            this.notification.add(this._rpcError(e, "Could not restore."), {
+                type: "danger",
+            });
+        }
+    }
+
+    async deleteForever(id) {
+        // Permanent delete: typed confirmation, Trash only (server-enforced).
+        const typed = window.prompt(
+            "Type DELETE to permanently delete this conversation. " +
+            "This cannot be undone — messages, links and inbox attachments " +
+            "are removed. Server-side mail is never touched.");
+        if (typed === null) {
+            return;
+        }
+        if (typed.trim().toUpperCase() !== "DELETE") {
+            this.notification.add("Permanent delete cancelled — type DELETE to confirm.", {
+                type: "warning",
+            });
+            return;
+        }
+        await this._deleteForever([id], typed);
+    }
+
+    async deleteChecked() {
+        const ids = this.checkedIdsList();
+        if (!ids.length) {
+            return;
+        }
+        const typed = window.prompt(
+            `Type DELETE to permanently delete ${ids.length} conversations. ` +
+            "This cannot be undone — messages, links and inbox attachments " +
+            "are removed. Server-side mail is never touched.");
+        if (typed === null) {
+            return;
+        }
+        if (typed.trim().toUpperCase() !== "DELETE") {
+            this.notification.add("Permanent delete cancelled — type DELETE to confirm.", {
+                type: "warning",
+            });
+            return;
+        }
+        await this._deleteForever(ids, typed);
+    }
+
+    async _deleteForever(ids, typed) {
+        try {
+            await this.orm.call(
+                "prema.inbox.conversation", "action_delete_permanent",
+                [ids, typed]);
+            this.notification.add("Conversation permanently deleted.", {
+                type: "info",
+            });
+            this._afterBulkAction();
+        } catch (e) {
+            this.notification.add(
+                this._rpcError(e, "Permanent delete failed."), { type: "danger" });
+        }
+    }
+
+    async purgeTrash() {
+        // Explicit "purge trash older than N days" — NEVER automatic. The
+        // typed DELETE doubles as the confirmation; the server re-checks it.
+        const raw = window.prompt(
+            "Purge trash older than how many days?",
+            String(this.state.trashRetentionDays || 30));
+        if (raw === null) {
+            return;
+        }
+        const days = parseInt(raw, 10);
+        if (!Number.isFinite(days) || days < 0) {
+            this.notification.add("Purging cancelled — enter a number of days.", {
+                type: "warning",
+            });
+            return;
+        }
+        const typed = window.prompt(
+            `Type DELETE to permanently purge every conversation in Trash ` +
+            `older than ${days} day${days === 1 ? "" : "s"}. This cannot be undone.`);
+        if (typed === null) {
+            return;
+        }
+        if (typed.trim().toUpperCase() !== "DELETE") {
+            this.notification.add("Purge cancelled — type DELETE to confirm.", {
+                type: "warning",
+            });
+            return;
+        }
+        try {
+            const n = await this.orm.call(
+                "prema.inbox.conversation", "action_purge_trash", [[], days, typed]);
+            if (n) {
+                this.notification.add(
+                    `Purged ${n} conversation${n === 1 ? "" : "s"} from Trash.`,
+                    { type: "info" });
+            } else {
+                this.notification.add("Nothing in Trash is older than that.", {
+                    type: "info",
+                });
+            }
+            this._afterBulkAction();
+        } catch (e) {
+            this.notification.add(this._rpcError(e, "Purge failed."), {
+                type: "danger",
+            });
+        }
+    }
+
+    _afterBulkAction() {
+        // The thread may have been one of the victims — reset selection so
+        // stale detail never renders, then reload folder + counts.
+        this.state.selectedId = null;
+        this.state.detail = null;
+        this.clearChecked();
+        if (window.innerWidth < 900) {
+            this.state.mobileScreen = "list";
+        }
+        this.reconcile();
         this.loadConversations();
     }
 
@@ -803,6 +1020,13 @@ export class InboxApp extends Component {
             if (r.activity) {
                 parts.push(`activity: ${r.activity}`);
             }
+        } else if (model === "custom_quote") {
+            if (r.quote_state) {
+                parts.push(r.quote_state);
+            }
+            if (r.total !== null && r.total !== undefined) {
+                parts.push(this.fmtMoney(r.total));
+            }
         }
         if (r.date) {
             parts.push(this.fmtDate(r.date));
@@ -1022,6 +1246,7 @@ export class InboxApp extends Component {
             ["job", c.job_id, c.job_name],
             ["invoice", c.invoice_id, c.invoice_name],
             ["opportunity", c.opportunity_id, c.opportunity_name],
+            ["custom_quote", c.custom_quote_id, c.custom_quote_name],
         ]) {
             if (id) {
                 rows.push({ model, id, name, label: LINK_LABELS[model] });

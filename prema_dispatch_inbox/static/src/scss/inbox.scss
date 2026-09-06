@@ -240,6 +240,18 @@ $inbox-accent: #017e84;
             gap: 6px;
         }
 
+        .o_inbox_conv_check {
+            // bulk-action checkbox — click must NOT open the conversation
+            display: inline-flex;
+            align-items: center;
+            cursor: pointer;
+
+            .form-check-input {
+                margin-top: 0;
+                cursor: pointer;
+            }
+        }
+
         .o_inbox_conv_from {
             font-size: 13px;
             color: #2b3446;
@@ -478,6 +490,27 @@ $inbox-accent: #017e84;
         .o_inbox_att_dl { color: $inbox-muted; &:hover { color: $inbox-accent; } }
     }
 
+    // ----- bulk actions (row checkboxes + bar) -----
+    .o_inbox_bulkbar {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 4px 10px;
+        margin: 0 10px 2px;
+        border: 1px solid #d8dce3;
+        border-radius: 6px;
+        background: #f7f8fa;
+        flex-shrink: 0;
+
+        .o_inbox_bulk_count {
+            font-size: 12px;
+            font-weight: 600;
+            color: #3b4354;
+        }
+    }
+
+    .o_inbox_trash_btn.btn-outline-danger:hover { color: #fff; }
+
     // ----- drafts banner -----
     .o_inbox_draftbar {
         border-bottom: 1px dashed #e0b98c;
@@ -493,6 +526,31 @@ $inbox-accent: #017e84;
             margin-top: 4px;
         }
     }
+
+    // ----- Trash (§19.2): banner inside a trashed thread + composer hint
+    .o_inbox_trashbar {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        width: 100%;
+        border: 1px solid #e6c6c8;
+        border-radius: 6px;
+        background: #fdf0f1;
+        color: #b0413e;
+        padding: 6px 8px;
+        flex-shrink: 0;
+    }
+
+    .o_inbox_trash_hint {
+        border-top: 1px solid #e6c6c8;
+        background: #fdf0f1;
+        color: #b0413e;
+        padding: 8px 12px;
+        font-size: 12px;
+        flex-shrink: 0;
+    }
+
+    .o_inbox_purge_btn { text-decoration: none; }
 
     .o_inbox_composer {
         border-top: 1px solid $inbox-border;

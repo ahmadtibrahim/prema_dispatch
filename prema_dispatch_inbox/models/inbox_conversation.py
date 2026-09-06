@@ -7,6 +7,14 @@ workflow_state (open/waiting/completed/archived) is shared, while personal
 read state is per-message/per-user on prema.inbox.message.read — reading is
 not completing.
 
+Trash is a SEPARATE soft flag (trashed/trashed_at/trashed_by) orthogonal to
+workflow_state: only the Trash folder lists trashed threads, permanent
+delete is available only from Trash with a typed confirmation, and no cron
+ever purges automatically (retention param prema_inbox.trash_retention_days
+only feeds the explicit "purge trash older than N days" action). Deleting
+an inbox record NEVER touches server-side mail (no IMAP/fetchmail/SMTP
+call; sent mail.mail ledger rows survive permanent delete).
+
 Real-time: every user of the inbox group subscribes to the bus channel
 prema_inbox:{uid}; new-message events and read-state changes are broadcast
 post-commit only.
@@ -14,6 +22,7 @@ post-commit only.
 import base64
 import logging
 import re
+from datetime import timedelta
 
 from odoo import _, api, fields, models
 from odoo.exceptions import AccessError, ValidationError
@@ -153,6 +162,21 @@ class InboxConversation(models.Model):
         ("completed", "Completed"),
         ("archived", "Archived"),
     ], string="State", default="open", index=True)
+    # Trash is a SOFT flag orthogonal to workflow_state — never part of the
+    # workflow select. A trashed thread keeps its workflow state so Restore
+    # returns it exactly where it was. Nothing auto-purges (no cron): the
+    # retention param only feeds the explicit purge action.
+    trashed = fields.Boolean(
+        string="In Trash", default=False, index=True,
+        help="Soft-deleted: shown only in the Trash folder, excluded from "
+             "every other folder and from unread/badge counts. Restoring "
+             "clears the flag; permanent delete is possible ONLY while this "
+             "is True (typed confirmation required). Deleting never touches "
+             "server-side mail.")
+    trashed_at = fields.Datetime(string="Trashed at", index=True)
+    trashed_by = fields.Many2one(
+        "res.users", string="Trashed by",
+        help="The dispatcher who moved the thread to Trash.")
     priority = fields.Selection([
         ("normal", "Normal"),
         ("urgent", "Urgent"),
@@ -172,6 +196,12 @@ class InboxConversation(models.Model):
              "per user — not shared.")
     booking_id = fields.Many2one(
         "logistics.booking", string="Booking", ondelete="set null")
+    custom_quote_id = fields.Many2one(
+        "logistics.custom.quote", string="Rate confirmation",
+        ondelete="set null",
+        help="Rate confirmation (logistics.custom.quote) linked to this "
+             "thread — same authorized picker/link semantics as the other "
+             "business links (never auto-created per email).")
     job_id = fields.Many2one(
         "prema.dispatch.job", string="Dispatch job", ondelete="set null")
     opportunity_id = fields.Many2one(
@@ -297,6 +327,16 @@ class InboxConversation(models.Model):
 
         # 2) thread-match by References / In-Reply-To
         conversation = self._find_by_references(references, in_reply_to)
+
+        # 2b) a NEW incoming message threading into a TRASHED conversation
+        # restores it: an actual reply is an active signal (the customer is
+        # talking again) — never silently buried in Trash. The restore keeps
+        # workflow_state/category/links intact; only the soft trash flag
+        # clears, so the thread returns exactly where it was.
+        if conversation and conversation.trashed:
+            conversation.write({"trashed": False, "trashed_at": False,
+                                "trashed_by": False})
+            conversation._broadcast_read_change()
 
         # 3) partner resolution — deterministic exact-email chain (D-4):
         #    ambiguous → provisional, dispatcher confirms; never guessed.
@@ -746,7 +786,10 @@ class InboxConversation(models.Model):
     # ------------------------------------------------------------------
     @api.model
     def _folder_domain(self, key):
-        base = [("is_spam", "=", False)]
+        """Computed folder domain. Trash is a soft flag orthogonal to
+        workflow_state: EVERY non-trash folder excludes trashed threads and
+        only the Trash folder lists them."""
+        base = [("is_spam", "=", False), ("trashed", "=", False)]
         if key == "inbox":
             return base + [("workflow_state", "=", "open")]
         if key == "needs_review":
@@ -761,10 +804,18 @@ class InboxConversation(models.Model):
         if key == "waiting_reply":
             return base + [("workflow_state", "=", "waiting")]
         if key == "archived":
-            return [("workflow_state", "=", "archived")]
+            return [("workflow_state", "=", "archived"),
+                    ("trashed", "=", False)]
+        if key == "trash":
+            return [("trashed", "=", True)]
         if key == "spam":
-            return [("is_spam", "=", True)]
-        # unread / tasks / drafts / sent are computed sets — no domain
+            return [("is_spam", "=", True), ("trashed", "=", False)]
+        if key in ("drafts", "sent", "unread", "tasks"):
+            # computed set keys: only the trash exclusion is a real domain
+            # (personal unread must never surface a trashed thread — the
+            # badge counts already exclude it)
+            return [("trashed", "=", False)]
+        # unknown key — nothing
         return []
 
     @api.model
@@ -801,7 +852,7 @@ class InboxConversation(models.Model):
             "active_shipments": "Active Shipments",
             "waiting_reply": "Waiting for Reply", "tasks": "Tasks",
             "drafts": "Drafts", "sent": "Sent", "archived": "Archived",
-            "spam": "Spam / Quarantine",
+            "trash": "Trash", "spam": "Spam / Quarantine",
         }
         return [{"key": k, "label": v, "count": len(self._folder_conversations(k))}
                 for k, v in labels.items()]
@@ -870,6 +921,9 @@ class InboxConversation(models.Model):
             "is_spam": conv.is_spam,
             "is_load_board": conv.is_load_board,
             "has_attachment": bool(conv.inbox_message_ids.attachment_ids),
+            "trashed": conv.trashed,
+            "trashed_at": conv.trashed_at.isoformat() if conv.trashed_at else None,
+            "trashed_by_name": conv.trashed_by.name or "",
             "booking_id": conv.booking_id.id,
             "booking_name": self._safe_link_name(conv.booking_id),
             "job_id": conv.job_id.id,
@@ -878,6 +932,8 @@ class InboxConversation(models.Model):
             "invoice_name": self._safe_link_name(conv.invoice_id),
             "opportunity_id": conv.opportunity_id.id,
             "opportunity_name": self._safe_link_name(conv.opportunity_id),
+            "custom_quote_id": conv.custom_quote_id.id,
+            "custom_quote_name": self._safe_link_name(conv.custom_quote_id),
         }
 
     @api.model
@@ -903,6 +959,8 @@ class InboxConversation(models.Model):
                 "subject": m.subject,
                 "body": m.body or "",
                 "body_plain": m.body_plain or "",
+                "message_id": m.message_id or "",
+                "mail_mail_id": m.mail_mail_id.id or None,
                 "is_read": m.is_read,
                 "outbound_state": m.outbound_state,
                 "send_error": m.send_error or "",
@@ -991,6 +1049,7 @@ class InboxConversation(models.Model):
             "job": "prema.dispatch.job",
             "invoice": "account.move",
             "opportunity": "crm.lead",
+            "custom_quote": "logistics.custom.quote",
         }
 
     @api.model
@@ -998,6 +1057,7 @@ class InboxConversation(models.Model):
         return {
             "booking": "booking_id", "job": "job_id",
             "invoice": "invoice_id", "opportunity": "opportunity_id",
+            "custom_quote": "custom_quote_id",
         }
 
     @api.model
@@ -1103,6 +1163,14 @@ class InboxConversation(models.Model):
                     "stage": self._safe_attr(r, "stage_id.name"),
                     "salesperson": self._safe_attr(r, "user_id.name"),
                     "activity": self._latest_activity_label(r),
+                })
+            elif model == "custom_quote":
+                row.update({
+                    "number": self._safe_attr(r, "name")
+                              or self._safe_attr(r, "id"),
+                    "date": self._fmt_date_attr(r, "create_date"),
+                    "total": r.quoted_price,
+                    "quote_state": self._safe_attr(r, "state"),
                 })
             rows.append(row)
         return rows
@@ -1695,6 +1763,20 @@ class InboxConversation(models.Model):
         else:
             message = self.env["prema.inbox.message"]
 
+        # ---- Trash guard ---------------------------------------------
+        # A trashed thread is immutable for composition: nothing new may be
+        # added to it (reply / reply-all / forward / note / draft resume)
+        # until it is restored — restore is one click and the thread then
+        # returns exactly where it was. "New email" (compose, no draft)
+        # ALWAYS builds its own fresh conversation, so it stays allowed
+        # even while a trashed thread is open in the UI.
+        if not (kind == "compose" and not message):
+            active_conv = message.conversation_id if message else self
+            if active_conv and active_conv.trashed:
+                raise ValidationError(_(
+                    "This conversation is in Trash — restore it before "
+                    "composing or sending."))
+
         # ---- internal note: immediate, never emailed -----------------
         if kind == "note":
             if not (body or "").strip():
@@ -1980,6 +2062,158 @@ class InboxConversation(models.Model):
                 conv.muted_user_ids = [(4, user.id)]
         return True
 
+    # ------------------------------------------------------------------
+    # Trash lifecycle (§19.2) — soft trash + guarded permanent delete.
+    # ------------------------------------------------------------------
+    @api.model
+    def trash_retention_days(self):
+        """prema_inbox.trash_retention_days (default 30), sanity-clamped.
+
+        Informational only: the retention window feeds the EXPLICIT "purge
+        trash older than N days" action. No cron anywhere reads this — the
+        inbox NEVER auto-purges.
+        """
+        try:
+            days = int(self.env["ir.config_parameter"].sudo().get_param(
+                "prema_inbox.trash_retention_days", "30"))
+        except (TypeError, ValueError):
+            return 30
+        return max(0, days)
+
+    def action_trash(self):
+        """Move conversation(s) to Trash — one-click single AND bulk.
+
+        SOFT delete: conversation, messages, attachments and links all stay
+        in place; only the trashed/trashed_at/trashed_by flag turns on and
+        the thread leaves every working folder. Open follow-up activities
+        are NOT touched (a trashed thread's task survives a restore) — they
+        only stop surfacing via the Tasks folder while trashed.
+
+        R5 — server-side mail safety: this is a pure ORM write. There is no
+        IMAP / fetchmail / SMTP call on this path or anywhere in the
+        module, so server-side mail is never altered by trashing.
+        """
+        now = fields.Datetime.now()
+        self.write({"trashed": True, "trashed_at": now,
+                    "trashed_by": self.env.user.id})
+        # Personal per-message unread markers are left untouched (another
+        # user's unread is not this user's to clear) — trashed threads are
+        # excluded from badges and the Unread/Tasks folders by the folder
+        # machinery, so the markers stay inert until a possible restore.
+        self._broadcast_read_change()
+        return True
+
+    def action_restore(self):
+        """Take conversation(s) out of Trash — back where they were.
+
+        The soft flag clears while workflow_state / category / links /
+        assignee survive untouched: a completed thread returns to the
+        Completed state, an archived one to Archived, etc. (folders derive
+        from the surviving state).
+        """
+        self.filtered(lambda c: c.trashed).write({
+            "trashed": False, "trashed_at": False, "trashed_by": False})
+        self._broadcast_read_change()
+        return True
+
+    def action_delete_permanent(self, confirmation=""):
+        """PERMANENT delete — Trash only, typed confirmation required.
+
+        §19.2: irreversible delete exists only inside Trash and demands the
+        word DELETE typed by the user (both UI prompt and server check).
+        Only rows whose trashed flag is set may be destroyed.
+
+        R5: only inbox rows die here. The mail.mail ledger rows of sent
+        messages (and their provider events, correlated by Message-ID)
+        survive — the server copy of the mail is untouched and history stays
+        correlatable. Attachments bound EXCLUSIVELY to the deleted messages
+        are removed; anything still referenced (other inbox threads, the
+        mail ledger, chatter) is kept.
+        """
+        if str(confirmation or "").strip().upper() != "DELETE":
+            raise ValidationError(_(
+                'Permanent delete requires typing "DELETE" to confirm.'))
+        if self.filtered(lambda c: not c.trashed):
+            raise ValidationError(_(
+                "Only conversations in Trash can be permanently deleted."))
+        self._unlink_inbox_only_attachments()
+        # orphan activities would point at deleted rows forever
+        self.env["mail.activity"].search([
+            ("res_model", "=", "prema.inbox.conversation"),
+            ("res_id", "in", self.ids),
+        ]).unlink()
+        self.unlink()  # inbox messages cascade on conversation_id
+        return True
+
+    def action_purge_trash(self, older_than_days=None, confirmation=""):
+        """Explicit "purge trash older than N days" (default: the
+        prema_inbox.trash_retention_days window). Never automatic — the
+        caller must be an explicit human action, and the same typed
+        confirmation as permanent delete is required."""
+        if str(confirmation or "").strip().upper() != "DELETE":
+            raise ValidationError(_(
+                'Purging requires typing "DELETE" to confirm.'))
+        try:
+            days = int(older_than_days)
+        except (TypeError, ValueError):
+            days = self.trash_retention_days()
+        if days < 0:
+            raise ValidationError(_("Retention days cannot be negative."))
+        cutoff = fields.Datetime.now() - timedelta(days=days)
+        doomed = self.search([("trashed", "=", True),
+                              ("trashed_at", "<=", cutoff)])
+        if self:
+            # scoped purge (explicit ids); the folder action passes none
+            doomed = doomed & self
+        if not doomed:
+            return 0
+        doomed._unlink_inbox_only_attachments()
+        self.env["mail.activity"].search([
+            ("res_model", "=", "prema.inbox.conversation"),
+            ("res_id", "in", doomed.ids),
+        ]).unlink()
+        doomed.unlink()
+        return len(doomed)
+
+    def _unlink_inbox_only_attachments(self):
+        """Unlink attachments bound EXCLUSIVELY to the messages of the
+        conversations being destroyed.
+
+        Called BEFORE the conversation unlink (the m2m rel rows must still
+        exist to identify the doomed set). After the cascade, every
+        attachment still referenced anywhere — by a surviving inbox
+        message, by the mail.mail ledger (mail.mail _inherits
+        mail.message), or by chatter mail.message rows — is kept. The
+        mailbox must never destroy a file the rest of Odoo still uses.
+        """
+        doomed_msgs = self.inbox_message_ids
+        candidates = doomed_msgs.attachment_ids
+        if not candidates:
+            return True
+        # Everything that STILL references a candidate must survive. The
+        # searches run BEFORE the conversation cascade (the m2m rel rows of
+        # the doomed messages still exist then — they die with the cascade
+        # and never protect anything).
+        keep_ids = set()
+        other_msgs = self.env["prema.inbox.message"].search([
+            ("id", "not in", doomed_msgs.ids),
+            ("attachment_ids", "in", candidates.ids)])
+        keep_ids.update(other_msgs.attachment_ids.ids)
+        # mail.mail ledger rows (_inherits mail.message → same attachment
+        # rel): sent-message attachments must survive permanent delete.
+        # mail.message covers both the ledger AND chatter rows.
+        ledger = self.env["mail.mail"].sudo().search(
+            [("attachment_ids", "in", candidates.ids)])
+        keep_ids.update(ledger.attachment_ids.ids)
+        chatter = self.env["mail.message"].sudo().search(
+            [("attachment_ids", "in", candidates.ids)])
+        keep_ids.update(chatter.attachment_ids.ids)
+        doomed = candidates.filtered(lambda a: a.id not in keep_ids)
+        if doomed:
+            # best-effort: owner/unlink ACL checks bypassed — every doomed
+            # file was verified unreferenced outside the deleted thread
+            doomed.sudo().unlink()
+        return True
 
 
 def _email_of(addr):
