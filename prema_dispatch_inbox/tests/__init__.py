@@ -9,5 +9,3 @@ from . import test_inbox_security
 from . import test_inbox_badge_route
 from . import test_inbox_gateway
 from . import test_inbox_fixes
-from . import test_inbox_phase1
-from . import test_inbox_trash

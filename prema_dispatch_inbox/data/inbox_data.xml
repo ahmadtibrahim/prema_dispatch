@@ -25,10 +25,6 @@
             <field name="key">prema_inbox.spam_filter_active</field>
             <field name="value">0</field>
         </record>
-        <record id="inbox_icp_trash_retention_days" model="ir.config_parameter">
-            <field name="key">prema_inbox.trash_retention_days</field>
-            <field name="value">30</field>
-        </record>
     </data>
 
 </odoo>
