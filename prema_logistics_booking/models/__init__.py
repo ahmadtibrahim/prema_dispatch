@@ -44,6 +44,7 @@ from . import dispatch_job_extension
 from . import dispatch_timeline_extension
 from . import dispatch_load_plan_extension
 from . import dispatch_stop_extension
+from . import dispatch_day_route_proposal
 from . import dispatch_item_extension
 from . import logistics_custom_quote_send_attempt
 from . import logistics_custom_quote
