@@ -56,6 +56,7 @@ BOOKING_CHANNEL_SELECTION = [
     ("email", "Email"),
     ("api", "API"),
     ("imported", "Imported"),
+    ("sale_order", "Sale Order"),
 ]
 
 
@@ -1719,6 +1720,8 @@ class LogisticsBooking(models.Model):
             "source_model": "logistics.booking",
             "source_res_id": self.id,
             "logistics_booking_id": self.id,
+            # D-C1 (§1.4): Sale Order back-link for the movement_v1 bridge.
+            "sale_order_id": self.sale_order_id.id if self.sale_order_id else False,
             "operation_date": operation_date,
             "corridor_departure_id": departure.id if departure else False,
             "auto_scheduled_ltl": bool(departure),
@@ -1897,6 +1900,10 @@ class LogisticsBooking(models.Model):
             "source_model": "logistics.booking",
             "source_res_id": self.id,
             "logistics_booking_id": self.id,
+            # D-C1 (§1.4): keep the Sale Order back-link on every Planner
+            # card created for an SO-originated booking (mirror of the
+            # invoice_id back-link below).
+            "sale_order_id": self.sale_order_id.id if self.sale_order_id else False,
             "booking_leg_id": leg.id if leg else False,
             "corridor_departure_id": departure.id if departure else False,
             "ltl_operation_key": operation_key,

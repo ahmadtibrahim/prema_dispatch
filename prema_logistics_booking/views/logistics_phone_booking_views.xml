@@ -4,7 +4,7 @@
         <field name="name">logistics.phone.booking.form</field>
         <field name="model">logistics.phone.booking</field>
         <field name="arch" type="xml">
-            <form string="Phone Quote / Booking">
+            <form string="Phone Quote / Booking (Legacy)">
                 <header>
                     <button name="action_get_price" string="Get Price" type="object"
                             class="btn-primary" invisible="price &gt; 0"/>
@@ -17,6 +17,16 @@
                 </header>
 
                 <sheet>
+                    <!-- D-C1 (§20) deprecation banner: no new features here;
+                         new staff quotes use the Internal Booking / Rate
+                         Confirmation flow (logistics.custom.quote). -->
+                    <div class="alert alert-warning" role="alert">
+                        <b>Deprecated — Phone Booking (Legacy).</b> Kept for
+                        historical quotes and data access only; no new features.
+                        Use the Internal Booking / Rate Confirmation flow
+                        (CRM Opportunity → Rate Confirmation) for new quotes —
+                        see the parity guide for the exact path per scenario.
+                    </div>
                     <div class="oe_title">
                         <h2>Phone Quote</h2>
                         <p class="text-muted mb-2">
@@ -149,7 +159,8 @@
     </record>
 
     <record id="action_logistics_phone_booking" model="ir.actions.act_window">
-        <field name="name">Phone Booking</field>
+        <!-- D-C1 (§20): legacy label kept in sync with the menu. -->
+        <field name="name">Phone Booking (Legacy)</field>
         <field name="res_model">logistics.phone.booking</field>
         <field name="view_mode">form</field>
         <field name="target">new</field>

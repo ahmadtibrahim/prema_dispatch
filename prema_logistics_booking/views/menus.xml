@@ -27,7 +27,10 @@
     <menuitem id="menu_v4_adhoc" name="Find Available Truck" parent="menu_v4_operations" action="prema_dispatch.action_adhoc_load_finder" sequence="35"/>
 
     <menuitem id="menu_v4_all_bookings" name="All Bookings" parent="menu_v4_bookings" action="action_logistics_booking" sequence="10"/>
-    <menuitem id="menu_v4_phone" name="Phone Booking" parent="menu_v4_bookings" action="action_logistics_phone_booking" sequence="20"/>
+    <!-- D-C1 (§20): Phone Booking deprecated — kept for historical quotes
+         only; new staff quoting uses the Internal Booking / Rate
+         Confirmation flow (logistics.custom.quote). -->
+    <menuitem id="menu_v4_phone" name="Phone Booking (Legacy)" parent="menu_v4_bookings" action="action_logistics_phone_booking" sequence="20"/>
     <menuitem id="menu_v4_recurring" name="Recurring Agreements" parent="menu_v4_bookings" action="action_logistics_recurring_agreement" sequence="30"/>
     <menuitem id="menu_v4_quotes" name="Custom Quotes" parent="menu_v4_bookings" action="action_logistics_custom_quote" sequence="40"/>
     <menuitem id="menu_v4_wa" name="WhatsApp Negotiations" parent="menu_v4_bookings" action="agent_wa.action_wa_negotiations" sequence="50"/>

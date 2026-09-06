@@ -887,6 +887,37 @@ class PremaDispatchJob(models.Model):
 
     @api.model_create_multi
     def create(self, vals_list):
+        # ── D-C1 (§1.4) orphan-prevention net ─────────────────────────────
+        # Every Planner card must belong to a canonical logistics.booking
+        # (created by logistics.booking._create_dispatch_job → bridge) or to
+        # a legacy pre-booking operation key. Two layers:
+        #   1. HARD: a direct create with source_model "sale.order" is the
+        #      retired bypass (sale_order_dispatch.py used to do this) —
+        #      raise with the canonical path. Escape hatch context key
+        #      `dispatch_job_legacy_create` exists ONLY for pre-D-C1 data
+        #      tooling/migrations that must reproduce historical rows.
+        #   2. AUDIT: creates with neither a booking link nor an operation
+        #      key are logged (manual/legacy tooling stays possible; orphan
+        #      rows become visible instead of silent).
+        for vals in vals_list:
+            if vals.get("source_model") == "sale.order" and not self.env.context.get(
+                    "dispatch_job_legacy_create"):
+                raise exceptions.ValidationError(
+                    _("A dispatch job may not be created directly from a "
+                      "Sales Order. Use the order's Book Load flow: it "
+                      "confirms ONE canonical logistics.booking whose "
+                      "dispatch-job bridge creates this Planner card.")
+                )
+            if (not vals.get("logistics_booking_id")
+                    and not vals.get("ltl_operation_key")
+                    and not self.env.context.get("dispatch_job_legacy_create")):
+                _logger.warning(
+                    "prema.dispatch.job created without a logistics booking "
+                    "or operation key (vals: %s) — legacy/standalone "
+                    "creation; no Planner card was expected to back-link it.",
+                    {k: vals.get(k) for k in (
+                        "source_model", "source_res_id", "ref", "name")},
+                )
         for vals in vals_list:
             if vals.get("name", "New") == "New":
                 vals["name"] = self.env["ir.sequence"].next_by_code(
@@ -1461,6 +1492,12 @@ class PremaDispatchJob(models.Model):
     @api.model
     def _create_stops_from_ai_data(self, job, stops_data, base_date=None):
         """
+        DEPRECATED (D-C1, master §1/§14): retained as a compatibility shim
+        only. The Sale Order "Generate from Text" flow no longer creates
+        dispatch jobs/stops directly — it confirms a canonical
+        logistics.booking whose dispatch-job bridge creates the stops.
+        No new callers may be added.
+
         Create prema.dispatch.stop records from AI-parsed stop list.
 
         Handles both the new format (pallets_in/pallets_out/linked_load_group)

@@ -35,6 +35,7 @@ SOURCE_CHANNELS = [
     ("phone", "Phone Booking"),
     ("internal", "Internal Staff"),
     ("invoice", "Invoice Create/Open Booking"),
+    ("sale_order", "Sale Order Book Load"),
     ("custom_quote", "Custom Quote"),
     ("recurring", "Recurring Agreement"),
     ("whatsapp", "WhatsApp Negotiation"),
@@ -1366,6 +1367,11 @@ class BookingOrchestrationService:
             booking_vals["recurring_agreement_id"] = normalized_request.recurring_agreement_id
         if normalized_request.recurring_job_id:
             booking_vals["recurring_job_id"] = normalized_request.recurring_job_id
+        # D-C1 (§1/§14): Sale Order channel — written into booking_vals so
+        # the dispatch-job bridge (created below in the same transaction)
+        # can back-link job.sale_order_id at creation time.
+        if normalized_request.existing_sale_order_id:
+            booking_vals["sale_order_id"] = normalized_request.existing_sale_order_id
 
         if pickup_fsa:
             booking_vals["pickup_fsa_id"] = pickup_fsa.id

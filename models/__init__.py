@@ -25,6 +25,7 @@ from . import dispatch_document
 from . import dispatch_load_plan
 from . import dispatch_load_plan_optimizer
 from . import dispatch_book_load_wizard
+from . import sale_order_book_wizard
 from . import dispatch_location_photo
 from . import dispatch_location_extraction
 from . import dispatch_route_visit
