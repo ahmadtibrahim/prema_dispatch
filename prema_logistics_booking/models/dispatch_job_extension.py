@@ -1,7 +1,7 @@
 """Connect scheduled LTL bookings to the canonical Dispatch Planner."""
 
 from odoo import _, api, fields, models
-from odoo.exceptions import ValidationError
+from odoo.exceptions import UserError, ValidationError
 
 
 class PremaDispatchJob(models.Model):
@@ -527,7 +527,130 @@ class PremaDispatchJob(models.Model):
                         "Reassign the Truck on that departure so every job on it stays synchronized.",
                         departure=job.corridor_departure_id.display_name,
                     ))
-        return super().write(vals)
+        pre_vehicle = {j.id: (j.vehicle_id.id or False) for j in self} \
+            if "vehicle_id" in vals else {}
+        result = super().write(vals)
+        # §15 (D-B4) safe-replanning: job-level drift (truck, stage,
+        # pickup day/time) invalidates any open proposal covering this
+        # job's stops — a proposal is never silently re-applied over a
+        # changed day.
+        drift = set(vals) & {
+            "vehicle_id", "stage_id", "operation_date", "scheduled_pickup"}
+        # A no-op write (e.g. departure sync re-assigning the SAME truck)
+        # does not reshape the day — nothing becomes stale over it.
+        if "vehicle_id" in drift and all(
+                pre_vehicle[j.id] == vals["vehicle_id"] for j in self):
+            drift.discard("vehicle_id")
+        if drift and not self.env.context.get("_day_route_silent"):
+            from odoo.addons.prema_logistics_booking.models.dispatch_day_route_proposal import (
+                PremaDispatchDayRouteProposal,
+            )
+            PremaDispatchDayRouteProposal._mark_stale_for_jobs(
+                self.env, self.ids,
+                "A job of this day changed (%s)."
+                % ", ".join(sorted(drift)))
+        return result
+
+    # ── §16.6 (D-B4): Dispatch Planner board stop-drag guard ─────────
+    # The board's drag panel previously rewrote every stop's sequence with
+    # no auth, validation or audit. It now goes through the SAME
+    # validation as the day-route apply path (same-truck active scope,
+    # executed/locked stops pinned in order, pickup-before-delivery,
+    # capacity) and is recorded as an explicit confirmed change on the
+    # day-route audit trail; invalid drags are refused and the refusal is
+    # audited. Open proposals covering the touched stops go stale via the
+    # stop-write hooks.
+
+    @api.model
+    def driver_reorder_stops_for_truck(self, stop_order):
+        from odoo.addons.prema_logistics_booking.services.day_route_service import (
+            DayRouteService)
+        user = self.env.user
+        if not any(user.has_group(g) for g in (
+                "prema_dispatch.group_dispatcher",
+                "prema_dispatch.group_dispatch_manager",
+                "prema_logistics_booking.group_logistics_booking_manager",
+                "base.group_system")):
+            raise UserError("Not authorized — dispatcher access required "
+                            "to reorder a truck's day.")
+        stops = self.env["prema.dispatch.stop"].browse(stop_order).exists()
+        if not stops:
+            return {"success": False, "error": "No valid stops"}
+        svc = DayRouteService(self.env)
+        check = svc.validate_day_stop_order(stop_order)
+        Proposal = self.env["prema.dispatch.day.route.proposal"]
+        if not check["valid"]:
+            Proposal._log_day_event(
+                check.get("vehicle_id") or False,
+                check.get("operating_date"),
+                "reorder_refused",
+                "Board reorder refused: %s"
+                % "; ".join(check["errors"]),
+                snapshot={"stop_ids": stops.ids})
+            raise UserError("Reordering refused — %s"
+                            % "; ".join(check["errors"]))
+        result = super().driver_reorder_stops_for_truck(stop_order)
+        Proposal._log_day_event(
+            check.get("vehicle_id") or False,
+            check.get("operating_date"),
+            "manual_reorder",
+            "Dispatcher reordered the truck/day stop list on the "
+            "Dispatch Planner board.",
+            new_value=[{"stop_id": s.id, "sequence": s.sequence}
+                       for s in stops],
+        )
+        return result
+
+    @api.model
+    def validate_stop_order_rpc(self, stop_order):
+        """No-mutate validation of a proposed stop order (board drag
+        pre-check / tests)."""
+        from odoo.addons.prema_logistics_booking.services.day_route_service import (
+            DayRouteService)
+        return DayRouteService(self.env).validate_day_stop_order(stop_order)
+
+    # ── §15 (D-B4) UI entry points on the job form ──────────────────
+
+    def _job_day_route_date(self):
+        self.ensure_one()
+        from datetime import date as _date
+        import pytz
+        user_tz = pytz.timezone(self.env.user.tz or "America/Toronto")
+        if self.operation_date:
+            return self.operation_date
+        if self.scheduled_pickup:
+            return pytz.utc.localize(self.scheduled_pickup).astimezone(
+                user_tz).date()
+        return _date.today()
+
+    def action_view_day_route_proposals(self):
+        self.ensure_one()
+        return {
+            "type": "ir.actions.act_window",
+            "name": "Day Trip Optimizer — %s" % self.display_name,
+            "res_model": "prema.dispatch.day.route.proposal",
+            "view_mode": "tree,form",
+            "domain": [("vehicle_id", "=", self.vehicle_id.id)]
+            if self.vehicle_id else [],
+            "context": {"search_default_operating_date":
+                            self._job_day_route_date().isoformat()},
+        }
+
+    def action_generate_day_route_proposal(self):
+        """Create a proposal for this job's truck/day (proposal-only — the
+        dispatcher reviews lines, then applies explicitly)."""
+        self.ensure_one()
+        if not self.vehicle_id:
+            raise UserError("Assign a truck to the job first.")
+        proposal = self.env["prema.dispatch.day.route.proposal"].generate(
+            self.vehicle_id.id, self._job_day_route_date())
+        return {
+            "type": "ir.actions.act_window",
+            "res_model": "prema.dispatch.day.route.proposal",
+            "view_mode": "form",
+            "res_id": proposal.id,
+            "name": proposal.display_name,
+        }
 
     @api.constrains("vehicle_id", "operation_date", "corridor_departure_id", "stage_id")
     def _check_custom_job_against_departure(self):
@@ -872,3 +995,40 @@ class LogisticsCorridorDeparture(models.Model):
                                 truck=departure.vehicle_id.display_name,
                             ))
         return result
+
+
+class LogisticsBooking(models.Model):
+    _inherit = "logistics.booking"
+
+    # ── §15 (D-B4) Day Trip Optimizer entry points on the booking ────
+
+    def _day_route_job(self):
+        """The dispatch job this booking drives (one per truck/day), if any."""
+        self.ensure_one()
+        return self.env["prema.dispatch.job"].search(
+            [("logistics_booking_id", "=", self.id)],
+            limit=1, order="id desc")
+
+    def action_view_day_route_proposals(self):
+        self.ensure_one()
+        job = self._day_route_job()
+        if not job:
+            return {
+                "type": "ir.actions.act_window",
+                "name": "Day Trip Optimizer",
+                "res_model": "prema.dispatch.day.route.proposal",
+                "view_mode": "tree,form",
+            }
+        return job.action_view_day_route_proposals()
+
+    def action_generate_day_route_proposal(self):
+        """Create (proposal-only) a day-route proposal for this booking's
+        job's truck/day — nothing is applied until the dispatcher reviews
+        and presses Apply on the proposal."""
+        self.ensure_one()
+        job = self._day_route_job()
+        if not job:
+            raise UserError(
+                "No dispatch job exists for booking %s yet."
+                % self.name)
+        return job.action_generate_day_route_proposal()

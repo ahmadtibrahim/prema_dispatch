@@ -4,3 +4,4 @@ from . import availability_bridge
 from . import booking_orchestration_service
 from . import lead_quote_draft_service
 from . import portal_multistop_bridge
+from . import day_route_service

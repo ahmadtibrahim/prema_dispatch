@@ -68,6 +68,9 @@ root for architecture notes, decisions, and phase status.
         "views/temperature_override_views.xml",
         "views/temperature_job_views.xml",
         "views/dispatch_job_views.xml",
+        # §15 (D-B4) Day Trip Optimizer — after menus.xml (menu refs) and
+        # the job/booking base forms it inherits.
+        "views/day_route_proposal_views.xml",
         "views/logistics_direct_delivery_views.xml",
         "views/logistics_weekly_plan_views.xml",
         # Phases 11-16 — execution/scenario/subcontracting UI. Must load

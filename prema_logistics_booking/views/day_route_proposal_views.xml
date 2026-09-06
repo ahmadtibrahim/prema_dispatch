@@ -1,0 +1,218 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- §15 (D-B4) Day Trip Optimizer: persisted proposal records.
+         MUST load after menus.xml (references menu_v4_operations). -->
+
+    <!-- ── Proposal list / form ───────────────────────────────────── -->
+    <record id="view_day_route_proposal_list" model="ir.ui.view">
+        <field name="name">prema.dispatch.day.route.proposal.list</field>
+        <field name="model">prema.dispatch.day.route.proposal</field>
+        <field name="arch" type="xml">
+            <list string="Day Trip Optimizer">
+                <field name="name"/>
+                <field name="vehicle_id"/>
+                <field name="operating_date"/>
+                <field name="state"/>
+                <field name="is_stale"/>
+                <field name="feasible" string="Feasible"/>
+                <field name="version"/>
+                <field name="total_stops" string="Stops" optional="hide"/>
+                <field name="total_drive_minutes" string="Drive (min)" optional="hide"/>
+                <field name="total_distance_km" string="Distance (km)" optional="hide"/>
+                <field name="finish_eta" string="Finish ETA" optional="hide"/>
+                <field name="created_by"/>
+                <field name="created_at" optional="hide"/>
+                <field name="applied_at" optional="hide"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="view_day_route_proposal_search" model="ir.ui.view">
+        <field name="name">prema.dispatch.day.route.proposal.search</field>
+        <field name="model">prema.dispatch.day.route.proposal</field>
+        <field name="arch" type="xml">
+            <search string="Day Trip Optimizer">
+                <field name="vehicle_id"/>
+                <field name="operating_date"/>
+                <field name="name"/>
+                <filter name="open" string="Open"
+                        domain="[('state', '=', 'proposed'), ('is_stale', '=', False)]"/>
+                <filter name="stale" string="Stale"
+                        domain="[('state', '=', 'proposed'), ('is_stale', '=', True)]"/>
+                <filter name="applied" string="Applied"
+                        domain="[('state', '=', 'applied')]"/>
+                <filter name="unfeasible" string="Infeasible"
+                        domain="[('feasible', '=', False)]"/>
+                <group expand="0" string="Group By">
+                    <filter name="group_vehicle" string="Truck"
+                            context="{'group_by': 'vehicle_id'}"/>
+                    <filter name="group_state" string="State"
+                            context="{'group_by': 'state'}"/>
+                    <filter name="group_date" string="Operating Day"
+                            context="{'group_by': 'operating_date'}"/>
+                </group>
+            </search>
+        </field>
+    </record>
+
+    <record id="view_day_route_proposal_form" model="ir.ui.view">
+        <field name="name">prema.dispatch.day.route.proposal.form</field>
+        <field name="model">prema.dispatch.day.route.proposal</field>
+        <field name="arch" type="xml">
+            <form string="Day Route Proposal">
+                <header>
+                    <button name="action_apply" string="Apply Proposal"
+                            type="object" class="btn-primary"
+                            groups="prema_dispatch.group_dispatcher,prema_dispatch.group_dispatch_manager,prema_logistics_booking.group_logistics_booking_manager"
+                            invisible="state != 'proposed'"
+                            confirm="Apply this proposed stop order to the truck/day? Stops are resequenced exactly once and the change is audit-logged."/>
+                    <button name="action_cancel" string="Cancel Proposal"
+                            type="object"
+                            groups="prema_dispatch.group_dispatch_manager,prema_logistics_booking.group_logistics_booking_manager"
+                            invisible="state != 'proposed'"/>
+                    <field name="state" widget="statusbar"/>
+                </header>
+                <sheet>
+                    <field name="is_stale" invisible="1"/>
+                    <widget name="web_ribbon" title="STALE" bg_color="bg-danger"
+                            invisible="not is_stale"/>
+                    <widget name="web_ribbon" title="INFEASIBLE" bg_color="bg-warning"
+                            invisible="is_stale or feasible"/>
+                    <div class="oe_title">
+                        <h1><field name="name" readonly="1"/></h1>
+                    </div>
+                    <group>
+                        <group>
+                            <field name="vehicle_id" readonly="1"/>
+                            <field name="operating_date" readonly="1"/>
+                            <field name="state" readonly="1"/>
+                            <field name="version" readonly="1"/>
+                            <field name="feasible" readonly="1"/>
+                            <field name="reason" readonly="1"
+                                   invisible="not reason"/>
+                        </group>
+                        <group>
+                            <field name="start_dt" readonly="1"
+                                   string="Day Anchor"/>
+                            <field name="finish_eta" readonly="1"/>
+                            <field name="vehicle_max_pallets" readonly="1"
+                                   string="Capacity (pallets)"/>
+                            <field name="onboard_at_start" readonly="1"
+                                   string="Onboard at Start"/>
+                            <field name="peak_onboard" readonly="1"
+                                   string="Peak Onboard"/>
+                            <field name="total_drive_minutes" readonly="1"/>
+                            <field name="total_distance_km" readonly="1"/>
+                            <field name="total_waiting_minutes" readonly="1"/>
+                            <field name="created_by" readonly="1"/>
+                            <field name="created_at" readonly="1"/>
+                            <field name="applied_by" readonly="1"
+                                   invisible="not applied_by"/>
+                            <field name="applied_at" readonly="1"
+                                   invisible="not applied_at"/>
+                        </group>
+                    </group>
+                    <group string="Stale" invisible="not is_stale">
+                        <field name="stale_reason" readonly="1"/>
+                        <field name="stale_since" readonly="1"/>
+                        <field name="stale_triggered_by" readonly="1"/>
+                    </group>
+                    <group string="Conflicts &amp; Notes" invisible="not conflicts_json">
+                        <field name="conflicts_json" readonly="1"
+                               nolabel="1" widget="pre"/>
+                    </group>
+                    <notebook>
+                        <page string="Proposed Stops">
+                            <field name="line_ids" readonly="1">
+                                <list string="Stop Sequence" editable="false">
+                                    <field name="optimized_order" string="#"/>
+                                    <field name="entry_order" string="Entry" optional="hide"/>
+                                    <field name="pinned" string="Pin"/>
+                                    <field name="job_id"/>
+                                    <field name="stop_id"/>
+                                    <field name="eta" string="ETA"/>
+                                    <field name="service_start_at" string="Service"/>
+                                    <field name="departure_at" string="Depart"/>
+                                    <field name="waiting_minutes" string="Wait"/>
+                                    <field name="onboard_before" string="On B"/>
+                                    <field name="onboard_after" string="On A"/>
+                                    <field name="weight_after" string="Lbs"/>
+                                    <field name="drive_minutes" string="Drive"/>
+                                    <field name="distance_km" string="Km"/>
+                                </list>
+                            </field>
+                        </page>
+                        <page string="Capacity Timeline"
+                              invisible="not capacity_timeline_json">
+                            <field name="capacity_timeline_json" readonly="1"
+                                   nolabel="1" widget="pre"/>
+                        </page>
+                        <page string="Audit">
+                            <field name="event_ids" readonly="1">
+                                <list string="Audit Events" editable="false">
+                                    <field name="changed_at"/>
+                                    <field name="event_type"/>
+                                    <field name="changed_by"/>
+                                    <field name="reason"/>
+                                </list>
+                            </field>
+                        </page>
+                    </notebook>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <record id="action_day_route_proposal" model="ir.actions.act_window">
+        <field name="name">Day Trip Optimizer</field>
+        <field name="res_model">prema.dispatch.day.route.proposal</field>
+        <field name="view_mode">list,form</field>
+        <field name="context">{'search_default_open': 1}</field>
+    </record>
+
+    <menuitem id="menu_v4_day_route_proposals" name="Day Trip Optimizer"
+              parent="menu_v4_operations" action="action_day_route_proposal"
+              sequence="27"/>
+
+    <!-- ── Job form smart button ──────────────────────────────────── -->
+    <record id="view_dispatch_job_form_day_route" model="ir.ui.view">
+        <field name="name">prema.dispatch.job.form.day.route</field>
+        <field name="model">prema.dispatch.job</field>
+        <field name="inherit_id" ref="prema_dispatch.view_dispatch_job_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//div[@name='button_box']" position="inside">
+                <button type="object" class="oe_stat_button"
+                        name="action_generate_day_route_proposal"
+                        icon="fa-route"
+                        groups="prema_dispatch.group_dispatcher,prema_dispatch.group_dispatch_manager,prema_logistics_booking.group_logistics_booking_manager"
+                        invisible="not vehicle_id">
+                    <div class="o_field_widget o_stat_info">
+                        <span class="o_stat_text">Optimize Day</span>
+                    </div>
+                </button>
+            </xpath>
+        </field>
+    </record>
+
+    <!-- ── Booking form smart button ──────────────────────────────── -->
+    <record id="view_logistics_booking_form_day_route" model="ir.ui.view">
+        <field name="name">logistics.booking.form.day.route</field>
+        <field name="model">logistics.booking</field>
+        <field name="inherit_id" ref="view_logistics_booking_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//sheet" position="before">
+                <header>
+                    <button name="action_generate_day_route_proposal"
+                            string="Propose Day Trip" type="object"
+                            groups="prema_dispatch.group_dispatcher,prema_dispatch.group_dispatch_manager,prema_logistics_booking.group_logistics_booking_manager"
+                            invisible="not dispatch_job_id"
+                            help="Optimize the truck/day this booking drives: build a reviewable stop-sequence proposal (nothing is applied until a dispatcher applies it)."/>
+                    <button name="action_view_day_route_proposals"
+                            string="Day Route Proposals" type="object"
+                            groups="prema_dispatch.group_dispatcher,prema_dispatch.group_dispatch_manager,prema_logistics_booking.group_logistics_booking_manager"
+                            invisible="not dispatch_job_id"/>
+                </header>
+            </xpath>
+        </field>
+    </record>
+</odoo>

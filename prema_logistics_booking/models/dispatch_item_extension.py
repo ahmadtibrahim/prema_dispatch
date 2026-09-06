@@ -3,9 +3,19 @@
 Same upward-comodel rule as dispatch_stop_extension.py: the Many2one to
 logistics.booking.pallet must be defined here (in prema_logistics_booking)
 so the comodel is always in the pool when the field is set up.
+
+§15 (D-B4): an item edit changes the day's LOAD (pallets/weight/route
+allocation) — any open day-route proposal covering the item's job goes
+stale, exactly like the stop/job hooks.
 """
 
-from odoo import fields, models
+from odoo import api, fields, models
+
+# Item fields whose change reshapes a day's capacity / movements.
+ITEM_STALE_TRIGGERS = (
+    "pallet_count", "weight_lbs", "status", "pickup_stop_id",
+    "delivery_stop_id", "stop_allocation_ids",
+)
 
 
 class PremaDispatchItem(models.Model):
@@ -15,3 +25,37 @@ class PremaDispatchItem(models.Model):
         "logistics.booking.pallet", string="Booking Pallet",
         ondelete="set null", index=True,
         help="Stable bridge to the canonical booking pallet movement.")
+
+    def write(self, vals):
+        trigger = set(vals) & set(ITEM_STALE_TRIGGERS)
+        pre_jobs = set()
+        if trigger and not self.env.context.get("_day_route_silent"):
+            # Job set BEFORE the write — delivery/stop reassignments move
+            # items between jobs and must stale BOTH sides.
+            pre_jobs = set(self.mapped("job_id.id"))
+        result = super().write(vals)
+        if trigger and not self.env.context.get("_day_route_silent"):
+            from odoo.addons.prema_logistics_booking.models.dispatch_day_route_proposal import (
+                PremaDispatchDayRouteProposal,
+            )
+            job_ids = pre_jobs | set(self.mapped("job_id.id"))
+            job_ids.discard(False)
+            if job_ids:
+                PremaDispatchDayRouteProposal._mark_stale_for_jobs(
+                    self.env, list(job_ids),
+                    "A load item of this day changed (%s)."
+                    % ", ".join(sorted(trigger)))
+        return result
+
+    @api.model
+    def create(self, vals_list):
+        records = super().create(vals_list)
+        job_ids = list({r.job_id.id for r in records if r.job_id})
+        if job_ids and not self.env.context.get("_day_route_silent"):
+            from odoo.addons.prema_logistics_booking.models.dispatch_day_route_proposal import (
+                PremaDispatchDayRouteProposal,
+            )
+            PremaDispatchDayRouteProposal._mark_stale_for_jobs(
+                self.env, job_ids,
+                "A load item was added to one of this day's jobs.")
+        return records
