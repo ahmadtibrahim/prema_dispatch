@@ -124,7 +124,7 @@
                     <notebook>
                         <page string="Proposed Stops">
                             <field name="line_ids" readonly="1">
-                                <list string="Stop Sequence" editable="false">
+                                <list string="Stop Sequence">
                                     <field name="optimized_order" string="#"/>
                                     <field name="entry_order" string="Entry" optional="hide"/>
                                     <field name="pinned" string="Pin"/>
@@ -149,7 +149,7 @@
                         </page>
                         <page string="Audit">
                             <field name="event_ids" readonly="1">
-                                <list string="Audit Events" editable="false">
+                                <list string="Audit Events">
                                     <field name="changed_at"/>
                                     <field name="event_type"/>
                                     <field name="changed_by"/>
