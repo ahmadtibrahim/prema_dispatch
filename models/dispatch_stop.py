@@ -1,6 +1,7 @@
 import logging
 
 from odoo import api, exceptions, fields, models
+from odoo.tools.translate import _
 
 _logger = logging.getLogger(__name__)
 
@@ -385,6 +386,25 @@ class PremaDispatchStop(models.Model):
     scheduled_time = fields.Datetime()
     actual_arrival_time = fields.Datetime()
     actual_departure_time = fields.Datetime()
+
+    # ── Facility timing beyond arrival/departure (§18 detention) ────
+    # Recorded by dispatch through action_record_timing (stop form
+    # buttons or RPC). Detention dwell uses (dock start → release) as the
+    # facility-held span when both are present. Restore clears them with
+    # the other actuals.
+    check_in_at = fields.Datetime(
+        string="Check-In At", copy=False,
+        help="When the driver checked in at the facility (gate/office/guard "
+             "— after arrival). Recorded by dispatch (§18 detention timing).")
+    dock_start_at = fields.Datetime(
+        string="Dock Start At", copy=False,
+        help="When loading (pickup) or unloading (delivery) actually started "
+             "at the dock door (§18 detention timing).")
+    released_at = fields.Datetime(
+        string="Released At", copy=False,
+        help="When the freight/paperwork was released and the truck was free "
+             "to leave — stamped from the completion departure when unset "
+             "(§18 detention timing).")
     completed_vehicle_id = fields.Many2one(
         "fleet.vehicle", string="Completed On Truck",
         readonly=True, copy=False,
@@ -960,6 +980,111 @@ class PremaDispatchStop(models.Model):
             stop=self,
         )
 
+    # ── §18 facility-timing recorder (check-in / dock start / release) ──
+    # One server-side helper stamps each timing event on the stop (so the
+    # records survive even when no detention item ever forms), keeps the
+    # event order sane against the events already recorded, and refreshes
+    # a still-draft detention item whose dwell span changed. Arrival and
+    # departure keep their own existing flows (action_mark_arrived /
+    # action_mark_completed).
+
+    def _record_timing_vals(self, event, timestamp=None):
+        """Validated field/value for one timing event. Raises when the
+        timestamp contradicts an already-recorded event or the stop's
+        actuals, so detention spans can never silently invert."""
+        self.ensure_one()
+        event_field = {
+            "check_in": "check_in_at",
+            "dock_start": "dock_start_at",
+            "release": "released_at",
+        }.get(event)
+        if not event_field:
+            raise exceptions.UserError(
+                _("Unknown timing event '%s' — expected check_in, "
+                  "dock_start or release.") % event)
+        ts = fields.Datetime.to_datetime(
+            timestamp or fields.Datetime.now())
+        # Order guards against the events/actuals already on record:
+        # check-in ≤ dock start ≤ release, all inside arrival..departure.
+        # One pass over the ordered events: events EARLIER than the one
+        # being recorded bound it from below, events LATER bound it from
+        # above — so recording forward (check-in, then dock start, then
+        # release) is always legal and only contradictions raise.
+        ordered = [("check_in_at", "check-in"),
+                   ("dock_start_at", "dock start"),
+                   ("released_at", "release")]
+        seen_event = False
+        for field, label in ordered:
+            if field == event_field:
+                seen_event = True
+                continue
+            if not self[field]:
+                continue
+            if seen_event:
+                # A later event is already on record: this one must not
+                # land after it.
+                if ts > self[field]:
+                    raise exceptions.UserError(
+                        _("Cannot record %s after the already-recorded %s "
+                          "(%s).") % (event, label,
+                                      fields.Datetime.to_string(self[field])))
+            else:
+                # An earlier event is already on record: this one must not
+                # land before it.
+                if ts < self[field]:
+                    raise exceptions.UserError(
+                        _("Cannot record %s before the already-recorded %s "
+                          "(%s).") % (event, label,
+                                      fields.Datetime.to_string(self[field])))
+        if self.actual_arrival_time and ts < self.actual_arrival_time:
+            raise exceptions.UserError(
+                _("Cannot record %s before the stop's actual arrival (%s).")
+                % (event, fields.Datetime.to_string(
+                    self.actual_arrival_time)))
+        if self.actual_departure_time and ts > self.actual_departure_time \
+                and self.status == "completed":
+            raise exceptions.UserError(
+                _("Cannot record %s after the stop was completed "
+                  "(%s) — correct the completion or the timing field "
+                  "directly.")
+                % (event, fields.Datetime.to_string(
+                    self.actual_departure_time)))
+        return event_field, ts
+
+    def action_record_timing(self, event, timestamp=None):
+        """§18: record one facility-timing event (check_in / dock_start /
+        release) on this stop. After the stop is completed, a still-draft
+        detention item's dwell/charges are refreshed from the new span."""
+        now = fields.Datetime.now()
+        recorded = []
+        for stop in self:
+            event_field, ts = stop._record_timing_vals(event, timestamp)
+            stop.write({event_field: ts})
+            recorded.append((stop, event_field, ts))
+            try:
+                if stop.status == "completed":
+                    # Draft items refresh; reviewed items stay untouched
+                    # (immutable after review). sudo: driver-app callers
+                    # have no create access on detention items — same
+                    # convention as evidence._create_evidence.
+                    self.env["prema.dispatch.detention.item"].sudo()\
+                        ._suggest_for_stop(stop)
+            except Exception:
+                _logger.exception(
+                    "Detention refresh failed after timing record on stop %s",
+                    stop.id)
+        return {"success": True, "recorded": len(recorded),
+                "at": fields.Datetime.to_string(now)}
+
+    def action_record_check_in(self):
+        return self.action_record_timing("check_in")
+
+    def action_record_dock_start(self):
+        return self.action_record_timing("dock_start")
+
+    def action_record_release(self):
+        return self.action_record_timing("release")
+
     def action_mark_completed(self):
         self.ensure_one()
         # Idempotent completion: a retried identical request (double tap,
@@ -971,10 +1096,16 @@ class PremaDispatchStop(models.Model):
         if self.status == "completed":
             return
         self._check_completion_requirements()
+        departure_at = fields.Datetime.now()
         vals = {
             "status": "completed",
-            "actual_departure_time": fields.Datetime.now(),
+            "actual_departure_time": departure_at,
         }
+        if not self.released_at:
+            # Completion IS the release when no explicit release was
+            # recorded: the dock-start→release span then measures to the
+            # truck's actual departure.
+            vals["released_at"] = departure_at
         if not self.actual_arrival_time:
             vals["actual_arrival_time"] = fields.Datetime.now()
         if not self.completed_vehicle_id and self.job_id.vehicle_id:
@@ -1023,9 +1154,12 @@ class PremaDispatchStop(models.Model):
             self.saved_location_id.record_visit_stats(self)
         # Phase 10: suggest customer detention from the ACTUAL dwell —
         # staff-reviewed only, never auto-invoiced. A failure here must
-        # never block the stop completion itself.
+        # never block the stop completion itself. sudo: driver-app
+        # completions run as the driver, who has no create access on
+        # detention items (same convention as evidence._create_evidence).
         try:
-            self.env["prema.dispatch.detention.item"]._suggest_for_stop(self)
+            self.env["prema.dispatch.detention.item"].sudo()\
+                ._suggest_for_stop(self)
         except Exception:
             _logger.exception(
                 "Detention suggestion failed for stop %s", self.id)
@@ -1565,6 +1699,9 @@ class PremaDispatchStop(models.Model):
             "status": "pending",
             "actual_arrival_time": False,
             "actual_departure_time": False,
+            "check_in_at": False,
+            "dock_start_at": False,
+            "released_at": False,
             "gps_stamp_lat": 0,
             "gps_stamp_lng": 0,
             "gps_stamp_time": False,

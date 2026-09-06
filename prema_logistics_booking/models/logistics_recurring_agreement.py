@@ -369,9 +369,14 @@ class LogisticsRecurringJob(models.Model):
             if self.next_shipment_date != due:
                 self.next_shipment_date = due
             return False
+        # §17 occurrence-occupancy: ANY booking for this (job, pickup
+        # date) occupies the occurrence — a CANCELLED one is a
+        # dispatcher's deliberate one-off skip (the booking's
+        # action_cancel records the reason/source and never touches the
+        # agreement), so a same-day re-run must not resurrect it. The
+        # generator moves on to the next occurrence as usual.
         existing = self.env["logistics.booking"].sudo().search([
             ("recurring_job_id", "=", self.id), ("pickup_date", "=", due),
-            ("state", "!=", "cancelled"),
         ], limit=1)
         if existing:
             return False

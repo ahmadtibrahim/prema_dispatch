@@ -20,6 +20,13 @@
         </field>
     </record>
 
+    <record id="action_logistics_custom_quote_revise_wizard" model="ir.actions.act_window">
+        <field name="name">Revise &amp; Resend</field>
+        <field name="res_model">logistics.custom.quote.revise</field>
+        <field name="view_mode">form</field>
+        <field name="target">new</field>
+    </record>
+
     <record id="view_logistics_custom_quote_form" model="ir.ui.view">
         <field name="name">logistics.custom.quote.form</field>
         <field name="model">logistics.custom.quote</field>
@@ -115,7 +122,7 @@
                             <field name="conversion_override_reason"
                                    invisible="not conversion_override and internal_confirmed"
                                    placeholder="Required — reason for converting without internal confirmation"
-                                   attrs="{'required': [('conversion_override', '=', True)]}"/>
+                                   required="conversion_override"/>
                         </group>
                     </group>
                     <notebook>
@@ -207,13 +214,6 @@
                 </footer>
             </form>
         </field>
-    </record>
-
-    <record id="action_logistics_custom_quote_revise_wizard" model="ir.actions.act_window">
-        <field name="name">Revise &amp; Resend</field>
-        <field name="res_model">logistics.custom.quote.revise</field>
-        <field name="view_mode">form</field>
-        <field name="target">new</field>
     </record>
 
     <record id="action_logistics_custom_quote" model="ir.actions.act_window">

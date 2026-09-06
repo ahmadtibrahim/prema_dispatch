@@ -27,6 +27,18 @@
                     <button name="action_mark_completed" string="Complete Stop"
                             type="object" class="btn-success"
                             invisible="status in ('completed','skipped')"/>
+                    <button name="action_record_check_in" string="Record Check-In"
+                            type="object" class="btn-secondary" icon="fa-clock-o"
+                            title="Stamp the driver's check-in at the facility (guards event order)"
+                            invisible="check_in_at or status in ('completed','skipped','cancelled')"/>
+                    <button name="action_record_dock_start" string="Record Dock Start"
+                            type="object" class="btn-secondary" icon="fa-clock-o"
+                            title="Stamp loading/unloading start — the dwell span starts here"
+                            invisible="dock_start_at or status in ('completed','skipped','cancelled')"/>
+                    <button name="action_record_release" string="Record Release"
+                            type="object" class="btn-secondary" icon="fa-clock-o"
+                            title="Stamp dock release — the dwell span ends here"
+                            invisible="released_at or status in ('completed','skipped','cancelled')"/>
                     <button name="action_restore_stop" string="Restore Stop"
                             type="object" class="btn-secondary"
                             confirm="Restore this stop to Pending?"
@@ -69,6 +81,11 @@
                         <group string="Schedule">
                             <field name="scheduled_time"/>
                             <field name="actual_arrival_time"/>
+                            <field name="check_in_at"/>
+                            <field name="dock_start_at"
+                                   help="Loading/unloading start. When both Dock Start and Release are recorded, customer detention dwell spans this interval."/>
+                            <field name="released_at"
+                                   help="Dock release. Auto-stamped when the stop is completed."/>
                             <field name="actual_departure_time"/>
                         </group>
                     </group>

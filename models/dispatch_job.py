@@ -95,6 +95,18 @@ class PremaDispatchJob(models.Model):
         for job in self:
             job.evidence_count = Evidence.search_count([("job_id", "=", job.id)])
 
+    # ── §18 Customer Detention ─────────────────────────────────────
+    detention_count = fields.Integer(
+        string="Detention Items", compute="_compute_detention_count",
+        help="Customer detention items suggested for this job's stops "
+             "(staff-reviewed charges).",
+    )
+
+    def _compute_detention_count(self):
+        Items = self.env["prema.dispatch.detention.item"]
+        for job in self:
+            job.detention_count = Items.search_count([("job_id", "=", job.id)])
+
     # ── Phase 13: Local Operations link ────────────────────────────
     local_operation_id = fields.Many2one(
         "logistics.daily.local.operation", string="Local Operation",
@@ -2823,6 +2835,18 @@ class PremaDispatchJob(models.Model):
             "type": "ir.actions.act_window",
             "name": "Evidence",
             "res_model": "prema.dispatch.evidence",
+            "view_mode": "list,form",
+            "domain": [("job_id", "=", self.id)],
+            "context": {"default_job_id": self.id},
+        }
+
+    def action_open_detention_items(self):
+        """§18: staff review of the job's customer detention items."""
+        self.ensure_one()
+        return {
+            "type": "ir.actions.act_window",
+            "name": "Customer Detention",
+            "res_model": "prema.dispatch.detention.item",
             "view_mode": "list,form",
             "domain": [("job_id", "=", self.id)],
             "context": {"default_job_id": self.id},

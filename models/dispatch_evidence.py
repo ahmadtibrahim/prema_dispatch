@@ -130,6 +130,16 @@ class PremaDispatchEvidence(models.Model):
     superseded_by_id = fields.Many2one(
         "prema.dispatch.evidence", string="Superseded By", ondelete="set null")
 
+    # §18 detention linkage: evidence backing a customer-detention charge.
+    # Rows auto-link to the stop's detention item at capture (when the
+    # item already exists) and at suggestion (item-side sync), so the
+    # approve-with-evidence gate sees the full proof set.
+    detention_item_ids = fields.Many2many(
+        "prema.dispatch.detention.item",
+        "prema_dispatch_detention_evidence_rel",
+        "evidence_id", "detention_item_id",
+        string="Detention Items")
+
     _sql_constraints = [
         ("attachment_uniq", "UNIQUE (attachment_id)",
          "An evidence record already exists for this attachment."),
@@ -192,7 +202,7 @@ class PremaDispatchEvidence(models.Model):
         plan_line = self.env["prema.dispatch.load.plan.job"].sudo().search(
             [("job_id", "=", job.id)], limit=1)
         load_plan = plan_line.load_plan_id
-        return self.sudo().create({
+        evidence = self.sudo().create({
             "attachment_id": attachment.id,
             "evidence_type": ev_type,
             "stop_id": stop.id,
@@ -216,6 +226,16 @@ class PremaDispatchEvidence(models.Model):
             "gps_accuracy_m": meta.get("gps_accuracy_m"),
             "captured_tz": meta.get("captured_tz") or "",
         })
+        # §18: evidence captured for a stop that already has a detention
+        # item backs that charge — link it so the approve-with-evidence
+        # gate sees it. Never fails the upload.
+        try:
+            self.env["prema.dispatch.detention.item"].sudo()\
+                ._sync_evidence_for_stop(stop)
+        except Exception:
+            _logger.exception(
+                "Detention evidence link failed for stop %s", stop.id)
+        return evidence
 
     def _payload(self):
         self.ensure_one()
