@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- ══════════════════════════════════════════════════════════════
+         D-A3B — CRM recurring-opportunity bridge (dispatch side)
+         * agreement list/form: crm_opportunity_id link + stat button
+           opening the engine's recurring opportunity.
+         * engine opportunity form (XMLID inherit — the dispatch repo may
+           extend engine views): "Create Recurring Agreement" button,
+           visible for contracted + customer-confirmed cadences that are
+           not Ended, for the logistics groups that may create/activate
+           recurring agreements.
+         ══════════════════════════════════════════════════════════════ -->
+
+    <record id="view_logistics_recurring_agreement_list_crm_bridge" model="ir.ui.view">
+        <field name="name">logistics.recurring.agreement.list.crm.bridge</field>
+        <field name="model">logistics.recurring.agreement</field>
+        <field name="inherit_id" ref="view_logistics_recurring_agreement_list"/>
+        <field name="arch" type="xml">
+            <xpath expr="//field[@name='agreement_reference']" position="after">
+                <field name="crm_opportunity_id" optional="hide"/>
+            </xpath>
+        </field>
+    </record>
+
+    <record id="view_logistics_recurring_agreement_form_crm_bridge" model="ir.ui.view">
+        <field name="name">logistics.recurring.agreement.form.crm.bridge</field>
+        <field name="model">logistics.recurring.agreement</field>
+        <field name="inherit_id" ref="view_logistics_recurring_agreement_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//div[hasclass('oe_title')]" position="after">
+                <div class="oe_button_box" name="crm_button_box">
+                    <button name="action_open_crm_opportunity" type="object"
+                            class="oe_stat_button" icon="fa-repeat"
+                            invisible="not crm_opportunity_id"
+                            help="Open the CRM recurring opportunity this
+                                  agreement was created from.">
+                        <div class="o_stat_info">
+                            <span class="o_stat_text">Recurring
+                                Opportunity</span>
+                        </div>
+                    </button>
+                </div>
+            </xpath>
+            <xpath expr="//field[@name='account_manager_id']" position="after">
+                <field name="crm_opportunity_id"
+                       options="{'no_create': True, 'no_create_edit': True}"
+                       placeholder="Linked CRM recurring opportunity (bridge)"/>
+            </xpath>
+        </field>
+    </record>
+
+    <record id="view_crm_recurring_opportunity_form_dispatch_bridge"
+            model="ir.ui.view">
+        <field name="name">crm.recurring.opportunity.form.dispatch.bridge</field>
+        <field name="model">crm.recurring.opportunity</field>
+        <field name="inherit_id"
+               ref="premafirm_ai_engine.view_crm_recurring_opportunity_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//header" position="inside">
+                <button name="action_create_recurring_agreement" type="object"
+                        string="Create Recurring Agreement" icon="fa-plus-circle"
+                        class="btn-primary"
+                        invisible="kind != 'contracted' or not customer_confirmed or activation_state == 'ended'"
+                        groups="prema_logistics_booking.group_logistics_booking_manager,prema_logistics_booking.group_logistics_pricing_manager,prema_logistics_booking.group_logistics_pricing_administrator"
+                        help="Create and activate the dispatch recurring
+                              agreement for this contracted cadence (one job
+                              per preferred weekday; irregular cadences and
+                              Sunday weekdays are refused by the dispatch
+                              network)."/>
+            </xpath>
+            <xpath expr="//group[@name='handoff']" position="inside">
+                <field name="pickup_dispatch_location_id"
+                       options="{'no_create': True}"
+                       invisible="kind != 'contracted' or not customer_confirmed"/>
+                <field name="delivery_dispatch_location_id"
+                       options="{'no_create': True}"
+                       invisible="kind != 'contracted' or not customer_confirmed"/>
+            </xpath>
+        </field>
+    </record>
+</odoo>
