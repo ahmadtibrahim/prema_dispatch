@@ -26,3 +26,4 @@ from . import test_d_b2_identifiers_payment
 from . import test_recurring_occurrence_cancel
 from . import test_detention_invoice_label
 from . import test_recurring_crm_bridge
+from . import test_crm_estimate_draft_bridge
