@@ -1331,6 +1331,8 @@ class BookingOrchestrationService:
             booking_vals["recurring_agreement_id"] = normalized_request.recurring_agreement_id
         if normalized_request.recurring_job_id:
             booking_vals["recurring_job_id"] = normalized_request.recurring_job_id
+        if normalized_request.existing_sale_order_id:
+            booking_vals["sale_order_id"] = normalized_request.existing_sale_order_id
 
         if pickup_fsa:
             booking_vals["pickup_fsa_id"] = pickup_fsa.id
@@ -1578,6 +1580,13 @@ class BookingOrchestrationService:
         if normalized_request.existing_invoice_id:
             existing = Booking.search([
                 ("invoice_id", "=", normalized_request.existing_invoice_id),
+            ], limit=1)
+            if existing:
+                return existing
+
+        if normalized_request.existing_sale_order_id:
+            existing = Booking.search([
+                ("sale_order_id", "=", normalized_request.existing_sale_order_id),
             ], limit=1)
             if existing:
                 return existing

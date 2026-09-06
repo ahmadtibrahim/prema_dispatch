@@ -100,6 +100,14 @@ class LogisticsCustomQuote(models.Model):
         copy=False,
         help="Opportunity that originated this rate confirmation.",
     )
+    sale_order_id = fields.Many2one(
+        "sale.order",
+        string="Sales Order",
+        index=True,
+        ondelete="set null",
+        copy=False,
+        help="Editable quotation or Sales Order that originated this rate.",
+    )
 
     # Source
     source = fields.Selection([
@@ -218,6 +226,12 @@ class LogisticsCustomQuote(models.Model):
         if self.booking_id:
             return
 
+        if self.sale_order_id and self.sale_order_id.state not in ("sale", "done"):
+            raise UserError(_(
+                "The linked quotation is still editable. Confirm it "
+                "internally before converting this rate into a booking."
+            ))
+
         if not self.departure_id:
             raise UserError(_(
                 "Assign an exact departure before converting this custom "
@@ -249,6 +263,12 @@ class LogisticsCustomQuote(models.Model):
             "agreed_rate": self.quoted_price,
             "departure_id": self.departure_id.id,
             "custom_quote_id": self.id,
+            "existing_sale_order_id": self.sale_order_id.id or False,
+            "source_model": "sale.order" if self.sale_order_id else self._name,
+            "source_res_id": self.sale_order_id.id or self.id,
+            "source_reference": (
+                self.sale_order_id.name if self.sale_order_id else self.name
+            ),
             "idempotency_key": f"custom_quote:{self.id}",
         }, source_channel="custom_quote")
 

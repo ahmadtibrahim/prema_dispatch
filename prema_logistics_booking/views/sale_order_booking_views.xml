@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_sale_order_canonical_dispatch_booking" model="ir.ui.view">
+        <field name="name">sale.order.canonical.dispatch.booking</field>
+        <field name="model">sale.order</field>
+        <field name="inherit_id" ref="prema_dispatch.view_sale_order_prema_dispatch"/>
+        <field name="arch" type="xml">
+            <xpath expr="//button[@name='action_book_load']" position="attributes">
+                <attribute name="string">Book in Prema Dispatch</attribute>
+                <attribute name="help">Open the reviewed Prema Dispatch rate and scheduling workflow. A draft quotation is never booked automatically.</attribute>
+                <attribute name="invisible">state not in ('sale', 'done')</attribute>
+            </xpath>
+            <xpath expr="//button[@name='action_generate_dispatch_from_text']" position="attributes">
+                <attribute name="string">Extract &amp; Review Rate</attribute>
+            </xpath>
+            <xpath expr="//button[@name='action_generate_dispatch_from_text']/following-sibling::small[1]" position="replace">
+                <small class="text-muted">
+                    AI extracts the shipment facts, then the canonical Prema Dispatch engine
+                    prices and schedules them for review. Nothing is booked automatically.
+                </small>
+            </xpath>
+        </field>
+    </record>
+</odoo>

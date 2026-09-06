@@ -32,6 +32,12 @@ class LogisticsPhoneBooking(models.TransientModel):
         readonly=True,
         help="Opportunity that opened this draft rate calculation.",
     )
+    sale_order_id = fields.Many2one(
+        "sale.order",
+        string="Sales Order",
+        readonly=True,
+        help="Quotation or Sales Order that opened this rate review.",
+    )
     source_text = fields.Text(
         string="Customer Freight Request",
         help="Customer-supplied CRM text. AI may extract shipment facts from "
@@ -293,10 +299,21 @@ class LogisticsPhoneBooking(models.TransientModel):
 
     def _normalized_request(self, service):
         self.ensure_one()
+        source_model = "sale.order" if self.sale_order_id else self._name
+        source_res_id = self.sale_order_id.id or self.id
+        idempotency_key = (
+            f"sale-order:{self.sale_order_id.id}"
+            if self.sale_order_id
+            else f"phone:{self.id}"
+        )
         return service.normalize_request({
             "partner_id": self.partner_id.id,
-            "source_model": self._name,
-            "source_res_id": self.id,
+            "source_model": source_model,
+            "source_res_id": source_res_id,
+            "source_reference": (
+                self.sale_order_id.name if self.sale_order_id else ""
+            ),
+            "existing_sale_order_id": self.sale_order_id.id or False,
             "pickup_stops": [self._stop_values("pickup")],
             "delivery_stops": [self._stop_values("delivery")],
             "pallets": self.pallets,
@@ -315,8 +332,8 @@ class LogisticsPhoneBooking(models.TransientModel):
             "appointment": self.appointment,
             "residential": self.residential,
             "same_day_requested": self.same_day_requested,
-            "idempotency_key": f"phone:{self.id}",
-        }, source_channel="phone")
+            "idempotency_key": idempotency_key,
+        }, source_channel="internal" if self.sale_order_id else "phone")
 
     def _validate_quote_inputs(self):
         """Require pricing inputs only when pricing, not before extraction."""
@@ -620,16 +637,19 @@ class LogisticsPhoneBooking(models.TransientModel):
     def action_extract_source_text(self):
         """Use Prema AI for facts only, then return to the editable wizard."""
         self.ensure_one()
-        if not self.crm_lead_id:
-            raise UserError(_("Open this quotation from a CRM opportunity first."))
+        if not self.crm_lead_id and not self.sale_order_id:
+            raise UserError(_(
+                "Open this rate review from a CRM opportunity or Sales Order first."
+            ))
         if not (self.source_text or "").strip():
             raise UserError(_("Paste or enter the customer's freight request first."))
         from odoo.addons.premafirm_ai_engine.services.invoice_ai_service import (
             InvoiceAIService,
         )
         try:
+            source = self.crm_lead_id or self.sale_order_id
             result = InvoiceAIService(self.env).analyze_from_text(
-                self.crm_lead_id,
+                source,
                 self.source_text,
                 "",
             )
@@ -637,8 +657,9 @@ class LogisticsPhoneBooking(models.TransientModel):
             raise UserError(str(exc)) from exc
         except Exception as exc:
             _logger.exception(
-                "CRM freight-request extraction failed for lead %s",
-                self.crm_lead_id.id,
+                "Freight-request extraction failed for %s:%s",
+                source._name,
+                source.id,
             )
             raise UserError(_(
                 "The shipment details could not be extracted. The source "
@@ -654,6 +675,7 @@ class LogisticsPhoneBooking(models.TransientModel):
         vals = {
             "partner_id": self.partner_id.id,
             "crm_lead_id": self.crm_lead_id.id or False,
+            "sale_order_id": self.sale_order_id.id or False,
             "company_name": self.partner_id.commercial_partner_id.name or self.partner_id.name,
             "contact_name": self.partner_id.name or "",
             "contact_email": self.partner_id.email or "",
@@ -678,7 +700,7 @@ class LogisticsPhoneBooking(models.TransientModel):
             "resolved_fsa_pickup": session.pickup_fsa_id.fsa if session.pickup_fsa_id else "",
             "resolved_fsa_delivery": session.delivery_fsa_id.fsa if session.delivery_fsa_id else "",
             "state": "quoted",
-            "source": "internal" if self.crm_lead_id else "phone",
+            "source": "internal" if (self.crm_lead_id or self.sale_order_id) else "phone",
             "notes": "\n".join(filter(None, [
                 f"Pickup instructions: {self.pickup_instructions}" if self.pickup_instructions else "",
                 f"Delivery instructions: {self.delivery_instructions}" if self.delivery_instructions else "",
@@ -896,6 +918,11 @@ class LogisticsPhoneBooking(models.TransientModel):
     def action_confirm_booking(self):
         """Accept the phone quote and create the booking through one engine."""
         self.ensure_one()
+        if self.sale_order_id and self.sale_order_id.state not in ("sale", "done"):
+            raise UserError(_(
+                "The quotation is still editable. Confirm it internally "
+                "before booking the load."
+            ))
         if not self.price or not self.quote_token:
             raise UserError(_("Get a price first."))
 

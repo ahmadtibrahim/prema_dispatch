@@ -1566,6 +1566,7 @@ class LogisticsBooking(models.Model):
         job = Job.create({
             "name": "Milk Run — %s" % self.booking_number,
             "partner_id": self.partner_id.id,
+            "sale_order_id": self.sale_order_id.id if self.sale_order_id else False,
             "ref": self.booking_number,
             "source_model": "logistics.booking",
             "source_res_id": self.id,
@@ -1745,6 +1746,7 @@ class LogisticsBooking(models.Model):
         corridor = departure.corridor_id if departure else self.env["logistics.corridor"]
         job = Job.create({
             "partner_id": self.partner_id.id,
+            "sale_order_id": self.sale_order_id.id if self.sale_order_id else False,
             "source_model": "logistics.booking",
             "source_res_id": self.id,
             "logistics_booking_id": self.id,

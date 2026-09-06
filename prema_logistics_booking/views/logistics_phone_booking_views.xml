@@ -4,7 +4,7 @@
         <field name="name">logistics.phone.booking.form</field>
         <field name="model">logistics.phone.booking</field>
         <field name="arch" type="xml">
-            <form string="Phone Quote / Booking">
+            <form string="Rate &amp; Booking Review">
                 <header>
                     <button name="action_get_price" string="Get Price" type="object"
                             class="btn-primary" invisible="price &gt; 0"/>
@@ -18,13 +18,13 @@
 
                 <sheet>
                     <div class="oe_title">
-                        <h2>Phone Quote</h2>
+                        <h2>Prema Dispatch Rate &amp; Booking</h2>
                         <p class="text-muted mb-2">
                             Staff quoting uses the same routing, pricing, schedule and capacity engine as the customer portal.
                         </p>
                     </div>
 
-                    <group string="CRM Request" invisible="not crm_lead_id">
+                    <group string="Customer Request" invisible="not crm_lead_id and not sale_order_id">
                         <field name="source_text"
                                placeholder="Customer freight request copied from the CRM opportunity"/>
                         <button name="action_extract_source_text"
@@ -40,6 +40,7 @@
                         <group string="Customer">
                             <field name="partner_id" required="1"/>
                             <field name="crm_lead_id" readonly="1" invisible="not crm_lead_id"/>
+                            <field name="sale_order_id" readonly="1" invisible="not sale_order_id"/>
                             <field name="requested_pickup_date"/>
                             <field name="available_pickup_dates" readonly="1"
                                    invisible="not available_pickup_dates"/>
