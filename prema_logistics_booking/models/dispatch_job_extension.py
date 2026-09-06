@@ -483,6 +483,19 @@ class PremaDispatchJob(models.Model):
                 vals["operation_date"] = self._operation_date_from_pickup(
                     vals["scheduled_pickup"]
                 )
+            # §6 (D-B2): a job born from a booking inherits the SAME
+            # Internal Load Reference (and any already-issued operational
+            # BOL) — the identifiers stay identical across every surface.
+            if vals.get("logistics_booking_id") and not vals.get("reference"):
+                booking = self.env["logistics.booking"].browse(
+                    vals["logistics_booking_id"])
+                if booking.exists():
+                    if not vals.get("reference") and booking.reference:
+                        vals["reference"] = booking.reference
+                    if not vals.get("bol_number") and booking.bol_number:
+                        vals["bol_number"] = booking.bol_number
+                    if not vals.get("po_number") and booking.po_number:
+                        vals["po_number"] = booking.po_number
             normalized.append(vals)
         return super().create(normalized)
 
@@ -492,6 +505,19 @@ class PremaDispatchJob(models.Model):
             vals["operation_date"] = self._operation_date_from_pickup(
                 vals.get("scheduled_pickup")
             )
+        # §6 (D-B2): the operational BOL is entered on the job; when the
+        # booking has none yet, mirror it up so booking + invoice carry
+        # the shipper-provided number. The booking stays the authority
+        # once set (never overwritten — no silent replacement). Mirrors
+        # are audit-tracked on the booking (its write() records them).
+        if vals.get("bol_number"):
+            for job in self.filtered(
+                    "logistics_booking_id").with_context(
+                        logistics_bol_mirror=True):
+                booking = job.logistics_booking_id.sudo()
+                if booking and not booking.bol_number \
+                        and booking.bol_number != vals["bol_number"]:
+                    booking.write({"bol_number": vals["bol_number"]})
         if "vehicle_id" in vals and not self.env.context.get("departure_vehicle_sync"):
             for job in self.filtered("corridor_departure_id"):
                 departure_vehicle = job.corridor_departure_id.vehicle_id

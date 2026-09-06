@@ -157,6 +157,30 @@
                 </tr>
             </table>
 
+            <!-- Identifiers (§6 D-B2) — customer PO / internal load reference -->
+            <table t-if="o.customer_po or o.reference" style="width: 100%; border-collapse: collapse; border: 1px solid #d0d0d0; margin-bottom: 14px;">
+                <tr>
+                    <td style="padding: 8px 10px; background: #f2f5fa; font-size: 10px; color: #1a3a6b;
+                               text-transform: uppercase; letter-spacing: 0.6px;">
+                        Reference Numbers
+                    </td>
+                </tr>
+                <tr>
+                    <td style="padding: 8px 10px; font-size: 12px;">
+                        <table style="width: 100%; border-collapse: collapse; font-size: 12px;">
+                            <tr t-if="o.customer_po">
+                                <td style="padding: 2px 0; color: #666; width: 42%;">Your PO #</td>
+                                <td style="padding: 2px 0;"><t t-esc="o.customer_po"/></td>
+                            </tr>
+                            <tr t-if="o.reference">
+                                <td style="padding: 2px 0; color: #666;">Internal Load Reference</td>
+                                <td style="padding: 2px 0;"><t t-esc="o.reference"/></td>
+                            </tr>
+                        </table>
+                    </td>
+                </tr>
+            </table>
+
             <!-- Route -->
             <table style="width: 100%; border-collapse: collapse; border: 1px solid #d0d0d0; margin-bottom: 14px;">
                 <tr>
@@ -203,6 +227,49 @@
                 </tr>
             </table>
 
+            <!-- Payment (§7 D-B2) — method, fees, instructions, QuickPay -->
+            <table t-if="o.payment_method_id or o.quickpay_apply" style="width: 100%; border-collapse: collapse; border: 1px solid #d0d0d0; margin-bottom: 14px;">
+                <tr>
+                    <td style="padding: 8px 10px; background: #f2f5fa; font-size: 10px; color: #1a3a6b;
+                               text-transform: uppercase; letter-spacing: 0.6px;">
+                        Payment
+                    </td>
+                </tr>
+                <tr>
+                    <td style="padding: 8px 10px; font-size: 12px;">
+                        <table style="width: 100%; border-collapse: collapse; font-size: 12px;">
+                            <tr t-if="o.payment_term_id">
+                                <td style="padding: 2px 0; color: #666; width: 42%;">Terms</td>
+                                <td style="padding: 2px 0;"><t t-esc="o.payment_term_id.name"/></td>
+                            </tr>
+                            <tr t-if="o.payment_method_id">
+                                <td style="padding: 2px 0; color: #666;">Method</td>
+                                <td style="padding: 2px 0;"><t t-esc="o.payment_method_id.name"/></td>
+                            </tr>
+                            <tr t-if="o.payment_method_id and o.payment_method_id.fee_notes">
+                                <td style="padding: 2px 0; color: #666;">Fees</td>
+                                <td style="padding: 2px 0; white-space: pre-wrap;"><t t-esc="o.payment_method_id.fee_notes"/></td>
+                            </tr>
+                            <tr t-if="o.quickpay_apply and o.quickpay_discount_pct">
+                                <td style="padding: 2px 0; color: #666;">QuickPay Early-Payment Discount</td>
+                                <td style="padding: 2px 0;">
+                                    Pay within
+                                    <t t-if="o.quickpay_deadline_days"><t t-esc="o.quickpay_deadline_days"/> day(s) of the invoice date</t>
+                                    <t t-else="">the invoice due date</t>
+                                    and deduct
+                                    <t t-esc="'%0.2f' % o.quickpay_discount_pct"/>%
+                                    (<t t-esc="'%0.2f' % o.quickpay_discount_amount"/>).
+                                    Balance due:
+                                    <t t-esc="'%0.2f' % o.quickpay_discounted_total"/>
+                                    (original balance
+                                    <t t-esc="'%0.2f' % o.quoted_price"/> without the discount).
+                                </td>
+                            </tr>
+                        </table>
+                    </td>
+                </tr>
+            </table>
+
             <!-- Notes -->
             <table t-if="o.notes" style="width: 100%; border-collapse: collapse; border: 1px solid #d0d0d0; margin-bottom: 14px;">
                 <tr>
@@ -216,11 +283,20 @@
                 </tr>
             </table>
 
-            <!-- Terms footer -->
+            <!-- Terms footer (§7 D-B2): the tax statement follows the
+                 document's price_tax_mode — never a hardcoded default. -->
             <div style="margin-top: 8px; border-top: 1px solid #d0d0d0; padding-top: 8px; font-size: 10px; color: #666;">
-                <div>This quotation is valid for 30 days from the date issued. Rates are exclusive of applicable taxes.
+                <div>
+                    This quotation is valid for 30 days from the date issued.
+                    <t t-if="o.price_tax_mode == 'inclusive'">
+                        The quoted price is inclusive of applicable taxes.
+                    </t>
+                    <t t-else="">
+                        Rates are exclusive of applicable taxes.
+                    </t>
                     Full Truckload (FTL) quotations are billed on the actual door-to-door road distance at the quoted per-km rate.
-                    Shipments are subject to our standard terms and conditions.</div>
+                    Shipments are subject to our standard terms and conditions.
+                </div>
             </div>
         </div>
     </template>

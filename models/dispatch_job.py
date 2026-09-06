@@ -40,6 +40,17 @@ class PremaDispatchJob(models.Model):
         "res.company", default=lambda self: self.env.company
     )
     ref = fields.Char(string="Reference / BOL / PO", tracking=True)
+    # §6 (D-B2): PremaFirm's stable end-to-end Internal Load Reference,
+    # propagated UNCHANGED Rate Confirmation → booking → job → invoice.
+    # Never auto-filled from po_number / bol_number / legacy ref — those
+    # stay separate identifiers with their own owners.
+    reference = fields.Char(string="Internal Load Reference", tracking=True,
+                            index=True, copy=False,
+                            help="PremaFirm's stable end-to-end Internal Load "
+                                 "Reference for this load (same value on the "
+                                 "Rate Confirmation, the booking and the "
+                                 "invoice). Never filled from the customer "
+                                 "PO or the BOL.")
     active = fields.Boolean(default=True)
     color = fields.Integer()
 

@@ -18,6 +18,33 @@
                             invisible="logistics_pricing_status != 'approved'"
                             groups="prema_logistics_booking.group_logistics_pricing_manager"/>
                 </group>
+                <!-- §7 (D-B2): customer payment profile — allowed methods,
+                     e-Transfer instructions, QuickPay (OFF by default). -->
+                <group string="Logistics Payment" groups="prema_logistics_booking.group_logistics_pricing_manager">
+                    <group>
+                        <field name="x_logistics_allowed_payment_method_ids"
+                               widget="many2many_tags"
+                               options="{'no_create': True}"/>
+                        <field name="x_logistics_default_payment_method_id"
+                               options="{'no_create': True}"/>
+                    </group>
+                    <group>
+                        <field name="x_logistics_etransfer_instructions"
+                               placeholder="Interac e-Transfer email / security hint for this customer"/>
+                    </group>
+                </group>
+                <group string="QuickPay (early-payment discount)" groups="prema_logistics_booking.group_logistics_booking_manager">
+                    <group>
+                        <field name="x_logistics_quickpay_enabled" string="QuickPay Eligible"/>
+                        <field name="x_logistics_quickpay_discount_pct" string="Discount %"
+                               invisible="not x_logistics_quickpay_enabled"/>
+                        <field name="x_logistics_quickpay_deadline_days" string="Deadline (days)"
+                               invisible="not x_logistics_quickpay_enabled"/>
+                    </group>
+                    <group>
+                        <field name="x_logistics_quickpay_stack_allowed" string="Stacking Allowed"/>
+                    </group>
+                </group>
             </xpath>
         </field>
     </record>

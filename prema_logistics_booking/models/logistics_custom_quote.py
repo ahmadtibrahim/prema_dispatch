@@ -78,6 +78,14 @@ _CQ_SEND_LOCKED_FIELDS = frozenset((
     "revision_no", "revised_from_id", "revision_reason", "revised_at",
     "revised_by_id", "last_sent_at", "last_sent_attempt_id",
     "revision_changes_summary",
+    # §6/§7 (D-B2): identifiers, pricing basis and payment agreement are
+    # all customer-facing — locked once sent, like the rest of the
+    # document.
+    "customer_po", "reference", "bol_number",
+    "price_tax_mode",
+    "payment_method_id", "payment_term_id",
+    "quickpay_apply", "quickpay_discount_pct", "quickpay_deadline_days",
+    "quickpay_stack_allowed", "quickpay_override_reason",
 ))
 
 # Fields compared between a sent revision and its successor — recorded as
@@ -90,6 +98,13 @@ _CQ_REVISION_DIFF_FIELDS = (
     "pickup_postal_code", "pickup_address",
     "delivery_postal_code", "delivery_address",
     "contact_name", "contact_email", "contact_phone",
+    # §6/§7 (D-B2): identifier + payment changes are shown to the customer
+    # on the revision email ("what changed").
+    "customer_po", "reference", "bol_number",
+    "price_tax_mode",
+    "payment_method_id", "payment_term_id",
+    "quickpay_apply", "quickpay_discount_pct", "quickpay_deadline_days",
+    "quickpay_stack_allowed",
 )
 
 # Context flag used by this module's own internal writes to a locked row
@@ -137,6 +152,87 @@ class LogisticsCustomQuote(models.Model):
     commodity = fields.Char(string="Commodity")
     requested_pickup_date = fields.Date(string="Requested Pickup")
     notes = fields.Text(string="Notes")
+    # ── Freight identifiers (§6, D-B2) ────────────────────────────────
+    # Three SEPARATE identifiers with distinct owners — never fallbacks
+    # for one another:
+    #   * customer_po — ONLY the customer-supplied PO; blank when the
+    #     customer gave none. Never derived from anything.
+    #   * reference   — PremaFirm's stable end-to-end Internal Load
+    #     Reference; generated ONCE here (defaults to the RC number when
+    #     conversion starts) and then propagated UNCHANGED through the
+    #     booking, the dispatch job and the invoice.
+    #   * bol_number  — the shipper/carrier BOL, only once the
+    #     operational load / BOL is formally created (often after the RC
+    #     was sent — backfilled on the booking then).
+    customer_po = fields.Char(
+        string="Customer PO #", copy=False,
+        help="The customer's own purchase order number. Populated ONLY "
+             "from a customer-supplied PO — never filled from the load "
+             "reference or the BOL. Leave blank when the customer gave no PO.")
+    reference = fields.Char(
+        string="Internal Load Reference", index=True,
+        help="PremaFirm's stable end-to-end Internal Load Reference for "
+             "this load (the SAME value appears on the Rate Confirmation, "
+             "the booking and the invoice). Never filled from the "
+             "customer PO or the BOL.")
+    bol_number = fields.Char(
+        string="BOL #", copy=False,
+        help="Shipper-provided BOL number — entered ONLY when the "
+             "operational load / BOL is formally created (usually after "
+             "this Rate Confirmation was sent).")
+    # ── Pricing basis / payment (§7, D-B2) ────────────────────────────
+    price_tax_mode = fields.Selection([
+        ("exclusive", "Exclusive of Taxes"),
+        ("inclusive", "Inclusive of Taxes"),
+    ], string="Quoted Price Is", default="exclusive",
+        help="How the Quoted Price is stated: exclusive of applicable "
+             "taxes (tax is added on the invoice) or inclusive (the "
+             "customer-agreed total already contains the tax). The "
+             "invoice preserves the agreed total in both modes.")
+    payment_method_id = fields.Many2one(
+        "logistics.payment.method", string="Payment Method",
+        help="Payment method agreed on this document (e.g. credit card, "
+             "Interac e-Transfer). Defaults from the customer profile; "
+             "may be overridden per document within the customer's "
+             "allowed methods. Carried unchanged onto the booking and the "
+             "invoice.")
+    payment_term_id = fields.Many2one(
+        "account.payment.term", string="Payment Terms",
+        help="Terms agreed on this document (due date basis). Defaults "
+             "from the customer profile; carried unchanged onto the "
+             "booking and the invoice.")
+    quickpay_apply = fields.Boolean(
+        string="QuickPay Discount Applies", default=False,
+        help="Customer opted into the early-payment QuickPay discount on "
+             "this document. Disabled by default; only offered when the "
+             "customer's profile enables QuickPay (or a booking manager "
+             "records a per-document override with a reason).")
+    quickpay_discount_pct = fields.Float(
+        string="QuickPay Discount %",
+        help="Early-payment discount percentage agreed on this document.")
+    quickpay_deadline_days = fields.Integer(
+        string="QuickPay Deadline (days)", default=7,
+        help="The discount is valid when the customer pays within this "
+             "many days of the invoice date.")
+    quickpay_stack_allowed = fields.Boolean(
+        string="QuickPay Stacking Allowed", default=False,
+        help="Allow this QuickPay discount to stack with other discounts "
+             "(e.g. a manual price adjustment) on the same document. "
+             "Off by default — discounts never stack silently.")
+    quickpay_override_reason = fields.Char(
+        string="QuickPay Override Reason",
+        help="Required when QuickPay is applied to a document whose "
+             "customer profile does not enable QuickPay (per-document "
+             "override). Audited on the chatter.")
+    quickpay_discount_amount = fields.Float(
+        string="QuickPay Discount Amount", readonly=True,
+        compute="_compute_quickpay_amounts",
+        help="Original quoted price × QuickPay %.")
+    quickpay_discounted_total = fields.Float(
+        string="Discounted Total (paid by deadline)", readonly=True,
+        compute="_compute_quickpay_amounts",
+        help="What the customer pays when paying by the QuickPay "
+             "deadline: original balance minus the QuickPay discount.")
 
     # Resolution
     state = fields.Selection(QUOTE_STATE, default="new", tracking=True)
@@ -330,7 +426,11 @@ class LogisticsCustomQuote(models.Model):
                  "required_temperature_c", "commodity",
                  "pickup_postal_code", "pickup_address",
                  "delivery_postal_code", "delivery_address",
-                 "contact_name", "contact_email", "contact_phone")
+                 "contact_name", "contact_email", "contact_phone",
+                 "customer_po", "reference", "bol_number",
+                 "price_tax_mode", "payment_method_id", "payment_term_id",
+                 "quickpay_apply", "quickpay_discount_pct",
+                 "quickpay_deadline_days", "quickpay_stack_allowed")
     def _compute_revision_changes_html(self):
         for rec in self:
             if not rec.revised_from_id:
@@ -359,6 +459,119 @@ class LogisticsCustomQuote(models.Model):
         for rec in self:
             rec.manual_price_adjustment = round(
                 (rec.quoted_price or 0.0) - (rec.system_calculated_price or 0.0), 2)
+
+    @api.depends("quoted_price", "quickpay_apply", "quickpay_discount_pct")
+    def _compute_quickpay_amounts(self):
+        """QuickPay numbers shown on the document: the discount (original
+        balance × %) and what the customer actually pays by the deadline.
+        The original balance itself (quoted_price) is never overwritten —
+        QuickPay is an early-payment incentive, not a reprice."""
+        for rec in self:
+            if not rec.quickpay_apply or not rec.quickpay_discount_pct:
+                rec.quickpay_discount_amount = 0.0
+                rec.quickpay_discounted_total = 0.0
+                continue
+            discount = round(
+                (rec.quoted_price or 0.0) * rec.quickpay_discount_pct / 100.0, 2)
+            rec.quickpay_discount_amount = discount
+            rec.quickpay_discounted_total = round(
+                (rec.quoted_price or 0.0) - discount, 2)
+
+    # ════════════════════════════════════════════════════════════════
+    # §7 (D-B2) payment/QuickPay validation — every change is tracked
+    # (tracking=True fields above → chatter audit trail).
+    # ════════════════════════════════════════════════════════════════
+
+    @api.onchange("partner_id")
+    def _onchange_partner_payment_defaults(self):
+        if not self.partner_id:
+            return
+        defaults = self.partner_id._logistics_payment_defaults()
+        for key, value in defaults.items():
+            setattr(self, key, value)
+
+    def _check_quickpay_configuration(self, vals, partner=None):
+        """Cross-field QuickPay guards shared by create() and write().
+
+        Raises UserError when QuickPay would silently stack with another
+        discount, or when a per-document override is used without the
+        recorded reason. Returns vals (possibly completed with the
+        stacking flag from the customer profile).
+        """
+        if self:
+            partner = partner or self.partner_id
+            quickpay_was_on = self.quickpay_apply
+        else:
+            partner = partner or self.env["res.partner"]
+            quickpay_was_on = False
+        if "quickpay_apply" in vals:
+            quickpay_on = bool(vals.get("quickpay_apply"))
+        else:
+            quickpay_on = quickpay_was_on
+        if not quickpay_on:
+            # QuickPay off (or untouched) — no guard applies; a write that
+            # merely clears an old quickpay_override_reason is harmless.
+            return vals
+        turning_on = quickpay_on and not quickpay_was_on
+        if turning_on:
+            pct = vals.get(
+                "quickpay_discount_pct",
+                self.quickpay_discount_pct if self else 0.0) or 0.0
+            if pct <= 0:
+                raise UserError(_(
+                    "QuickPay is on but no discount percentage is set — "
+                    "set the QuickPay Discount %% above 0."))
+            if not partner.x_logistics_quickpay_enabled:
+                reason = (vals.get("quickpay_override_reason")
+                          or (self.quickpay_override_reason if self else "")
+                          or "")
+                if not (reason or "").strip():
+                    raise UserError(_(
+                        "Customer %s is not QuickPay-eligible. A "
+                        "per-document override needs a recorded QuickPay "
+                        "Override Reason (audit trail).") %
+                        (partner.name or ""))
+                if not vals.get("quickpay_override_reason") and reason:
+                    vals = dict(vals, quickpay_override_reason=reason)
+        # Stacking guard: a discounted price (manual adjustment below the
+        # system price) plus QuickPay = two discounts. Never silent.
+        stack_allowed = vals.get("quickpay_stack_allowed") \
+            if "quickpay_stack_allowed" in vals \
+            else (self.quickpay_stack_allowed if self else False)
+        if not stack_allowed and partner.x_logistics_quickpay_stack_allowed:
+            vals = dict(vals, quickpay_stack_allowed=True)
+            stack_allowed = True
+        quoted = (vals.get("quoted_price") if "quoted_price" in vals
+                  else (self.quoted_price if self else 0.0)) or 0.0
+        system = (vals.get("system_calculated_price")
+                  if "system_calculated_price" in vals
+                  else (self.system_calculated_price if self else 0.0)) or 0.0
+        if system and quoted and round(quoted, 2) < round(system, 2) \
+                and not stack_allowed:
+            raise UserError(_(
+                "QuickPay may not stack with the manual price adjustment "
+                "on this document. Either clear QuickPay, restore the "
+                "system price, or explicitly allow stacking (QuickPay "
+                "Stacking Allowed on the document or the customer)."))
+        return vals
+
+    def _check_payment_method_allowed(self, vals):
+        """The per-document payment-method override must stay within the
+        customer's allowed methods (contractual boundary)."""
+        if "payment_method_id" not in vals or not vals.get("payment_method_id"):
+            return
+        partner = self.partner_id if self else self.env["res.partner"]
+        if not partner:
+            return
+        allowed = partner.x_logistics_allowed_payment_method_ids
+        if not allowed:
+            return
+        if vals["payment_method_id"] not in allowed.ids:
+            raise UserError(_(
+                "Payment method is not in the allowed methods of customer "
+                "%s. Allowed: %s.") % (
+                partner.name,
+                ", ".join(allowed.mapped("name")) or "—"))
 
     # ════════════════════════════════════════════════════════════════
     # create/write — single-draft rule + send-lock guard
@@ -396,6 +609,23 @@ class LogisticsCustomQuote(models.Model):
         for vals in vals_list:
             if vals.get("name", "New") == "New":
                 vals["name"] = self.env["ir.sequence"].sudo().next_by_code("logistics.custom.quote") or "CQ-0001"
+            # §7 (D-B2): partner payment/QuickPay defaults fill ONLY the
+            # keys the caller did not already pick (per-key, not
+            # all-or-nothing): a caller that set the method or the
+            # stacking flag alone still inherits the profile's QuickPay
+            # offer, while an explicitly chosen value always wins.
+            if vals.get("partner_id"):
+                partner = self.env["res.partner"].browse(vals["partner_id"])
+                vals.update({
+                    key: value for key, value in
+                    partner._logistics_payment_defaults().items()
+                    if key not in vals
+                })
+            # §7 guards (raise before any row is created).
+            partner = self.env["res.partner"].browse(
+                vals.get("partner_id") or False)
+            vals = self._check_quickpay_configuration(vals, partner=partner)
+            self._check_payment_method_allowed(vals)
         return super().create(vals_list)
 
     def write(self, vals):
@@ -424,6 +654,14 @@ class LogisticsCustomQuote(models.Model):
                              rec.last_sent_at.strftime("%Y-%m-%d %H:%M")
                              if rec.last_sent_at else "—",
                              (rec.revision_no or 1) + 1))
+        # §7 (D-B2) guards: QuickPay stacking/override rules and the
+        # allowed-methods boundary are enforced on every write (tracking
+        # fields provide the audit trail).
+        if not self.env.context.get(_CQ_INTERNAL_WRITE_CTX):
+            for rec in self:
+                vals = rec._check_quickpay_configuration(
+                    vals, partner=rec.partner_id)
+                rec._check_payment_method_allowed(vals)
         changed = []
         for rec in self:
             if "quoted_price" in vals and vals.get("quoted_price") is not None \
@@ -444,6 +682,37 @@ class LogisticsCustomQuote(models.Model):
                         "A Manual Price Reason is required when the quoted "
                         "price differs from the system calculated price."))
                 changed.append((rec, old_price, new_price, system))
+        # §6/§7 (D-B2): identifiers + payment agreement are NEVER changed
+        # silently on the customer document — every change is posted on
+        # the chatter (deterministic row, mirror of the sell-price audit;
+        # the fields carry no tracking= so no duplicate row appears at
+        # transaction commit).
+        agreement_fields = {
+            "price_tax_mode": "Price Is",
+            "payment_method_id": "Payment Method",
+            "payment_term_id": "Payment Terms",
+            "quickpay_apply": "QuickPay Discount Applies",
+            "quickpay_discount_pct": "QuickPay Discount %",
+            "quickpay_deadline_days": "QuickPay Deadline (days)",
+            "quickpay_stack_allowed": "QuickPay Stacking Allowed",
+            "quickpay_override_reason": "QuickPay Override Reason",
+            "customer_po": "Customer PO",
+            "reference": "Internal Load Reference",
+            "bol_number": "BOL #",
+        }
+        agreement_changes = []
+        for rec in self:
+            for fname, label in agreement_fields.items():
+                if fname not in vals:
+                    continue
+                new_value = vals.get(fname)
+                old_value = getattr(rec, fname)
+                if fname.endswith("_id"):
+                    old_value = old_value.id if old_value else False
+                if bool(new_value) != bool(old_value) or \
+                        (new_value is not None and str(new_value).strip()
+                         != str(old_value or "").strip()):
+                    agreement_changes.append((rec, label, old_value, new_value))
         result = super().write(vals)
         for rec, old_price, new_price, system in changed:
             rec.write({
@@ -454,6 +723,10 @@ class LogisticsCustomQuote(models.Model):
             rec.message_post(body=self.env["logistics.booking"]._sell_price_audit_message(
                 old_price, new_price, rec.manual_price_reason or "",
                 self.env.user.name or ""))
+        for rec, label, old_value, new_value in agreement_changes:
+            rec.message_post(
+                body=self.env["logistics.booking"]._payment_change_audit_message(
+                    label, old_value, new_value, self.env.user.name or ""))
         return result
 
     # ════════════════════════════════════════════════════════════════
@@ -484,6 +757,16 @@ class LogisticsCustomQuote(models.Model):
                 "contact_email": lead.email_from or "",
                 "contact_phone": lead.phone or "",
             })
+        # §6 (D-B2): the ONLY sanctioned PO source is the customer-supplied
+        # PO recorded on the lead ("Customer PO #"). It is never derived
+        # from the reference/BOL or anything else. QuickPay defaults come
+        # from the partner profile and stay OFF when the customer is not
+        # eligible.
+        lead_po = getattr(lead, "po_number", "") or ""
+        vals["customer_po"] = (lead_po or "").strip()
+        if partner:
+            vals.update(
+                partner._logistics_payment_defaults())
         if idempotency_key:
             vals["idempotency_key"] = idempotency_key
         return vals
@@ -600,6 +883,30 @@ class LogisticsCustomQuote(models.Model):
                 .get(self.temperature_mode, self.temperature_mode)),
             (_("Pallets"), self.pallets),
             (_("Weight (lbs)"), self.weight_lbs or "—"),
+        ]
+        # §6 (D-B2): identifiers on the customer email.
+        if self.reference:
+            rows.append((_("Internal Load Reference"), self.reference))
+        if self.customer_po:
+            rows.append((_("Customer PO"), self.customer_po))
+        # §7 (D-B2): pricing basis + payment agreement on the email.
+        rows.append((
+            _("Price Is"),
+            dict(self._fields["price_tax_mode"].selection)
+            .get(self.price_tax_mode or "exclusive", "—")))
+        if self.payment_method_id:
+            rows.append((_("Payment Method"), self.payment_method_id.name))
+        if self.payment_term_id:
+            rows.append((_("Payment Terms"), self.payment_term_id.name))
+        if self.quickpay_apply and self.quickpay_discount_pct:
+            rows.append((_("QuickPay Discount (paid by deadline)"),
+                         "%s%% — %s" % (
+                             self.quickpay_discount_pct,
+                             self.currency_id.format(
+                                 self.quickpay_discounted_total)
+                             if self.currency_id
+                             else "%.2f" % self.quickpay_discounted_total)))
+        rows += [
             (_("Total Price"), price),
             (_("Valid Until"), self.quotation_valid_until or "—"),
         ]
@@ -880,6 +1187,15 @@ class LogisticsCustomQuote(models.Model):
                 "conversion_override_at": fields.Datetime.now(),
             })
 
+        # §6 (D-B2): the Internal Load Reference is generated exactly ONCE
+        # here (default = this Rate Confirmation's number) when the staff
+        # did not already assign one. From this point on the SAME string
+        # propagates unchanged booking → dispatch job → invoice; it is
+        # never re-derived from the PO or the BOL.
+        if not self.reference:
+            self.with_context(_CQ_INTERNAL_WRITE_CTX=True).write(
+                {"reference": self.name or self.id})
+
         from ..services.booking_orchestration_service import BookingOrchestrationService
         svc = BookingOrchestrationService(self.env)
 
@@ -904,6 +1220,21 @@ class LogisticsCustomQuote(models.Model):
             "departure_id": self.departure_id.id,
             "custom_quote_id": self.id,
             "idempotency_key": f"custom_quote:{self.id}",
+            # §6 identifiers — carried into the booking verbatim. Note:
+            # customer_reference is deliberately NOT fed from the PO — the
+            # legacy "ref" fallback must never become a PO alias.
+            "po_number": self.customer_po or "",
+            "reference": self.reference or "",
+            "bol_number": self.bol_number or "",
+            # §7 payment/QuickPay snapshot + pricing basis.
+            "price_tax_mode": self.price_tax_mode or "exclusive",
+            "payment_method_id": self.payment_method_id.id or False,
+            "payment_term_id": self.payment_term_id.id or False,
+            "quickpay_apply": self.quickpay_apply,
+            "quickpay_discount_pct": self.quickpay_discount_pct,
+            "quickpay_deadline_days": self.quickpay_deadline_days,
+            "quickpay_stack_allowed": self.quickpay_stack_allowed,
+            "quickpay_override_reason": self.quickpay_override_reason or "",
         }, source_channel="custom_quote")
 
         booking = svc.confirm_from_internal(
@@ -973,6 +1304,20 @@ class LogisticsCustomQuote(models.Model):
             "estimator_id": self.estimator_id.id,
             "crm_lead_id": self.crm_lead_id.id,
             "company_id": self.company_id.id,
+            # §6/§7 (D-B2): the revision branch reopens the SAME
+            # identifiers and payment agreement — editing them on the
+            # branch is a deliberate, tracked change.
+            "customer_po": self.customer_po,
+            "reference": self.reference,
+            "bol_number": self.bol_number,
+            "price_tax_mode": self.price_tax_mode,
+            "payment_method_id": self.payment_method_id.id,
+            "payment_term_id": self.payment_term_id.id,
+            "quickpay_apply": self.quickpay_apply,
+            "quickpay_discount_pct": self.quickpay_discount_pct,
+            "quickpay_deadline_days": self.quickpay_deadline_days,
+            "quickpay_stack_allowed": self.quickpay_stack_allowed,
+            "quickpay_override_reason": self.quickpay_override_reason,
         }
 
     def action_revise(self, reason=""):

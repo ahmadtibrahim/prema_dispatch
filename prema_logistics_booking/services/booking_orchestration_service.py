@@ -130,7 +130,22 @@ class NormalizedBookingRequest:
         self.po_number = data.get("po_number", "")
         self.customer_reference = data.get("customer_reference", "")
         self.bol_number = data.get("bol_number", "")
+        # §6 (D-B2): PremaFirm's stable end-to-end Internal Load Reference.
+        # Populated at conversion from the Rate Confirmation; propagated
+        # UNCHANGED booking → dispatch job → invoice. Never derived from
+        # the PO or BOL (they are separate identifiers).
+        self.reference = data.get("reference", "")
         self.instructions = data.get("instructions", "")
+        # §7 (D-B2): pricing basis + payment agreement carried from the
+        # customer document.
+        self.price_tax_mode = data.get("price_tax_mode", "exclusive")
+        self.payment_method_id = data.get("payment_method_id") or 0
+        self.payment_term_id = data.get("payment_term_id") or 0
+        self.quickpay_apply = bool(data.get("quickpay_apply", False))
+        self.quickpay_discount_pct = data.get("quickpay_discount_pct", 0.0)
+        self.quickpay_deadline_days = data.get("quickpay_deadline_days", 0)
+        self.quickpay_stack_allowed = bool(data.get("quickpay_stack_allowed", False))
+        self.quickpay_override_reason = data.get("quickpay_override_reason", "")
 
         self.pricing_method = data.get("pricing_method", "corridor")
         self.agreed_rate = data.get("agreed_rate", 0.0)
@@ -166,6 +181,14 @@ class NormalizedBookingRequest:
             raise ValidationError(_("weight_lbs must be >= 0"))
         if self.load_type not in VALID_LOAD_TYPES:
             raise ValidationError(_("Invalid load_type: %s") % self.load_type)
+        if self.price_tax_mode not in ("exclusive", "inclusive"):
+            raise ValidationError(_(
+                "Invalid price_tax_mode: %s (expected 'exclusive' or 'inclusive')")
+                % self.price_tax_mode)
+        if self.quickpay_apply and not (
+                self.quickpay_discount_pct or 0.0) > 0:
+            raise ValidationError(_(
+                "QuickPay applies but no discount percentage was supplied."))
         if self.route_model_version not in ("legacy", "movement_v1"):
             raise ValidationError(_("Invalid route_model_version: %s") % self.route_model_version)
         if self.route_model_version == "movement_v1":
@@ -1306,6 +1329,18 @@ class BookingOrchestrationService:
             "original_confirmed_price": calculated_price,
             "po_number": normalized_request.po_number or "",
             "customer_reference": normalized_request.customer_reference or "",
+            # §6/§7 (D-B2): identifiers + payment snapshot — set verbatim
+            # from the request; never silently replaced downstream.
+            "reference": normalized_request.reference or "",
+            "bol_number": normalized_request.bol_number or "",
+            "price_tax_mode": normalized_request.price_tax_mode or "exclusive",
+            "payment_method_id": normalized_request.payment_method_id or False,
+            "payment_term_id": normalized_request.payment_term_id or False,
+            "quickpay_apply": normalized_request.quickpay_apply,
+            "quickpay_discount_pct": normalized_request.quickpay_discount_pct or 0.0,
+            "quickpay_deadline_days": normalized_request.quickpay_deadline_days or 0,
+            "quickpay_stack_allowed": normalized_request.quickpay_stack_allowed,
+            "quickpay_override_reason": normalized_request.quickpay_override_reason or "",
             "booking_number": self.env["logistics.booking"]._generate_booking_number(),
             "state": "confirmed",
             # Explicit architecture discriminator, frozen at creation.

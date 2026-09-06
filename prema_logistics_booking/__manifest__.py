@@ -1,6 +1,6 @@
 {
     "name": "Prema Logistics Booking",
-    "version": "18.0.13.55.0",
+    "version": "18.0.13.56.0",
     "summary": "Private customer LTL/FTL pricing, scheduling, and booking engine "
                "for PremaFirm Logistics — integrates with Prema Dispatch.",
     "category": "Logistics",
@@ -22,6 +22,8 @@ root for architecture notes, decisions, and phase status.
         "security/logistics_security.xml",
         "security/ir.model.access.csv",
         "data/logistics_config_parameter_data.xml",
+        # §7 (D-B2): seeded logistics payment methods (card / e-Transfer / terms).
+        "data/logistics_payment_method_data.xml",
         "data/logistics_region_data.xml",
         "data/logistics_official_region_catalog.xml",
         # "data/logistics_equipment_profile_data.xml",  # ARCHIVED — fleet.vehicle is sole authority
@@ -50,6 +52,7 @@ root for architecture notes, decisions, and phase status.
         "views/dispatch_stop_integrity_views.xml",
         "views/logistics_booking_views.xml",
         "views/logistics_custom_quote_views.xml",
+        "views/account_move_booking_views.xml",
         "views/logistics_recurring_agreement_views.xml",
         "views/logistics_phone_booking_views.xml",
         # menus.xml must load before any file that references its menu xmlids

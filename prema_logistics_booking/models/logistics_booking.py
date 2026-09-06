@@ -421,6 +421,70 @@ class LogisticsBooking(models.Model):
         help="'1°C – 3°C (33.8°F – 37.4°F)' for quote/confirmation surfaces.")
     po_number = fields.Char(string="PO Number")
     customer_reference = fields.Char(string="Customer Reference")
+    # ── Freight identifiers (§6, D-B2) ────────────────────────────────
+    # Same ownership split as the Rate Confirmation: reference is
+    # PremaFirm's stable end-to-end Internal Load Reference (propagated
+    # UNCHANGED from the RC); bol_number is shipper-provided, entered only
+    # once the operational load/BOL formally exists (mirrored up from the
+    # dispatch job); pod_number is captured at operational completion.
+    reference = fields.Char(
+        string="Internal Load Reference", tracking=True, index=True,
+        copy=False,
+        help="PremaFirm's stable end-to-end Internal Load Reference — the "
+             "SAME value as on the Rate Confirmation, the dispatch job "
+             "and the invoice. Never filled from the customer PO or BOL.")
+    bol_number = fields.Char(
+        string="BOL #", tracking=True, copy=False,
+        help="Shipper-provided BOL number. Entered ONLY when the "
+             "operational load / BOL is formally created (usually on the "
+             "dispatch job; mirrored here). Never generated from the "
+             "load reference or the PO.")
+    pod_number = fields.Char(
+        string="POD #", tracking=True, readonly=True, copy=False,
+        help="Proof-of-Delivery number captured when the shipment "
+             "completes (from the uploaded POD evidence).")
+    # ── Pricing basis / payment snapshot (§7, D-B2) ───────────────────
+    # Snapshot of the customer agreement, carried RC → booking →
+    # invoice. price_tax_mode states whether calculated_price (the
+    # customer sell price) is exclusive or inclusive of the applicable
+    # freight tax; the invoice preserves the agreed total in both modes.
+    price_tax_mode = fields.Selection([
+        ("exclusive", "Exclusive of Taxes"),
+        ("inclusive", "Inclusive of Taxes"),
+    ], string="Price Is", default="exclusive", tracking=True,
+        help="How the customer price is stated: exclusive of applicable "
+             "taxes (tax added on the invoice) or inclusive (the "
+             "customer-agreed total already contains the tax).")
+    payment_method_id = fields.Many2one(
+        "logistics.payment.method", string="Payment Method", tracking=True,
+        help="Payment method agreed with the customer (from the Rate "
+             "Confirmation). Carried onto the invoice.")
+    payment_term_id = fields.Many2one(
+        "account.payment.term", string="Payment Terms", tracking=True,
+        help="Payment terms agreed with the customer (from the Rate "
+             "Confirmation). Applied to the invoice.")
+    quickpay_apply = fields.Boolean(
+        string="QuickPay Discount Applies", default=False, tracking=True)
+    quickpay_discount_pct = fields.Float(
+        string="QuickPay Discount %", tracking=True)
+    quickpay_deadline_days = fields.Integer(
+        string="QuickPay Deadline (days)", default=0, tracking=True,
+        help="Discount valid when the customer pays within this many days "
+             "of the invoice date.")
+    quickpay_stack_allowed = fields.Boolean(
+        string="QuickPay Stacking Allowed", default=False, tracking=True)
+    quickpay_override_reason = fields.Char(
+        string="QuickPay Override Reason", tracking=True)
+    quickpay_discount_amount = fields.Float(
+        string="QuickPay Discount Amount", readonly=True,
+        compute="_compute_quickpay_amounts",
+        help="Original balance × QuickPay % — shown on the invoice.")
+    quickpay_discounted_total = fields.Float(
+        string="Discounted Total (paid by deadline)", readonly=True,
+        compute="_compute_quickpay_amounts",
+        help="Original balance minus the QuickPay discount — what the "
+             "customer pays when paying by the deadline. The original "
+             "balance stays the invoice amount until then.")
     commodity = fields.Char(string="Commodity")
     # Tax snapshot (populated at confirmation, immutable afterward)
     billing_relationship = fields.Selection(BILLING_RELATIONSHIP_SELECTION, readonly=True, string="Billing Relationship")
@@ -503,7 +567,71 @@ class LogisticsBooking(models.Model):
         if "maximum_temperature_c" in vals:
             vals["maximum_temperature_supplied"] = self._raw_supplied(
                 vals["maximum_temperature_c"])
-        return super().write(vals)
+        # §7 (D-B2): the payment agreement (method, terms, QuickPay, tax
+        # basis) and the identifiers are NEVER changed silently on a live
+        # booking — every change is recorded as a mail.message audit row
+        # (queryable like the sell-price audit; the booking form has no
+        # chatter widget), because the invoice created downstream must
+        # never diverge without a trace.
+        payment_fields = {
+            "price_tax_mode": "Price Is",
+            "payment_method_id": "Payment Method",
+            "payment_term_id": "Payment Terms",
+            "quickpay_apply": "QuickPay Discount Applies",
+            "quickpay_discount_pct": "QuickPay Discount %",
+            "quickpay_deadline_days": "QuickPay Deadline (days)",
+            "quickpay_stack_allowed": "QuickPay Stacking Allowed",
+            "quickpay_override_reason": "QuickPay Override Reason",
+            "reference": "Internal Load Reference",
+            "bol_number": "BOL #",
+            "po_number": "PO Number",
+            "pod_number": "POD #",
+        }
+        audited = []
+        for field_name, label in payment_fields.items():
+            if field_name not in vals:
+                continue
+            new_value = vals.get(field_name)
+            for rec in self:
+                old_value = getattr(rec, field_name)
+                if field_name.endswith("_id"):
+                    old_value = old_value.id if old_value else False
+                if bool(new_value) != bool(old_value) or \
+                        (new_value is not None and str(new_value).strip()
+                         != str(old_value or "").strip()):
+                    audited.append((rec, label, old_value, new_value))
+        result = super().write(vals)
+        if audited:
+            for rec, label, old_value, new_value in audited:
+                self.env["mail.message"].sudo().create({
+                    "model": rec._name,
+                    "res_id": rec.id,
+                    "body": self._payment_change_audit_message(
+                        label, old_value, new_value,
+                        self.env.user.name or ""),
+                    "message_type": "comment",
+                    "subtype_id": self.env.ref("mail.mt_comment").id,
+                })
+        return result
+
+    @staticmethod
+    def _payment_change_audit_message(label, old_value, new_value, by):
+        """Audit-row body for a payment/identifier change on a live
+        booking — mirror of _sell_price_audit_message."""
+        def _fmt(value):
+            if value is None:
+                return "—"
+            if hasattr(value, "name"):
+                return value.name or "—"
+            return str(value) if str(value).strip() else "—"
+        return _(
+            "%(label)s changed: %(old)s → %(new)s (by %(by)s)"
+        ) % {
+            "label": label,
+            "old": _fmt(old_value),
+            "new": _fmt(new_value),
+            "by": by or "",
+        }
 
     @api.depends("required_temperature_c", "target_temperature_c",
                  "minimum_temperature_c", "maximum_temperature_c",
@@ -667,6 +795,24 @@ class LogisticsBooking(models.Model):
                     f"{group['facility_name']} — {agg}"
                     + (f" ({where})" if where else ""))
             rec.facility_grouping_summary = "\n".join(lines) or "No stops"
+
+    @api.depends("calculated_price", "quickpay_apply", "quickpay_discount_pct")
+    def _compute_quickpay_amounts(self):
+        """QuickPay numbers on the booking/invoice: discount = original
+        balance × %, discounted total = balance − discount. calculated_price
+        (the invoice amount) is NEVER rewritten — QuickPay is an
+        early-payment incentive applied at payment time."""
+        for rec in self:
+            if not rec.quickpay_apply or not rec.quickpay_discount_pct:
+                rec.quickpay_discount_amount = 0.0
+                rec.quickpay_discounted_total = 0.0
+                continue
+            discount = round(
+                (rec.calculated_price or 0.0) * rec.quickpay_discount_pct / 100.0,
+                2)
+            rec.quickpay_discount_amount = discount
+            rec.quickpay_discounted_total = round(
+                (rec.calculated_price or 0.0) - discount, 2)
 
     def _compute_customer_status(self):
         for rec in self:
@@ -1567,6 +1713,9 @@ class LogisticsBooking(models.Model):
             "name": "Milk Run — %s" % self.booking_number,
             "partner_id": self.partner_id.id,
             "ref": self.booking_number,
+            # §6 (D-B2): the SAME Internal Load Reference on every surface.
+            "reference": self.reference or "",
+            "bol_number": self.bol_number or "",
             "source_model": "logistics.booking",
             "source_res_id": self.id,
             "logistics_booking_id": self.id,
@@ -1814,6 +1963,11 @@ class LogisticsBooking(models.Model):
             "approximate_skids": self.pallets,
             "commodity": self.commodity or "",
             "po_number": self.po_number or "",
+            # §6 (D-B2): the SAME Internal Load Reference — never a PO/BOL
+            # fallback. bol_number rides along when the booking already
+            # carries an operational BOL.
+            "reference": self.reference or "",
+            "bol_number": self.bol_number or "",
             "ref": self.customer_reference or self.booking_number,
             "route_definition_mode": "exact_stops",
             "stops_confirmation_state": "confirmed",
@@ -2439,7 +2593,11 @@ class LogisticsBooking(models.Model):
         lines.append(f"Weight: {self.weight_lbs:,.0f} lb")
         if self.po_number:
             lines.append(f"PO: {self.po_number}")
-        if self.customer_reference:
+        if self.reference:
+            lines.append(f"Internal Load Reference: {self.reference}")
+        if self.bol_number:
+            lines.append(f"BOL #: {self.bol_number}")
+        if self.customer_reference and self.customer_reference != self.reference:
             lines.append(f"Reference: {self.customer_reference}")
 
         # Use stop_ids when available (keyed stops only for movement_v1 —
@@ -2500,7 +2658,151 @@ class LogisticsBooking(models.Model):
                 lines.append("Special Instructions:")
                 lines.append(self.pickup_instructions)
 
+        # §7 (D-B2): customer payment block — due-date terms, applicable
+        # fees, e-Transfer instructions / secure card link, QuickPay
+        # numbers. Printed on the invoice line description.
+        payment_block = self._customer_payment_block()
+        if payment_block:
+            lines.append("")
+            lines.append("Payment:")
+            lines.extend("  " + line for line in payment_block)
+
         return "\n".join(lines)
+
+    # ════════════════════════════════════════════════════════════════
+    # §6/§7 (D-B2) helpers — identifiers, POD capture, payment display
+    # ════════════════════════════════════════════════════════════════
+
+    def _capture_pod_number(self):
+        """§6 POD capture at operational completion.
+
+        The booking's POD number comes ONLY from the uploaded POD evidence
+        (the existing prema.dispatch.evidence rows of the completion flow —
+        nothing is rebuilt). Called exactly once, from invoice creation:
+        the first scanned_pod / pod_general evidence's original filename
+        stem, else a deterministic '%(booking)s-POD' label. Idempotent.
+        """
+        self.ensure_one()
+        if self.pod_number:
+            return self.pod_number
+        Evidence = self.env["prema.dispatch.evidence"].sudo()
+        evidence = Evidence.search([
+            "|",
+            ("booking_id", "=", self.id),
+            ("job_id", "in", self.dispatch_job_ids.ids),
+            ("evidence_type", "in", ("scanned_pod", "pod_general")),
+        ], order="uploaded_at asc, id asc", limit=1)
+        pod = ""
+        if evidence and evidence.original_filename:
+            base = str(evidence.original_filename).rsplit("/", 1)[-1]
+            base = base.rsplit(".", 1)[0] if "." in base else base
+            pod = base.strip()[:64]
+        if not pod:
+            pod = "%s-POD" % (self.booking_number or "B%d" % self.id)
+        self.write({"pod_number": pod})  # write() audit trail row
+        return pod
+
+    def _line_unit_price_for_tax_mode(self, price, tax=None):
+        """Line price_unit that makes the invoice total equal the
+        customer-agreed price in BOTH tax modes (§7).
+
+        * exclusive (default): price_unit = the agreed price; the tax is
+          added on top on the invoice (current behaviour).
+        * inclusive: price_unit is solved so that agreed price + tax ==
+          the agreed total — the invoice shows the agreed total unchanged.
+        Only percent/group taxes are solvable; anything else (or an
+        unresolvable tax) falls back to the exclusive treatment and is
+        never guessed.
+        """
+        if not tax or self.price_tax_mode != "inclusive":
+            return price
+        try:
+            result = tax.compute_all(
+                price_unit=price, currency=self.currency_id, quantity=1.0)
+            total_excl = result.get("total", 0.0) or 0.0
+            total_incl = result.get("total_included", 0.0) or 0.0
+        except Exception:
+            _logger.warning(
+                "Booking %s: tax %s could not be resolved for inclusive "
+                "pricing — falling back to exclusive treatment.",
+                self.booking_number, tax.name)
+            return price
+        if not total_incl or total_incl <= total_excl:
+            return price  # zero/credit tax — nothing to include
+        # total_incl was computed on price: base = price / (total_incl / price)
+        return round(price * price / total_incl, 6)
+
+    def _invoice_payment_snapshot_vals(self, payment_instructions=""):
+        """account.move fields snapshotting the §7 payment agreement —
+        written at invoice creation so the customer document keeps the
+        terms/method/QuickPay as agreed, immune to later booking edits
+        (later booking edits are audited, never silently replayed)."""
+        return {
+            "logistics_payment_method_id": self.payment_method_id.id or False,
+            "logistics_payment_instructions": payment_instructions or "",
+            "logistics_price_tax_mode": self.price_tax_mode or "exclusive",
+            "logistics_quickpay_apply": self.quickpay_apply,
+            "logistics_quickpay_discount_pct": self.quickpay_discount_pct or 0.0,
+            "logistics_quickpay_deadline_days": self.quickpay_deadline_days or 0,
+            "logistics_quickpay_discount_amount": self.quickpay_discount_amount,
+            "logistics_quickpay_discounted_total": self.quickpay_discounted_total,
+        }
+
+    def _payment_instructions_resolved(self):
+        """Customer-facing payment instructions for the selected method —
+        e-Transfer instructions from the customer profile, the secure
+        card-payment link from the system parameter (placeholder OK — no
+        live provider), or the method's own text."""
+        self.ensure_one()
+        method = self.payment_method_id
+        if not method:
+            return ""
+        partner = self.commercial_partner_id or self.partner_id
+        ICP = self.env["ir.config_parameter"].sudo()
+        card_url = (ICP.get_param("logistics.payment.card_link_url", "") or "").strip()
+        etransfer = (partner.x_logistics_etransfer_instructions or "").strip()
+        if method.method_type == "card":
+            return (card_url or method.instructions or "").replace(
+                "%(card_link_url)s", card_url or "to be provided")
+        if method.method_type == "etransfer":
+            return (etransfer or method.instructions or "").replace(
+                "%(etransfer_instructions)s",
+                etransfer or "Contact PremaFirm for e-Transfer details.")
+        return (method.instructions or "").replace(
+            "%(card_link_url)s", card_url or "to be provided").replace(
+            "%(etransfer_instructions)s",
+            etransfer or "Contact PremaFirm for e-Transfer details.")
+
+    def _customer_payment_block(self):
+        """§7 lines shown on the customer invoice: due date basis, method
+        fees + instructions, and the QuickPay offer with the original
+        balance, discount, deadline and discounted amount — never stacked
+        silently (see the quote/booking QuickPay guards)."""
+        self.ensure_one()
+        lines = []
+        if self.payment_term_id:
+            lines.append(f"Terms: {self.payment_term_id.name}")
+        method = self.payment_method_id
+        if method:
+            lines.append(f"Method: {method.name}")
+            if method.fee_notes:
+                lines.append(method.fee_notes.strip())
+            instructions = self._payment_instructions_resolved()
+            if instructions:
+                lines.append(instructions)
+        if self.quickpay_apply and self.quickpay_discount_pct:
+            original = self.calculated_price or 0.0
+            deadline = (
+                f"within {self.quickpay_deadline_days} day(s) of the "
+                f"invoice date" if self.quickpay_deadline_days else
+                "by the invoice due date")
+            lines.append(
+                f"QuickPay: pay {deadline} and deduct "
+                f"{self.quickpay_discount_pct:g}% "
+                f"({self.quickpay_discount_amount:.2f}) — "
+                f"balance due {self.quickpay_discounted_total:.2f} "
+                f"(original balance {original:.2f} without the discount).")
+        return lines
 
     def _ensure_completion_invoice(self):
         """DEFERRED INVOICE: create the draft customer invoice only when the
@@ -2568,6 +2870,10 @@ class LogisticsBooking(models.Model):
             )
             return None
 
+        # §6 (D-B2): capture the POD number ONCE — from the POD evidence
+        # uploaded during the existing completion flow (never invented).
+        pod_number = self._capture_pod_number()
+
         # Build invoice description
         description = self._generate_invoice_description()
 
@@ -2580,8 +2886,21 @@ class LogisticsBooking(models.Model):
         if self.tax_rule_id:
             line_tax_ids = [(6, 0, [self.tax_rule_id.id])]
 
+        # §7 (D-B2): preserve the customer-agreed total in BOTH tax modes.
+        # price_tax_mode == inclusive solves the line unit price so that
+        # price + tax == the agreed total (never a silent reprice).
+        line_price = self._line_unit_price_for_tax_mode(
+            self.calculated_price, tax=self.tax_rule_id)
+
+        # Resolved payment instructions (e-Transfer text / card link) —
+        # the snapshot the customer document shows at issue time.
+        payment_instructions = self._payment_instructions_resolved()
+
+        # §6 identifiers on the invoice: reuse the engine's
+        # premafirm_po/premafirm_bol/premafirm_pod/load_reference columns
+        # (owned by premafirm_ai_engine — guarded in case they ever move).
         Invoice = self.env["account.move"].sudo()
-        invoice = Invoice.create({
+        invoice_vals = {
             "move_type": "out_invoice",
             "partner_id": partner.id,
             "invoice_origin": self.booking_number,
@@ -2592,22 +2911,46 @@ class LogisticsBooking(models.Model):
                 "product_id": product.id,
                 "name": description,
                 "quantity": 1,
-                "price_unit": self.calculated_price,
+                "price_unit": line_price,
                 "tax_ids": line_tax_ids,
             })],
-        })
+        }
+        if "load_reference" in Invoice._fields:
+            invoice_vals["load_reference"] = self.reference or ""
+        if "premafirm_po" in Invoice._fields:
+            invoice_vals["premafirm_po"] = self.po_number or ""
+        bol_number = self.bol_number or ""
+        if not bol_number and self.dispatch_job_ids:
+            bol_number = (self.dispatch_job_ids.sudo()
+                          .filtered("bol_number").mapped("bol_number")[:1]) or ""
+        if "premafirm_bol" in Invoice._fields:
+            invoice_vals["premafirm_bol"] = bol_number or ""
+        if "premafirm_pod" in Invoice._fields:
+            invoice_vals["premafirm_pod"] = pod_number or ""
+        # §7 payment/QuickPay snapshot on the invoice.
+        if "invoice_payment_term_id" in Invoice._fields \
+                and self.payment_term_id:
+            invoice_vals["invoice_payment_term_id"] = self.payment_term_id.id
+        invoice_vals.update(self._invoice_payment_snapshot_vals(
+            payment_instructions=payment_instructions))
+        invoice = Invoice.create(invoice_vals)
 
-        # Store tax snapshot on booking
+        # Store tax snapshot on booking — the REAL invoice amounts (in
+        # inclusive mode the untaxed base differs from calculated_price by
+        # design: the TOTAL is the preserved agreed number).
         invoice.invalidate_recordset()
-        subtotal = self.calculated_price
-        tax_amount = round(invoice.amount_total - subtotal, 2) if invoice.amount_total > 0 else 0.0
+        amount_total = invoice.amount_total or self.calculated_price or 0.0
+        amount_untaxed = invoice.amount_untaxed or (
+            self.calculated_price if self.price_tax_mode != "inclusive"
+            else amount_total)
+        amount_tax = round(amount_total - amount_untaxed, 2)
 
         self.write({
             "invoice_id": invoice.id,
             "invoice_created_at": fields.Datetime.now(),
-            "amount_untaxed": subtotal,
-            "amount_tax": tax_amount,
-            "amount_total": invoice.amount_total or subtotal + tax_amount,
+            "amount_untaxed": amount_untaxed,
+            "amount_tax": amount_tax,
+            "amount_total": amount_total,
             "currency_id": invoice.currency_id.id,
             "fiscal_position_id": fiscal_position.id if fiscal_position else False,
         })

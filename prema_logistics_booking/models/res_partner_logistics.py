@@ -57,6 +57,55 @@ class ResPartner(models.Model):
         help="Visible only to Accounting or Logistics Managers.",
     )
 
+    # ── Payment methods & QuickPay (§7, D-B2) ─────────────────────────
+    # Partner-level payment configuration. All QuickPay fields default to
+    # OFF: a customer only gets an early-payment discount when a booking
+    # manager has explicitly enabled it here (eligibility flag + discount
+    # % + deadline in days) and the document then opts in.
+    x_logistics_allowed_payment_method_ids = fields.Many2many(
+        "logistics.payment.method",
+        "res_partner_logistics_payment_method_rel",
+        "partner_id", "payment_method_id",
+        string="Allowed Payment Methods",
+        help="Payment methods this customer may use. Empty = all active "
+             "methods are allowed.",
+    )
+    x_logistics_default_payment_method_id = fields.Many2one(
+        "logistics.payment.method",
+        string="Default Payment Method",
+        domain="[('active', '=', True),"
+               "('id', 'in', x_logistics_allowed_payment_method_ids)]",
+        help="Payment method proposed on new Rate Confirmations for this "
+             "customer (must be one of the allowed methods).",
+    )
+    x_logistics_etransfer_instructions = fields.Text(
+        string="e-Transfer Instructions",
+        help="Interac e-Transfer instructions (email address, security "
+             "question hint) shown on the customer documents when "
+             "e-Transfer is the selected payment method. Falls back to "
+             "the method's own instructions when empty.",
+    )
+    x_logistics_quickpay_enabled = fields.Boolean(
+        string="QuickPay Eligible", default=False, tracking=True,
+        help="Customer-specific QuickPay early-payment discount: DISABLED "
+             "by default. Enable only with explicit commercial sign-off.",
+    )
+    x_logistics_quickpay_discount_pct = fields.Float(
+        string="QuickPay Discount %", tracking=True,
+        help="Early-payment discount percentage offered to this customer.",
+    )
+    x_logistics_quickpay_deadline_days = fields.Integer(
+        string="QuickPay Deadline (days)", default=7, tracking=True,
+        help="Discount valid when paid within this many days of the "
+             "invoice date.",
+    )
+    x_logistics_quickpay_stack_allowed = fields.Boolean(
+        string="QuickPay Stacking Allowed", default=False, tracking=True,
+        help="Allow QuickPay to stack with other discounts (e.g. a manual "
+             "price adjustment) on the same document. Default OFF — "
+             "discounts never stack silently.",
+    )
+
     @api.depends("x_freight_billing_relationship")
     def _compute_x_freight_tax_rules_apply(self):
         for rec in self:
@@ -69,6 +118,30 @@ class ResPartner(models.Model):
             else:
                 rec.x_freight_tax_rules_apply = False
                 rec.x_freight_tax_rules_display = "Review"
+
+    def _logistics_payment_defaults(self):
+        """Partner → Rate Confirmation payment defaults (§7).
+
+        Returns payment-related vals for a new customer document: the
+        partner's default method (when allowed) and QuickPay profile
+        (OFF by design when the customer is not eligible)."""
+        self.ensure_one()
+        method = self.x_logistics_default_payment_method_id
+        allowed = self.x_logistics_allowed_payment_method_ids
+        if method and allowed and method.id not in allowed.ids:
+            method = self.env["logistics.payment.method"].browse(False)
+        vals = {
+            "payment_method_id": method.id if method else False,
+            "payment_term_id": self.property_payment_term_id.id or False,
+        }
+        if self.x_logistics_quickpay_enabled:
+            vals.update({
+                "quickpay_apply": True,
+                "quickpay_discount_pct": self.x_logistics_quickpay_discount_pct,
+                "quickpay_deadline_days": self.x_logistics_quickpay_deadline_days,
+                "quickpay_stack_allowed": self.x_logistics_quickpay_stack_allowed,
+            })
+        return vals
 
     def action_request_logistics_pricing(self):
         for partner in self:

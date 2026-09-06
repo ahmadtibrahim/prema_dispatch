@@ -113,6 +113,7 @@
                 <field name="priority" widget="priority" optional="show"/>
                 <field name="invoice_id"/>
                 <field name="partner_id"/>
+                <field name="reference" string="Load Ref." optional="hide"/>
                 <field name="vehicle_id" string="Truck"/>
                 <field name="driver_id" string="Driver"/>
                 <field name="scheduled_pickup"/>
@@ -320,8 +321,12 @@
                                    invisible="not requires_reefer"
                                    placeholder="e.g. -18 or 2 to 8"
                                    help="Temperature range in Celsius. e.g. -18 or 2 to 8. Bare numbers are auto-suffixed with °C."/>
-                            <field name="bol_number"/>
-                            <field name="po_number"/>
+                            <field name="bol_number"
+                                   help="BOL # — set ONLY when the operational load / BOL is formally created."/>
+                            <field name="po_number" string="Customer PO #"
+                                   help="The customer's own PO — never auto-filled from the load reference."/>
+                            <field name="reference"
+                                   help="PremaFirm's stable end-to-end Internal Load Reference (same value as the Rate Confirmation, booking and invoice)."/>
                             <field name="ref" placeholder="Internal reference / notes ref"/>
                         </group>
                     </group>
@@ -701,6 +706,9 @@
                 <field name="driver_id"/>
                 <field name="invoice_id"/>
                 <field name="ref"/>
+                <field name="reference"/>
+                <field name="bol_number"/>
+                <field name="po_number"/>
                 <filter name="today" string="Today"
                         domain="[('scheduled_pickup','&gt;=', datetime.datetime.combine(context_today(), datetime.time(0,0,0)).strftime('%Y-%m-%d %H:%M:%S')),('scheduled_pickup','&lt;', (context_today() + datetime.timedelta(days=1)).strftime('%Y-%m-%d 00:00:00'))]"/>
                 <filter name="tomorrow" string="Tomorrow"
