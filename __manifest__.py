@@ -1,6 +1,6 @@
 {
     "name": "Prema Dispatch",
-    "version": "18.0.3.47.0",
+    "version": "18.0.3.48.0",
     "summary": "Booking, planning, live GPS tracking, driver mobile app, interactive truck Load Plans, warehouse loading mode, AI document extraction, VoIP calling and reporting for PremaFirm dispatch operations",
     "category": "Logistics",
     "description": """
@@ -14,11 +14,13 @@ report on how it went.
 Booking
 -------
 * Create a Dispatch Booking directly, or generate one from a Sales Order or
-  Invoice ("Book Load" button — reuses an existing booking instead of
-  duplicating it, with a wizard to choose when one already exists).
+  Invoice ("Book Load" button — canonical logistics.booking flow: opens the
+  existing booking / Rate Confirmation when one exists, never duplicates,
+  and the booking's dispatch-job bridge creates the Planner cards).
 * "Generate from Text" on the Sales Order: paste a customer WhatsApp/SMS/
-  email and AI extracts pickup/delivery stops, pallet counts, route, dates
-  and reefer/liftgate requirements into a new booking.
+  email and AI extracts pickup/delivery stops, pallet counts, dates and
+  reefer/liftgate requirements into one canonical booking (same text always
+  reopens the same booking).
 * Recurring Agreements (provided by Prema Logistics Booking), an ad-hoc
   "Find Available Truck" mid-day load finder, and LTL consolidation tools.
 
@@ -157,6 +159,7 @@ A full in-app user manual is available from the Prema Dispatch app menu.
         "views/dispatch_manual_template.xml",
         "views/menus.xml",
         "views/dispatch_book_load_wizard_views.xml",
+        "views/sale_order_book_wizard_views.xml",
         "views/dispatch_route_visit_views.xml",
         "views/dispatch_load_plan_views.xml",
         "views/dispatch_error_log_views.xml",

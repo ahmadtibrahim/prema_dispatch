@@ -7,12 +7,28 @@ from odoo.exceptions import UserError
 
 _logger = logging.getLogger(__name__)
 
+# DEPRECATED (D-C1, master §20 — Phone Booking deprecation)
+# ---------------------------------------------------------------------------
+# This wizard is kept INTACT as the historical record type for phone-originated
+# quotes/bookings (data history only). No new features may be added here.
+# Staff quoting now belongs to the Internal Booking / Rate Confirmation flow
+# (logistics.custom.quote "Customer Rate Confirmation" lifecycle, B1) and the
+# canonical internal booking entry — see docs/PHONE_BOOKING_PARITY.md for the
+# per-scenario mapping of every phone-booking use to its canonical
+# replacement path and exact entry point. The model, its views, its menu
+# (renamed "Phone Booking (Legacy)") and its data stay fully functional.
+
 SHIPMENT_TYPES = [("ltl", "LTL"), ("ftl", "FTL")]
 TEMP_MODES = [("dry", "Dry"), ("reefer", "Reefer")]
 
 
 class LogisticsPhoneBooking(models.TransientModel):
     """Staff phone-quote wizard backed by the canonical booking engine.
+
+    DEPRECATED (D-C1, master §20): kept for historical data access only —
+    use the Internal Booking / Rate Confirmation flow for new quotes (see
+    docs/PHONE_BOOKING_PARITY.md). The wizard itself is unchanged and still
+    functional, but no new features are added.
 
     This wizard deliberately does not create new Saved Location / Master
     Facility records while a caller is only asking for a price. Staff may

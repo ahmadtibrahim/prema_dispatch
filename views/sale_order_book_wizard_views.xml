@@ -1,0 +1,51 @@
+<odoo>
+    <record id="view_prema_dispatch_so_book_wizard_form" model="ir.ui.view">
+        <field name="name">prema.dispatch.so.book.wizard.form</field>
+        <field name="model">prema.dispatch.so.book.wizard</field>
+        <field name="arch" type="xml">
+            <form string="Book Load from Sales Order">
+                <sheet>
+                    <field name="sale_order_id" invisible="1"/>
+                    <group>
+                        <group>
+                            <field name="booking_mode" widget="radio"/>
+                            <field name="partner_id"/>
+                            <field name="pickup_saved_location_id"/>
+                            <field name="delivery_saved_location_id"/>
+                            <field name="scheduled_pickup"/>
+                        </group>
+                        <group string="Freight">
+                            <field name="service_type"/>
+                            <field name="equipment_type"/>
+                            <field name="required_temperature_c" invisible="equipment_type != 'reefer'"/>
+                            <field name="submitted_temperature_unit"
+                                   invisible="equipment_type != 'reefer'"
+                                   string="Temperature Unit"/>
+                            <field name="temperature_confirmed" invisible="equipment_type != 'reefer'"/>
+                            <field name="requires_liftgate"/>
+                            <field name="expected_skids"/>
+                            <field name="total_weight_lbs"/>
+                            <field name="commodity"/>
+                        </group>
+                    </group>
+                    <group string="References">
+                        <field name="customer_reference"/>
+                        <field name="purchase_order"/>
+                        <field name="bol_reference"/>
+                        <field name="general_notes"/>
+                    </group>
+                    <div class="alert alert-info" role="alert" invisible="booking_mode != 'scheduled_ltl'">
+                        Scheduled LTL uses Corridor pricing, reserves exact departure capacity and assigns Planner jobs to that departure's Truck.
+                    </div>
+                    <div class="alert alert-warning" role="alert" invisible="booking_mode != 'custom'">
+                        Custom / Expedited carries this Sales Order's total as the agreed rate; the Planner card is created without a scheduled departure.
+                    </div>
+                </sheet>
+                <footer>
+                    <button name="action_confirm" type="object" string="Confirm Booking" class="btn-primary"/>
+                    <button string="Cancel" special="cancel"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+</odoo>

@@ -8,12 +8,17 @@
 
             <!-- Book Load button in SO header -->
             <xpath expr="//button[@name='action_confirm']" position="before">
+                <!-- D-C1 (§1/§14): canonical booking entry. Reuses the SO's
+                     existing logistics.booking or Rate Confirmation; only
+                     when neither exists does it open the Book Load wizard,
+                     which confirms ONE canonical booking through the
+                     booking orchestration service. -->
                 <button name="action_book_load"
                         string="Book Load"
                         type="object"
                         class="btn-primary"
                         icon="fa-truck"
-                        help="Create a Prema Dispatch booking from this Sales Order. Customer and order details are pulled automatically."/>
+                        help="Create the Prema Dispatch booking for this Sales Order through the canonical booking engine: opens the existing booking or Rate Confirmation when one exists, never duplicates, and confirms exactly one logistics.booking (its dispatch-job bridge creates the Planner card(s))."/>
             </xpath>
 
             <!-- Smart button — dispatch booking count -->
@@ -55,8 +60,10 @@
                                 icon="fa-magic"/>
                         <small class="text-muted">
                             AI extracts pickup/delivery addresses, pallet counts per stop,
-                            route, date, and reefer/liftgate requirements
-                            and creates a dispatch booking automatically.
+                            date, and reefer/liftgate requirements and confirms one
+                            canonical logistics.booking (channel "sale.order"). The
+                            booking's dispatch-job bridge creates the Planner card(s);
+                            pasting the same text again reopens the same booking.
                         </small>
                     </div>
                     <div class="mt-3 text-muted small" invisible="dispatch_job_count == 0">
