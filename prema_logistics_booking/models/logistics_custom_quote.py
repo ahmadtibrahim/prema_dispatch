@@ -92,6 +92,14 @@ class LogisticsCustomQuote(models.Model):
     # Converted booking
     booking_id = fields.Many2one("logistics.booking", string="Converted Booking", readonly=True)
     estimator_id = fields.Many2one("premafirm.rate.estimator", string="Estimator", readonly=True)
+    crm_lead_id = fields.Many2one(
+        "crm.lead",
+        string="CRM Opportunity",
+        index=True,
+        ondelete="set null",
+        copy=False,
+        help="Opportunity that originated this rate confirmation.",
+    )
 
     # Source
     source = fields.Selection([
