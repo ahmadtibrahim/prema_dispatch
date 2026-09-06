@@ -6,6 +6,7 @@
         <field name="arch" type="xml">
             <list>
                 <field name="name"/>
+                <field name="revision_no" optional="show"/>
                 <field name="company_name"/>
                 <field name="contact_name"/>
                 <field name="pickup_postal_code"/>
@@ -13,10 +14,12 @@
                 <field name="pallets"/>
                 <field name="quoted_price"/>
                 <field name="state"/>
+                <field name="is_locked" optional="hide"/>
                 <field name="source"/>
             </list>
         </field>
     </record>
+
     <record id="view_logistics_custom_quote_form" model="ir.ui.view">
         <field name="name">logistics.custom.quote.form</field>
         <field name="model">logistics.custom.quote</field>
@@ -24,77 +27,154 @@
             <form>
                 <header>
                     <button name="action_start_review" string="Start Review" type="object"
-                            invisible="state != 'new'"/>
+                            invisible="state != 'new' or is_locked"/>
                     <button name="action_quote" string="Quote" type="object"
-                            invisible="state not in ('reviewing',)"/>
-                    <button name="action_accept" string="Accept" type="object"
-                            invisible="state != 'quoted'"/>
+                            invisible="state not in ('reviewing',) or is_locked"/>
+                    <button name="action_record_customer_acceptance_form" string="Record Customer Acceptance" type="object"
+                            invisible="state not in ('quoted', 'accepted') or booking_id or is_superseded"/>
                     <button name="action_decline" string="Decline" type="object"
-                            invisible="state != 'quoted'"/>
+                            invisible="state not in ('quoted', 'accepted') or booking_id"/>
+                    <button name="action_confirm_internally" string="Confirm Internally" type="object"
+                            class="btn-primary"
+                            invisible="state != 'accepted' or internal_confirmed or booking_id or is_superseded"/>
                     <button name="action_convert_to_booking" string="Convert to Booking" type="object"
-                            class="btn-success" invisible="state != 'accepted'"/>
-                    <button name="action_print_quotation" string="Print Quotation" type="object"
-                            class="btn-primary" invisible="not quoted_price"/>
+                            class="btn-success"
+                            invisible="state != 'accepted' or booking_id or is_superseded"/>
+                    <button name="%(action_logistics_custom_quote_revise_wizard)d"
+                            string="Revise &amp; Resend" type="action" class="btn-warning"
+                            groups="prema_logistics_booking.group_logistics_booking_manager"
+                            context="{'default_quote_id': id}"
+                            invisible="not is_locked or is_superseded or booking_id or state not in ('quoted', 'accepted', 'declined')"/>
+                    <button name="action_send_rc" string="Send Rate Confirmation" type="object"
+                            class="btn-primary"
+                            invisible="state not in ('quoted', 'accepted') or is_locked or is_superseded or booking_id"/>
+                    <button name="action_preview" string="Print / Preview" type="object"
+                            invisible="not quoted_price"/>
                     <button name="action_open_estimator" string="Prema AI Estimator" type="object"
-                            class="btn-secondary"/>
+                            class="btn-secondary" invisible="is_locked"/>
                     <field name="state" widget="statusbar"/>
                 </header>
                 <sheet>
                     <div class="oe_title"><h1><field name="name"/></h1></div>
                     <group>
                         <field name="crm_lead_id" readonly="1" invisible="not crm_lead_id"/>
+                        <field name="is_locked" invisible="1"/>
+                        <field name="is_superseded" invisible="1"/>
                         <group>
-                            <field name="partner_id"/>
-                            <field name="contact_name"/>
-                            <field name="contact_email"/>
-                            <field name="contact_phone"/>
-                            <field name="company_name"/>
-                            <field name="source"/>
+                            <field name="partner_id" readonly="is_locked"/>
+                            <field name="contact_name" readonly="is_locked"/>
+                            <field name="contact_email" readonly="is_locked"/>
+                            <field name="contact_phone" readonly="is_locked"/>
+                            <field name="company_name" readonly="is_locked"/>
+                            <field name="source" readonly="is_locked"/>
                         </group>
                         <group>
                             <field name="state"/>
-                            <field name="quoted_price" readonly="state == 'converted'"/>
+                            <field name="revision_no" readonly="1"
+                                   invisible="not is_locked and revision_no == 1"/>
+                            <field name="last_sent_at" readonly="1" invisible="not last_sent_at"/>
+                            <field name="quoted_price" readonly="state == 'converted' or is_locked"/>
                             <field name="system_calculated_price" readonly="1"
                                    invisible="not system_calculated_price"/>
                             <field name="manual_price_adjustment" readonly="1"
                                    invisible="not system_calculated_price"/>
-                            <field name="manual_price_reason"
+                            <field name="manual_price_reason" readonly="is_locked"
                                    invisible="not system_calculated_price"
                                    placeholder="Required when the quoted price differs from the system price"/>
                             <button name="action_reset_price" string="Reset to System Price" type="object"
                                     class="btn-secondary"
-                                    invisible="state == 'converted' or not system_calculated_price"/>
+                                    invisible="state == 'converted' or not system_calculated_price or is_locked"/>
                             <field name="manual_price_changed_by" readonly="1"
                                    invisible="not manual_price_changed_by"/>
                             <field name="manual_price_changed_at" readonly="1"
                                    invisible="not manual_price_changed_at"/>
-                            <field name="reason_code"/>
+                            <field name="reason_code" readonly="is_locked"/>
+                        </group>
+                    </group>
+                    <group string="Customer Acceptance &amp; Confirmation"
+                           invisible="state not in ('quoted', 'accepted') and not acceptance_recorded_at">
+                        <group>
+                            <field name="acceptance_channel"
+                                   readonly="state == 'accepted' or booking_id or is_superseded"
+                                   placeholder="Email / Portal / Phone / Text"/>
+                            <field name="acceptance_recorded_at" readonly="1"
+                                   invisible="not acceptance_recorded_at"/>
+                            <field name="acceptance_recorded_by" readonly="1"
+                                   invisible="not acceptance_recorded_by"/>
+                        </group>
+                        <group>
+                            <field name="internal_confirmed" readonly="1"
+                                   invisible="not internal_confirmed"/>
+                            <field name="internal_confirmed_at" readonly="1"
+                                   invisible="not internal_confirmed_at"/>
+                            <field name="internal_confirmed_by" readonly="1"
+                                   invisible="not internal_confirmed_by"/>
+                            <field name="conversion_override"
+                                   invisible="not conversion_override and internal_confirmed"
+                                   help="Manager-authorized: convert without internal confirmation (reason required)."/>
+                            <field name="conversion_override_reason"
+                                   invisible="not conversion_override and internal_confirmed"
+                                   placeholder="Required — reason for converting without internal confirmation"
+                                   attrs="{'required': [('conversion_override', '=', True)]}"/>
                         </group>
                     </group>
                     <notebook>
                         <page string="Shipment">
                             <group>
                                 <group>
-                                    <field name="pickup_postal_code"/>
-                                    <field name="pickup_address"/>
-                                    <field name="resolved_fsa_pickup"/>
-                                    <field name="resolved_region_pickup"/>
+                                    <field name="pickup_postal_code" readonly="is_locked"/>
+                                    <field name="pickup_address" readonly="is_locked"/>
+                                    <field name="resolved_fsa_pickup" readonly="is_locked"/>
+                                    <field name="resolved_region_pickup" readonly="is_locked"/>
                                 </group>
                                 <group>
-                                    <field name="delivery_postal_code"/>
-                                    <field name="delivery_address"/>
-                                    <field name="resolved_fsa_delivery"/>
-                                    <field name="resolved_region_delivery"/>
+                                    <field name="delivery_postal_code" readonly="is_locked"/>
+                                    <field name="delivery_address" readonly="is_locked"/>
+                                    <field name="resolved_fsa_delivery" readonly="is_locked"/>
+                                    <field name="resolved_region_delivery" readonly="is_locked"/>
                                 </group>
                             </group>
                             <group>
-                                <field name="pallets"/>
-                                <field name="weight_lbs"/>
-                                <field name="temperature_mode"/>
-                                <field name="commodity"/>
-                                <field name="requested_pickup_date"/>
-                                <field name="routing_strategy"/>
+                                <field name="pallets" readonly="is_locked"/>
+                                <field name="weight_lbs" readonly="is_locked"/>
+                                <field name="temperature_mode" readonly="is_locked"/>
+                                <field name="commodity" readonly="is_locked"/>
+                                <field name="requested_pickup_date" readonly="is_locked"/>
+                                <field name="departure_id" readonly="is_locked"/>
+                                <field name="routing_strategy" readonly="is_locked"/>
                             </group>
+                        </page>
+                        <page string="Revisions"
+                               invisible="not is_locked and revision_no == 1 and not revised_from_id">
+                            <group string="This Revision">
+                                <group>
+                                    <field name="revision_no" readonly="1"/>
+                                    <field name="revised_from_id" readonly="1"/>
+                                    <field name="revision_reason" readonly="1"/>
+                                </group>
+                                <group>
+                                    <field name="revised_by_id" readonly="1"/>
+                                    <field name="revised_at" readonly="1"/>
+                                    <field name="last_sent_at" readonly="1"/>
+                                    <field name="last_sent_attempt_id" readonly="1"/>
+                                </group>
+                            </group>
+                            <field name="revision_changes_html"
+                                   invisible="not revised_from_id"/>
+                            <separator string="Send History" invisible="not send_attempt_ids"/>
+                            <list string="Send History" invisible="not send_attempt_ids">
+                                <field name="send_attempt_ids">
+                                    <list>
+                                        <field name="state"/>
+                                        <field name="sent_at"/>
+                                        <field name="revision_no"/>
+                                        <field name="template_ref"/>
+                                        <field name="mail_mail_id"/>
+                                        <field name="provider_message_id"/>
+                                        <field name="send_hash"/>
+                                    </list>
+                                </field>
+                            </list>
                         </page>
                         <page string="Notes">
                             <field name="notes"/>
@@ -109,6 +189,33 @@
             </form>
         </field>
     </record>
+
+    <record id="view_logistics_custom_quote_revise_form" model="ir.ui.view">
+        <field name="name">logistics.custom.quote.revise.form</field>
+        <field name="model">logistics.custom.quote.revise</field>
+        <field name="arch" type="xml">
+            <form string="Revise and Resend Rate Confirmation">
+                <group>
+                    <field name="quote_reference"/>
+                    <field name="current_revision"/>
+                    <field name="reason"/>
+                </group>
+                <footer>
+                    <button name="action_revise" string="Create Revision &amp; Reopen Editing"
+                            type="object" class="btn-primary"/>
+                    <button string="Cancel" class="btn-secondary" special="cancel"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+
+    <record id="action_logistics_custom_quote_revise_wizard" model="ir.actions.act_window">
+        <field name="name">Revise &amp; Resend</field>
+        <field name="res_model">logistics.custom.quote.revise</field>
+        <field name="view_mode">form</field>
+        <field name="target">new</field>
+    </record>
+
     <record id="action_logistics_custom_quote" model="ir.actions.act_window">
         <field name="name">Custom Quotes</field>
         <field name="res_model">logistics.custom.quote</field>
