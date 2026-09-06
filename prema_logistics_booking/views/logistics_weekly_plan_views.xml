@@ -154,7 +154,9 @@
                                 <div class="fw-bold text-truncate" title="Customer">
                                     <field name="partner_id"/>
                                 </div>
-                                <span t-if="state == 'booking_generated'" class="badge text-bg-success">BOOKED</span>
+                                <span t-if="state == 'booking_generated' and booking_cancelled"
+                                      class="badge text-bg-danger">BOOKING CANCELLED</span>
+                                <span t-else-if="state == 'booking_generated'" class="badge text-bg-success">BOOKED</span>
                                 <span t-else-if="state == 'cancelled'" class="badge text-bg-secondary">CANCELLED</span>
                                 <span t-else="" class="badge text-bg-primary">PLANNED</span>
                             </div>
@@ -181,6 +183,11 @@
                                       class="badge text-bg-danger" title="Blocked reason">
                                     <i class="fa fa-exclamation-triangle me-1"/>
                                     Blocked
+                                </span>
+                                <span t-if="booking_cancelled" class="badge text-bg-danger"
+                                      title="The generated booking for this occurrence was cancelled (one-off skip — never auto-regenerated)">
+                                    <i class="fa fa-ban me-1"/>
+                                    Booking cancelled
                                 </span>
                                 <span t-if="booking_number" class="text-muted">
                                     <i class="fa fa-file-invoice me-1"/>
@@ -227,7 +234,9 @@
                                 <div class="fw-bold text-truncate" title="Customer">
                                     <field name="partner_id"/>
                                 </div>
-                                <span t-if="state == 'booking_generated'" class="badge text-bg-success">BOOKED</span>
+                                <span t-if="state == 'booking_generated' and booking_cancelled"
+                                      class="badge text-bg-danger">BOOKING CANCELLED</span>
+                                <span t-else-if="state == 'booking_generated'" class="badge text-bg-success">BOOKED</span>
                                 <span t-else-if="state == 'cancelled'" class="badge text-bg-secondary">CANCELLED</span>
                                 <span t-else="" class="badge text-bg-primary">PLANNED</span>
                             </div>
@@ -251,6 +260,11 @@
                                     <i class="fa fa-exclamation-triangle me-1"/>
                                     Blocked
                                 </span>
+                                <span t-if="booking_cancelled" class="badge text-bg-danger"
+                                      title="The generated booking for this occurrence was cancelled (one-off skip — never auto-regenerated)">
+                                    <i class="fa fa-ban me-1"/>
+                                    Booking cancelled
+                                </span>
                                 <span t-if="booking_number" class="text-muted">
                                     <i class="fa fa-file-invoice me-1"/>
                                     <field name="booking_number"/>
@@ -268,7 +282,7 @@
         <field name="model">logistics.weekly.plan.reservation</field>
         <field name="arch" type="xml">
             <list decoration-muted="state == 'cancelled'"
-                  decoration-danger="is_blocked and state == 'planned'"
+                  decoration-danger="is_blocked and state == 'planned' or booking_cancelled"
                   string="Recurring Cards">
                 <field name="plan_date"/>
                 <field name="weekday_label"/>
@@ -279,6 +293,8 @@
                 <field name="load_type"/>
                 <field name="vehicle_id"/>
                 <field name="state" widget="badge"/>
+                <field name="booking_cancelled" string="Booking Cancelled" widget="badge"
+                       optional="hide"/>
                 <field name="is_due" string="Due"/>
                 <field name="is_blocked" string="Blocked"/>
                 <field name="booking_number"/>
@@ -302,7 +318,7 @@
                     <button name="action_cancel_occurrence" type="object"
                             string="Cancel This Occurrence"
                             class="btn-danger"
-                            invisible="state != 'planned'"/>
+                            invisible="state == 'cancelled' or (state == 'booking_generated' and not booking_cancelled)"/>
                     <button name="action_reactivate" type="object"
                             string="Re-activate"
                             invisible="state != 'cancelled'"/>
@@ -322,6 +338,16 @@
                         generated automatically a configurable number of days
                         before this pickup date (see the plan's
                         "Generate Booking" setting).
+                    </div>
+                    <div class="alert alert-danger" role="alert"
+                         invisible="not booking_cancelled">
+                        <i class="fa fa-ban me-1"/>
+                        The generated booking
+                        <b><field name="booking_number"/></b> for this
+                        occurrence was cancelled — a deliberate one-off
+                        skip, so this card is never auto-regenerated.
+                        Mark the card Cancelled to acknowledge the skip
+                        (Re-activate is not available after that).
                     </div>
                     <group>
                         <group string="Occurrence">

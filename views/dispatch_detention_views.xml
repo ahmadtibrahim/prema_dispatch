@@ -7,6 +7,8 @@
             <list default_order="id desc" string="Customer Detention">
                 <field name="name"/>
                 <field name="state" widget="badge" optional="show"/>
+                <field name="stop_kind" optional="show"/>
+                <field name="exception_type" widget="badge" optional="show"/>
                 <field name="partner_id" optional="show"/>
                 <field name="facility_id" optional="show"/>
                 <field name="job_id" optional="hide"/>
@@ -15,8 +17,12 @@
                 <field name="free_minutes" string="Free (min)"/>
                 <field name="billable_minutes" string="Billable (min)"/>
                 <field name="units" string="Units"/>
+                <field name="rate_per_increment" string="Rate / Incr." optional="hide"/>
+                <field name="minimum_charge" string="Min" optional="hide"/>
+                <field name="maximum_charge" string="Cap" optional="hide"/>
                 <field name="suggested_amount" widget="monetary" string="Suggested"/>
                 <field name="approved_amount" widget="monetary" string="Approved" optional="show"/>
+                <field name="evidence_required" string="Ev. Required" optional="hide"/>
                 <field name="invoiced"/>
                 <field name="review_user_id" optional="show"/>
                 <field name="actual_arrival_time" optional="hide"/>
@@ -43,6 +49,8 @@
                     <button name="action_add_to_invoice" type="object"
                             string="Add to Invoice" class="btn-primary"
                             invisible="state not in ('approved','modified') or invoiced"/>
+                    <field name="state" widget="statusbar"
+                           statusbar_visible="draft,approved,modified,waived"/>
                 </header>
                 <sheet>
                     <div class="oe_title">
@@ -56,31 +64,51 @@
                             <field name="partner_id" readonly="1"/>
                             <field name="facility_id" readonly="1"/>
                             <field name="stop_id" readonly="1"/>
+                            <field name="stop_kind" readonly="1"
+                                   string="Stop Kind (rule side)"/>
                         </group>
-                        <group string="Actual Dwell (authority: actual timestamps)">
+                        <group string="Facility Timeline (authority: actuals)"
+                               help="Dwell spans (dock start → release) when both are recorded — otherwise departure − arrival.">
                             <field name="actual_arrival_time" readonly="1"/>
+                            <field name="check_in_at" readonly="1"/>
+                            <field name="dock_start_at" readonly="1"/>
+                            <field name="released_at" readonly="1"/>
                             <field name="actual_departure_time" readonly="1"/>
-                            <field name="actual_dwell_minutes" readonly="1"/>
-                            <field name="free_minutes" readonly="1" string="Free Time (min)"/>
+                            <field name="actual_dwell_minutes" readonly="1"
+                                   string="Dwell (min)"/>
                         </group>
                         <group string="Charges">
                             <field name="billable_minutes" readonly="1"/>
+                            <field name="free_minutes" readonly="1"
+                                   string="Free Time (min)"/>
                             <field name="increment_minutes" readonly="1"/>
                             <field name="units" readonly="1"/>
                             <field name="rate_per_increment" readonly="1"/>
-                            <field name="suggested_amount" readonly="1"/>
+                            <field name="minimum_charge" readonly="1"/>
+                            <field name="maximum_charge" readonly="1"/>
+                            <field name="suggested_amount" readonly="1"
+                                   string="Suggested Charge"/>
                             <field name="approved_amount"
                                    readonly="state in ('approved','modified','waived')"/>
                             <field name="currency_id" readonly="1"/>
                         </group>
-                        <group string="Review">
+                        <group string="Exception &amp; Review"
+                               help="Exception codes are catalog-only — they never rewrite the suggested charge; the item always stays in staff review.">
+                            <field name="exception_type"/>
                             <field name="reason_notes"
-                                   placeholder="Why was this modified or waived? (recorded for the review trail)"/>
+                                   placeholder="Why the truck was held / why modified or waived (recorded for the review trail)"/>
+                            <field name="evidence_required" readonly="1"
+                                   string="Evidence Required at Approval"/>
                             <field name="review_user_id" readonly="1"/>
                             <field name="review_time" readonly="1"/>
                             <field name="invoiced" readonly="1"/>
                             <field name="invoice_line_id" readonly="1"/>
                         </group>
+                    </group>
+                    <group string="Evidence (required before Approve / Modify when flagged)">
+                        <field name="evidence_ids" nolabel="1"
+                               domain="[('stop_id', '=', stop_id)]"
+                               options="{'no_create': True}"/>
                     </group>
                 </sheet>
             </form>
@@ -96,10 +124,72 @@
                 <field name="partner_id" options="{'no_create': True}"/>
                 <field name="facility_id" options="{'no_create': True}"/>
                 <field name="enabled"/>
-                <field name="free_minutes" string="Free (min)"/>
+                <field name="free_minutes" string="Free (min)" optional="hide"/>
                 <field name="increment_minutes" string="Increment (min)"/>
                 <field name="rate_per_increment" string="Rate / Increment"/>
+                <field name="pickup_free_minutes" string="Pickup Free (min)"
+                       optional="hide"/>
+                <field name="pickup_increment_minutes" string="Pickup Increment"
+                       optional="hide"/>
+                <field name="pickup_rate_per_increment" string="Pickup Rate"
+                       optional="hide"/>
+                <field name="minimum_charge" string="Min Charge"/>
+                <field name="maximum_charge" string="Max Charge (cap)"/>
+                <field name="evidence_required" string="Evidence Req."/>
             </list>
+        </field>
+    </record>
+
+    <record id="view_dispatch_detention_rule_form" model="ir.ui.view">
+        <field name="name">prema.dispatch.detention.rule.form</field>
+        <field name="model">prema.dispatch.detention.rule</field>
+        <field name="arch" type="xml">
+            <form string="Detention Rule">
+                <sheet>
+                    <group string="Scope">
+                        <group>
+                            <field name="partner_id" options="{'no_create': True}"
+                                   placeholder="Any customer…"/>
+                            <field name="facility_id" options="{'no_create': True}"
+                                   placeholder="Any facility…"/>
+                        </group>
+                        <group>
+                            <field name="enabled"/>
+                            <field name="name" readonly="1"/>
+                        </group>
+                    </group>
+                    <group string="Parameters (most specific rule wins)">
+                        <group string="Delivery Stops (base)">
+                            <field name="free_minutes" string="Free Time (min)"/>
+                            <field name="increment_minutes"
+                                   string="Billing Increment (min)"/>
+                            <field name="rate_per_increment"
+                                   string="Rate per Increment"/>
+                            <field name="delivery_hourly_rate"
+                                   string="≈ Rate / Hour (reference)"/>
+                        </group>
+                        <group string="Pickup Stops (§18)"
+                               help="Pickup-kind parameter set. While the whole pickup side is zero it follows the Delivery columns of this same rule — tune any pickup field to split.">
+                            <field name="pickup_free_minutes"
+                                   string="Free Time (min)"/>
+                            <field name="pickup_increment_minutes"
+                                   string="Billing Increment (min)"/>
+                            <field name="pickup_rate_per_increment"
+                                   string="Rate per Increment"/>
+                            <field name="pickup_hourly_rate"
+                                   string="≈ Rate / Hour (reference)"/>
+                        </group>
+                        <group string="Extras &amp; Policy">
+                            <field name="minimum_charge" string="Minimum Charge"/>
+                            <field name="maximum_charge"
+                                   string="Maximum Charge (cap)"
+                                   help="0 = no cap."/>
+                            <field name="evidence_required"
+                                   string="Evidence Required at Approval"/>
+                        </group>
+                    </group>
+                </sheet>
+            </form>
         </field>
     </record>
 
@@ -113,7 +203,7 @@
     <record id="action_dispatch_detention_rule" model="ir.actions.act_window">
         <field name="name">Detention Rules</field>
         <field name="res_model">prema.dispatch.detention.rule</field>
-        <field name="view_mode">list</field>
+        <field name="view_mode">list,form</field>
     </record>
 
     <menuitem id="menu_dispatch_detention"

@@ -409,6 +409,20 @@ class LogisticsWeeklyPlanReservation(models.Model):
                                  readonly=True, copy=False)
     booking_number = fields.Char(related="booking_id.booking_number",
                                  readonly=True)
+    booking_cancelled = fields.Boolean(
+        string="Booking Cancelled", compute="_compute_booking_cancelled",
+        store=True,
+        help="§17: the generated booking for this occurrence was CANCELLED "
+             "— a deliberate one-off skip, so the occurrence is never "
+             "auto-regenerated. Marks the card on the weekly board "
+             "(§16: distinct from the card's own Planned/Booked/Cancelled "
+             "state — the card may still read Booking Generated).")
+
+    @api.depends("booking_id", "booking_id.state")
+    def _compute_booking_cancelled(self):
+        for rec in self:
+            rec.booking_cancelled = bool(
+                rec.booking_id and rec.booking_id.state == "cancelled")
     is_due = fields.Boolean(compute="_compute_is_due",
                             string="Due for Booking")
     is_blocked = fields.Boolean(compute="_compute_blocked",
@@ -521,9 +535,16 @@ class LogisticsWeeklyPlanReservation(models.Model):
 
     def action_cancel_occurrence(self):
         """One-off cancellation (§45/§46): this occurrence only; the
-        agreement and the next occurrence continue normally."""
+        agreement and the next occurrence continue normally.
+
+        §17: a card whose generated booking was ALREADY cancelled may be
+        marked cancelled to mirror the skip on the board — the card is
+        never auto-regenerated either way. An ACTIVE generated booking
+        must be cancelled first: the booking is the commercial record,
+        the card only reflects it."""
         for rec in self:
-            if rec.state == "booking_generated":
+            if rec.state == "booking_generated" and rec.booking_id \
+                    and rec.booking_id.state != "cancelled":
                 raise UserError(_(
                     "A booking already exists for %(card)s. Cancel the "
                     "booking itself, not the card.",
@@ -555,12 +576,16 @@ class LogisticsWeeklyPlanReservation(models.Model):
         job = self.recurring_job_id
         # Shared business key with the recurring job generator
         # (logistics.recurring.job._generate_if_due): (recurring_job_id,
-        # pickup_date, state != cancelled). Whichever generator runs first
-        # wins; the other deduplicates here and in the job generator.
+        # pickup_date). Whichever generator runs first wins; the other
+        # deduplicates here and in the job generator.
+        # §17: ANY booking occupies the occurrence — a CANCELLED one is a
+        # dispatcher's deliberate one-off skip and must never be
+        # resurrected by a re-run. The card ADOPTS the found booking
+        # either way (booking_id + booking_generated), so the board can
+        # show the booking_cancelled marker instead of silently rebooking.
         existing = self.env["logistics.booking"].sudo().search([
             ("recurring_job_id", "=", job.id),
             ("pickup_date", "=", self.plan_date),
-            ("state", "!=", "cancelled"),
         ], limit=1)
         if existing:
             self.write({"booking_id": existing.id,
