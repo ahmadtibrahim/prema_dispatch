@@ -62,3 +62,6 @@ from . import purchase_order_freight
 from . import res_partner_carrier
 from . import temperature_override
 from . import crm_lead_rate_confirmation
+# D-A3B — CRM recurring-opportunity bridge (extends logistics.recurring.
+# agreement + crm.recurring.opportunity; engine module dependency).
+from . import logistics_recurring_agreement_crm_bridge

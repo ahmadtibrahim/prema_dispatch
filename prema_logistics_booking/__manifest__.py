@@ -1,6 +1,6 @@
 {
     "name": "Prema Logistics Booking",
-    "version": "18.0.13.55.0",
+    "version": "18.0.13.56.0",
     "summary": "Private customer LTL/FTL pricing, scheduling, and booking engine "
                "for PremaFirm Logistics — integrates with Prema Dispatch.",
     "category": "Logistics",
@@ -17,7 +17,7 @@ phase is internal-staff configuration only. See CLAUDE.md in the module
 root for architecture notes, decisions, and phase status.
 """,
     "author": "PremaFirm Logistics",
-    "depends": ["base", "base_setup", "mail", "portal", "website", "fleet", "account", "sale_management", "purchase", "prema_dispatch", "agent_wa"],
+    "depends": ["base", "base_setup", "mail", "portal", "website", "fleet", "account", "sale_management", "purchase", "prema_dispatch", "agent_wa", "premafirm_ai_engine"],
     "data": [
         "security/logistics_security.xml",
         "security/ir.model.access.csv",
@@ -51,6 +51,10 @@ root for architecture notes, decisions, and phase status.
         "views/logistics_booking_views.xml",
         "views/logistics_custom_quote_views.xml",
         "views/logistics_recurring_agreement_views.xml",
+        # D-A3B — CRM recurring-opportunity bridge views (agreement form
+        # stat button/link field + "Create Recurring Agreement" button on
+        # the engine's opportunity form).
+        "views/logistics_recurring_agreement_crm_bridge_views.xml",
         "views/logistics_phone_booking_views.xml",
         # menus.xml must load before any file that references its menu xmlids
         # (logistics_direct_delivery_views.xml, logistics_weekly_plan_views.xml,

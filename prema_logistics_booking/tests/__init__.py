@@ -22,3 +22,4 @@ from . import test_phase20_security_personas
 from . import test_phase22_perf_baseline
 from . import test_crm_rate_confirmation_bridge
 from . import test_custom_quote_lifecycle
+from . import test_recurring_crm_bridge
