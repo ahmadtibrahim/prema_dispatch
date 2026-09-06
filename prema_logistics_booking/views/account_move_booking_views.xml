@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- §7 (D-B2): logistics payment/QuickPay snapshot on the customer
+         invoice (account.move). Fields are copied from the booking at
+         invoice creation; editing them here is the audited DOCUMENT
+         OVERRIDE (tracking=True on the fields). -->
+    <record id="view_move_form_logistics_payment" model="ir.ui.view">
+        <field name="name">account.move.form.logistics.payment</field>
+        <field name="model">account.move</field>
+        <field name="inherit_id" ref="account.view_move_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//page[@name='dispatch_jobs_tab']" position="inside">
+                <group string="Logistics Payment / QuickPay"
+                       invisible="not logistics_booking_id"
+                       groups="account.group_account_invoice,prema_logistics_booking.group_logistics_booking_manager">
+                    <group>
+                        <field name="logistics_price_tax_mode" string="Price Is" readonly="1"/>
+                        <field name="logistics_payment_method_id" string="Payment Method"
+                               options="{'no_create': True}"/>
+                        <field name="invoice_payment_term_id" string="Payment Terms"/>
+                    </group>
+                    <group>
+                        <field name="logistics_quickpay_apply" string="QuickPay Discount Applies"/>
+                        <field name="logistics_quickpay_discount_pct" string="QuickPay Discount %"
+                               invisible="not logistics_quickpay_apply"/>
+                        <field name="logistics_quickpay_deadline_days" string="QuickPay Deadline (days)"
+                               invisible="not logistics_quickpay_apply"/>
+                        <field name="logistics_quickpay_deadline_date" string="QuickPay Deadline"
+                               readonly="1" invisible="not logistics_quickpay_deadline_date"/>
+                    </group>
+                    <group string="QuickPay Numbers"
+                           invisible="not (logistics_quickpay_apply and logistics_quickpay_discount_pct)">
+                        <field name="logistics_quickpay_discount_amount" readonly="1"/>
+                        <field name="logistics_quickpay_discounted_total" readonly="1"/>
+                        <field name="amount_total" string="Original Balance" readonly="1"/>
+                    </group>
+                    <field name="logistics_payment_instructions"
+                           invisible="not logistics_payment_instructions"
+                           colspan="2"/>
+                </group>
+            </xpath>
+        </field>
+    </record>
+</odoo>

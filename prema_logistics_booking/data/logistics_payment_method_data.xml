@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- Seeded logistics payment methods (§7 D-B2). Rows are config
+         catalog entries only — no live provider is wired. noupdate: seed
+         once; local edits (fee notes, instructions) survive upgrades. -->
+    <data noupdate="1">
+    <record id="payment_method_credit_card" model="logistics.payment.method">
+        <field name="name">Credit Card</field>
+        <field name="code">card</field>
+        <field name="method_type">card</field>
+        <field name="sequence">10</field>
+        <field name="fee_notes">Credit card payments may be subject to a
+processing fee; the exact fee is confirmed at the time of payment.</field>
+        <field name="instructions">Pay by credit card on our secure
+payment page: %(card_link_url)s
+(A secure card-payment link is provided when no payment page is configured.)</field>
+    </record>
+
+    <record id="payment_method_interac_etransfer" model="logistics.payment.method">
+        <field name="name">Interac e-Transfer</field>
+        <field name="code">etransfer</field>
+        <field name="method_type">etransfer</field>
+        <field name="sequence">20</field>
+        <field name="fee_notes"/>
+        <field name="instructions">%(etransfer_instructions)s</field>
+    </record>
+
+    <record id="payment_method_terms_30" model="logistics.payment.method">
+        <field name="name">Terms / Net</field>
+        <field name="code">terms</field>
+        <field name="method_type">other</field>
+        <field name="sequence">30</field>
+        <field name="fee_notes"/>
+        <field name="instructions">Payment by terms as stated in the
+payment terms of this document.</field>
+    </record>
+    </data>
+</odoo>

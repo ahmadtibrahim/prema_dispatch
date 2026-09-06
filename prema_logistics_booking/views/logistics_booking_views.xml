@@ -40,10 +40,44 @@
                 <field name="delivery_fsa_id"/>
                 <field name="pickup_date"/>
                 <field name="estimated_delivery_date"/>
+                <field name="reference" string="Load Ref." optional="hide"/>
+                <field name="po_number" string="Customer PO" optional="hide"/>
+                <field name="bol_number" string="BOL #" optional="hide"/>
+                <field name="pod_number" string="POD #" optional="hide"/>
                 <field name="calculated_price"/>
                 <field name="state"/>
                 <field name="dispatch_job_id"/>
             </list>
+        </field>
+    </record>
+
+    <record id="view_logistics_booking_search" model="ir.ui.view">
+        <field name="name">logistics.booking.search</field>
+        <field name="model">logistics.booking</field>
+        <field name="arch" type="xml">
+            <search string="Bookings">
+                <field name="booking_number"/>
+                <field name="partner_id"/>
+                <field name="reference"/>
+                <field name="po_number"/>
+                <field name="bol_number"/>
+                <field name="pod_number"/>
+                <field name="pickup_fsa_id"/>
+                <field name="delivery_fsa_id"/>
+                <filter name="confirmed" string="Confirmed"
+                        domain="[('state', '=', 'confirmed')]"/>
+                <filter name="completed" string="Completed"
+                        domain="[('state', '=', 'completed')]"/>
+                <separator/>
+                <filter name="quickpay" string="QuickPay Applied"
+                        domain="[('quickpay_apply', '=', True)]"/>
+                <group expand="0" string="Group By">
+                    <filter name="group_state" string="State" context="{'group_by': 'state'}"/>
+                    <filter name="group_partner" string="Customer" context="{'group_by': 'partner_id'}"/>
+                    <filter name="group_payment_method" string="Payment Method"
+                            context="{'group_by': 'payment_method_id'}"/>
+                </group>
+            </search>
         </field>
     </record>
     <record id="view_logistics_booking_form" model="ir.ui.view">
@@ -93,6 +127,35 @@
                             <field name="manual_price_changed_by" readonly="1" invisible="not manual_price_override"/>
                             <field name="manual_price_changed_at" readonly="1" invisible="not manual_price_override"/>
                             <field name="original_confirmed_price" readonly="1" invisible="not original_confirmed_price"/>
+                        </group>
+                    </group>
+                    <group string="Identifiers &amp; Payment" col="2">
+                        <group>
+                            <field name="reference" string="Internal Load Reference" readonly="1"
+                                   help="Same value as the Rate Confirmation, dispatch job and invoice — never the PO/BOL."/>
+                            <field name="po_number" string="Customer PO #" readonly="1"/>
+                            <field name="bol_number" string="BOL #"
+                                   help="Shipper-provided — only once the operational BOL formally exists (mirrored from the dispatch job)."/>
+                            <field name="pod_number" string="POD #" readonly="1"
+                                   invisible="not pod_number"/>
+                        </group>
+                        <group>
+                            <field name="price_tax_mode" string="Price Is" readonly="1"/>
+                            <field name="payment_method_id" string="Payment Method"/>
+                            <field name="payment_term_id" string="Payment Terms"/>
+                            <field name="quickpay_apply" string="QuickPay Discount Applies"/>
+                            <field name="quickpay_discount_pct" string="QuickPay Discount %"
+                                   invisible="not quickpay_apply"/>
+                            <field name="quickpay_deadline_days" string="QuickPay Deadline (days)"
+                                   invisible="not quickpay_apply"/>
+                            <field name="quickpay_stack_allowed" string="QuickPay Stacking Allowed"
+                                   invisible="not quickpay_apply"/>
+                        </group>
+                        <group string="QuickPay Numbers"
+                               invisible="not (quickpay_apply and calculated_price)">
+                            <field name="quickpay_discount_amount" readonly="1"/>
+                            <field name="quickpay_discounted_total" readonly="1"/>
+                            <field name="calculated_price" string="Original Balance" readonly="1"/>
                         </group>
                     </group>
                     <notebook>

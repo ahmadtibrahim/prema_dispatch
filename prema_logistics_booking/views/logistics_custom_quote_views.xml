@@ -13,11 +13,70 @@
                 <field name="delivery_postal_code"/>
                 <field name="pallets"/>
                 <field name="quoted_price"/>
+                <field name="reference" string="Load Ref." optional="hide"/>
+                <field name="customer_po" string="Customer PO" optional="hide"/>
                 <field name="state"/>
                 <field name="is_locked" optional="hide"/>
                 <field name="source"/>
             </list>
         </field>
+    </record>
+
+    <record id="view_logistics_custom_quote_search" model="ir.ui.view">
+        <field name="name">logistics.custom.quote.search</field>
+        <field name="model">logistics.custom.quote</field>
+        <field name="arch" type="xml">
+            <search string="Custom Quotes">
+                <field name="name"/>
+                <field name="company_name"/>
+                <field name="customer_po"/>
+                <field name="reference"/>
+                <field name="bol_number"/>
+                <field name="pickup_postal_code"/>
+                <field name="delivery_postal_code"/>
+                <filter name="open_drafts" string="Open Drafts"
+                        domain="[('state', 'in', ('new', 'reviewing', 'quoted'))]"/>
+                <filter name="accepted" string="Accepted"
+                        domain="[('state', '=', 'accepted')]"/>
+                <filter name="converted" string="Converted"
+                        domain="[('state', '=', 'converted')]"/>
+                <separator/>
+                <filter name="quickpay" string="QuickPay Applied"
+                        domain="[('quickpay_apply', '=', True)]"/>
+                <group expand="0" string="Group By">
+                    <filter name="group_state" string="State" context="{'group_by': 'state'}"/>
+                    <filter name="group_partner" string="Customer" context="{'group_by': 'partner_id'}"/>
+                    <filter name="group_payment_method" string="Payment Method"
+                            context="{'group_by': 'payment_method_id'}"/>
+                </group>
+            </search>
+        </field>
+    </record>
+
+    <record id="view_logistics_custom_quote_revise_form" model="ir.ui.view">
+        <field name="name">logistics.custom.quote.revise.form</field>
+        <field name="model">logistics.custom.quote.revise</field>
+        <field name="arch" type="xml">
+            <form string="Revise and Resend Rate Confirmation">
+                <group>
+                    <field name="quote_reference"/>
+                    <field name="current_revision"/>
+                    <field name="reason"/>
+                </group>
+                <footer>
+                    <button name="action_revise" string="Create Revision &amp; Reopen Editing"
+                            type="object" class="btn-primary"/>
+                    <button string="Cancel" class="btn-secondary" special="cancel"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+
+    <record id="action_logistics_custom_quote_revise_wizard" model="ir.actions.act_window">
+        <field name="name">Revise &amp; Resend</field>
+        <field name="res_model">logistics.custom.quote.revise</field>
+        <field name="view_mode">form</field>
+        <field name="target">new</field>
     </record>
 
     <record id="view_logistics_custom_quote_form" model="ir.ui.view">
@@ -91,6 +150,51 @@
                             <field name="reason_code" readonly="is_locked"/>
                         </group>
                     </group>
+                    <group string="Identifiers &amp; Payment"
+                           invisible="state in ('converted',)">
+                        <group>
+                            <field name="customer_po" string="Customer PO #"
+                                   readonly="is_locked"
+                                   placeholder="Only when the customer supplied a PO"
+                                   help="Never auto-filled — only the customer's own PO."/>
+                            <field name="reference" string="Internal Load Reference"
+                                   readonly="is_locked"
+                                   placeholder="Generated at conversion when left blank"/>
+                            <field name="bol_number" string="BOL #"
+                                   readonly="is_locked"
+                                   invisible="not bol_number and state not in ('new', 'reviewing')"
+                                   help="Only once the operational BOL formally exists."/>
+                            <field name="price_tax_mode" string="Quoted Price Is"
+                                   readonly="is_locked"/>
+                        </group>
+                        <group>
+                            <field name="payment_method_id" string="Payment Method"
+                                   readonly="is_locked"/>
+                            <field name="payment_term_id" string="Payment Terms"
+                                   readonly="is_locked"/>
+                            <field name="quickpay_apply" string="QuickPay Discount Applies"
+                                   readonly="is_locked"/>
+                            <field name="quickpay_discount_pct" string="QuickPay Discount %"
+                                   readonly="is_locked"
+                                   invisible="not quickpay_apply"/>
+                            <field name="quickpay_deadline_days" string="QuickPay Deadline (days)"
+                                   readonly="is_locked"
+                                   invisible="not quickpay_apply"/>
+                            <field name="quickpay_stack_allowed" string="QuickPay Stacking Allowed"
+                                   readonly="is_locked"
+                                   invisible="not quickpay_apply"/>
+                            <field name="quickpay_override_reason" string="QuickPay Override Reason"
+                                   readonly="is_locked"
+                                   invisible="not quickpay_apply"
+                                   placeholder="Required when the customer is not QuickPay-eligible"/>
+                        </group>
+                        <group string="QuickPay Numbers"
+                               invisible="not (quickpay_apply and quoted_price)">
+                            <field name="quickpay_discount_amount" readonly="1"/>
+                            <field name="quickpay_discounted_total" readonly="1"/>
+                            <field name="quoted_price" string="Original Balance" readonly="1"/>
+                        </group>
+                    </group>
                     <group string="Customer Acceptance &amp; Confirmation"
                            invisible="state not in ('quoted', 'accepted') and not acceptance_recorded_at">
                         <group>
@@ -115,7 +219,7 @@
                             <field name="conversion_override_reason"
                                    invisible="not conversion_override and internal_confirmed"
                                    placeholder="Required — reason for converting without internal confirmation"
-                                   attrs="{'required': [('conversion_override', '=', True)]}"/>
+                                   required="conversion_override"/>
                         </group>
                     </group>
                     <notebook>
@@ -188,32 +292,6 @@
                 </sheet>
             </form>
         </field>
-    </record>
-
-    <record id="view_logistics_custom_quote_revise_form" model="ir.ui.view">
-        <field name="name">logistics.custom.quote.revise.form</field>
-        <field name="model">logistics.custom.quote.revise</field>
-        <field name="arch" type="xml">
-            <form string="Revise and Resend Rate Confirmation">
-                <group>
-                    <field name="quote_reference"/>
-                    <field name="current_revision"/>
-                    <field name="reason"/>
-                </group>
-                <footer>
-                    <button name="action_revise" string="Create Revision &amp; Reopen Editing"
-                            type="object" class="btn-primary"/>
-                    <button string="Cancel" class="btn-secondary" special="cancel"/>
-                </footer>
-            </form>
-        </field>
-    </record>
-
-    <record id="action_logistics_custom_quote_revise_wizard" model="ir.actions.act_window">
-        <field name="name">Revise &amp; Resend</field>
-        <field name="res_model">logistics.custom.quote.revise</field>
-        <field name="view_mode">form</field>
-        <field name="target">new</field>
     </record>
 
     <record id="action_logistics_custom_quote" model="ir.actions.act_window">
