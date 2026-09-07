@@ -191,7 +191,12 @@ class LeadQuoteDraftService:
             text_by_key[key] = (doc.get("text") or "").strip()
             rows_by_key.setdefault(key, [])
 
-        def extractor(text, source="", kind="lead_description", at=None):
+        def extractor(text, source=None, source_label=None,
+                      kind="lead_description", at=None):
+            # LeadFactService injects extractors with source_label= (the
+            # engine's declared spelling) — accept both, like compat_extractor.
+            if source is None:
+                source = source_label or ""
             key = (str(source or ""), _iso_at(at), str(kind or ""))
             if key in rows_by_key and key in text_by_key \
                     and text_by_key[key] == (text or "").strip():
