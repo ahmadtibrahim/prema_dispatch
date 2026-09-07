@@ -212,6 +212,31 @@
                                 <field name="appointment" readonly="1"/>
                             </group>
                         </page>
+                        <page string="Freight Lines &amp; Handling" name="freight_lines_handling">
+                            <div class="text-muted mb-2">
+                                Original freight quantities booked on this shipment
+                                (canonical intake record — dispatch items and pallet
+                                building never overwrite these). Loose/mixed freight
+                                reserves floor space through its pallet equivalent.
+                            </div>
+                            <field name="line_ids" readonly="1" nolabel="1">
+                                <list create="0" edit="0" delete="0">
+                                    <field name="sequence"/>
+                                    <field name="description"/>
+                                    <field name="handling_type"/>
+                                    <field name="pallets"/>
+                                    <field name="actual_pallet_count"/>
+                                    <field name="planned_pallet_equivalent"/>
+                                    <field name="package_quantity"/>
+                                    <field name="package_uom"/>
+                                    <field name="case_count"/>
+                                    <field name="current_load_form"/>
+                                    <field name="pallets_built"/>
+                                    <field name="carrier_pallet_used"/>
+                                    <field name="hand_bomb_required"/>
+                                </list>
+                            </field>
+                        </page>
                         <page string="Stops &amp; Pallets" name="movement_v1_stops"
                               invisible="route_model_version != 'movement_v1'">
                             <group>
