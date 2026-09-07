@@ -2342,6 +2342,10 @@ class PremaDispatchJob(models.Model):
                 "corridor_tag":            job.corridor_tag or "",
                 "service_type":            job.service_type or "",
                 "source_document_name":    job.source_document_name or "",
+                # §TODO14: persisted engine-risk payload (hard/soft reasons).
+                # Enriched from prema.dispatch.job.risk below — a board load
+                # NEVER triggers an evaluation.
+                "risk_reasons":            [],
                 **avail_svc._operation_metadata(job),
             })
 
@@ -2408,6 +2412,27 @@ class PremaDispatchJob(models.Model):
                 "requested_at": self._dt_iso_utc(stop.delete_requested_at),
                 "reason": stop.delete_request_reason or "",
             } for stop in requested_stops]
+
+        # §TODO14: attach each referenced job's PERSISTED engine-risk
+        # payload to its unassigned card and truck job block. Read-only —
+        # evaluation only ever happens on assignment attempts / the
+        # Explain-Risks action, never on a board load. Defaults to [] when
+        # the risk engine (prema_logistics_booking) is not installed.
+        if "prema.dispatch.job.risk" in self.env.registry.models:
+            board_job_ids = [card["job_id"] for card in unassigned_cards]
+            for truck in trucks:
+                board_job_ids.extend(
+                    job["job_id"] for job in (truck.get("jobs") or [])
+                    if job.get("job_id"))
+            risk_map = self.env[
+                "prema.dispatch.job.risk"]._risk_reasons_map_for_jobs(
+                    board_job_ids)
+            for card in unassigned_cards:
+                card["risk_reasons"] = risk_map.get(card["job_id"], [])
+            for truck in trucks:
+                for job in (truck.get("jobs") or []):
+                    if job.get("job_id") and job["job_id"] in risk_map:
+                        job["risk_reasons"] = risk_map[job["job_id"]]
 
         return {
             "date":            check_date.isoformat(),
@@ -2667,10 +2692,12 @@ class PremaDispatchJob(models.Model):
         """
         job = self.browse(job_id)
         if not job.exists():
-            return {"success": False, "error": "Job not found"}
+            return {"success": False, "error": "Job not found",
+                    "risk_reasons": []}
         vehicle = self.env["fleet.vehicle"].browse(truck_id)
         if not vehicle.exists():
-            return {"success": False, "error": "Truck not found"}
+            return {"success": False, "error": "Truck not found",
+                    "risk_reasons": []}
 
         # Run the (Google-Maps-backed) feasibility checker ONCE, not once to
         # gate + once to classify risky/feasible — the second call was pure
@@ -2689,11 +2716,23 @@ class PremaDispatchJob(models.Model):
 
         if not force and option and option.get("verdict") == "not_feasible":
             is_manager = self.env.user.has_group("prema_dispatch.group_dispatch_manager")
+            # §TODO14: persist + return the engine-risk rows. The guard's
+            # own (not yet persisted) verdict is passed as an extra reason
+            # so the feasibility_blocked row always states the guard's
+            # message; can_override semantics are untouched.
+            risk_reasons = self._engine_risk_rows(
+                vehicle, extra_reasons=[{
+                    "code": "feasibility_blocked",
+                    "severity": "hard",
+                    "message": option.get("reason")
+                    or "This truck can't feasibly complete this job.",
+                }])
             return {
                 "success": False,
                 "feasibility_blocked": True,
                 "can_override": is_manager,
                 "error": option.get("reason") or "This truck can't feasibly complete this job.",
+                "risk_reasons": risk_reasons,
             }
 
         try:
@@ -2727,6 +2766,10 @@ class PremaDispatchJob(models.Model):
             warnings = "\n".join(
                 w for w in (job.assignment_warnings or "", no_driver_warning, risky_warning) if w
             )
+            # §TODO14: persist + return the engine-risk rows for the truck
+            # that was just assigned (the guard has passed — soft rows such
+            # as capacity/appointment-hours may still explain itself).
+            risk_reasons = self._engine_risk_rows(vehicle)
             return {
                 "success": True,
                 "job_id": job_id,
@@ -2734,10 +2777,23 @@ class PremaDispatchJob(models.Model):
                 "driver_name": job.driver_id.name if job.driver_id else "",
                 "stage_name": job.stage_id.name if job.stage_id else "",
                 "warnings": warnings,
+                "risk_reasons": risk_reasons,
             }
         except Exception as exc:
             _logger.exception("assign_job_to_truck(%s, %s) failed after feasibility check", job_id, truck_id)
-            return {"success": False, "error": str(exc)}
+            return {
+                "success": False,
+                "error": str(exc),
+                "risk_reasons": self._engine_risk_rows(vehicle),
+            }
+
+    def _engine_risk_rows(self, vehicle, extra_reasons=None, at=None):
+        """§TODO14 guarded stub — real implementation in prema_logistics_booking
+        (models/dispatch_job_risk.py). Persists + returns the engine-risk
+        payload [{severity, code, message}] for this job + candidate truck,
+        or [] when the risk engine module is absent. Never evaluated on a
+        plain board load (the board reads persisted rows)."""
+        return []
 
     @api.model
     def unassign_truck(self, job_id):

@@ -70,6 +70,9 @@ root for architecture notes, decisions, and phase status.
         "views/temperature_override_views.xml",
         "views/temperature_job_views.xml",
         "views/dispatch_job_views.xml",
+        # §TODO14 Engine risks — after the job base form (its inherit
+        # records patch view_dispatch_job_form header/button_box).
+        "views/dispatch_job_risk_views.xml",
         # §15 (D-B4) Day Trip Optimizer — after menus.xml (menu refs) and
         # the job/booking base forms it inherits.
         "views/day_route_proposal_views.xml",

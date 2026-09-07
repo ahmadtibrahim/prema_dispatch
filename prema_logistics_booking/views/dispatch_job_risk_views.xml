@@ -1,0 +1,106 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- ── §TODO14 Engine risks (prema.dispatch.job.risk) ──────────────
+         Read-only everywhere: rows are engine-written (source='engine') by
+         JobRiskService on assignment attempts / Explain Risks. -->
+
+    <record id="view_prema_dispatch_job_risk_tree" model="ir.ui.view">
+        <field name="name">prema.dispatch.job.risk.tree</field>
+        <field name="model">prema.dispatch.job.risk</field>
+        <field name="arch" type="xml">
+            <tree string="Engine Risks" create="false" edit="false"
+                  delete="false">
+                <field name="event_at" string="Evaluated At"/>
+                <field name="severity" widget="badge"
+                       decoration-danger="severity == 'hard'"
+                       decoration-warning="severity == 'soft'"/>
+                <field name="code" string="Reason Code"/>
+                <field name="message" string="Reason"/>
+                <field name="vehicle_id" string="Candidate Truck"/>
+                <field name="job_id" string="Dispatch Job" optional="hide"/>
+                <field name="stop_id" string="Stop" optional="hide"/>
+                <field name="capacity_used_equiv" string="Capacity Used"
+                       optional="show"/>
+                <field name="capacity_available_equiv" string="Capacity Available"
+                       optional="show"/>
+                <field name="equipment" optional="show"/>
+                <field name="temperature_c" string="Temp (°C)" optional="show"/>
+                <field name="hours_summary" string="Hours" optional="hide"/>
+                <field name="source" optional="hide"/>
+            </tree>
+        </field>
+    </record>
+
+    <record id="view_prema_dispatch_job_risk_form" model="ir.ui.view">
+        <field name="name">prema.dispatch.job.risk.form</field>
+        <field name="model">prema.dispatch.job.risk</field>
+        <field name="arch" type="xml">
+            <form string="Engine Risk" create="false" edit="false" delete="false">
+                <group>
+                    <group>
+                        <field name="job_id"/>
+                        <field name="booking_id"/>
+                        <field name="vehicle_id" string="Candidate Truck"/>
+                        <field name="stop_id"/>
+                    </group>
+                    <group>
+                        <field name="severity"/>
+                        <field name="code" string="Reason Code"/>
+                        <field name="event_at" string="Evaluated At"/>
+                        <field name="source"/>
+                    </group>
+                </group>
+                <group string="Details">
+                    <field name="message" string="Reason"/>
+                    <field name="hours_summary" string="Hours Summary"
+                           invisible="not hours_summary"/>
+                    <field name="hos_summary" string="HOS Summary"
+                           invisible="not hos_summary"/>
+                    <field name="equipment" invisible="not equipment"/>
+                    <field name="temperature_c" string="Temperature (°C)"
+                           invisible="not temperature_c"/>
+                    <field name="capacity_used_equiv" string="Capacity Used (equiv)"/>
+                    <field name="capacity_available_equiv"
+                           string="Capacity Available (equiv)"/>
+                </group>
+            </form>
+        </field>
+    </record>
+
+    <record id="act_prema_dispatch_job_risk_open" model="ir.actions.act_window">
+        <field name="name">Engine Risks</field>
+        <field name="res_model">prema.dispatch.job.risk</field>
+        <field name="view_mode">tree,form</field>
+        <field name="view_id" ref="view_prema_dispatch_job_risk_tree"/>
+    </record>
+
+    <!-- Job form: "Explain Risks" header button + Engine Risks smart button.
+         Rows are never editable from the form. -->
+    <record id="view_dispatch_job_form_engine_risks" model="ir.ui.view">
+        <field name="name">prema.dispatch.job.form.engine_risks</field>
+        <field name="model">prema.dispatch.job</field>
+        <field name="inherit_id" ref="prema_dispatch.view_dispatch_job_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//header/button[@name='action_open_invoice']" position="after">
+                <button name="action_explain_engine_risks"
+                        string="Explain Risks"
+                        type="object"
+                        class="btn-secondary"
+                        icon="fa-shield"
+                        title="Evaluate and persist every engine risk for this job's truck (capacity, equipment, corridor day-hold, hours); then show the reasons."
+                        invisible="stage_id.is_completed or stage_id.is_cancelled"/>
+            </xpath>
+            <xpath expr="//div[@name='button_box']" position="inside">
+                <button type="object" class="oe_stat_button"
+                        name="action_open_engine_risks"
+                        icon="fa-exclamation-triangle" string="Engine Risks"
+                        invisible="not risk_ids">
+                    <div class="o_field_widget o_stat_info">
+                        <span class="o_stat_value"><field name="risk_count"/></span>
+                        <span class="o_stat_text">Engine Risks</span>
+                    </div>
+                </button>
+            </xpath>
+        </field>
+    </record>
+</odoo>

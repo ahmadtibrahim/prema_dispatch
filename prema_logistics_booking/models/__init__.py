@@ -41,6 +41,7 @@ from . import account_move_booking
 from . import logistics_corridor
 from . import res_users_temperature_preference
 from . import dispatch_job_extension
+from . import dispatch_job_risk
 from . import dispatch_timeline_extension
 from . import dispatch_load_plan_extension
 from . import dispatch_stop_extension

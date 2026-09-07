@@ -759,9 +759,14 @@ class PremaDispatchJob(models.Model):
     def assign_job_to_truck(self, job_id, truck_id, force=False):
         job = self.browse(job_id)
         if not job.exists():
-            return {"success": False, "error": "Job not found"}
+            return {"success": False, "error": "Job not found",
+                    "risk_reasons": []}
         if job.corridor_departure_id:
             if job.corridor_departure_id.vehicle_id.id != truck_id:
+                # §TODO14: persist + return the engine-risk rows for this
+                # candidate (departure_controlled + any other state rows).
+                risk_reasons = job._engine_risk_rows(
+                    self.env["fleet.vehicle"].browse(truck_id))
                 return {
                     "success": False,
                     "departure_controlled": True,
@@ -769,6 +774,7 @@ class PremaDispatchJob(models.Model):
                         "This LTL load belongs to %(departure)s. Reassign the Truck from Open: Departure.",
                         departure=job.corridor_departure_id.display_name,
                     ),
+                    "risk_reasons": risk_reasons,
                 }
             return super().assign_job_to_truck(job_id, truck_id, force=force)
 
@@ -783,6 +789,11 @@ class PremaDispatchJob(models.Model):
                 ("status", "not in", ("cancelled", "completed")),
             ], limit=1)
             if conflict:
+                # §TODO14: the risk service re-runs this same search against
+                # LIVE evidence (scheduled departure on an active corridor)
+                # so its rows mirror the guard's reason exactly.
+                risk_reasons = job._engine_risk_rows(
+                    self.env["fleet.vehicle"].browse(truck_id))
                 return {
                     "success": False,
                     "truck_day_blocked": True,
@@ -792,6 +803,7 @@ class PremaDispatchJob(models.Model):
                         route=conflict.corridor_id.display_name,
                         date=operation_date,
                     ),
+                    "risk_reasons": risk_reasons,
                 }
             ltl_operation = self.sudo().search([
                 ("id", "!=", job.id),
@@ -801,6 +813,9 @@ class PremaDispatchJob(models.Model):
                 ("stage_id.stage_type", "not in", ("cancelled", "completed")),
             ], limit=1)
             if ltl_operation:
+                # §TODO14: same live-evidence mirror (departure_conflict row).
+                risk_reasons = job._engine_risk_rows(
+                    self.env["fleet.vehicle"].browse(truck_id))
                 return {
                     "success": False,
                     "truck_day_blocked": True,
@@ -810,6 +825,7 @@ class PremaDispatchJob(models.Model):
                         job=ltl_operation.display_name,
                         date=operation_date,
                     ),
+                    "risk_reasons": risk_reasons,
                 }
         return super().assign_job_to_truck(job_id, truck_id, force=force)
 
