@@ -554,9 +554,16 @@ class PremaDispatchJob(models.Model):
         if not result.get("feasible"):
             return False
         try:
-            return datetime.fromisoformat(result["recommended_start"])
+            dt = datetime.fromisoformat(result["recommended_start"])
         except (TypeError, ValueError):
             return False
+        # The planner returns a UTC-aware ISO string; the Datetime field
+        # stores naive values only (aware ones raise ValueError on the
+        # field write and abort the ETA recompute that triggered the
+        # compute). The value is already UTC — drop the offset, no shift.
+        if dt.tzinfo is not None:
+            dt = dt.replace(tzinfo=None)
+        return dt
 
     @api.depends("delivery_window_type", "delivery_exact_time", "delivery_deadline",
                  "delivery_latest", "delivery_earliest")
@@ -2736,7 +2743,7 @@ class PremaDispatchJob(models.Model):
             # own (not yet persisted) verdict is passed as an extra reason
             # so the feasibility_blocked row always states the guard's
             # message; can_override semantics are untouched.
-            risk_reasons = self._engine_risk_rows(
+            risk_reasons = job._engine_risk_rows(
                 vehicle, extra_reasons=[{
                     "code": "feasibility_blocked",
                     "severity": "hard",
@@ -2785,7 +2792,9 @@ class PremaDispatchJob(models.Model):
             # §TODO14: persist + return the engine-risk rows for the truck
             # that was just assigned (the guard has passed — soft rows such
             # as capacity/appointment-hours may still explain itself).
-            risk_reasons = self._engine_risk_rows(vehicle)
+            # (``job`` — never the @api.model ``self``: the risk override
+            # calls ensure_one on the receiver recordset.)
+            risk_reasons = job._engine_risk_rows(vehicle)
             return {
                 "success": True,
                 "job_id": job_id,
@@ -2800,7 +2809,7 @@ class PremaDispatchJob(models.Model):
             return {
                 "success": False,
                 "error": str(exc),
-                "risk_reasons": self._engine_risk_rows(vehicle),
+                "risk_reasons": job._engine_risk_rows(vehicle),
             }
 
     def _engine_risk_rows(self, vehicle, extra_reasons=None, at=None):

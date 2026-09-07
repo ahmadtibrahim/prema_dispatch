@@ -86,7 +86,19 @@ class WeeklyCapacityService:
         if ctx_tz:
             return ctx_tz
         company = self.env.company
-        return (company.tz or FALLBACK_TZ_NAME) if company else FALLBACK_TZ_NAME
+        if company:
+            # Odoo 18 res.company carries no tz — use the company
+            # partner's tz, then its working calendar, then the shared
+            # default. (Web calls always carry context tz; request-less
+            # XML-RPC/cron callers with a tz-less user land here.)
+            tz_name = company.partner_id.tz
+            if not tz_name:
+                calendar = getattr(company, "resource_calendar_id", None)
+                if calendar:
+                    tz_name = calendar.tz
+            if tz_name:
+                return tz_name
+        return FALLBACK_TZ_NAME
 
     @staticmethod
     def _zone(tz_name):

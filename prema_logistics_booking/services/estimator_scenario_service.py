@@ -88,8 +88,13 @@ class EstimatorScenarioService:
                 "coordinates) — dedicated drive times and costs cannot be "
                 "computed; only the scheduled network option can be priced.")
 
+        # MP2: capacity validation uses the peak load aboard each route
+        # segment (pickup → unloads → second pickup …), not merely the
+        # grand total of all deliveries.
+        peak_onboard = max(int(payload.get("peak_onboard_pallets") or 0), 0)
+        capacity_pallets = max(pallets, peak_onboard)
         capacity = self.availability.capacity_report(
-            vehicle, pallets, weight_lbs, equipment=equipment,
+            vehicle, capacity_pallets, weight_lbs, equipment=equipment,
             liftgate_pickup=bool(payload.get("liftgate_pickup")),
             liftgate_delivery=bool(payload.get("liftgate_delivery")))
         margin_pct = float(payload.get("margin_pct")
@@ -367,7 +372,8 @@ class EstimatorScenarioService:
             "badge": "infeasible", "feasible": False,
             "truck": "Network truck (assigned by the corridor schedule)",
             "pickup_date": False, "delivery_date": False,
-            "date_requested": False,
+            "date_requested": (self._iso(ctx["d0"])
+                               if ctx.get("d0") else False),
             "distance_km": False, "drive_hrs": False,
             "cost": False, "cost_source": "network_list_price",
             "suggested_sell": False,

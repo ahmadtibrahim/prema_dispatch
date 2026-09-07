@@ -542,13 +542,13 @@ class PremaDispatchJob(models.Model):
                 pre_vehicle[j.id] == vals["vehicle_id"] for j in self):
             drift.discard("vehicle_id")
         if drift and not self.env.context.get("_day_route_silent"):
-            from odoo.addons.prema_logistics_booking.models.dispatch_day_route_proposal import (
-                PremaDispatchDayRouteProposal,
-            )
-            PremaDispatchDayRouteProposal._mark_stale_for_jobs(
-                self.env, self.ids,
-                "A job of this day changed (%s)."
-                % ", ".join(sorted(drift)))
+            # @api.model helpers must be invoked through a recordset —
+            # class-level calls hand the raw env in as ``self``.
+            self.env["prema.dispatch.day.route.proposal"] \
+                ._mark_stale_for_jobs(
+                    self.ids,
+                    "A job of this day changed (%s)."
+                    % ", ".join(sorted(drift)))
         return result
 
     # ── §16.6 (D-B4): Dispatch Planner board stop-drag guard ─────────

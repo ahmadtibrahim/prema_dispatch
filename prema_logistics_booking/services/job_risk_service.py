@@ -122,6 +122,12 @@ class JobRiskService:
         # do not carry are kept as-is — including several rows sharing one
         # code (e.g. one appointment_outside_hours per affected stop).
         extra_codes = {r["code"] for r in extras}
+        # Extras arrive as bare {severity, code, message} dicts (e.g. the
+        # feasibility_blocked reason from assign_job_to_truck) — the sort
+        # below keys on _seq which only state-derived rows carry. Give
+        # extras a stable tail position instead of crashing.
+        for _i, _r in enumerate(extras):
+            _r.setdefault("_seq", 10000 + _i)
         final_rows = [r for r in rows if r["code"] not in extra_codes]
         final_rows += extras
         ordered = sorted(

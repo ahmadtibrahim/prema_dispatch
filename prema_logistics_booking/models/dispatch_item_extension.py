@@ -35,16 +35,16 @@ class PremaDispatchItem(models.Model):
             pre_jobs = set(self.mapped("job_id.id"))
         result = super().write(vals)
         if trigger and not self.env.context.get("_day_route_silent"):
-            from odoo.addons.prema_logistics_booking.models.dispatch_day_route_proposal import (
-                PremaDispatchDayRouteProposal,
-            )
             job_ids = pre_jobs | set(self.mapped("job_id.id"))
             job_ids.discard(False)
             if job_ids:
-                PremaDispatchDayRouteProposal._mark_stale_for_jobs(
-                    self.env, list(job_ids),
-                    "A load item of this day changed (%s)."
-                    % ", ".join(sorted(trigger)))
+                # @api.model helpers must be invoked through a recordset —
+                # class-level calls hand the raw env in as ``self``.
+                self.env["prema.dispatch.day.route.proposal"] \
+                    ._mark_stale_for_jobs(
+                        list(job_ids),
+                        "A load item of this day changed (%s)."
+                        % ", ".join(sorted(trigger)))
         return result
 
     @api.model
@@ -52,10 +52,8 @@ class PremaDispatchItem(models.Model):
         records = super().create(vals_list)
         job_ids = list({r.job_id.id for r in records if r.job_id})
         if job_ids and not self.env.context.get("_day_route_silent"):
-            from odoo.addons.prema_logistics_booking.models.dispatch_day_route_proposal import (
-                PremaDispatchDayRouteProposal,
-            )
-            PremaDispatchDayRouteProposal._mark_stale_for_jobs(
-                self.env, job_ids,
-                "A load item was added to one of this day's jobs.")
+            self.env["prema.dispatch.day.route.proposal"] \
+                ._mark_stale_for_jobs(
+                    job_ids,
+                    "A load item was added to one of this day's jobs.")
         return records

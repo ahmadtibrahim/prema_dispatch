@@ -40,13 +40,14 @@ class PremaDispatchStop(models.Model):
             "planning_only",
         }
         if trigger and not self.env.context.get("_day_route_silent"):
-            from odoo.addons.prema_logistics_booking.models.dispatch_day_route_proposal import (
-                PremaDispatchDayRouteProposal,
-            )
-            PremaDispatchDayRouteProposal._mark_stale_for_stops(
-                self.env, self.ids,
-                "A stop of this day changed (%s)."
-                % ", ".join(sorted(trigger)))
+            # @api.model helpers must be invoked through a recordset —
+            # class-level calls bypass the binder and hand the raw env
+            # in as ``self`` (AttributeError on self.env.user.id).
+            self.env["prema.dispatch.day.route.proposal"] \
+                ._mark_stale_for_stops(
+                    self.ids,
+                    "A stop of this day changed (%s)."
+                    % ", ".join(sorted(trigger)))
         return result
 
     def create(self, vals_list):
@@ -54,23 +55,18 @@ class PremaDispatchStop(models.Model):
         # A stop ADDED to a covered job changes the day's load/scope.
         job_ids = list({r.job_id.id for r in records if r.job_id})
         if job_ids and not self.env.context.get("_day_route_silent"):
-            from odoo.addons.prema_logistics_booking.models.dispatch_day_route_proposal import (
-                PremaDispatchDayRouteProposal,
-            )
-            PremaDispatchDayRouteProposal._mark_stale_for_jobs(
-                self.env, job_ids,
-                "A stop was added to one of this day's jobs.")
+            self.env["prema.dispatch.day.route.proposal"] \
+                ._mark_stale_for_jobs(
+                    job_ids,
+                    "A stop was added to one of this day's jobs.")
         return records
 
     def unlink(self):
         # A stop REMOVED from a covered day changes the day's scope. Run
         # BEFORE the delete — the proposal lines still point at the stops.
         if not self.env.context.get("_day_route_silent"):
-            from odoo.addons.prema_logistics_booking.models.dispatch_day_route_proposal import (
-                PremaDispatchDayRouteProposal,
-            )
-            PremaDispatchDayRouteProposal._mark_stale_for_stops(
-                self.env, self.ids,
-                "A stop was removed from this day.")
+            self.env["prema.dispatch.day.route.proposal"] \
+                ._mark_stale_for_stops(
+                    self.ids, "A stop was removed from this day.")
         return super().unlink()
 

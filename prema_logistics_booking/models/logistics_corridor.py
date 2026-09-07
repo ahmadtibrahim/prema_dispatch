@@ -20,6 +20,21 @@ from odoo.exceptions import AccessError, ValidationError
 DWELL_MINUTES = 15
 
 
+def _corridor_msg(env, text, **kwargs):
+    """Translate chatter text with module + language made explicit.
+
+    ``odoo._`` (get_text_alias) resolves the language by walking the
+    caller's frame for context / kwargs / self.env / request / cr+uid
+    locals. Request-less code paths (XML-RPC scripts, cron) can present
+    a frame whose ``cr``/``uid`` locals combine into an invalid
+    Environment(cr, ...) — AssertionError — so chatter built here must
+    look the term up directly instead of relying on the frame walk.
+    """
+    from odoo.tools.translate import get_translated_module, get_translation
+    module = get_translated_module(__name__)
+    return get_translation(module, env.lang or "en_US", text, kwargs or ())
+
+
 class LogisticsCorridor(models.Model):
     _name = "logistics.corridor"
     _description = "Operating Corridor (ordered truck route) — single source of truth"
@@ -1029,11 +1044,13 @@ class LogisticsCorridor(models.Model):
                     "max_capacity": self._vehicle_capacity(available_default),
                 })
                 archived.message_post(
-                    subject=_("Departure Re-activated"),
-                    body=_("%(corridor)s operates again on %(date)s — this "
-                           "retired departure was re-activated to serve it.",
-                           corridor=self.name,
-                           date=departure_date.strftime("%A %Y-%m-%d")),
+                    subject=_corridor_msg(self.env, "Departure Re-activated"),
+                    body=_corridor_msg(
+                        self.env,
+                        "%(corridor)s operates again on %(date)s — this "
+                        "retired departure was re-activated to serve it.",
+                        corridor=self.name,
+                        date=departure_date.strftime("%A %Y-%m-%d")),
                 )
                 summary["reactivated"] += 1
             else:
@@ -1058,7 +1075,8 @@ class LogisticsCorridor(models.Model):
         by its (corridor, date) business key.
         """
         if corridor_active:
-            reason = _(
+            reason = _corridor_msg(
+                self.env,
                 "corridor %(corridor)s no longer operates on %(weekday)s "
                 "(or this occurrence is outside its booking horizon / "
                 "blacked out)",
@@ -1066,25 +1084,29 @@ class LogisticsCorridor(models.Model):
                 weekday=departure.departure_date.strftime("%A"),
             )
         else:
-            reason = _(
+            reason = _corridor_msg(
+                self.env,
                 "corridor %(corridor)s is inactive",
                 corridor=self.name,
             )
         departure.write({"status": "cancelled", "active": False})
         minutes = int(round((departure.departure_time or 0.0) * 60))
         departure.message_post(
-            subject=_("Departure retired automatically"),
-            body=_("Departure %(date)s at %(time)s was retired automatically "
-                   "because %(reason)s. It had not begun and carried no real "
-                   "booking or open dispatch job, so it no longer blocks "
-                   "truck %(truck)s. — %(user)s on %(when)s",
-                   date=departure.departure_date,
-                   time="%02d:%02d" % (minutes // 60, minutes % 60),
-                   reason=reason,
-                   truck=departure.vehicle_id.display_name
-                   if departure.vehicle_id else _("(unassigned)"),
-                   user=self.env.user.display_name,
-                   when=fields.Datetime.now().strftime("%Y-%m-%d %H:%M")),
+            subject=_corridor_msg(self.env, "Departure retired automatically"),
+            body=_corridor_msg(
+                self.env,
+                "Departure %(date)s at %(time)s was retired automatically "
+                "because %(reason)s. It had not begun and carried no real "
+                "booking or open dispatch job, so it no longer blocks "
+                "truck %(truck)s. — %(user)s on %(when)s",
+                date=departure.departure_date,
+                time="%02d:%02d" % (minutes // 60, minutes % 60),
+                reason=reason,
+                truck=departure.vehicle_id.display_name
+                if departure.vehicle_id
+                else _corridor_msg(self.env, "(unassigned)"),
+                user=self.env.user.display_name,
+                when=fields.Datetime.now().strftime("%Y-%m-%d %H:%M")),
         )
         return departure
 

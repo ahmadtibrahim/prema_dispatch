@@ -2286,6 +2286,21 @@ class LogisticsBooking(models.Model):
         self._sync_load_plan_for_jobs(jobs)
         return jobs
 
+    def action_sync_dispatch_jobs(self):
+        """Materialize/refresh this booking's Planner cards (idempotent).
+
+        Public twin of the private _create_dispatch_job for RPC/API callers
+        (booking creation through the canonical orchestration flow already
+        materializes jobs; this door exists for bookings created directly
+        from the form/API and for safe re-syncs).  Runs under sudo so a
+        booking that a caller may create but not read (record-rule scoped)
+        can still be materialized — the private core already operates every
+        child model under sudo.  Repeated calls never duplicate: the core
+        returns the existing job set and re-syncs the departure load plans.
+        """
+        self.ensure_one()
+        return self.sudo()._create_dispatch_job().ids
+
     def _sync_load_plan_for_jobs(self, jobs):
         """LOAD-PLAN AUTO-SYNC: every scheduled-LTL job on a
         departure+truck+date automatically gets its departure Load Plan.
