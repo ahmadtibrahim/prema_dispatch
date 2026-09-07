@@ -31,9 +31,13 @@ def company_tz(env):
 
 
 def to_utc_naive(local_dt, tz):
-    """Naive local datetime → naive UTC (Odoo stores naive UTC)."""
+    """Naive local datetime → naive UTC (Odoo stores naive UTC).
+
+    ``tz`` may be a zoneinfo.ZoneInfo (company_tz below) or a pytz tz;
+    ZoneInfo has no ``.localize``, so attach the zone with ``replace``
+    (pytz still accepts the attached tzinfo on astimezone)."""
     if local_dt.tzinfo is None:
-        local_dt = tz.localize(local_dt)  # noqa: ambiguous naive local OK
+        local_dt = local_dt.replace(tzinfo=tz)
     return local_dt.astimezone(datetime.timezone.utc).replace(tzinfo=None)
 
 
