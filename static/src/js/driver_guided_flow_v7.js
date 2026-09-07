@@ -269,7 +269,8 @@
                 </label>
                 <label class="da-v7-field">If the count changed, tell Dispatch why
                     <textarea id="v7Variance" placeholder="Customer added a pallet, short shipment, etc.">${html(stop.job_summary?.pickup_variance_notes || "")}</textarea>
-                </label>`;
+                </label>
+                ${typeof renderFreightHandling === "function" ? renderFreightHandling(stop) : ""}`;
         }
         if (step === 2) {
             if (!state.items.length) return `<div class="da-v7-empty"><b>No pickup pallets are available yet.</b><span>Contact Dispatch instead of creating a second pallet record.</span></div>`;

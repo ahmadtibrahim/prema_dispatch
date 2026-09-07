@@ -29,6 +29,7 @@ TIMELINE_EVENTS = [
     ("temperature",        "Reefer / Temperature"),
     ("temperature_conflict", "Temperature Conflict"),
     ("temperature_override", "Temperature Override"),
+    ("freight_handled", "Freight Handled"),
 ]
 
 

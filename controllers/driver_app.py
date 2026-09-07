@@ -103,6 +103,17 @@ class DriverAppController(http.Controller):
         return request.env["prema.dispatch.job"].driver_remove_evidence(
             stop_id, ev_type, att_id, extra=extra or {})
 
+    @http.route("/dispatch/driver/freight/handling/add", type="json", auth="user", methods=["POST"])
+    def add_freight_handling(self, stop_id, action, item_id=None, values=None, **kwargs):
+        """TODO 8: record one auditable freight-handling event at a pickup
+        stop (Loaded Loose / Built Pallet / Shipper Palletized / Exception).
+
+        `values` carries the per-action capture: counts, toggles, notes and
+        the optional photo {data_b64, filename, captured_at, lat, lng,
+        device}."""
+        return request.env["prema.dispatch.job"].driver_add_freight_handling(
+            int(stop_id), action, item_id=item_id, values=values or {})
+
     @http.route("/dispatch/driver/evidence/scan-complete", type="json", auth="user", methods=["POST"])
     def scan_complete(self, stop_id, ev_type, session, **kwargs):
         """Merge a multi-page scan session into ONE PDF (spec §17)."""

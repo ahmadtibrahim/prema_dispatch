@@ -125,6 +125,17 @@
             <field name="groups" eval="[(4, ref('group_dispatch_driver'))]"/>
         </record>
 
+        <!-- TODO 8 freight-handling journal: drivers read the events on
+             their own jobs only (immutable audit rows — creation happens
+             through driver_add_freight_handling (auth'd, sudo'd), the
+             driver ACL is read-only). -->
+        <record id="rule_freight_handling_driver_own" model="ir.rule">
+            <field name="name">prema.dispatch.freight.handling: driver sees only events on their own jobs</field>
+            <field name="model_id" ref="model_prema_dispatch_freight_handling"/>
+            <field name="domain_force">[('job_id.driver_id', '=', user.partner_id.id)]</field>
+            <field name="groups" eval="[(4, ref('group_dispatch_driver'))]"/>
+        </record>
+
         <!-- No Access / Sealed Load overrides (Phase 4, spec §22): drivers
              see only their own jobs' overrides; dispatchers/managers see
              everything. Creation happens through driver_create_popp_override

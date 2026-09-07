@@ -555,3 +555,46 @@ body.da-body{margin:0;padding:0;background:#f1f3f5;font-family:-apple-system,Bli
 .da-v6-temp-off{background:linear-gradient(135deg,#546e7a,#37474f)}
 .da-v6-temp-conflict{background:linear-gradient(135deg,#c62828,#8e0000)}
 .da-v6-temp .da-btn{color:#fff;border:1px solid rgba(255,255,255,.5)}
+
+/* ── Freight-handling journal (TODO 8) ─────────────────────────────
+   Renders inside the v7 guided pickup step 1 (white sheet) and the
+   classic stop body (cross-dock pickups / closed stops) alike — one
+   rounded card, blue=loose / green=built / amber=shipper / red=exception. */
+.da-fh-section{margin:10px 0 0;padding:12px 14px;background:#fff;border:1px solid #e2e7ee;border-radius:14px}
+.da-fh-head{display:flex;flex-direction:column;gap:2px;margin-bottom:8px}
+.da-fh-title{font-size:11.5px;font-weight:800;text-transform:uppercase;letter-spacing:.05em;color:#8a5a00}
+.da-fh-sub{font-size:11px;color:var(--da-text-faint);line-height:1.4}
+.da-fh-rows{display:flex;flex-direction:column;gap:8px}
+.da-fh-item{border:1px solid #e2e7ee;border-radius:12px;padding:10px;background:#fbfcfe}
+.da-fh-item-head{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 8px;margin-bottom:8px}
+.da-fh-item-head strong{font-size:14px;color:#1a1a2e}
+.da-fh-item-meta{display:flex;flex-wrap:wrap;gap:4px}
+.da-fh-chip{font-size:10px;background:#f1f4f8;border:1px solid #e0e4ea;color:#44546a;padding:2px 7px;border-radius:999px;white-space:nowrap}
+.da-fh-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}
+.da-fh-grid .da-btn{padding:9px 6px;font-size:12.5px;min-height:40px;white-space:normal;line-height:1.2}
+.da-fh-a-loaded{background:#e8f0fe;color:#1565C0}
+.da-fh-a-built{background:#eaf7ef;color:#1e7a44}
+.da-fh-a-shipper{background:#fdf0e2;color:#9a4b00}
+.da-fh-a-exception{background:#fdecea;color:#c0392b}
+.da-fh-sheet{margin-top:10px;border:1px solid #d9e1ea;border-radius:12px;background:#f8fafc;padding:11px;display:grid;gap:9px}
+.da-fh-sheet-title{font-size:14px;font-weight:800;color:#1a1a2e}
+.da-fh-field{display:grid;gap:4px;font-size:12px;font-weight:700;color:#52647a}
+.da-fh-field input,.da-fh-field textarea{width:100%;font-size:15px;border:1px solid #ccd7e4;border-radius:10px;padding:9px 10px;background:#fff;color:#16243a;box-sizing:border-box}
+.da-fh-field textarea{resize:vertical;font-weight:400}
+.da-fh-field-wide{grid-column:1/-1}
+.da-fh-chk{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;color:#33435a}
+.da-fh-chk input{width:20px;height:20px;flex:0 0 20px}
+.da-fh-hint{font-size:11.5px;color:var(--da-text-faint);line-height:1.45}
+.da-fh-photo{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.da-fh-photo .da-btn{width:auto}
+.da-fh-photo-name{font-size:11px;color:#44546a}
+.da-fh-sheet-btns{display:flex;gap:8px}
+.da-fh-sheet-btns .da-btn{flex:1;min-width:0;padding:11px 6px;font-size:13px}
+.da-fh-history{margin-top:10px;border-top:1px dashed #e2e7ee;padding-top:8px;display:grid;gap:6px}
+.da-fh-history-title{font-size:10.5px;font-weight:800;text-transform:uppercase;letter-spacing:.05em;color:var(--da-text-faint)}
+.da-fh-ev{border:1px solid #e7ebf1;border-radius:10px;background:#fbfcfe;padding:8px 10px;display:grid;gap:3px}
+.da-fh-ev-badge{font-size:11px;font-weight:800;color:#33435a}
+.da-fh-ev-detail{font-size:12px;color:#44546a;line-height:1.4}
+.da-fh-photo-link{text-decoration:none}
+.da-fh-ev-meta{font-size:10.5px;color:var(--da-text-faint)}
+.da-fh-ev-notes{font-size:11.5px;color:#44546a;font-style:italic;line-height:1.4}

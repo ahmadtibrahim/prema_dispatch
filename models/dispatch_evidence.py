@@ -32,6 +32,7 @@ EVIDENCE_TYPES = [
     ("scanned_pod", "Scanned POD (PDF)"),
     ("scan_page", "Scan Page (pre-merge)"),
     ("issue_photo", "Issue Photo"),
+    ("freight_photo", "Freight Photo"),
     ("other", "Other"),
 ]
 

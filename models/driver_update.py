@@ -45,6 +45,7 @@ _FEED_TYPES = [
     ("reefer_off_ack", "Reefer-Off Acknowledgment"),
     ("route_completed", "Route Completed"),
     ("workday_ended", "Workday Ended"),
+    ("freight_handled", "Freight Handled"),
 ]
 
 _UPDATE_TYPES = _ALERT_TYPES + _FEED_TYPES

@@ -106,6 +106,22 @@ class PremaDispatchJob(models.Model):
         for job in self:
             job.evidence_count = Evidence.search_count([("job_id", "=", job.id)])
 
+    # ── Freight-handling journal (TODO 8) ──────────────────────────
+    freight_handling_count = fields.Integer(
+        string="Freight Handling Events", compute="_compute_freight_handling_count",
+        help="Auditable driver freight-handling events recorded on this "
+             "job's stops (Loaded Loose / Built Pallet / Shipper "
+             "Palletized / Exception).",
+    )
+
+    def _compute_freight_handling_count(self):
+        # Non-stored: recomputed on read (same convention as
+        # _compute_evidence_count above).
+        FreightHandling = self.env["prema.dispatch.freight.handling"]
+        for job in self:
+            job.freight_handling_count = FreightHandling.search_count(
+                [("job_id", "=", job.id)])
+
     # ── §18 Customer Detention ─────────────────────────────────────
     detention_count = fields.Integer(
         string="Detention Items", compute="_compute_detention_count",
@@ -2944,6 +2960,17 @@ class PremaDispatchJob(models.Model):
             "context": {"default_job_id": self.id},
         }
 
+    def action_open_freight_handling(self):
+        self.ensure_one()
+        return {
+            "type": "ir.actions.act_window",
+            "name": "Freight Handling",
+            "res_model": "prema.dispatch.freight.handling",
+            "view_mode": "list,form",
+            "domain": [("job_id", "=", self.id)],
+            "context": {"default_job_id": self.id},
+        }
+
     def action_open_detention_items(self):
         """§18: staff review of the job's customer detention items."""
         self.ensure_one()
@@ -3729,6 +3756,7 @@ class PremaDispatchJob(models.Model):
             else ("Reefer" if job.requires_reefer else "")
         )
         serialized_freight_items = []
+        FreightHandling = self.env["prema.dispatch.freight.handling"]
         for item in freight_items:
             origin = item.pickup_stop_id
             active_allocations = item.stop_allocation_ids.filtered("active")
@@ -3747,6 +3775,13 @@ class PremaDispatchJob(models.Model):
                 "custody": item.current_custody_type,
                 "load_unit_type": item.load_unit_type,
                 "shared_skid": item.shared_skid,
+                # TODO 8: the booking line this item was created from
+                # (loose/mixed intake record — current_load_form, cases,
+                # pallet equivalent…), so the app can offer the right
+                # freight-handling actions. False when no unambiguous
+                # booking line maps to the item.
+                "freight_booking": FreightHandling.sudo()
+                ._freight_booking_payload(item),
                 # Chain-of-custody source: a delivery stop can contain
                 # pallets from several pickup stops, so this is per item.
                 "pickup_origin": {
@@ -3827,6 +3862,13 @@ class PremaDispatchJob(models.Model):
             "transfer_to_vehicle_plate": s.transfer_to_vehicle_id.license_plate if s.transfer_to_vehicle_id else "",
             "freight_item_summary": s.freight_item_summary or "",
             "freight_items": serialized_freight_items,
+            # TODO 8: bounded audit history of this stop's driver
+            # freight-handling actions (pickup context only — freight
+            # actions are never recorded on delivery stops).
+            "freight_handling_events": (
+                FreightHandling.sudo()._stop_freight_events_payload(s)
+                if s.stop_type in ("pickup", "cross_dock_pickup") else []
+            ),
             "transit_evidence": self._attachment_payloads(transit_evidence),
             "scheduled_time":    self._dt_iso_utc(s.scheduled_time),
             "estimated_arrival": self._dt_iso_utc(s.estimated_arrival),
@@ -5125,6 +5167,77 @@ class PremaDispatchJob(models.Model):
                     pass
             return {"success": False, "code": "upload_failed",
                     "error": "Could not save this upload. Please try again."}
+
+    def driver_add_freight_handling(self, stop_id, action, item_id=None,
+                                    values=None):
+        """TODO 8: record ONE auditable freight-handling event at a stop.
+
+        Driver App route: POST /dispatch/driver/freight/handling/add.
+
+        Actions (labels are the app's buttons, exact):
+          * loaded_loose       — loose cargo loaded as-is (cases + labour)
+          * built_pallet       — loose cargo built onto carrier pallets
+          * shipper_palletized — cargo the shipper palletized before pickup
+          * exception          — note + photo only, no cargo conversion
+
+        Authorization mirrors driver_add_evidence exactly (check_stop_access
+        with raise_on_fail=False → dict responses); the actual record is
+        created by prema.dispatch.freight.handling.record_freight_handling
+        under sudo() — the freight-handling model's rows are
+        driver-read-only (immutable audit convention, same as evidence).
+
+        values: item_id / case_count / pallets_built / pallets_loaded /
+        carrier_pallet_used / shrink_wrap_used / labour_minutes /
+        billable_pallets / billable_labour / notes / photo {data_b64,
+        filename, captured_at, lat, lng, device, gps_accuracy_m,
+        captured_tz}."""
+        from odoo.addons.prema_dispatch.services.dispatch_auth import (
+            check_stop_access)
+        FH = self.env["prema.dispatch.freight.handling"]
+        stop = self.env["prema.dispatch.stop"].browse(stop_id)
+        if not stop.exists():
+            return {"success": False, "code": "record_not_found",
+                    "error": "Stop not found"}
+        if not check_stop_access(self.env, stop, raise_on_fail=False):
+            return {"success": False, "code": "unauthorized",
+                    "error": "Not authorized for this stop"}
+        if stop.job_id.stage_id.is_cancelled:
+            return {"success": False, "code": "unauthorized",
+                    "error": "This job has been cancelled — freight handling "
+                             "can no longer be recorded."}
+        if action not in ("loaded_loose", "built_pallet",
+                          "shipper_palletized", "exception"):
+            return {"success": False, "code": "unsupported_action",
+                    "error": "Unsupported freight-handling action."}
+        if stop.stop_type not in ("pickup", "cross_dock_pickup"):
+            return {"success": False, "code": "unsupported_stop",
+                    "error": "Freight handling can only be recorded on "
+                             "pickup stops."}
+        if stop.status in ("completed", "skipped", "cancelled"):
+            return {"success": False, "code": "stop_closed",
+                    "error": "This stop is already closed."}
+        values = dict(values or {})
+        if item_id is not None:
+            values["item_id"] = item_id
+        elif not values.get("item_id"):
+            return {"success": False, "code": "item_required",
+                    "error": "A freight item is required."}
+        try:
+            event = FH.sudo().record_freight_handling(stop, action, values)
+        except exceptions.UserError as e:
+            # Friendly per-field validation errors (bad counts, item not
+            # loose, photo rejected…) — never a bare 500.
+            return {"success": False, "code": "invalid_input",
+                    "error": str(e)}
+        except Exception:
+            _logger.exception("driver_add_freight_handling failed")
+            return {"success": False, "code": "freight_handling_failed",
+                    "error": "Could not record this action. Please try again."}
+        return {
+            "success": True,
+            "event": event._event_payload(),
+            "capacity_delta": event._capacity_delta(),
+        }
 
     def _copy_evidence_to_invoice(self, att, stop, ev_type):
         """Copy a just-uploaded evidence attachment to the draft invoice

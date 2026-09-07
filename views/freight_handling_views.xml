@@ -1,0 +1,111 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<odoo>
+    <!--
+        TODO 8: driver freight-handling journal (prema.dispatch.freight.handling).
+        One immutable row per driver-recorded freight action at a pickup stop
+        (Loaded Loose / Built Pallet / Shipper Palletized / Exception), created
+        from the Driver App through driver_add_freight_handling. Mirror of the
+        evidence views: staff review lists/filters; the form reads the audit
+        trail. Nothing here ever edits a row.
+    -->
+    <record id="view_freight_handling_list" model="ir.ui.view">
+        <field name="name">prema.dispatch.freight.handling.list</field>
+        <field name="model">prema.dispatch.freight.handling</field>
+        <field name="arch" type="xml">
+            <list string="Freight Handling" default_group_by="job_id">
+                <field name="job_id"/>
+                <field name="item_id" string="Freight Item"/>
+                <field name="action" widget="badge"/>
+                <field name="driver_id" string="By"/>
+                <field name="event_at" string="At"/>
+                <field name="case_count" string="Cases" optional="show"/>
+                <field name="pallets_built" string="Built" optional="show"/>
+                <field name="pallets_loaded" string="Pallets Loaded" optional="show"/>
+                <field name="carrier_pallet_used" string="Carrier Pallet" optional="hide"/>
+                <field name="shrink_wrap_used" string="Wrap" optional="hide"/>
+                <field name="labour_minutes" string="Labour Min" optional="show"/>
+                <field name="billable_pallets" string="Bill. Pallets" optional="hide"/>
+                <field name="billable_labour" string="Bill. Labour" optional="hide"/>
+                <field name="stop_id" string="Stop" optional="hide"/>
+                <field name="photo_attachment_id" string="Photo" optional="show"/>
+                <field name="notes" optional="show"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="view_freight_handling_search" model="ir.ui.view">
+        <field name="name">prema.dispatch.freight.handling.search</field>
+        <field name="model">prema.dispatch.freight.handling</field>
+        <field name="arch" type="xml">
+            <search string="Freight Handling">
+                <field name="job_id"/>
+                <field name="item_id"/>
+                <field name="driver_id"/>
+                <field name="notes"/>
+                <filter name="f_loaded_loose" string="Loaded Loose"
+                        domain="[('action', '=', 'loaded_loose')]"/>
+                <filter name="f_built_pallet" string="Built Pallet"
+                        domain="[('action', '=', 'built_pallet')]"/>
+                <filter name="f_shipper_palletized" string="Shipper Palletized"
+                        domain="[('action', '=', 'shipper_palletized')]"/>
+                <filter name="f_exception" string="Exception"
+                        domain="[('action', '=', 'exception')]"/>
+                <filter name="f_with_photo" string="With Photo"
+                        domain="[('photo_attachment_id', '!=', False)]"/>
+                <group expand="0" string="Group By">
+                    <filter name="g_job" string="Job" context="{'group_by': 'job_id'}"/>
+                    <filter name="g_action" string="Action" context="{'group_by': 'action'}"/>
+                    <filter name="g_item" string="Freight Item" context="{'group_by': 'item_id'}"/>
+                    <filter name="g_driver" string="Driver" context="{'group_by': 'driver_id'}"/>
+                    <filter name="g_stop" string="Stop" context="{'group_by': 'stop_id'}"/>
+                    <filter name="g_event_at" string="Event Date" context="{'group_by': 'event_at'}"/>
+                </group>
+            </search>
+        </field>
+    </record>
+
+    <record id="view_freight_handling_form" model="ir.ui.view">
+        <field name="name">prema.dispatch.freight.handling.form</field>
+        <field name="model">prema.dispatch.freight.handling</field>
+        <field name="arch" type="xml">
+            <form string="Freight Handling Event">
+                <sheet>
+                    <group>
+                        <group string="Shipment">
+                            <field name="action"/>
+                            <field name="job_id"/>
+                            <field name="booking_id"/>
+                            <field name="stop_id" string="Stop"/>
+                            <field name="item_id" string="Freight Item"/>
+                            <field name="driver_id" string="Driver"/>
+                            <field name="event_at" string="Event At"/>
+                        </group>
+                        <group string="Captured Actuals">
+                            <field name="case_count" string="Cases"/>
+                            <field name="pallets_built" string="Pallets Built"/>
+                            <field name="pallets_loaded" string="Pallets Loaded"/>
+                            <field name="carrier_pallet_used" string="Carrier Pallet Used"/>
+                            <field name="shrink_wrap_used" string="Shrink Wrap Used"/>
+                            <field name="labour_minutes" string="Labour Minutes"/>
+                            <field name="billable_pallets" string="Billable Pallets"/>
+                            <field name="billable_labour" string="Billable Labour"/>
+                            <field name="photo_attachment_id" string="Photo"
+                                   help="Photo of the handled freight (also recorded as a freight_photo evidence row against the stop)."/>
+                        </group>
+                    </group>
+                    <group string="Notes">
+                        <field name="notes" nolabel="1" placeholder="Driver notes on the handling action…"/>
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <record id="action_dispatch_freight_handling" model="ir.actions.act_window">
+        <field name="name">Freight Handling</field>
+        <field name="res_model">prema.dispatch.freight.handling</field>
+        <field name="view_mode">list,form</field>
+        <field name="search_view_id" ref="view_freight_handling_search"/>
+        <field name="context">{}</field>
+    </record>
+</odoo>

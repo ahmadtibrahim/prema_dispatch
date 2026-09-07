@@ -859,6 +859,19 @@ function bindPickupDelegates(){
                 ev.preventDefault();
                 retakeEvidence(currentPickupStop()?.id || S.stop?.id, "popp", parseInt(btn.dataset.attId,10), parseInt(btn.dataset.itemId,10));
                 break;
+            case "fh-open":
+                ev.preventDefault();
+                fhOpenSheet(parseInt(btn.dataset.stopId,10), parseInt(btn.dataset.itemId,10), btn.dataset.fhAction);
+                break;
+            case "fh-close":
+                ev.preventDefault();
+                if(S.fh && S.fh.busy) break;
+                fhCloseSheet();
+                break;
+            case "fh-submit":
+                ev.preventDefault();
+                await fhSubmit();
+                break;
             }
         }catch(err){
             toast(err.message || "Action failed");
@@ -944,6 +957,18 @@ function bindPickupDelegates(){
         if(field==="pickup-edit-stop-shared-enabled"){
             pickupSetEditStopField("shared_pallet_enabled", !!el.checked);
             if(S.pickupStops) renderPickupStopsScreen(); else renderPickupIntake();
+        }
+        if(field==="fh-photo"){
+            // Freight-handling sheet photo: keep the File on S.fh (the
+            // capture sheet renders photo as a plain file input — no
+            // queue/offline semantics; base64 is read at submit time).
+            const fh=S.fh;
+            if(!fh) return;
+            const file=el.files && el.files[0] ? el.files[0] : null;
+            fh.file=file;
+            const name=q("#fhPhotoName");
+            if(name) name.textContent=file?("📷 "+file.name):"";
+            return;
         }
     });
 
@@ -1497,7 +1522,7 @@ function renderStopDetail() {
             :stop.type==="transfer"
             ?`<div class="da-detail-meta">📦 <strong>${stop.pallets_out||"?"} pallets</strong> to hand off / stage</div>`
             :`<div class="da-detail-meta">📦 <strong>${stop.pallets_out||"?"} pallets</strong> to deliver</div>`)+
-        renderFreightItems(stop)+
+        renderFreightItems(stop)+renderFreightHandling(stop)+
         (!isDone?`<div class="da-detail-svc">⏱ Service time:
             <button class="da-svc-btn" onclick="bumpSvcTime(-5)">−</button>
             <span class="da-svc-val">${stop.service_time_min||15}m</span>
@@ -1707,6 +1732,355 @@ function renderFreightItems(stop){
         <div class="da-detail-items-title">${title}</div>
         <div class="da-detail-items-list">${rows}</div>
     </div>`;
+}
+
+// ── Freight-handling journal (TODO 8) ──────────────────────────────
+// The driver records ONE auditable action per loose-freight pickup:
+// "Loaded Loose", "Built Pallet", "Shipper Palletized" or "Exception".
+// Buttons only render for pickup-like stops whose cargo is not fully
+// shipper-palletized (i.e. dispatch items still in a loose/floor unit
+// type). Each button posts through driver_add_freight_handling, which
+// records a prema.dispatch.freight.handling row (immutable audit trail)
+// and converts the affected cargo. The same markup is reused in two
+// hosts — the classic stop body (renderStopDetail, covers
+// cross_dock_pickup stops) and the v7 guided pickup step 1 (see
+// driver_guided_flow_v7.js pickupStepBody) — so all state lives in S.fh
+// and all events are delegated from #app, never inlined.
+const FH_LOOSE_UNITS=["loose","carton","tote","other"];
+const FH_ACTIONS=[
+    {key:"loaded_loose",       label:"Loaded Loose",       icon:"📦", cls:"da-fh-a-loaded"},
+    {key:"built_pallet",       label:"Built Pallet",       icon:"🪵", cls:"da-fh-a-built"},
+    {key:"shipper_palletized", label:"Shipper Palletized", icon:"🍱", cls:"da-fh-a-shipper"},
+    {key:"exception",          label:"Exception",          icon:"⚠️", cls:"da-fh-a-exception"},
+];
+function fhActionLabel(key){
+    const a=FH_ACTIONS.find(x=>x.key===key);
+    return a?a.label:key;
+}
+function fhActionIcon(key){
+    const a=FH_ACTIONS.find(x=>x.key===key);
+    return a?a.icon:"";
+}
+function fhIsLooseUnit(u){ return FH_LOOSE_UNITS.includes(u); }
+function fhEligibleFreightItem(item){
+    // A pickup-stop item offers the freight actions only while it is
+    // still physically a floor/loose unit (pallet-type cargo is already
+    // shipper-palletized by definition). Cancelled items are invisible.
+    return !!item && fhIsLooseUnit(item.load_unit_type) && item.status!=="cancelled";
+}
+function fhClosedStop(stop){
+    return ["completed","skipped","cancelled"].includes(stop.status);
+}
+function fhTimeLabel(iso){
+    // Server sends UTC with a trailing Z (see _event_payload); show it
+    // in the truck's local time zone like every other stop timestamp.
+    if(!iso) return "";
+    try{
+        const d=new Date(iso);
+        if(isNaN(d.getTime())) return "";
+        return new Intl.DateTimeFormat("en-US",{month:"short",day:"numeric",hour:"numeric",minute:"2-digit",hour12:true,
+            timeZone:S.stop?.tz_name||"America/Toronto"}).format(d);
+    }catch{ return ""; }
+}
+function fhEventDetail(ev){
+    const bits=[];
+    if(ev.action==="loaded_loose"){
+        if(ev.case_count) bits.push(`${ev.case_count} case${ev.case_count===1?"":"s"} loaded loose`);
+        else bits.push("freight loaded loose");
+    }else if(ev.action==="built_pallet"){
+        if(ev.pallets_built) bits.push(`${ev.pallets_built} pallet${ev.pallets_built===1?"":"s"} built`);
+        if(ev.case_count) bits.push(`${ev.case_count} case${ev.case_count===1?"":"s"} still on the floor`);
+        if(ev.carrier_pallet_used) bits.push("carrier pallet");
+        if(ev.shrink_wrap_used) bits.push("shrink-wrapped");
+    }else if(ev.action==="shipper_palletized"){
+        bits.push(`${ev.pallets_loaded||0} shipper pallet${(ev.pallets_loaded||0)===1?"":"s"}`);
+    }else if(ev.action==="exception"){
+        bits.push("exception recorded");
+    }else{
+        bits.push(ev.action_label||ev.action);
+    }
+    if(ev.labour_minutes) bits.push(`${ev.labour_minutes} min labour`);
+    const t=fhTimeLabel(ev.event_at);
+    return {text:bits.join(" · "), t};
+}
+function fhBookingChips(item){
+    const fb=item.freight_booking;
+    if(!fb || typeof fb!=="object") return [`<span class="da-fh-chip">${esc(item.load_unit_type||"")}</span>`];
+    const chips=[];
+    if(fb.handling_type==="loose_floor_loaded") chips.push("Booked loose");
+    else if(fb.handling_type==="mixed") chips.push("Booked mixed");
+    else if(fb.handling_type==="palletized") chips.push("Booked palletized");
+    if(fb.case_count) chips.push(`${fb.case_count} case${fb.case_count===1?"":"s"}`);
+    else if(fb.package_quantity&&fb.package_uom) chips.push(`${fb.package_quantity} ${fb.package_uom}`);
+    if(fb.current_load_form==="carrier_palletized") chips.push(`${fb.pallets_built||0} pallet${fb.pallets_built===1?"":"s"} already built`);
+    else if(fb.current_load_form==="shipper_palletized") chips.push(`shipper-palletized (${fb.actual_pallet_count||"?"})`);
+    else if(fb.planned_pallet_equivalent>0) chips.push(`≈ ${fb.planned_pallet_equivalent} pallet${fb.planned_pallet_equivalent===1?"":"s"} floor space`);
+    if(fb.hand_bomb_required) chips.push("🤲 hand-bomb at delivery");
+    return chips.map(c=>`<span class="da-fh-chip">${esc(c)}</span>`);
+}
+function fhFreightRows(stop, closed){
+    const items=(stop.freight_items||[]).filter(fhEligibleFreightItem);
+    if(!items.length || closed) return "";
+    return `<div class="da-fh-rows">`+items.map(item=>{
+        const btns=FH_ACTIONS.map(a=>{
+            // Shipper Palletized is pointless when the booking line
+            // already says the freight arrived shipper-palletized.
+            if(a.key==="shipper_palletized" && item.freight_booking
+               && item.freight_booking.current_load_form==="shipper_palletized") return "";
+            return `<button type="button" class="da-btn da-btn-sm ${a.cls}" data-action="fh-open"
+                    data-fh-action="${a.key}" data-item-id="${item.id}" data-stop-id="${stop.id}">
+                    ${a.icon} ${a.label}</button>`;
+        }).join("");
+        return `<div class="da-fh-item" data-fh-item="${item.id}">
+            <div class="da-fh-item-head"><strong>${esc(item.label)}</strong>
+                <span class="da-fh-item-meta">${fhBookingChips(item).join("")}</span></div>
+            <div class="da-fh-grid">${btns}</div>
+        </div>`;
+    }).join("")+`</div>`;
+}
+function fhPhotoFieldHtml(){
+    return `<div class="da-fh-photo">
+        <label class="da-btn da-btn-ghost da-btn-sm">📷 Add photo
+            <input type="file" accept="image/jpeg,image/png,image/heic,image/heif" capture="camera" style="display:none"
+                   data-field="fh-photo" data-stop-id="${S.fh.stopId}" data-item-id="${S.fh.itemId}" ${S.fh.busy?"disabled":""}>
+        </label>
+        <span class="da-fh-photo-name" id="fhPhotoName"></span>
+    </div>`;
+}
+function fhSheetHtml(stop,item,action){
+    const a=FH_ACTIONS.find(x=>x.key===action)||FH_ACTIONS[0];
+    const fb=item.freight_booking||{};
+    const numF=(id,label,ph,val)=>`<label class="da-fh-field">${label}
+        <input id="${id}" type="number" inputmode="decimal" min="0" step="any" placeholder="${ph||"0"}" value="${val===undefined?"":val}"></label>`;
+    const chkF=(id,label,checked)=>`<label class="da-fh-chk"><input id="${id}" type="checkbox" ${checked?"checked":""}> ${label}</label>`;
+    const notesF=`<label class="da-fh-field da-fh-field-wide">Notes for Dispatch
+        <textarea id="fhNotes" rows="2" placeholder="Anything Dispatch should know…"></textarea></label>`;
+    let inner="";
+    if(action==="loaded_loose"){
+        inner=numF("fhCases","Cases loaded loose","e.g. 60", (fb.case_count||""))+
+            numF("fhLabour","Labour (minutes)","0", "")+
+            chkF("fhBillLabour","Billable labour",true)+
+            `<div class="da-fh-hint">Freight leaves as loose floor cargo — nothing is converted. ${S.fh.file?"Photo ready.":""}</div>`;
+    }else if(action==="built_pallet"){
+        inner=numF("fhPalletsBuilt","Pallets built (1+)","e.g. 4", "")+
+            numF("fhCasesRemaining","Cases NOT built — still on the floor","0 if all were built", "")+
+            chkF("fhCarrierPallet","Carrier pallet used",false)+
+            chkF("fhWrap","Shrink wrap used",false)+
+            numF("fhLabour","Labour (minutes)","0", "")+
+            chkF("fhBillPallets","Billable pallets",true)+
+            chkF("fhBillLabour","Billable labour",true)+
+            `<div class="da-fh-hint">Loose freight becomes ${(fb.handling_type==="loose_floor_loaded"||fb.handling_type==="mixed")?"carrier-palletized":"pallet"} cargo: ${item.label} is moved onto the built pallets and its floor footprint is taken from the plan. Cases you leave on the floor are flagged for hand-bomb at delivery.</div>`;
+    }else if(action==="shipper_palletized"){
+        inner=`<div class="da-fh-hint">The freight arrived already on shipper pallets — record how many were loaded.</div>`+
+            numF("fhPalletsLoaded","Pallets on the freight (1+)","e.g. 6", (fb.actual_pallet_count||""))+
+            `<div class="da-fh-hint">Cargo converts to shipper-palletized and the ${item.label} item is planned as pallets.</div>`;
+    }else{ // exception
+        inner=`<div class="da-fh-hint">Describe the problem with ${esc(item.label)}. Nothing converts — Dispatch reviews this exception.</div>`+
+            notesF+
+            `<div class="da-fh-hint">${S.fh.file?"Photo ready.":"A photo helps Dispatch understand the problem."}</div>`;
+    }
+    if(action!=="exception" && !inner.includes("fhNotes")) inner+=notesF;
+    inner+=fhPhotoFieldHtml();
+    const busy=S.fh.busy;
+    return `<div class="da-fh-sheet" data-fh-sheet="1">
+        <div class="da-fh-sheet-title">${a.icon} ${a.label} — ${esc(item.label)}</div>
+        ${inner}
+        <div class="da-fh-sheet-btns">
+            <button type="button" class="da-btn da-btn-secondary da-btn-sm" data-action="fh-close" ${busy?"disabled":""}>Cancel</button>
+            <button type="button" class="da-btn da-btn-sm ${a.cls}" data-action="fh-submit" ${busy?"disabled":""}>${busy?"Recording…":"Record "+a.label}</button>
+        </div>
+    </div>`;
+}
+function fhHistoryHtml(stop){
+    const events=(stop.freight_handling_events||[]);
+    if(!events.length) return "";
+    const rows=events.map(ev=>{
+        const d=fhEventDetail(ev);
+        const photo=ev.photo_url?` <a class="da-fh-photo-link" href="${esc(ev.photo_url)}" target="_blank">📷</a>`:"";
+        const notes=ev.notes?`<div class="da-fh-ev-notes">${esc(ev.notes)}</div>`:"";
+        return `<div class="da-fh-ev">
+            <span class="da-fh-ev-badge">${fhActionIcon(ev.action)} ${esc(ev.action_label||fhActionLabel(ev.action))}</span>
+            <span class="da-fh-ev-detail">${esc(d.text)}${photo}</span>
+            <span class="da-fh-ev-meta">${esc(ev.item_label||"")}${d.t?" · "+esc(d.t):""} · ${esc((ev.billable_pallets||ev.billable_labour)?"billable":"info only")}</span>
+            ${notes}
+        </div>`;
+    }).join("");
+    return `<div class="da-fh-history"><div class="da-fh-history-title">Freight Handling Events (${events.length})</div>${rows}</div>`;
+}
+function fhSectionContentHtml(stop){
+    // Everything under the section container that can change while the
+    // stop stays on screen (open/close sheet, recorded-event history).
+    const closed=fhClosedStop(stop);
+    const item=(S.fh && S.fh.stopId===stop.id && !closed)
+        ? (stop.freight_items||[]).find(i=>i.id===S.fh.itemId) : null;
+    const sheet=(item && FH_ACTIONS.some(a=>a.key===S.fh.action))
+        ? fhSheetHtml(stop, item, S.fh.action) : "";
+    return fhFreightRows(stop, closed)+sheet+fhHistoryHtml(stop);
+}
+function renderFreightHandling(stop){
+    // Returns "" for every stop that has no floor/loose cargo AND no
+    // recorded freight events — pallet-only pickups stay untouched.
+    if(!stop || !isPickupLikeStop(stop.type)) return "";
+    // An open capture sheet belongs to exactly one stop: when the driver
+    // moved on to another stop and came back, the stale sheet must not
+    // resurrect (its typed values died with the screen anyway).
+    if(S.fh && stop.id!==S.fh.stopId) S.fh=null;
+    const items=(stop.freight_items||[]).filter(fhEligibleFreightItem);
+    const events=(stop.freight_handling_events||[]);
+    if(!items.length && !events.length) return "";
+    const closed=fhClosedStop(stop);
+    return `<div class="da-fh-section" data-fh-section="${stop.id}">
+        <div class="da-fh-head">
+            <span class="da-fh-title">Loose Freight — record how it was handled</span>
+            <span class="da-fh-sub">${closed?"":`Every action is saved to the job audit trail — “Built Pallet” and “Shipper Palletized” convert the freight to pallet cargo.`}</span>
+        </div>
+        ${fhSectionContentHtml(stop)}
+    </div>`;
+}
+// Delegated event plumbing (registered once in bindPickupDelegates):
+//   fh-open    — open the capture sheet for (stop, item, action)
+//   fh-close   — close the sheet, keep everything as it was
+//   fh-submit  — read the sheet fields and record the action
+//   [data-field="fh-photo"] change — keep the picked File on S.fh
+function fhRedrawSection(stopId){
+    // Repaint ONLY the freight section in place. The v7 guide body is
+    // content-key-gated and S.fh is deliberately NOT part of that key
+    // (S.fh is ephemeral open-sheet UI state) — so open/close of the
+    // sheet must not depend on a full guide repaint. When the host
+    // container is gone (screen switched), fall back to a full-host
+    // refresh so the recorded event is never left invisible.
+    const host=q(`[data-fh-section="${stopId}"]`);
+    const stop=findStopById(stopId) || S.stop;
+    if(host && stop){ host.innerHTML=fhSectionContentHtml(stop); return; }
+    if(stop && isPickupLikeStop(stop.type)){
+        if(typeof window.__v7GuideRefresh==="function") window.__v7GuideRefresh();
+        else renderStopDetail();
+    }
+}
+function fhOpenSheet(stopId,itemId,action){
+    const stop=findStopById(stopId) || S.stop;
+    if(!stop || stop.id!==stopId){ toast("Stop is no longer available."); return; }
+    const item=(stop.freight_items||[]).find(i=>i.id===itemId);
+    if(!item || !fhEligibleFreightItem(item)){ toast("This freight item is no longer loose cargo."); return; }
+    if(fhClosedStop(stop)){ toast("This stop is closed — no new freight actions."); return; }
+    if(S.fh && S.fh.stopId===stopId){ S.fh=null; } // switching actions: drop any prior sheet
+    S.fh={stopId:stop.id, itemId, action, file:null, busy:false};
+    fhRedrawSection(stop.id);
+}
+function fhCloseSheet(){
+    const fh=S.fh; S.fh=null;
+    if(!fh) return;
+    fhRedrawSection(fh.stopId);
+}
+function fhFieldNum(id){
+    const el=q("#"+id);
+    if(!el) return 0;
+    const n=parseFloat(el.value);
+    return Number.isFinite(n) && n>0 ? n : 0;
+}
+function fhFieldBool(id){
+    const el=q("#"+id);
+    return el ? !!el.checked : false;
+}
+function fhFieldText(id){
+    const el=q("#"+id);
+    return el ? String(el.value||"").trim() : "";
+}
+function fhSetSheetBusy(busy){
+    if(!S.fh) return;
+    S.fh.busy=busy;
+    const sheet=q("#fhSection .da-fh-sheet");
+    if(!sheet) return;
+    sheet.querySelectorAll("[data-action='fh-submit'],[data-action='fh-close']").forEach(b=>{ b.disabled=busy; });
+    const sub=sheet.querySelector("[data-action='fh-submit']");
+    if(sub) sub.textContent=busy?("Recording…"):("Record "+fhActionLabel(S.fh.action));
+}
+function fhFileToDataUrl(file){
+    return new Promise((resolve,reject)=>{
+        const r=new FileReader();
+        r.onload=()=>resolve(typeof r.result==="string"?r.result:"");
+        r.onerror=()=>reject(new Error("Could not read the photo"));
+        r.readAsDataURL(file);
+    });
+}
+async function fhSubmit(){
+    const fh=S.fh;
+    if(!fh || fh.busy) return;
+    const stop=findStopById(fh.stopId) || S.stop;
+    if(!stop || stop.id!==fh.stopId){ toast("Stop is no longer available."); return; }
+    const item=(stop.freight_items||[]).find(i=>i.id===fh.itemId);
+    if(!item || !fhEligibleFreightItem(item)){ toast("This freight item changed — close and reopen the sheet."); return; }
+    if(fhClosedStop(stop)){ toast("This stop is closed — no new freight actions."); return; }
+    const values={};
+    if(fh.action==="built_pallet"){
+        const built=fhFieldNum("fhPalletsBuilt");
+        if(!built){ toast("Enter how many pallets you built (at least 1)."); return; }
+        values.pallets_built=built;
+        values.case_count=fhFieldNum("fhCasesRemaining");
+        values.carrier_pallet_used=fhFieldBool("fhCarrierPallet");
+        values.shrink_wrap_used=fhFieldBool("fhWrap");
+        values.labour_minutes=fhFieldNum("fhLabour");
+        values.billable_pallets=fhFieldBool("fhBillPallets");
+        values.billable_labour=fhFieldBool("fhBillLabour");
+        // Billable toggles default to TRUE server-side — an untouched
+        // checked checkbox reads true here, so no defaulting needed.
+        // case_count (cases NOT built, still on the floor) is sent as-is:
+        // it drives the hand-bomb-at-delivery flag on the booking line.
+    }else if(fh.action==="loaded_loose"){
+        values.case_count=fhFieldNum("fhCases");
+        values.labour_minutes=fhFieldNum("fhLabour");
+        values.billable_labour=fhFieldBool("fhBillLabour");
+    }else if(fh.action==="shipper_palletized"){
+        const loaded=fhFieldNum("fhPalletsLoaded");
+        if(!loaded){ toast("Enter how many pallets the freight arrived on (at least 1)."); return; }
+        values.pallets_loaded=loaded;
+    }else if(fh.action==="exception"){
+        const notes=fhFieldText("fhNotes");
+        if(!notes && !fh.file){ toast("Describe the exception or attach a photo."); return; }
+        if(notes) values.notes=notes;
+    }else{
+        toast("Unknown action."); return;
+    }
+    const notes=fhFieldText("fhNotes");
+    if(notes && fh.action!=="exception") values.notes=notes;
+    fhSetSheetBusy(true);
+    let photo=null;
+    if(fh.file){
+        try{
+            const dataUrl=await fhFileToDataUrl(fh.file);
+            const comma=dataUrl.indexOf(",");
+            photo={data_b64:(comma>=0?dataUrl.slice(comma+1):""), filename:fh.file.name||"freight.jpg"};
+            if(!photo.data_b64){ toast("Could not read the photo file."); fhSetSheetBusy(false); return; }
+        }catch(e){
+            toast(e.message||"Could not read the photo file."); fhSetSheetBusy(false); return;
+        }
+    }
+    try{
+        const res=await rpc("/dispatch/driver/freight/handling/add",
+            {stop_id:stop.id, action:fh.action, item_id:item.id, values:{...values, ...(photo?{photo}:{})}});
+        if(!res || !res.success){
+            toast((res&&res.error)||"Could not record the action — try again.");
+            fhSetSheetBusy(false);
+            return;
+        }
+        toast(fhActionLabel(fh.action)+" recorded ✓");
+        S.fh=null;
+        await reloadDay();
+        const fresh=findStopById(stop.id);
+        if(fresh) S.stop=fresh;
+        // Conversions move floor freight onto pallets: refresh the shared
+        // load plan so later guide steps see the converted items.
+        try{ if(fh.action!=="exception") await ensurePickupLoadPlan(true); }catch(e){ /* plan best-effort */ }
+        // Repaint: direct section redraw for instant feedback; the guide
+        // (when open) also repaints because its content key now includes
+        // the new event row and the refreshed load plan.
+        fhRedrawSection(stop.id);
+        if(typeof window.__v7GuideRefresh==="function") window.__v7GuideRefresh();
+        else if(S.stop && isPickupLikeStop(S.stop.type)) renderStopDetail();
+    }catch(e){
+        toast("Error: "+(e.message||"recording failed"));
+        fhSetSheetBusy(false);
+    }
 }
 
 function renderTransitEvidence(stop){
