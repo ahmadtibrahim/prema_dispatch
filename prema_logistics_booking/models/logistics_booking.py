@@ -2187,7 +2187,9 @@ class LogisticsBooking(models.Model):
             for line in self.line_ids:
                 Item.create({
                     "job_id": job.id,
-                    "name": line.description or "Pallet",
+                    "name": line.description or (
+                        "Pallet" if line.handling_type == "palletized"
+                        else "Loose Freight"),
                     "description": line.commodity or self.commodity or "",
                     "pallet_count": line.pallets,
                     "weight_lbs": line.weight_lbs,
@@ -2195,7 +2197,15 @@ class LogisticsBooking(models.Model):
                     "delivery_stop_id": created_destination.id if created_destination else False,
                     "available_after_stop_id": created_origin.id if created_origin else False,
                     "temperature_zone": "chilled" if self.temperature_mode == "reefer" else "ambient",
-                    "load_unit_type": "pallet",
+                    # TODO 7 (loose/mixed freight): carry the line's ORIGINAL
+                    # handling onto the item. palletized → pallet;
+                    # loose_floor_loaded → loose; mixed → pallet only when
+                    # every unit is palletized, else loose (the item then
+                    # represents the whole line, footprint below).
+                    "load_unit_type": line._dispatch_load_unit_type(),
+                    # Pallet-equivalent floor footprint; falls back to 0
+                    # (legacy pallet-position counting) when unset.
+                    "capacity_equivalent": line.planned_pallet_equivalent or 0.0,
                 })
         return job
 

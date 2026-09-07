@@ -9,6 +9,7 @@
                 <field name="name"/>
                 <field name="item_ref"/>
                 <field name="pallet_count"/>
+                <field name="capacity_equivalent" optional="hide"/>
                 <field name="weight_lbs"/>
                 <field name="pickup_stop_id"/>
                 <field name="delivery_stop_id"/>
