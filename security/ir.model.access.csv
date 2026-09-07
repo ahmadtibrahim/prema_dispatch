@@ -142,3 +142,10 @@ access_detention_item_manager,detention.item.manager,model_prema_dispatch_detent
 access_detention_rule_readonly,detention.rule.readonly,model_prema_dispatch_detention_rule,group_dispatch_readonly,1,0,0,0
 access_detention_rule_dispatcher,detention.rule.dispatcher,model_prema_dispatch_detention_rule,group_dispatcher,1,1,1,0
 access_detention_rule_manager,detention.rule.manager,model_prema_dispatch_detention_rule,group_dispatch_manager,1,1,1,1
+
+# TODO 8: driver freight-handling journal — driver read-only (rows are
+# created under sudo() by authorized callers; immutable audit convention,
+# same as prema.dispatch.evidence).
+access_freight_handling_driver,freight.handling.driver,model_prema_dispatch_freight_handling,group_dispatch_driver,1,0,0,0
+access_freight_handling_dispatcher,freight.handling.dispatcher,model_prema_dispatch_freight_handling,group_dispatcher,1,1,1,1
+access_freight_handling_manager,freight.handling.manager,model_prema_dispatch_freight_handling,group_dispatch_manager,1,1,1,1

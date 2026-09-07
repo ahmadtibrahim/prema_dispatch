@@ -131,6 +131,7 @@ A full in-app user manual is available from the Prema Dispatch app menu.
         "views/dispatch_stage_views.xml",
         "views/dispatch_stop_views.xml",
         "views/dispatch_evidence_views.xml",
+        "views/freight_handling_views.xml",
         "views/dispatch_item_views.xml",
         "views/dispatch_assignment_log_views.xml",
         "views/dispatch_job_views.xml",
