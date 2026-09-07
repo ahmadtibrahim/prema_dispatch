@@ -8,7 +8,7 @@
         <field name="name">prema.dispatch.job.risk.tree</field>
         <field name="model">prema.dispatch.job.risk</field>
         <field name="arch" type="xml">
-            <tree string="Engine Risks" create="false" edit="false"
+            <list string="Engine Risks" create="false" edit="false"
                   delete="false">
                 <field name="event_at" string="Evaluated At"/>
                 <field name="severity" widget="badge"
@@ -27,7 +27,7 @@
                 <field name="temperature_c" string="Temp (°C)" optional="show"/>
                 <field name="hours_summary" string="Hours" optional="hide"/>
                 <field name="source" optional="hide"/>
-            </tree>
+            </list>
         </field>
     </record>
 
