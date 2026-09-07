@@ -174,6 +174,17 @@ class PremaDispatchItem(models.Model):
         compute="_compute_consumes_floor_position", store=True, readonly=False,
         help="Only items with this set count toward truck layout capacity.",
     )
+    # TODO 7 (loose/mixed freight): pallet-equivalent floor footprint
+    # carried over from the booking line (planned_pallet_equivalent).
+    # 0/unset means "no footprint recorded — count this item by its pallet
+    # positions as before", so existing capacity logic never regresses.
+    # consumes_floor_position above is deliberately left untouched.
+    capacity_equivalent = fields.Float(
+        string="Pallet Equivalent", digits=(10, 1),
+        help="Pallet-equivalent floor space this freight reserves "
+             "(from the booking line's planned_pallet_equivalent). "
+             "0 = unset: existing pallet-position logic applies.",
+    )
     load_plan_id = fields.Many2one("prema.dispatch.load.plan", ondelete="set null", index=True)
     position_id = fields.Many2one("prema.dispatch.vehicle.layout.position", ondelete="set null", index=True)
     stop_allocation_ids = fields.One2many("prema.dispatch.pallet.stop.allocation", "dispatch_item_id")
