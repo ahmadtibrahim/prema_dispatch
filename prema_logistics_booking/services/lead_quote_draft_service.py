@@ -69,6 +69,22 @@ WEIGHT_RE = re.compile(
 INT_RE = re.compile(r"\d+")
 
 
+def _iso_at(at):
+    """Serialize a document timestamp the way the engine does for its
+    facts_snapshot sources (naive-UTC ISO, seconds precision, None → '').
+
+    Kept at module level so replay keys, doc-identity checks and the engine
+    snapshot always line up byte for byte."""
+    if at is None:
+        return ""
+    if isinstance(at, datetime.datetime):
+        if at.tzinfo is not None:
+            from pytz import UTC
+            at = at.astimezone(UTC).replace(tzinfo=None)
+        return at.isoformat(sep=" ", timespec="seconds")
+    return str(at)
+
+
 class LeadQuoteDraftService:
     """CRM opportunity → draft estimate / draft Rate Confirmation helper."""
 
@@ -80,12 +96,76 @@ class LeadQuoteDraftService:
     # ════════════════════════════════════════════════════════════════════
 
     def extract_effective_facts(self, lead, extractor=None, docs=None):
-        """Customer documents → superseded per-field effective facts."""
+        """Customer documents → superseded per-field effective facts.
+
+        The extractor defaults to :meth:`compat_extractor` (never the raw
+        engine default): the engine calls per-document extractors with
+        ``source=`` while ``extract_from_text`` declares ``source_label=``,
+        and this dispatch side must not depend on which spelling the engine
+        uses internally (engine lead_fact_service currently TypeErrors on
+        its own default).
+        """
         from odoo.addons.premafirm_ai_engine.services.lead_fact_service import (  # noqa: E501
             LeadFactService,
         )
+        if extractor is None:
+            extractor = self.compat_extractor()
         return LeadFactService(self.env).extract_effective_facts(
             lead, extractor=extractor, docs=docs)
+
+    def compat_extractor(self):
+        """Live extractor callable tolerant of BOTH kwarg spellings.
+
+        LeadFactService calls per-document extractors as
+        ``extractor(text, source=..., kind=..., at=...)`` while
+        ShipmentFactExtractionService.extract_from_text declares the same
+        argument as ``source_label=``.  This wrapper accepts both and
+        forwards to the declared signature, so dispatch-side callers never
+        TypeError regardless of the engine's internal spelling (fixed or
+        not).
+        """
+        def extractor(text, source=None, source_label=None,
+                      kind="lead_description", at=None):
+            from odoo.addons.premafirm_ai_engine.services.shipment_fact_extraction_service import (  # noqa: E501
+                ShipmentFactExtractionService,
+            )
+            return ShipmentFactExtractionService(self.env).extract_from_text(
+                text,
+                source_label=source_label
+                if source_label is not None else (source or ""),
+                kind=kind,
+                at=at,
+            )
+        return extractor
+
+    def customer_documents_covered_by_draft(self, lead, draft):
+        """True when every current customer document of the lead is already
+        represented in the draft's stored facts snapshot — i.e. the draft is
+        current and a repeat click must reopen it (never a duplicate).
+
+        Document identity is (kind, source, at), exactly the ``sources`` the
+        engine stores in ``facts_snapshot``, serialized the same way
+        (naive-UTC seconds).  Using identity — not wall-clock comparison —
+        keeps the guard immune to future-dated inbound mail (test fixtures
+        deliberately date customer emails ahead of ``now``): any document
+        the draft was built FROM is covered whatever its date says.
+        """
+        from odoo.addons.premafirm_ai_engine.services.lead_fact_service import (  # noqa: E501
+            LeadFactService,
+        )
+        sources = (draft.facts_snapshot or {}).get("sources") or []
+        draft_keys = {
+            (str(source.get("kind") or ""), str(source.get("source") or ""),
+             str(source.get("at") or ""))
+            for source in sources
+        }
+        docs = LeadFactService(self.env).collect_documents(lead)
+        current_keys = {
+            (str(doc.get("kind") or ""), str(doc.get("source") or ""),
+             _iso_at(doc.get("at")))
+            for doc in docs
+        }
+        return draft_keys >= current_keys
 
     def replay_extractor(self, facts_result):
         """Callable that replays already-extracted rows document by document.
@@ -105,25 +185,14 @@ class LeadQuoteDraftService:
                    str(row.get("kind") or ""))
             rows_by_key.setdefault(key, []).append(dict(row))
 
-        def at_key(at):
-            """Mirror the engine's _at_to_iso so cached keys line up."""
-            if at is None:
-                return ""
-            if isinstance(at, datetime.datetime):
-                if at.tzinfo is not None:
-                    from pytz import UTC
-                    at = at.astimezone(UTC).replace(tzinfo=None)
-                return at.isoformat(sep=" ", timespec="seconds")
-            return str(at)
-
         for doc in facts_result.get("docs") or []:
-            key = (str(doc.get("source") or ""), at_key(doc.get("at")),
+            key = (str(doc.get("source") or ""), _iso_at(doc.get("at")),
                    str(doc.get("kind") or ""))
             text_by_key[key] = (doc.get("text") or "").strip()
             rows_by_key.setdefault(key, [])
 
         def extractor(text, source="", kind="lead_description", at=None):
-            key = (str(source or ""), at_key(at), str(kind or ""))
+            key = (str(source or ""), _iso_at(at), str(kind or ""))
             if key in rows_by_key and key in text_by_key \
                     and text_by_key[key] == (text or "").strip():
                 return {"rows": rows_by_key[key], "warnings": []}
@@ -523,7 +592,11 @@ class LeadQuoteDraftService:
         pickup_date = self._parse_iso_date(f("pickup_date"))
         return {
             "pallets": pallets or 1,
+            # Stated-ness flags: priceable actions must not silently price a
+            # never-stated load size as one pallet of nothing.
+            "pallets_stated": bool(pallets),
             "weight_lbs": weight_lbs if weight_lbs is not None else 0.0,
+            "weight_stated": weight_lbs is not None,
             "commodity": f("commodity"),
             "load_type": load_type,
             "temperature_mode": temperature_mode,
@@ -644,7 +717,11 @@ class LeadQuoteDraftService:
         }
 
     def canonical_quote(self, lead, request_values):
-        """normalize + prepare_quote — the ONLY sanctioned price source."""
+        """normalize + prepare_quote — the ONLY sanctioned price source.
+
+        Never indexes the result blindly: a missing/non-numeric price raises
+        a clear UserError instead of a raw KeyError/TypeError surfacing to
+        the caller."""
         from ..services.booking_orchestration_service import (
             BookingOrchestrationService,
         )
@@ -657,6 +734,14 @@ class LeadQuoteDraftService:
                 "The dispatch pricing service returned no quote. Nothing "
                 "was created — try again or quote manually via 'Calculate "
                 "Dispatch Rate'."))
+        amount = quote.get("calculated_price")
+        if isinstance(amount, bool) or not isinstance(amount, (int, float)):
+            raise UserError(_(
+                "The dispatch pricing service returned quote %(token)s "
+                "without a price for this shipment. Nothing was created — "
+                "try again or quote manually via 'Calculate Dispatch "
+                "Rate'.",
+                token=quote.get("quote_token")))
         return quote
 
     def price_reference_from_quote(self, quote):

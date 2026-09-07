@@ -44,13 +44,37 @@ class CrmLeadEstimateBridge(models.Model):
 
         Runs the full chain — supersession → stop resolution → canonical
         dispatch pricing → engine draft — and opens the draft for human
-        review in the chatter.  Nothing is sent, staged or booked."""
+        review.  Nothing is sent, staged or booked.
+
+        Repeat-click guard: while the newest draft already reflects the
+        latest customer statements, a repeat click reopens that draft
+        untouched (no second AI call, no second pricing session, no
+        duplicate).  Only a NEWER customer document than the draft re-runs
+        the chain — the controlled re-estimate path after a correction.
+        """
         self.ensure_one()
         if not self.partner_id:
             raise UserError(_(
                 "Select or create the Customer on this opportunity before "
                 "preparing a preliminary estimate."))
+        Estimate = self.env["premafirm.lead.estimate.reply"]
+        existing = Estimate.search(
+            [("crm_lead_id", "=", self.id)],
+            order="create_date desc, id desc", limit=1)
         companion = LeadQuoteDraftService(self.env)
+        if existing and companion.customer_documents_covered_by_draft(
+                self, existing):
+            # The newest draft was already built from every current customer
+            # document: a repeat click reopens the applicable draft. Never
+            # reprice/reprose — the draft may already carry reviewer edits.
+            self.message_post(
+                body=_(
+                    "Preliminary estimate draft %s is still current for the "
+                    "latest customer statements — reopened; nothing was "
+                    "re-priced.") % (existing.subject or existing.id),
+                subtype_xmlid="mail.mt_note",
+            )
+            return self._estimate_open_action(existing)
 
         facts = companion.extract_effective_facts(self)
         # Validates both sides and raises BEFORE anything is written when a
@@ -64,26 +88,52 @@ class CrmLeadEstimateBridge(models.Model):
                 "setpoint ('frozen' or 'chilled' alone is not a setpoint). "
                 "Confirm the setpoint with the customer, then retry — "
                 "nothing was priced or created."))
+        if shipment["load_type"] != "ftl" and not shipment["pallets_stated"]:
+            raise UserError(_(
+                "The customer never stated how many pallets this LTL "
+                "shipment is, and the LTL price is quoted per pallet. "
+                "Confirm the pallet count with the customer (and state it "
+                "on the opportunity), then retry — nothing was priced or "
+                "created."))
 
         quote = companion.canonical_quote(
             self, companion.estimate_request_values(self, stops, shipment))
         amount = quote["calculated_price"]
-        draft = self.env["premafirm.lead.estimate.reply"].prepare_from_lead(
+        price_reference = companion.price_reference_from_quote(quote)
+        draft = Estimate.prepare_from_lead(
             self,
             price_amount=amount,
-            price_reference=companion.price_reference_from_quote(quote),
+            price_reference=price_reference,
             extractor=companion.replay_extractor(facts),
         )
-        self.message_post(
-            body=_(
-                "Preliminary estimate draft %s created (amount %s came from "
-                "the dispatch pricing engine — %s). Review it in the draft "
-                "before anything is sent.") % (
-                draft.subject or draft.id,
-                format(amount, ",.2f"),
-                companion.price_reference_from_quote(quote)),
-            subtype_xmlid="mail.mt_note",
-        )
+        if existing:
+            self.message_post(
+                body=_(
+                    "New customer statement(s) arrived after the previous "
+                    "draft, so a fresh preliminary estimate draft %s was "
+                    "prepared from the latest facts (amount %s — %s). The "
+                    "older draft %s is kept for reference.") % (
+                    draft.subject or draft.id,
+                    format(amount, ",.2f"),
+                    price_reference,
+                    existing.subject or existing.id),
+                subtype_xmlid="mail.mt_note",
+            )
+        else:
+            self.message_post(
+                body=_(
+                    "Preliminary estimate draft %s created (amount %s came "
+                    "from the dispatch pricing engine — %s). Review it in "
+                    "the draft before anything is sent.") % (
+                    draft.subject or draft.id,
+                    format(amount, ",.2f"),
+                    price_reference),
+                subtype_xmlid="mail.mt_note",
+            )
+        return self._estimate_open_action(draft)
+
+    def _estimate_open_action(self, draft):
+        """One proper window action opening the estimate draft's form."""
         return {
             "type": "ir.actions.act_window",
             "name": _("Preliminary Estimate Reply"),

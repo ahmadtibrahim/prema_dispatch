@@ -7,7 +7,14 @@ does not search corridor names, hardcode weekdays, or pick the first truck.
 
 
 def generate_phase1_departures(env, weeks=8):
-    """Reconcile every active configured corridor; kept as the cron API.
+    """Reconcile every configured corridor; kept as the cron API.
+
+    Active corridors keep their rolling horizon of generated departures.
+    Inactive corridors are reconciled too (heal loop): future generated
+    departures that never began are retired there (once a real booking /
+    open dispatch job cleared), so a disabled corridor can never keep
+    blocking its truck. This also self-heals pre-existing stale rows that
+    were left scheduled+active by the old inactive-write() defect.
 
     ``weeks`` remains accepted for older callers/tests, but the public horizon
     is capped at eight weeks by the corridor model.
@@ -18,6 +25,8 @@ def generate_phase1_departures(env, weeks=8):
         "updated": 0,
         "removed": 0,
         "preserved_booked": 0,
+        "preserved_job": 0,
+        "reactivated": 0,
         "skipped": 0,
         "weeks": requested_weeks,
     }
@@ -32,7 +41,14 @@ def generate_phase1_departures(env, weeks=8):
                 "departure_horizon_weeks": requested_weeks,
             })
         result = corridor._reconcile_departure_horizon()
-        for key in ("created", "updated", "removed", "preserved_booked"):
+        for key in ("created", "updated", "removed", "preserved_booked",
+                    "preserved_job", "reactivated"):
+            totals[key] += result.get(key, 0)
+    inactive = env["logistics.corridor"].with_context(active_test=False).search(
+        [("active", "=", False)])
+    for corridor in inactive:
+        result = corridor._reconcile_departure_horizon()
+        for key in ("removed", "preserved_booked", "preserved_job"):
             totals[key] += result.get(key, 0)
     return totals
 

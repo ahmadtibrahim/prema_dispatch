@@ -667,7 +667,10 @@ class LogisticsCorridor(models.Model):
         return self.browse()
 
     def action_refresh_departures(self):
-        summary = {"created": 0, "updated": 0, "removed": 0, "preserved_booked": 0, "retired_referenced": 0}
+        summary = {
+            "created": 0, "updated": 0, "removed": 0,
+            "preserved_booked": 0, "preserved_job": 0, "reactivated": 0,
+        }
         for corridor in self:
             result = corridor._reconcile_departure_horizon()
             for key in summary:
@@ -678,9 +681,10 @@ class LogisticsCorridor(models.Model):
             "params": {
                 "title": _("Departure schedule refreshed"),
                 "message": _(
-                    "Created %(created)s, updated %(updated)s, removed %(removed)s; "
-                    "preserved %(preserved_booked)s booked and retired "
-                    "%(retired_referenced)s referenced departure(s).",
+                    "Created %(created)s, updated %(updated)s, re-activated "
+                    "%(reactivated)s, retired %(removed)s; preserved "
+                    "%(preserved_booked)s booked and %(preserved_job)s "
+                    "job-carrying departure(s).",
                     **summary,
                 ),
                 "type": "success",
@@ -901,15 +905,33 @@ class LogisticsCorridor(models.Model):
         }
 
     def _reconcile_departure_horizon(self, today=None):
-        """Maintain the next eight weekly occurrences for this corridor.
+        """Maintain the rolling departure horizon for this corridor.
 
-        Future unbooked Scheduled rows that no longer match the weekly pattern
-        are removed. Completed/in-progress rows and any booked future departure
-        are preserved. Manual truck overrides are never overwritten.
+        Active corridor: every weekly occurrence inside the horizon is
+        guaranteed to exist as a Scheduled departure — retired template rows
+        are re-activated by their (corridor, date) business key instead of
+        duplicating, and genuinely new dates are created.
+
+        Inactive corridor / disabled weekday / blackout date / missed same-day
+        departure: future Scheduled departures that have NOT begun (no real
+        booking work started, no OPEN dispatch job referencing them) are
+        retired — status ``cancelled``, ``active`` False, with a chatter note
+        explaining why — so they never block a truck again. Departed / in
+        progress rows, past rows and departures already carrying a real
+        booking or an open dispatch job are preserved (active) so that real
+        work keeps blocking the truck where appropriate.
+
+        Idempotent: rows are never deleted and never duplicated; re-running
+        (daily cron, any schedule write) converges to the same schedule.
         """
         self.ensure_one()
         today = today or fields.Date.context_today(self)
-        weekdays = self._operating_weekdays()
+        corridor_active = self.active
+        # An inactive corridor has NO operating weekdays: its future rows are
+        # retirement candidates, never regeneration targets. This is the
+        # second half of the enable/disable defect — previously the reconcile
+        # kept "operating" the disabled corridor's weekday pattern.
+        weekdays = self._operating_weekdays() if corridor_active else set()
         weeks = min(max(self.departure_horizon_weeks or 8, 1), 8)
         excluded = self._excluded_departure_dates()
         target_dates = set()
@@ -935,7 +957,10 @@ class LogisticsCorridor(models.Model):
             ("status", "=", "scheduled"),
             ("active", "=", True),
         ])
-        summary = {"created": 0, "updated": 0, "removed": 0, "preserved_booked": 0, "retired_referenced": 0}
+        summary = {
+            "created": 0, "updated": 0, "removed": 0,
+            "preserved_booked": 0, "preserved_job": 0, "reactivated": 0,
+        }
         DispatchJob = self.env["prema.dispatch.job"].sudo().with_context(active_test=False)
         for departure in future:
             booked = bool(Leg.search_count([
@@ -943,26 +968,29 @@ class LogisticsCorridor(models.Model):
                 ("reservation_state", "in", ("pending", "reserved", "consumed")),
                 ("booking_id.state", "!=", "cancelled"),
             ]))
-            if departure.departure_date not in target_dates:
-                if booked:
-                    summary["preserved_booked"] += 1
-                elif DispatchJob.search_count([
-                        ("corridor_departure_id", "=", departure.id)]) > 0:
-                    # Dispatch jobs (incl. archived) reference this departure
-                    # with ondelete="restrict" — never unlink. Retire the row so
-                    # history stays intact and the FK keeps holding.
-                    departure.write({"status": "cancelled", "active": False})
-                    summary["retired_referenced"] += 1
-                else:
-                    departure.unlink()
-                    summary["removed"] += 1
-                continue
             if booked:
-                # An already-sold exact departure is frozen. Schedule/default
-                # changes apply to new or still-empty rows; dispatchers may
-                # deliberately override this row from Open: Departure.
+                # Real bookings freeze their departure — never retired, even
+                # when the corridor or its weekday is disabled. The booking
+                # (not the template) keeps blocking the truck.
                 summary["preserved_booked"] += 1
                 continue
+            if departure.departure_date not in target_dates:
+                open_job_referenced = bool(DispatchJob.search_count([
+                    ("corridor_departure_id", "=", departure.id),
+                    ("stage_id.stage_type", "not in", ("cancelled", "completed")),
+                ]))
+                if open_job_referenced:
+                    # An open dispatch job (incl. archived jobs still open)
+                    # is real planned work on this departure — keep the row
+                    # visible/active so the job keeps blocking the truck.
+                    summary["preserved_job"] += 1
+                    continue
+                self._retire_departure(departure, corridor_active)
+                summary["removed"] += 1
+                continue
+            # The date is (again) a valid operating day. Row still here →
+            # re-sync time/vehicle unless the dispatcher deliberately
+            # overrode the truck (vehicle_assignment_source).
             vals = {}
             if departure.departure_time != self.start_time:
                 vals["departure_time"] = self.start_time
@@ -979,20 +1007,86 @@ class LogisticsCorridor(models.Model):
                 departure.with_context(corridor_default_sync=True).write(vals)
                 summary["updated"] += 1
 
-        existing_dates = set(future.filtered(lambda d: d.exists()).mapped("departure_date"))
+        existing_dates = set(future.mapped("departure_date"))
         for departure_date in sorted(target_dates - existing_dates):
             available_default = self._default_vehicle_for_date(departure_date)
-            Departure.with_context(corridor_default_sync=True).create({
-                "corridor_id": self.id,
-                "departure_date": departure_date,
-                "departure_time": self.start_time,
-                "vehicle_id": available_default.id or False,
-                "vehicle_assignment_source": "corridor_default",
-                "status": "scheduled",
-                "max_capacity": self._vehicle_capacity(available_default),
-            })
-            summary["created"] += 1
+            # Idempotency guard by business key: a retired template row for
+            # this exact corridor+date is re-activated in place; a fresh row
+            # is created only when no such row exists.
+            archived = Departure.with_context(active_test=False).search([
+                ("corridor_id", "=", self.id),
+                ("departure_date", "=", departure_date),
+                ("active", "=", False),
+                ("status", "in", ("scheduled", "cancelled")),
+            ], order="id desc", limit=1)
+            if archived:
+                archived.with_context(corridor_default_sync=True).write({
+                    "active": True,
+                    "status": "scheduled",
+                    "departure_time": self.start_time,
+                    "vehicle_id": available_default.id or False,
+                    "vehicle_assignment_source": "corridor_default",
+                    "max_capacity": self._vehicle_capacity(available_default),
+                })
+                archived.message_post(
+                    subject=_("Departure Re-activated"),
+                    body=_("%(corridor)s operates again on %(date)s — this "
+                           "retired departure was re-activated to serve it.",
+                           corridor=self.name,
+                           date=departure_date.strftime("%A %Y-%m-%d")),
+                )
+                summary["reactivated"] += 1
+            else:
+                Departure.with_context(corridor_default_sync=True).create({
+                    "corridor_id": self.id,
+                    "departure_date": departure_date,
+                    "departure_time": self.start_time,
+                    "vehicle_id": available_default.id or False,
+                    "vehicle_assignment_source": "corridor_default",
+                    "status": "scheduled",
+                    "max_capacity": self._vehicle_capacity(available_default),
+                })
+                summary["created"] += 1
         return summary
+
+    def _retire_departure(self, departure, corridor_active):
+        """Retire a future generated departure that never began.
+
+        Status ``cancelled`` + ``active`` False with an explanatory chatter
+        note. The row is never deleted: past history and any referencing
+        record keep holding, and the corridor's reactivation can resurrect it
+        by its (corridor, date) business key.
+        """
+        if corridor_active:
+            reason = _(
+                "corridor %(corridor)s no longer operates on %(weekday)s "
+                "(or this occurrence is outside its booking horizon / "
+                "blacked out)",
+                corridor=self.name,
+                weekday=departure.departure_date.strftime("%A"),
+            )
+        else:
+            reason = _(
+                "corridor %(corridor)s is inactive",
+                corridor=self.name,
+            )
+        departure.write({"status": "cancelled", "active": False})
+        minutes = int(round((departure.departure_time or 0.0) * 60))
+        departure.message_post(
+            subject=_("Departure retired automatically"),
+            body=_("Departure %(date)s at %(time)s was retired automatically "
+                   "because %(reason)s. It had not begun and carried no real "
+                   "booking or open dispatch job, so it no longer blocks "
+                   "truck %(truck)s. — %(user)s on %(when)s",
+                   date=departure.departure_date,
+                   time="%02d:%02d" % (minutes // 60, minutes % 60),
+                   reason=reason,
+                   truck=departure.vehicle_id.display_name
+                   if departure.vehicle_id else _("(unassigned)"),
+                   user=self.env.user.display_name,
+                   when=fields.Datetime.now().strftime("%Y-%m-%d %H:%M")),
+        )
+        return departure
 
     @api.model_create_multi
     def create(self, vals_list):
@@ -1020,9 +1114,49 @@ class LogisticsCorridor(models.Model):
             "departure_horizon_weeks", "holiday_calendar_ids", "active",
         }
         if schedule_fields.intersection(vals) and not self.env.context.get("skip_departure_reconcile"):
-            for record in self.filtered("active"):
+            # Reconcile over the FULL written set — including records that
+            # just turned inactive or dropped a weekday. An inactive
+            # corridor/weekday must retire its future not-yet-begun generated
+            # departures so they stop blocking the truck; the reconcile itself
+            # decides what to retire, preserve or (re)create, and gates its
+            # target weekdays on the corridor's active state.
+            for record in self:
                 record._reconcile_departure_horizon()
         return result
+
+    # ── Enable / disable ─────────────────────────────────────────────
+    # Object-button convenience around the active flag. The write() hook
+    # above reconciles the departure horizon in BOTH directions: deactivate
+    # retires the corridor's future generated departures that never began
+    # (real bookings/jobs keep their departure), activate regenerates only
+    # the missing valid dates (never a duplicate — retired rows are
+    # re-activated by their corridor+date business key).
+
+    def action_deactivate(self):
+        """Disable this corridor: the Tuesday-Windsor style stop.
+
+        Future template-generated departures that have not begun (no real
+        booking or open dispatch job) are retired by the reconcile so an
+        inactive corridor never blocks its truck again; departures already
+        carrying a real booking or job stay active so that real work keeps
+        blocking the truck where appropriate. Past/begun departures are
+        never touched.
+        """
+        for corridor in self:
+            if not corridor.active:
+                continue
+            corridor.active = False
+        return True
+
+    def action_activate(self):
+        """Re-enable this corridor. Only genuinely missing departures are
+        (re)created — never duplicates: retired template rows matching an
+        operating weekday inside the horizon are re-activated in place."""
+        for corridor in self:
+            if corridor.active:
+                continue
+            corridor.active = True
+        return True
 
 class LogisticsCorridorStop(models.Model):
     _name = "logistics.corridor.stop"
