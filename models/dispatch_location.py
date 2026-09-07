@@ -916,6 +916,19 @@ class PremaDispatchLocation(models.Model):
 
         res = super().write(vals)
 
+        # Estimator stops snapshot this location's verification_state into
+        # their STORED status.  The engine's @depends deliberately stops at
+        # saved_location_id (a path through this model would crash engine
+        # schema upgrades — prema_dispatch loads one depth AFTER
+        # premafirm_ai_engine), so poke the estimator rows from here — the
+        # legal direction — whenever verification changes.
+        if "verification_state" in vals or "google_verified" in vals:
+            stop_model = self.env.get("premafirm.estimator.structured.stop")
+            if stop_model is not None and self.ids:
+                stop_model.search([
+                    ("saved_location_id", "in", self.ids),
+                ]).modified(["saved_location_id"])
+
         for rec in self:
             updates = {}
             # Clear Google verification on manual address edit

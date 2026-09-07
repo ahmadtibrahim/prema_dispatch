@@ -380,6 +380,10 @@ class LeadQuoteDraftService:
         return {
             "side": side,
             "stop_type": side,
+            # Customer-stated company/facility name — used to name any new
+            # Pending Review facility the resolution saves (spec: dedupe on
+            # PHYSICAL address, name from the company the customer gave).
+            "company_name": cls._fact_value(facts, "%s_company_name" % prefix),
             "address": address or "",
             "city": city or "",
             "postal_code": postal or "",
@@ -406,16 +410,169 @@ class LeadQuoteDraftService:
             return "civic_only"
         return "city_only" if address else "none"
 
+    # ════════════════════════════════════════════════════════════════════
+    # Google completion of civic-only stops (master instruction §4 address
+    # resolution: postal missing but street + city/province present → ONE
+    # canonical Google Places resolution; never auto-verified, created once
+    # as Pending Review; ambiguity/no-match → options for manual choice)
+    # ════════════════════════════════════════════════════════════════════
+
+    def _google_service(self):
+        from ..services.google_places_service import GooglePlacesService
+        return GooglePlacesService(self.env)
+
+    @staticmethod
+    def _google_query(stop):
+        """Full-text search for a civic-only stop — street, city and
+        province exactly as the customer stated them, nothing invented."""
+        text = "%s %s" % (stop.get("address") or "", stop.get("city") or "")
+        province = PROVINCE_RE.search(text)
+        parts = []
+        if (stop.get("address") or "").strip():
+            parts.append(stop["address"].strip().rstrip(","))
+        if (stop.get("city") or "").strip():
+            parts.append(stop["city"].strip().rstrip(","))
+        if province:
+            parts.append(province.group(1).upper())
+        return ", ".join(part for part in parts if part)
+
+    def _civic_only_google(self, stop):
+        """Google Places completion for ONE civic-only stop.
+
+        Returns {"candidates": [...], "confident": candidate-or-None}:
+        * candidates — every usable raw candidate, for the manual-choice
+          error path;
+        * confident  — the single candidate that carries a postal code,
+          whose street civic number matches the customer's street AND
+          whose province matches when the customer stated one.  Zero or
+          several narrowed candidates → confident stays None: this service
+          never guesses between addresses.
+
+        [] candidates also means "Google could not help" (no API key
+        configured, API unreachable, or nothing usable returned) — the
+        caller then reports the stop unresolved, exactly like a missing
+        postal code was reported before.
+        """
+        candidates = self._google_service().search_address_candidates(
+            self._google_query(stop))
+        if not candidates:
+            return {"candidates": [], "confident": None}
+        civic = CIVIC_NUMBER_RE.search(stop.get("address") or "")
+        province = PROVINCE_RE.search(
+            "%s %s" % (stop.get("address") or "", stop.get("city") or ""))
+        narrowed = []
+        for candidate in candidates:
+            if not (candidate.get("postal_code") or "").strip():
+                continue  # no postal → still nothing to price against
+            if civic:
+                cand_civic = CIVIC_NUMBER_RE.search(
+                    candidate.get("street") or "")
+                if not cand_civic or cand_civic.group(0).strip() \
+                        != civic.group(0).strip():
+                    continue
+            if province and (candidate.get("province_code") or "").upper() \
+                    != province.group(1).upper():
+                continue
+            narrowed.append(candidate)
+        return {"candidates": candidates,
+                "confident": narrowed[0] if len(narrowed) == 1 else None}
+
+    @staticmethod
+    def _same_civic(location, civic_number):
+        match = (CIVIC_NUMBER_RE.search(location.address or "")
+                 or CIVIC_NUMBER_RE.search(location.street or ""))
+        return bool(match and match.group(0).strip()
+                    == civic_number.strip())
+
+    def _match_resolved(self, candidate):
+        """Reuse an existing Saved Location for one Google-resolved
+        address instead of creating a second physical row.
+
+        Tries the same google_place_id first (the strongest dedupe key —
+        a repeat Prepare click, or an earlier resolution of this same
+        address, hits it), then a postal + street-number match for rows
+        saved before the place id existed.  Empty recordset = nothing to
+        reuse (the caller creates the single Pending Review row)."""
+        Location = self._location_model()
+        place_id = (candidate.get("place_id") or "").strip()
+        if place_id:
+            hit = Location.search([("google_place_id", "=", place_id)],
+                                  limit=1)
+            if hit:
+                return hit
+        postal = Location._normalize_postal(
+            candidate.get("postal_code") or "")
+        civic = CIVIC_NUMBER_RE.search(candidate.get("street") or "")
+        if postal and civic:
+            # Stored rows keep the postal code in the country format
+            # ("N0B 2B1") while _normalize_postal strips to "n0b2b1" —
+            # =ilike is exact-match, so match against BOTH forms.
+            compact = postal.replace(" ", "")
+            spaced = (compact[:3] + " " + compact[3:]) if len(compact) == 6 \
+                else compact
+            same_civic = Location.search([
+                ("active", "=", True),
+                "|",
+                ("postal_code", "=ilike", compact),
+                ("postal_code", "=ilike", spaced),
+            ], limit=20).filtered(
+                lambda loc: self._same_civic(loc, civic.group(0)))
+            if len(same_civic) == 1:
+                return same_civic
+        return Location.browse()
+
+    @staticmethod
+    def _google_location_values(candidate, company_name, stop_type):
+        """Reviewable Pending Review facility values from ONE confident
+        Google candidate (spec C).
+
+        The STANDARDIZED Google address is stored as the physical address
+        (street/city/province/postal components split out), the pin is the
+        Google place position (pin_source google_place) and the place id is
+        kept for future dedupe.  google_verified stays False — a Google
+        lookup alone never verifies a facility — so the row lands in the
+        same Pending Review queue as any other new location.
+        """
+        company_name = (company_name or "").strip()
+        formatted = (candidate.get("formatted_address") or "").strip()
+        street = (candidate.get("street") or "").strip()
+        city = (candidate.get("city") or "").strip()
+        return {
+            "name": (company_name or city or street or formatted)[:80],
+            "business_name": company_name or "",
+            "address": formatted or street,
+            "street": street,
+            "city": city,
+            "province_code": (candidate.get("province_code") or "").upper(),
+            "postal_code": (candidate.get("postal_code") or "").strip(),
+            "stop_type": stop_type,
+            "source_type": "google_places",
+            "verification_state": "pending_review",
+            "google_verified": False,
+            "google_place_id": (candidate.get("place_id") or "").strip(),
+            "pin_lat": candidate.get("latitude"),
+            "pin_lng": candidate.get("longitude"),
+            "pin_source": "google_place",
+        }
+
     def resolve_stops(self, lead, facts, require_priceable):
         """Resolve origin/destination against the saved-location rules.
 
         Validates BOTH sides before writing anything, then saves each
         unmatched COMPLETE address as a Pending Review facility (with
-        customer access).  Returns {"pickup": stop, "delivery": stop,
-        "created": locations}; raises with an actionable message when a side
-        is city-only or (for require_priceable) not priceable — before any
-        row is persisted."""
+        customer access) and completes civic-only stops through Google
+        Places (spec C) — each physical address is created at most ONCE,
+        google-resolved rows are never auto-verified.  Returns {"pickup":
+        stop, "delivery": stop, "created": locations}; raises with an
+        actionable message when a side is city-only or (for
+        require_priceable) not priceable — before any row is persisted."""
         partner = lead.partner_id
+        # Flush every Saved Location created earlier in THIS transaction:
+        # a pending create lives only in the ORM cache until flushed, so
+        # without this the dedupe searches below would miss it and create
+        # a second row for the same physical address (unique-index
+        # violation on the deferred insert).
+        self._location_model().flush_model()
         stops = {}
         for side in ("pickup", "delivery"):
             stop = self._side_stop(facts, side)
@@ -424,6 +581,30 @@ class LeadQuoteDraftService:
                                                  stop["postal_code"])
             if location:
                 kind = "location"
+            stop["google_attempted"] = False
+            stop["google_options"] = []
+            if kind == "civic_only" and require_priceable \
+                    and CIVIC_NUMBER_RE.search(stop["address"] or "") \
+                    and ((stop["city"] or "")
+                         or PROVINCE_RE.search(stop["address"] or "")):
+                # A street + city/province WITHOUT a postal code: try the
+                # canonical Google resolution before refusing the stop.
+                stop["google_attempted"] = True
+                google = self._civic_only_google(stop)
+                if google["confident"]:
+                    stop["google_candidate"] = google["confident"]
+                    existing = self._match_resolved(google["confident"])
+                    if existing:
+                        # A repeat resolution / earlier create of this same
+                        # physical address — reuse the row (kind location),
+                        # and make sure `location` below keeps it (the
+                        # google-only candidate must not clobber the match).
+                        location = existing
+                        kind = "location"
+                    else:
+                        kind = "google_new"
+                else:
+                    stop["google_options"] = google["candidates"]
             stop["kind"] = kind
             stop["location"] = location
             stops[side] = stop
@@ -444,43 +625,95 @@ class LeadQuoteDraftService:
                     "quote manually via 'Calculate Dispatch Rate'.")
                     % (label, stop["address"]))
             elif require_priceable and stop["kind"] == "civic_only":
-                errors.append(_(
-                    "%s: %s has no postal code — pricing needs a postal "
-                    "code or a verified Saved Location. Complete it on the "
-                    "opportunity first.") % (label, stop["address"]))
+                if stop["google_options"]:
+                    options = "\n".join(
+                        "  • %s — %s %s%s" % (
+                            candidate["formatted_address"],
+                            candidate["province_code"] or "??",
+                            candidate["postal_code"],
+                            ("  [%s]" % candidate["place_id"])
+                            if candidate.get("place_id") else "")
+                        for candidate in stop["google_options"][:8])
+                    errors.append(_(
+                        "%(label)s: %(address)s has no postal code and "
+                        "Google returned SEVERAL candidate addresses — "
+                        "this service never picks between them. Select "
+                        "the correct one below and add it as a Saved "
+                        "Location (or state its full postal code on the "
+                        "opportunity), then run 'Prepare Preliminary "
+                        "Estimate Reply' again.\nGoogle candidates:\n"
+                        "%(options)s",
+                        label=label, address=stop["address"],
+                        options=options))
+                elif stop["google_attempted"]:
+                    errors.append(_(
+                        "%s: %s has no postal code and Google could not "
+                        "resolve it to an address (API key missing, "
+                        "unreachable, or no usable match). Pricing needs a "
+                        "postal code or a verified Saved Location — "
+                        "complete it on the opportunity first.")
+                        % (label, stop["address"]))
+                else:
+                    errors.append(_(
+                        "%s: %s has no postal code and no city/province to "
+                        "resolve it against — pricing needs a postal code "
+                        "or a verified Saved Location. Complete it on the "
+                        "opportunity first.") % (label, stop["address"]))
         if errors:
             raise UserError(_(
                 "The shipment stop could not be resolved from the latest "
                 "customer facts:\n%s\nNothing was created or priced.")
                 % "\n".join(errors))
 
-        # ── Deliberate save: unmatched COMPLETE addresses → Pending Review ──
-        # Re-match right before each create (like the wizard's per-side
-        # ensure flow): an earlier side of this very call may have already
-        # saved the same civic address (identical pickup/delivery), and a
-        # repeat click must reuse the pending row — never duplicate it.
+        # ── Deliberate save (only after BOTH sides validated) ──────────
+        # Unmatched COMPLETE addresses and Google-completed civic-only
+        # stops → Pending Review facilities, with customer access when a
+        # partner exists.  Re-match right before each create (like the
+        # wizard's per-side ensure flow): an earlier side of this very call
+        # may already have saved the same physical address (identical
+        # pickup/delivery), and a repeat click must reuse the pending row
+        # — never duplicate it.
         created = self._location_model()
         for side, stop in stops.items():
-            if stop["kind"] != "complete":
+            kind = stop["kind"]
+            if kind not in ("complete", "google_new"):
                 continue
-            location = stop["location"] or self.match_saved_location(
-                stop["address"], stop["postal_code"])
-            if location:
-                stop["location"] = location
-                stop["kind"] = "location"
-                continue
-            values = self.manual_location_values(
-                stop["address"], stop["postal_code"], "", side)
-            if not values:
-                continue
+            if kind == "complete":
+                location = stop["location"] or self.match_saved_location(
+                    stop["address"], stop["postal_code"])
+                if location:
+                    stop["location"] = location
+                    stop["kind"] = "location"
+                    continue
+                values = self.manual_location_values(
+                    stop["address"], stop["postal_code"],
+                    stop.get("company_name") or "", side)
+                if not values:
+                    continue
+                _logger.info(
+                    "Lead %s: %s address %r saved as Pending Review "
+                    "facility (manual values)", lead.id, side,
+                    stop["address"])
+            else:  # google_new
+                candidate = stop.get("google_candidate") or {}
+                location = self._match_resolved(candidate)
+                if location:
+                    stop["location"] = location
+                    stop["kind"] = "location"
+                    continue
+                values = self._google_location_values(
+                    candidate, stop.get("company_name") or "", side)
+                _logger.info(
+                    "Lead %s: %s civic-only stop %r completed by Google → "
+                    "Pending Review facility (place %s, %s)", lead.id,
+                    side, stop["address"],
+                    candidate.get("place_id") or "?",
+                    candidate.get("postal_code") or "?")
             location = self._location_model().create(values)
             self.ensure_customer_location_access(location, side, partner)
             stop["location"] = location
             stop["kind"] = "new_pending_review"
             created |= location
-            _logger.info(
-                "Lead %s: %s address %r saved as Pending Review facility %s",
-                lead.id, side, stop["address"], location.id)
         return {"pickup": stops["pickup"], "delivery": stops["delivery"],
                 "created": created}
 
@@ -489,6 +722,7 @@ class LeadQuoteDraftService:
         location = stop.get("location")
         payload = self._location_payload(
             location, stop["side"], partner) if location else {}
+        liftgate = self._liftgate_sides(shipment)
         payload.update({
             "company_name": payload.get("company_name") or "",
             "formatted_address": payload.get("formatted_address")
@@ -501,7 +735,10 @@ class LeadQuoteDraftService:
             "pallets": shipment["pallets"],
             "weight_lb": shipment["weight_lbs"],
             "weight_lbs": shipment["weight_lbs"],
-            "liftgate_required": False,
+            # Customer-stated accessorial → per-stop flag (see
+            # _liftgate_sides: unqualified liftgate = delivery side).
+            "liftgate_required": liftgate["liftgate_pickup"]
+                if stop["side"] == "pickup" else liftgate["liftgate_delivery"],
         })
         return payload
 
@@ -576,6 +813,35 @@ class LeadQuoteDraftService:
         if REEFER_RE.search(equipment):
             return "reefer", mode, setpoint, equipment
         return "dry", mode, setpoint, equipment
+
+    @staticmethod
+    def _liftgate_sides(shipment):
+        """liftgate_pickup / liftgate_delivery from the customer's words.
+
+        A liftgate statement without a side defaults to DELIVERY (the
+        receiving end is where the liftgate is normally needed); PICKUP is
+        set only when the customer explicitly binds the liftgate to the
+        pickup.  An explicit 'no liftgate' overrides every mention.
+        """
+        text = " ".join(str(shipment.get(key) or "") for key in (
+            "accessorials", "instructions")).lower()
+        if "liftgate" not in text and "lift gate" not in text:
+            return {"liftgate_pickup": False, "liftgate_delivery": False}
+        if re.search(r"no\s+lift[\s-]?gate", text):
+            return {"liftgate_pickup": False, "liftgate_delivery": False}
+        pickup_explicit = bool(re.search(
+            r"lift[\s-]?gate.{0,60}?\b(pickup|origin)\b|"
+            r"\b(pickup|origin)\b.{0,60}?lift[\s-]?gate", text))
+        delivery_explicit = bool(re.search(
+            r"lift[\s-]?gate.{0,60}?\b(deliver(?:y)?|unload|receiv(?:e|ing)?)\b|"
+            r"\b(deliver(?:y)?|unload|receiv(?:e|ing)?)\b.{0,60}?lift[\s-]?gate",
+            text))
+        return {
+            "liftgate_pickup": pickup_explicit,
+            # Unqualified mention → delivery (default receiving side); an
+            # explicitly pickup-only liftgate does not force delivery.
+            "liftgate_delivery": delivery_explicit or not pickup_explicit,
+        }
 
     def shipment_values(self, facts):
         """Parsed shipment values from the effective facts (only dry/ltl
@@ -713,8 +979,9 @@ class LeadQuoteDraftService:
             "requested_pickup_date": shipment["requested_pickup_date"],
             "pricing_method": "corridor",
             "transfer_allowed": shipment["load_type"] != "ftl",
-            "liftgate_pickup": False,
-            "liftgate_delivery": False,
+            # Customer-stated liftgate flows to the canonical pricing request
+            # exactly like the phone wizard sends it (default: delivery).
+            **self._liftgate_sides(shipment),
             "appointment": False,
             "residential": False,
             "same_day_requested": False,
