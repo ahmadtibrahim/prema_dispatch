@@ -13,5 +13,22 @@
             <field name="key">prema_dispatch.reefer_precool_minutes</field>
             <field name="value">40</field>
         </record>
+        <!-- MP1 §11/§13 estimator advisory defaults (logistics authority) -->
+        <record id="param_logistics_estimator_hos_drive_hours" model="ir.config_parameter">
+            <field name="key">logistics.hos_max_drive_hours_per_day</field>
+            <field name="value">11.0</field>
+        </record>
+        <record id="param_logistics_estimator_hos_shift_hours" model="ir.config_parameter">
+            <field name="key">logistics.hos_max_shift_hours_per_day</field>
+            <field name="value">14.0</field>
+        </record>
+        <record id="param_logistics_estimator_workday_start" model="ir.config_parameter">
+            <field name="key">logistics.workday_start_hour</field>
+            <field name="value">8.0</field>
+        </record>
+        <record id="param_logistics_pairing_window_days" model="ir.config_parameter">
+            <field name="key">logistics.pairing_window_days</field>
+            <field name="value">3</field>
+        </record>
     </data>
 </odoo>

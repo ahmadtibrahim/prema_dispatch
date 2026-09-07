@@ -68,3 +68,7 @@ from . import crm_lead_rate_confirmation
 # agreement + crm.recurring.opportunity; engine module dependency).
 from . import logistics_recurring_agreement_crm_bridge
 from . import crm_lead_estimate_bridge
+# MP1 §9-13 — Estimator bridge: Dispatch-side authority entry point for
+# the Prema AI estimator (three scenarios, availability, intel, pairing,
+# route development). Engine side calls env["logistics.estimator.bridge"].
+from . import logistics_estimator_bridge
