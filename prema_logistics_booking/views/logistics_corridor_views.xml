@@ -4,7 +4,8 @@
         <field name="name">logistics.corridor.list</field>
         <field name="model">logistics.corridor</field>
         <field name="arch" type="xml">
-            <list default_order="default_vehicle_id, schedule_weekday_index, weekly_sequence, start_time, name">
+            <list default_order="default_vehicle_id, schedule_weekday_index, weekly_sequence, start_time, name"
+                  decoration-muted="not active">
                 <field name="name"/>
                 <field name="direction"/>
                 <field name="operating_days_display" string="Every Week"/>
@@ -30,13 +31,21 @@
                 <header>
                     <button name="action_recalculate_route_distance" string="Calculate Route Distance" type="object" class="btn-secondary"/>
                     <button name="action_calculate_route_times" string="Calculate Route Times" type="object" class="btn-secondary"/>
-                    <div class="o_row">
-                        <button name="action_refresh_departures" type="object" icon="fa-refresh" class="btn-primary"/>
-                        <field name="departure_refresh_label" readonly="1" nolabel="1"/>
-                    </div>
+                    <button name="action_activate" string="Activate" type="object"
+                            icon="fa-play" class="btn-primary"
+                            invisible="active"
+                            title="Re-enable this corridor: missing future departures are re-created, never duplicated"/>
+                    <button name="action_deactivate" string="Deactivate" type="object"
+                            icon="fa-stop" class="btn-secondary"
+                            invisible="not active"
+                            title="Disable this corridor: future departures that never began are retired and stop blocking the truck; real bookings and jobs keep theirs"/>
                 </header>
                 <sheet>
-                    <div class="oe_title"><h1><field name="name"/></h1></div>
+                    <div class="oe_title">
+                        <h1><field name="name"/></h1>
+                        <span class="badge text-bg-success mt-1" invisible="not active">ACTIVE</span>
+                        <span class="badge text-bg-secondary mt-1" invisible="active">INACTIVE</span>
+                    </div>
                     <group>
                         <group>
                             <field name="direction"/>
@@ -62,6 +71,14 @@
                             </div>
                             <field name="overnight"/>
                             <field name="departure_horizon_weeks"/>
+                            <label for="departure_refresh_label" string="Departure Schedule"/>
+                            <div class="d-flex align-items-center gap-2">
+                                <button name="action_refresh_departures" type="object"
+                                        icon="fa-refresh" class="btn-primary"
+                                        title="Re-generate the upcoming departure schedule from this corridor (keeps booked departures)"/>
+                                <field name="departure_refresh_label" readonly="1" nolabel="1"
+                                       class="text-muted oe_inline"/>
+                            </div>
                         </group>
                         <group string="Prior-Day Pickup">
                             <field name="allow_prior_day_pickup"/>
