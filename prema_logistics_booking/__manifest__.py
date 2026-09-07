@@ -64,6 +64,8 @@ root for architecture notes, decisions, and phase status.
         # (logistics_direct_delivery_views.xml, logistics_weekly_plan_views.xml,
         # location_hours_wizard_views.xml)
         "views/menus.xml",
+        # §TODO 9-13 Weekly Capacity board — after menus.xml (menu refs).
+        "views/weekly_capacity_views.xml",
         "views/location_hours_wizard_views.xml",
         "views/temperature_override_views.xml",
         "views/temperature_job_views.xml",
@@ -92,6 +94,10 @@ root for architecture notes, decisions, and phase status.
             "prema_logistics_booking/static/src/css/where_we_go.css",
             "prema_logistics_booking/static/src/xml/where_we_go_action.xml",
             "prema_logistics_booking/static/src/js/where_we_go_action.js",
+            # §TODO 9-13 Weekly Capacity board.
+            "prema_logistics_booking/static/src/css/weekly_capacity_board.css",
+            "prema_logistics_booking/static/src/xml/weekly_capacity_board.xml",
+            "prema_logistics_booking/static/src/js/weekly_capacity_board.js",
         ],
     },
     "installable": True,

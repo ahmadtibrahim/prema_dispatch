@@ -690,3 +690,231 @@ class EtaEngine:
             and j.scheduled_pickup.date() == day
             and not j.all_stops_completed)
         return jobs[:20]
+
+    # ═══════════════════════════════════════════════════════════════
+    # Weekly Capacity board (§TODO 10) — READ-ONLY chain helpers.
+    # Both helpers are pure projections: they reuse the exact walk math
+    # above (_start_profile / _stop_times / _arrival_plan / Itinerary
+    # Planner effective windows) but never write a field. The board
+    # renders stored ETAs when the engine persisted them and calls these
+    # only for the genuine gaps: jobs without stored ETA outputs, and
+    # chains whose LATER binding times (appointment / deadline /
+    # latest-arrival) constrain how late each earlier stop may run.
+    # ═══════════════════════════════════════════════════════════════
+
+    def project_forward_times(self, job, anchor=None, source=None):
+        """In-memory twin of compute_job_eta: the SAME start-profile +
+        per-stop walk, returning {stop_id: values} instead of writing.
+
+        Used by the Weekly Capacity board to render arrival / service /
+        departure / wait rows for jobs the engine never persisted an ETA
+        for (freshly assembled trucks, planning-only chains). Identical
+        anchor/position advance rules — completed stops anchor on their
+        actual departure, arrived on actual arrival, en_route holds its
+        stored ETA and passes delay forward. Read-only: even the
+        driver_home leave-home derivation is computed but never stored.
+        """
+        job = job.sudo()
+        stops = job.stop_ids.filtered(lambda s: not s.planning_only)
+        if not stops:
+            return {}
+        ordered = stops.sorted("sequence")
+        profile = self._start_profile(job, anchor, source)
+        anchor_dt = profile["anchor"]
+        position = profile["position"]
+        collected = {}
+        for stop in ordered:
+            times = self._stop_times(job, stop, anchor_dt, position,
+                                     profile["mode"], profile["origin"],
+                                     source)
+            collected[stop.id] = times
+            if stop.status in ("completed",):
+                anchor_dt = stop.actual_departure_time or anchor_dt
+                position = self._stop_position(stop) or position
+            elif stop.status == "arrived":
+                anchor_dt = stop.actual_arrival_time or anchor_dt
+                position = self._stop_position(stop) or position
+            elif stop.status == "en_route":
+                anchor_dt = times["facility_service_start_at"] or anchor_dt
+                position = self._stop_position(stop) or position
+            else:
+                anchor_dt = times["planned_departure_at"] or anchor_dt
+                position = self._stop_position(stop) or position
+        return collected
+
+    def backward_latest_chain(self, job):
+        """Latest-feasible per-stop bounds computed BACKWARD from the
+        last LATER binding time on the chain.
+
+        The forward walk answers "when will the truck arrive given the
+        start anchor". When a stop further down the chain carries a
+        binding time (exact appointment, by-deadline, latest-arrival
+        window), the earlier stops ALSO have a latest-feasible moment:
+        leave stop N by T or the appointment downstream is missed. This
+        helper computes those bounds with the same travel/service/hours
+        math as the forward walk, reversed:
+
+          latest_departure_i = latest_service_start_{i+1} − travel_{i+1}
+          latest_service_start_i = latest_departure_i − service_minutes_i
+
+        clipped per stop to its own facility-hours/window span of that
+        local day and to its own binding when it has one. Returns, in
+        stop order, one dict per confirmed stop:
+
+          stop_id, kind ("binding"|"derived"), binding_type
+          ("exact"|"deadline"|"latest_window"|None),
+          service_start_latest (naive-UTC datetime or False),
+          departure_latest (naive-UTC datetime or False),
+          feasible (bool), notes (list[str])
+
+        Empty list when no stop carries a later binding (a purely
+        forward chain has no backward constraint). Nothing is written;
+        a first-stop facility that opens later than the backward bound
+        is surfaced as infeasible=false with the opening note — the
+        board then renders arrival = max(forward arrival, open time)
+        with the wait shown, exactly like the forward walk does.
+        """
+        from ..services.itinerary_planner import ItineraryPlanner
+        from pytz import timezone as _tz
+        job = job.sudo()
+        stops = job.stop_ids.filtered(
+            lambda s: not s.planning_only).sorted("sequence")
+        if not stops:
+            return []
+        planner = ItineraryPlanner(self.env)
+
+        def _stop_tz(stop):
+            """Local tz of one stop — hours spans are evaluated per stop,
+            never with a neighbouring stop's zone."""
+            from pytz import timezone as _stop_tz_impl
+            return _stop_tz_impl(stop.tz_name or "America/Toronto")
+
+        # Binding sources, in stop order, from the fields themselves
+        # (exact_time = fixed appointment; deadline_time = must be
+        # completed before; latest_time = must arrive by).
+        bindings = []
+        for idx, stop in enumerate(stops):
+            service = self._service_minutes(stop)
+            if stop.time_window_type == "exact" and stop.exact_time:
+                bindings.append((idx, "exact", stop.exact_time))
+            elif stop.time_window_type == "deadline" and stop.deadline_time:
+                bindings.append(
+                    (idx, "deadline",
+                     stop.deadline_time - timedelta(minutes=service)))
+            elif stop.latest_time:
+                bindings.append((idx, "latest_window", stop.latest_time))
+        if not bindings:
+            return []
+
+        # The chain is only constrained between the FIRST and the LAST
+        # binding: downstream of the last binding nothing pins the truck
+        # (it may run late), so the backward walk spans
+        # [first_binding .. last_binding] only.
+        start_idx, _, _ = bindings[0]
+        end_idx = bindings[-1][0]
+        plan = {i: None for i in range(start_idx, end_idx + 1)}
+
+        # Position each stop is travelled FROM, mirroring the forward
+        # anchor advance: a stop without coordinates keeps the last known
+        # position (lat/lng of the previous stop with any).
+        known_pos = {}
+        running_pos = None
+        for i in range(end_idx + 1):
+            running_pos = self._stop_position(stops[i]) or running_pos
+            known_pos[i] = running_pos
+
+        def _window_span(stop, probe_dt):
+            """(open, close) hour floats for the local day of probe_dt."""
+            return planner.effective_window(
+                self._planner_stop(stop), probe_dt)
+
+        def _dt_on_hour(stop, probe_dt, hour):
+            """The naive-UTC instant of `hour` (float) on probe's local day."""
+            local = probe_dt.astimezone(_stop_tz(stop))
+            base = local.replace(hour=int(hour), minute=int((hour % 1) * 60),
+                                 second=0, microsecond=0)
+            return base.astimezone(_tz("UTC")).replace(tzinfo=None)
+
+        # ── Walk backwards from the LAST binding to the FIRST ─────────
+        for idx in range(end_idx, start_idx - 1, -1):
+            stop = stops[idx]
+            entry = {
+                "stop_id": stop.id,
+                "kind": "binding",
+                "binding_type": None,
+                "service_start_latest": False,
+                "departure_latest": False,
+                "feasible": True,
+                "notes": [],
+            }
+            binding = next((b for b in bindings if b[0] == idx), None)
+            successor = plan.get(idx + 1)
+            # The last binding's service start is fixed by its own field;
+            # anything downstream of it is unconstrained.
+            if binding and successor is None:
+                latest = binding[2]
+                entry["binding_type"] = binding[1]
+            else:
+                entry["kind"] = "derived"
+                latest = False
+                if successor and successor.get("service_start_latest"):
+                    # Travel from THIS stop to the next one — same
+                    # direction the forward walk measures travel in
+                    # (_travel_minutes(job, next_stop, prev_position));
+                    # the origin is the position the forward walk holds
+                    # when leaving this stop (this stop's coords, else
+                    # the last known upstream one — known_pos).
+                    travel = self._travel_minutes(
+                        job, stops[idx + 1], known_pos.get(idx))
+                    latest = successor["service_start_latest"] - timedelta(
+                        minutes=travel + self._service_minutes(stop))
+            if binding and successor is not None:
+                # Both the stop's own binding and the successor chain
+                # constrain it: the latest feasible start is the earlier
+                # of the two (the binding pins exact appointments).
+                entry["binding_type"] = binding[1]
+                chain_latest = latest
+                own_latest = binding[2]
+                if binding[1] == "exact":
+                    latest = own_latest
+                    if chain_latest and latest > chain_latest:
+                        entry["feasible"] = False
+                        entry["notes"].append(
+                            "exact appointment conflicts with downstream "
+                            "binding")
+                else:
+                    latest = min(
+                        v for v in (own_latest, chain_latest) if v)
+            if not latest:
+                entry["feasible"] = False
+                plan[idx] = entry
+                continue
+            # Facility-hours span of the stop's own local day: service
+            # must land inside [open, close] — waiting is always allowed,
+            # running later than close is not.
+            span = _window_span(stop, latest)
+            if span is not None:
+                open_dt = _dt_on_hour(stop, latest, span[0])
+                close_dt = _dt_on_hour(stop, latest, span[1])
+                if latest > close_dt:
+                    entry["feasible"] = False
+                    entry["notes"].append(
+                        "chain runs past facility close "
+                        "(%s)" % _dt_on_hour(
+                            stop, latest, span[1]).strftime("%H:%M"))
+                    latest = close_dt
+                if latest < open_dt:
+                    entry["feasible"] = False
+                    entry["notes"].append(
+                        "facility opens later than the latest feasible "
+                        "service start (%s)" % open_dt.strftime("%H:%M"))
+            entry["service_start_latest"] = latest
+            entry["departure_latest"] = latest + timedelta(
+                minutes=self._service_minutes(stop))
+            plan[idx] = entry
+
+        # Stops BEFORE the first binding are unconstrained by the chain
+        # (the truck may arrive as early as it likes); the board only
+        # needs the constrained window.
+        return [plan[i] for i in range(start_idx, end_idx + 1)
+                if plan[i] is not None]

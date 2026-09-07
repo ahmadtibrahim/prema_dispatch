@@ -1,0 +1,366 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Weekly Capacity board — OWL template (TODO 9-13).
+
+    Layout: header (week nav / Today / tz) → rail (truck selector +
+    Evaluate-load panel) → board:
+      • unassigned strip (real unassigned jobs of the week, draggable
+        onto any truck/day lane; dropping an ASSIGNED card here
+        unassigns it — the canonical unassign_truck).
+      • single-truck mode: shared 24h ruler + 7 day columns, each a
+        vertical 24h lane (day header = capacity status, untimed cards
+        on top, P/D cards positioned by computed stop times).
+      • overview mode: one lane per truck×day with a mini per-row ruler.
+
+    Data comes from one weekly RPC; the payload's jobs map carries the
+    booking/source/temperature/risk metadata per job (looked up through
+    `jmeta`). OWL attribute evaluation happens before inner t-set, so
+    attributes never reference t-set variables — only loop vars, state
+    and methods.
+-->
+<templates xml:space="preserve">
+    <t t-name="prema_logistics_booking.WeeklyCapacityBoard" t-root="true">
+        <div t-att-class="'o_wc ' + (state.selectedTruckId ? 'o_wc--truck' : 'o_wc--overview')">
+
+            <!-- ── Header ─────────────────────────────────────────── -->
+            <div class="o_wc-header">
+                <div class="o_wc-title">
+                    <span class="o_wc-title-text">Weekly Capacity</span>
+                    <span class="o_wc-tz" t-att-title="state.tz">
+                        <i class="fa fa-clock-o"/> <t t-esc="state.tz"/>
+                    </span>
+                </div>
+                <div class="o_wc-nav">
+                    <button class="btn btn-sm btn-secondary" t-on-click="() =&gt; this._nav(-1)"
+                            title="Previous week"><i class="fa fa-chevron-left"/></button>
+                    <span class="o_wc-week-label"><t t-esc="state.weekLabel"/></span>
+                    <button class="btn btn-sm btn-secondary" t-on-click="() =&gt; this._nav(1)"
+                            title="Next week"><i class="fa fa-chevron-right"/></button>
+                    <button class="btn btn-sm btn-primary" t-on-click="() =&gt; this._goToday()">
+                        Today</button>
+                    <button class="btn btn-sm btn-light" t-on-click="() =&gt; this._refresh()"
+                            title="Reload this week">
+                        <i class="fa fa-refresh" t-att-class="state.loading ? 'fa-spin' : ''"/>
+                    </button>
+                </div>
+            </div>
+
+            <div class="o_wc-body o_wc-body--error" t-if="state.error &amp;&amp; !state.loading">
+                <div class="alert alert-danger m-3"><t t-esc="state.error"/></div>
+            </div>
+
+            <div class="o_wc-main" t-if="!state.error">
+                <!-- ── Left rail: trucks + evaluate ───────────────── -->
+                <div class="o_wc-rail">
+                    <div class="o_wc-rail-section-label">Trucks</div>
+                    <button t-att-class="'o_wc-truck o_wc-truck--all ' + (state.selectedTruckId === null ? ' o_wc-truck--active' : '')"
+                            t-on-click="() =&gt; this._selectTruck(null)">
+                        <span class="o_wc-truck-name">All trucks (overview)</span>
+                        <span class="o_wc-truck-driver">one lane per truck / day</span>
+                    </button>
+                    <button t-foreach="state.trucks" t-as="tr" t-key="tr.truck_id"
+                            t-att-class="'o_wc-truck ' + (state.selectedTruckId === tr.truck_id ? ' o_wc-truck--active' : '')"
+                            t-on-click="() =&gt; this._selectTruck(tr.truck_id)">
+                        <span class="o_wc-truck-name"><t t-esc="tr.name"/>
+                            <t t-if="tr.has_reefer"><i class="fa fa-snowflake-o o_wc-reefer-ico" title="Reefer"/></t>
+                        </span>
+                        <span class="o_wc-truck-driver"><t t-esc="tr.driver_name"/></span>
+                    </button>
+
+                    <div class="o_wc-eval">
+                        <div class="o_wc-rail-section-label">
+                            Evaluate load
+                            <button class="btn btn-link btn-sm o_wc-eval-toggle"
+                                    t-on-click="() =&gt; this._toggleEval()">
+                                <i t-att-class="'fa ' + (state.evalOpen ? 'fa-chevron-up' : 'fa-chevron-down')"/>
+                            </button>
+                        </div>
+                        <div t-if="state.evalOpen" class="o_wc-eval-body">
+                            <div class="o_wc-eval-row">
+                                <label>Pickup date</label>
+                                <input type="date" t-model="state.eval.date"
+                                       class="form-control form-control-sm"/>
+                            </div>
+                            <div class="o_wc-eval-row">
+                                <label>Pallets / cases</label>
+                                <input type="number" min="0" t-model="state.eval.pallets"
+                                       class="form-control form-control-sm"/>
+                            </div>
+                            <div class="o_wc-eval-row">
+                                <label>Weight (lbs)</label>
+                                <input type="number" min="0" t-model="state.eval.weight"
+                                       class="form-control form-control-sm"/>
+                            </div>
+                            <div class="o_wc-eval-row o_wc-eval-checks">
+                                <label><input type="checkbox" t-model="state.eval.reefer"/> Reefer</label>
+                                <label><input type="checkbox" t-model="state.eval.liftgate"/> Liftgate</label>
+                            </div>
+                            <div class="o_wc-eval-row">
+                                <label>From (FSA / city)</label>
+                                <input type="text" t-model="state.eval.pickup"
+                                       class="form-control form-control-sm"/>
+                            </div>
+                            <div class="o_wc-eval-row">
+                                <label>To (FSA / city)</label>
+                                <input type="text" t-model="state.eval.delivery"
+                                       class="form-control form-control-sm"/>
+                            </div>
+                            <button class="btn btn-sm btn-secondary w-100 o_wc-eval-go"
+                                    t-on-click="() =&gt; this._evaluate()"
+                                    t-att-disabled="state.evalBusy ? true : undefined">
+                                <i t-att-class="'fa fa-calculator ' + (state.evalBusy ? 'fa-spin' : '')"/>
+                                Evaluate availability
+                            </button>
+                            <div t-if="state.evalError" class="text-danger small mt-1">
+                                <t t-esc="state.evalError"/>
+                            </div>
+                            <div class="o_wc-eval-results" t-if="state.evalResults">
+                                <div t-foreach="state.evalResults" t-as="er" t-key="er.truck_id"
+                                     class="o_wc-eval-result">
+                                    <span t-att-class="'o_wc-chip o_wc-chip--' + er.status"
+                                          t-att-title="this._evalTitle(er)">
+                                        <t t-esc="er.status === 'ok' ? 'Available' : (er.status === 'warning' ? 'With warning' : 'Unavailable')"/>
+                                    </span>
+                                    <span class="o_wc-eval-truck"><t t-esc="er.name"/></span>
+                                    <span class="o_wc-eval-free" t-if="er.status !== 'hard' &amp;&amp; er.free_capacity !== null &amp;&amp; er.free_capacity !== undefined">
+                                        <t t-esc="er.free_capacity"/> free
+                                    </span>
+                                    <button class="btn btn-xs btn-primary o_wc-eval-book"
+                                            t-if="er.status !== 'hard'"
+                                            t-on-click="() =&gt; this._openBooking(er)">Create booking</button>
+                                </div>
+                                <div class="text-muted small mt-1">
+                                    Availability only — pricing runs in the Phone Booking wizard;
+                                    nothing is reserved here.
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ── Board: unassigned strip + week grid ────────── -->
+                <div class="o_wc-board">
+                    <div class="o_wc-unassigned"
+                         t-on-drop.prevent="(ev) =&gt; this._onDropUnassign(ev)"
+                         t-on-dragover.prevent="(ev) =&gt; this._dragOver(ev, 'unassign')">
+                        <span class="o_wc-unassigned-label">
+                            Unassigned
+                            <span class="badge badge-secondary" t-esc="state.unassignedCards.length"/>
+                            <span class="o_wc-unassigned-hint">— drop assigned cards here to unassign</span>
+                        </span>
+                        <div class="o_wc-unassigned-list">
+                            <div t-foreach="state.unassignedCards" t-as="uc" t-key="uc.job_id"
+                                 class="o_wc-card o_wc-card--unassigned"
+                                 draggable="true"
+                                 t-on-dragstart="(ev) =&gt; this._onDragStart(ev, uc)"
+                                 t-on-click="() =&gt; this._openJob(uc.job_id)">
+                                <span class="o_wc-date-chip" t-esc="uc.date_label"/>
+                                <span class="o_wc-card-name"><t t-esc="uc.name"/></span>
+                                <span class="o_wc-card-route">
+                                    <t t-if="uc.pickup_city" t-esc="uc.pickup_city"/>
+                                    <i class="fa fa-arrow-right" t-if="uc.pickup_city &amp;&amp; uc.delivery_city"/>
+                                    <t t-if="uc.delivery_city" t-esc="uc.delivery_city"/>
+                                </span>
+                                <span class="o_wc-card-qty" t-if="uc.pallets"><t t-esc="uc.pallets"/> plt</span>
+                                <t t-set="jmeta" t-value="state.jobs[uc.job_id] || {}"/>
+                                <t t-call="prema_logistics_booking.WeeklyCapacityMeta"/>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- single-truck mode -->
+                    <div class="o_wc-grid o_wc-grid--single" t-if="state.selectedTruckId"
+                         t-att-style="'--o-wc-untimed: ' + state.untimedMax + 'px'">
+                        <div class="o_wc-ruler">
+                            <div class="o_wc-ruler-head"
+                                 t-att-style="'height: ' + (this._rulerHeadPx()) + 'px'">
+                                <span class="o_wc-ruler-truck" t-esc="state.selectedTruckName"/>
+                                <span class="o_wc-ruler-cap" t-if="state.selectedTruckCap">cap <t t-esc="state.selectedTruckCap"/></span>
+                            </div>
+                            <div class="o_wc-ruler-body">
+                                <t t-foreach="state.hours" t-as="h" t-key="h.i">
+                                    <div class="o_wc-hour"><t t-esc="h.label"/></div>
+                                </t>
+                            </div>
+                        </div>
+                        <div t-foreach="state.dayDates" t-as="dateStr" t-key="dateStr"
+                             class="o_wc-day"
+                             t-on-drop.prevent="(ev) =&gt; this._onDropLane(ev, dateStr, null)"
+                             t-on-dragover.prevent="(ev) =&gt; this._dragOver(ev, 'lane')">
+                            <t t-set="cell" t-value="(state.days[dateStr] || {}).by_truck[state.selectedTruckId] || {}"/>
+                            <div t-att-class="'o_wc-day-head' + (dateStr === state.today ? ' o_wc-day-head--today' : '') + (state.holidays[dateStr] ? ' o_wc-day-head--holiday' : '')">
+                                <div class="o_wc-day-name"><t t-esc="state.dayNames[state.dateIndex[dateStr]]"/></div>
+                                <div class="o_wc-day-date"><t t-esc="state.shortDate[dateStr]"/></div>
+                                <div class="o_wc-day-capacity">
+                                    <span t-att-class="'o_wc-dot o_wc-dot--' + (cell.status || 'available')"
+                                          t-att-title="cell.status_note || ''"/>
+                                    <span t-if="cell.rolling &amp;&amp; cell.rolling.capacity"
+                                          t-esc="cell.rolling.capacity + ' plt cap'"/>
+                                    <span class="o_wc-day-dep" t-if="cell.departure_id"
+                                          t-att-title="cell.status_note || ''" t-esc="cell.departure_name"/>
+                                    <span t-if="cell.rolling &amp;&amp; cell.rolling.peak_onboard !== null &amp;&amp; cell.rolling.peak_onboard !== undefined"
+                                          t-att-class="'o_wc-day-peak' + ((cell.rolling.exceed_stops || []).length ? ' text-danger' : '')"
+                                          t-att-title="'highest onboard that day'">
+                                        peak <t t-esc="cell.rolling.peak_onboard"/>
+                                    </span>
+                                </div>
+                                <div t-if="(cell.rolling || {}).notes &amp;&amp; cell.rolling.notes.length"
+                                     class="o_wc-day-notes" t-att-title="cell.rolling.notes.join('\n')">
+                                    <i class="fa fa-warning"/> <t t-esc="cell.rolling.notes[0]"/>
+                                </div>
+                            </div>
+                            <div class="o_wc-untimed">
+                                <t t-foreach="this._untimedOf(state.selectedTruckId, dateStr)"
+                                   t-as="row" t-key="row.stop_id">
+                                    <t t-call="prema_logistics_booking.WeeklyCapacityCard"/>
+                                </t>
+                            </div>
+                            <div t-att-class="'o_wc-lane' + (dateStr === state.today ? ' o_wc-lane--today' : '') + (state.holidays[dateStr] ? ' o_wc-lane--holiday' : '') + (cell.status === 'unavailable' ? ' o_wc-lane--off' : '')">
+                                <div t-foreach="this._timedOf(state.selectedTruckId, dateStr)"
+                                     t-as="row" t-key="row.stop_id"
+                                     t-att-style="this._cardStyle(row)"
+                                     t-att-class="'o_wc-lane-card-wrap ' + (row.exceed ? 'o_wc-wrap--exceed' : '') + (row.underflow ? ' o_wc-wrap--underflow' : '')">
+                                    <t t-call="prema_logistics_booking.WeeklyCapacityCard"/>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- overview mode: one lane per truck × day -->
+                    <div class="o_wc-grid o_wc-grid--overview" t-else="">
+                        <t t-foreach="state.trucks" t-as="tr" t-key="tr.truck_id">
+                            <div class="o_wc-ov-row"
+                                 t-att-style="'--o-wc-untimed: ' + (state.untimedMaxByTruck[tr.truck_id] || 0) + 'px'">
+                                <div class="o_wc-ov-rail">
+                                    <div class="o_wc-ov-truck"><t t-esc="tr.name"/>
+                                        <t t-if="tr.has_reefer"><i class="fa fa-snowflake-o o_wc-reefer-ico" title="Reefer"/></t>
+                                    </div>
+                                    <div class="o_wc-ov-spacer"/>
+                                    <div class="o_wc-ruler-body o_wc-ruler-body--mini">
+                                        <t t-foreach="state.hours" t-as="h" t-key="h.i">
+                                            <span class="o_wc-hour-mini">
+                                                <t t-if="h.i % 2 === 0" t-esc="h.short"/>
+                                            </span>
+                                        </t>
+                                    </div>
+                                </div>
+                                <div t-foreach="state.dayDates" t-as="dateStr" t-key="dateStr"
+                                     class="o_wc-day o_wc-day--ov"
+                                     t-on-drop.prevent="(ev) =&gt; this._onDropLane(ev, dateStr, tr.truck_id)"
+                                     t-on-dragover.prevent="(ev) =&gt; this._dragOver(ev, 'lane')">
+                                    <t t-set="cell" t-value="(state.days[dateStr] || {}).by_truck[tr.truck_id] || {}"/>
+                                    <div t-att-class="'o_wc-day-head o_wc-day-head--mini' + (dateStr === state.today ? ' o_wc-day-head--today' : '')">
+                                        <span class="o_wc-day-name"><t t-esc="state.dayNames[state.dateIndex[dateStr]]"/></span>
+                                        <span class="o_wc-day-date"><t t-esc="state.shortDate[dateStr]"/></span>
+                                        <span t-att-class="'o_wc-dot o_wc-dot--' + (cell.status || 'available')"
+                                              t-att-title="cell.status_note || ''"/>
+                                        <span t-if="cell.rolling &amp;&amp; cell.rolling.peak_onboard !== null &amp;&amp; cell.rolling.peak_onboard !== undefined"
+                                              t-att-class="'o_wc-day-peak small' + ((cell.rolling.exceed_stops || []).length ? ' text-danger' : '')"
+                                              t-att-title="'highest onboard that day'">
+                                            <t t-esc="cell.rolling.peak_onboard"/>
+                                        </span>
+                                    </div>
+                                    <div class="o_wc-untimed">
+                                        <t t-foreach="this._untimedOf(tr.truck_id, dateStr)"
+                                           t-as="row" t-key="row.stop_id">
+                                            <t t-call="prema_logistics_booking.WeeklyCapacityCard"/>
+                                        </t>
+                                    </div>
+                                    <div t-att-class="'o_wc-lane o_wc-lane--ov' + (cell.status === 'unavailable' ? ' o_wc-lane--off' : '')">
+                                        <div t-foreach="this._timedOf(tr.truck_id, dateStr)"
+                                             t-as="row" t-key="row.stop_id"
+                                             t-att-style="this._cardStyle(row)">
+                                            <t t-call="prema_logistics_booking.WeeklyCapacityCard"/>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </t>
+                    </div>
+
+                    <div class="o_wc-legend">
+                        <span><i class="o_wc-legend-pickup"/> pickup</span>
+                        <span><i class="o_wc-legend-delivery"/> delivery / return</span>
+                        <span class="text-muted small">cards without a clock sit above the timeline</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="o_wc-loading" t-if="state.loading">
+                <i class="fa fa-spinner fa-spin"/> Loading week…
+            </div>
+        </div>
+    </t>
+
+    <!-- Risk / temperature / source meta chips. Single root
+         (display:contents) so the chips stay inline where called;
+         expects `jmeta` in the calling scope (content-only template —
+         attributes of the CALLER are evaluated before its t-set, so the
+         caller sets jmeta before this t-call). -->
+    <t t-name="prema_logistics_booking.WeeklyCapacityMeta">
+        <span class="o_wc-meta-wrap">
+            <span class="o_wc-temp-chip" t-if="jmeta.required_temperature_c"
+                  t-att-title="'Reefer setpoint'"
+                  t-esc="this._tempLabel(jmeta.required_temperature_c)"/>
+            <span t-if="this._riskSeverity(jmeta)"
+                  t-att-class="'o_wc-risk ' + (this._riskSeverity(jmeta) === 'hard' ? 'o_wc-risk--hard' : 'o_wc-risk--soft')"
+                  t-att-title="this._riskTooltip(jmeta)">⚠</span>
+            <span class="o_wc-booking" t-if="jmeta.booking_id"
+                  t-on-click.stop="() =&gt; this._openBooking(jmeta.booking_id)"
+                  t-att-title="'Open booking form'"
+                  t-esc="jmeta.source_document_name || ('BO #' + jmeta.booking_id)"/>
+            <span class="o_wc-booking o_wc-booking--dep"
+                  t-if="jmeta.departure_id &amp;&amp; !jmeta.booking_id"
+                  t-att-title="'Departure-controlled — edit on the departure'"
+                  t-esc="jmeta.source_document_name || ('Dep #' + jmeta.departure_id)"/>
+        </span>
+    </t>
+
+    <!-- One stop-card on a lane. Expects `row` in scope (t-as of the
+         lane loops). jmeta is derived INSIDE the single root div as its
+         first child — attributes never reference it (OWL evaluates
+         attributes before children), only methods/state/loop vars do. -->
+    <t t-name="prema_logistics_booking.WeeklyCapacityCard">
+        <div t-att-class="'o_wc-card ' + (row.kind === 'pickup' ? 'o_wc-card--pickup' : 'o_wc-card--delivery')"
+             draggable="true"
+             t-on-dragstart="(ev) =&gt; this._onDragStart(ev, row)"
+             t-on-click="() =&gt; this._openJob(row.job_id)"
+             t-att-title="this._cardTitle(row, state.jobs[row.job_id] || {})">
+            <t t-set="jmeta" t-value="state.jobs[row.job_id] || {}"/>
+            <div class="o_wc-card-top">
+                <span class="o_wc-pill" t-if="row.label" t-esc="row.label"/>
+                <span class="o_wc-card-name"><t t-esc="row.company"/><t t-if="row.city"> — <t t-esc="row.city"/></t></span>
+                <button class="o_wc-card-unassign" title="Unassign this job"
+                        t-if="state.jobs[row.job_id] &amp;&amp; state.jobs[row.job_id].vehicle_id"
+                        t-on-click.stop="() =&gt; this._unassign(row.job_id)">
+                    <i class="fa fa-times"/>
+                </button>
+            </div>
+            <div class="o_wc-card-sub">
+                <t t-if="row.timed">
+                    <span class="o_wc-clock" t-if="row.service_start_local">
+                        ETA <t t-esc="row.service_start_local"/></span>
+                    <span class="o_wc-clock" t-if="row.departure_local"
+                          t-att-title="'service departure'">dep <t t-esc="row.departure_local"/></span>
+                    <span class="o_wc-clock" t-if="row.arrival_local &amp;&amp; row.arrival_local !== row.service_start_local"
+                          t-att-title="'arrival'">arr <t t-esc="row.arrival_local"/></span>
+                    <span class="o_wc-wait" t-if="row.waiting_minutes"
+                          t-att-title="'waiting at facility'">wait <t t-esc="Math.round(row.waiting_minutes)"/>m</span>
+                    <i t-if="row.projected" class="fa fa-magic o_wc-proj-ico"
+                       title="projected ETA — the stop has no stored engine ETA yet"/>
+                </t>
+                <t t-else="">
+                    <span class="text-muted o_wc-noclock">no clock yet</span>
+                </t>
+                <span class="o_wc-card-qty"
+                      t-if="row.qty_display !== null &amp;&amp; row.qty_display !== undefined">
+                    <i t-att-class="'fa ' + (row.qty_kind === 'pickup' ? 'fa-arrow-up' : 'fa-arrow-down')"/>
+                    <t t-esc="row.qty_display"/>
+                </span>
+                <span class="o_wc-deadline" t-if="row.hard_deadline" title="hard-deadline stop">!</span>
+                <span class="o_wc-lift" t-if="row.requires_liftgate" title="liftgate">⇧</span>
+                <t t-call="prema_logistics_booking.WeeklyCapacityMeta"/>
+            </div>
+        </div>
+    </t>
+</templates>

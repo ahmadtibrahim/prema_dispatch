@@ -1,0 +1,560 @@
+/*
+ * Weekly Capacity board — styling (TODO 9-13).
+ * Scale contract with the JS: one lane hour = HOUR_PX = 32 px, so the
+ * 24h lane body is 768 px tall and cards are positioned in px by the
+ * component (top = minutes * 32/60).
+ */
+
+.o_wc {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    background: #f3f5f8;
+    color: #3a3f47;
+    font-size: 12px;
+}
+
+/* ── header ─────────────────────────────────────────────────────── */
+.o_wc-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 12px;
+    background: #fff;
+    border-bottom: 1px solid #dfe3e9;
+    flex: 0 0 auto;
+}
+.o_wc-title { display: flex; align-items: baseline; gap: 8px; }
+.o_wc-title-text { font-size: 16px; font-weight: 600; }
+.o_wc-tz { color: #7c8494; font-size: 11px; }
+.o_wc-nav { display: flex; align-items: center; gap: 4px; }
+.o_wc-week-label {
+    font-weight: 600;
+    min-width: 190px;
+    text-align: center;
+}
+
+.o_wc-body { flex: 1 1 auto; overflow: auto; }
+
+/* ── main layout ────────────────────────────────────────────────── */
+.o_wc-main {
+    flex: 1 1 auto;
+    display: flex;
+    min-height: 0;
+}
+.o_wc-rail {
+    flex: 0 0 236px;
+    overflow-y: auto;
+    background: #fff;
+    border-right: 1px solid #dfe3e9;
+    padding: 6px;
+}
+.o_wc-rail-section-label {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    color: #7c8494;
+    letter-spacing: .4px;
+    margin: 8px 2px 4px;
+}
+.o_wc-truck {
+    display: block;
+    width: 100%;
+    text-align: left;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    padding: 5px 8px;
+    margin-bottom: 2px;
+    background: transparent;
+    cursor: pointer;
+}
+.o_wc-truck:hover { background: #eef2f7; }
+.o_wc-truck--active {
+    background: #e2ecf9;
+    border-color: #7ea8d8;
+}
+.o_wc-truck-name { display: block; font-weight: 600; }
+.o_wc-truck--all .o_wc-truck-name { font-weight: 700; color: #34577f; }
+.o_wc-truck-driver {
+    display: block;
+    font-size: 10.5px;
+    color: #7c8494;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.o_wc-reefer-ico { color: #2d9cdb; margin-left: 4px; }
+
+/* ── evaluate panel ─────────────────────────────────────────────── */
+.o_wc-eval { margin-top: 10px; border-top: 1px solid #e7eaef; }
+.o_wc-eval-toggle { float: right; padding: 0 4px; }
+.o_wc-eval-row { margin: 4px 0; }
+.o_wc-eval-row label {
+    display: block;
+    font-size: 11px;
+    color: #6b7280;
+    margin: 2px 0;
+}
+.o_wc-eval-checks label {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin-right: 10px;
+    font-size: 12px;
+    color: #3a3f47;
+}
+.o_wc-eval-go { margin-top: 4px; }
+.o_wc-eval-results { margin-top: 8px; }
+.o_wc-eval-result {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 2px;
+    border-bottom: 1px dashed #e7eaef;
+}
+.o_wc-eval-truck { font-weight: 600; flex: 1 1 auto; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; }
+.o_wc-eval-free { color: #5b6a7d; font-size: 11px; }
+.o_wc-eval-book { padding: 1px 6px; font-size: 10.5px; }
+.o_wc-chip {
+    border-radius: 10px;
+    padding: 1px 7px;
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    color: #fff;
+    flex: 0 0 auto;
+}
+.o_wc-chip--ok { background: #2e9e5b; }
+.o_wc-chip--warning { background: #d9a22a; }
+.o_wc-chip--hard { background: #cf4a3c; }
+
+/* ── board column area ──────────────────────────────────────────── */
+.o_wc-board {
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    overflow: auto;
+}
+
+/* unassigned strip (also the unassign drop dock) */
+.o_wc-unassigned {
+    flex: 0 0 auto;
+    background: #fff8e6;
+    border-bottom: 1px solid #ead9a8;
+    padding: 4px 8px;
+    min-height: 34px;
+}
+.o_wc-unassigned-label {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    color: #8a6d1a;
+    margin-right: 6px;
+}
+.o_wc-unassigned-hint { color: #b49a4e; font-weight: 400; text-transform: none; }
+.o_wc-unassigned-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    padding: 3px 0 1px;
+    align-items: center;
+}
+
+/* grid: shared ruler + day columns (single mode) */
+.o_wc-grid {
+    flex: 1 1 auto;
+    display: flex;
+    align-items: stretch;
+    min-width: 0;
+    padding: 0 6px 6px 0;
+    --o-wc-lane-hours: 768px; /* 24 h * 32 px */
+}
+.o_wc-ruler { flex: 0 0 58px; display: flex; flex-direction: column; }
+.o_wc-ruler-head {
+    flex: 0 0 auto;
+    padding: 4px 2px 2px 8px;
+    display: flex;
+    flex-direction: column;
+    box-sizing: border-box;
+    /* Day-head height (76px, below) + the untimed strip — the JS sets the
+       exact total inline (76 + untimedMax) so the hour labels start at the
+       same Y as the lanes' 00:00 gridline. 76px is the fallback (empty
+       strip). */
+    min-height: 76px;
+    height: 76px;
+    justify-content: flex-end;
+}
+.o_wc-ruler-truck { font-weight: 700; font-size: 11.5px; }
+.o_wc-ruler-cap { color: #7c8494; font-size: 10.5px; }
+.o_wc-ruler-body {
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+}
+.o_wc-hour {
+    height: 32px;
+    text-align: right;
+    padding-right: 6px;
+    font-size: 10px;
+    color: #8b93a1;
+    border-top: 1px solid rgba(0, 0, 0, .05);
+    box-sizing: border-box;
+    line-height: 11px;
+}
+
+/* day columns */
+.o_wc-day {
+    flex: 1 1 0;
+    min-width: 132px;
+    display: flex;
+    flex-direction: column;
+    margin-left: 4px;
+    background: #fff;
+    border: 1px solid #e2e6ec;
+    border-radius: 6px;
+    overflow: hidden;
+}
+.o_wc-day-head {
+    flex: 0 0 auto;
+    padding: 3px 6px 2px;
+    background: #fafbfd;
+    border-bottom: 1px solid #e2e6ec;
+    height: 76px;          /* fixed so lanes align with the ruler */
+    overflow: hidden;
+    box-sizing: border-box;
+}
+.o_wc-day-head--today { background: #e8f2fd; }
+.o_wc-day-head--holiday { background: #fdeeee; }
+.o_wc-day-name { font-weight: 700; font-size: 11.5px; }
+.o_wc-day-head--today .o_wc-day-name { color: #1d6fc2; }
+.o_wc-day-date { color: #7c8494; font-size: 11px; }
+.o_wc-day-capacity {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    white-space: nowrap;
+    font-size: 10.5px;
+    color: #5b6a7d;
+    margin-top: 2px;
+    overflow: hidden;
+}
+.o_wc-day-dep {
+    background: #e3ecf7;
+    color: #2c5c92;
+    border-radius: 8px;
+    padding: 0 5px;
+    font-size: 10px;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.o_wc-day-peak { font-weight: 700; }
+.o_wc-day-notes {
+    font-size: 10px;
+    color: #a1760e;
+    margin-top: 1px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.o_wc-dot {
+    width: 9px; height: 9px;
+    border-radius: 50%;
+    display: inline-block;
+    flex: 0 0 auto;
+}
+.o_wc-dot--available { background: #2e9e5b; }
+.o_wc-dot--warning, .o_wc-dot--partial { background: #d9a22a; }
+.o_wc-dot--unavailable, .o_wc-dot--busy { background: #cf4a3c; }
+
+/* the 24h lane */
+.o_wc-lane {
+    position: relative;
+    flex: 1 1 auto;
+    height: var(--o-wc-lane-hours, 768px);
+    background-image:
+        repeating-linear-gradient(
+            to bottom,
+            rgba(20, 40, 70, .16) 0,
+            rgba(20, 40, 70, .16) 1px,
+            transparent 1px,
+            transparent 96px),
+        repeating-linear-gradient(
+            to bottom,
+            rgba(20, 40, 70, .07) 0,
+            rgba(20, 40, 70, .07) 1px,
+            transparent 1px,
+            transparent 32px);
+    margin: 0 4px;
+}
+.o_wc-lane--today { background-color: #f6fbff; }
+.o_wc-lane--holiday { background-color: #fff8f8; }
+.o_wc-lane--off { background-color: #f6f3f1; }
+
+/* untimed strip: sits ABOVE the 24h lane (not inside it), so cards with
+   no clock never overlap timed cards near midnight. min-height var is
+   set per grid/row in JS (uniform across the 7 days so the ruler stays
+   aligned); cards stack here in date order */
+.o_wc-untimed {
+    position: relative;
+    flex: 0 0 auto;
+    min-height: var(--o-wc-untimed, 0px);
+    background: #fffdf5;
+    border-bottom: 1px dashed #e8ddbb;
+    display: flex;
+    flex-wrap: wrap;
+    align-content: flex-start;
+    gap: 2px;
+    padding: 2px;
+}
+.o_wc-untimed .o_wc-card { position: static; margin: 0; }
+
+/* positioned timed cards */
+.o_wc-lane-card-wrap {
+    position: absolute;
+    left: 2px;
+    right: 2px;
+    box-sizing: border-box;
+}
+.o_wc-lane-card-wrap .o_wc-card { height: 100%; box-sizing: border-box; }
+.o_wc-wrap--exceed { box-shadow: 0 0 0 2px #cf4a3c inset; border-radius: 5px; }
+.o_wc-wrap--underflow { box-shadow: 0 0 0 2px #d9a22a inset; border-radius: 5px; }
+
+/* ── cards ──────────────────────────────────────────────────────── */
+.o_wc-card {
+    background: #fff;
+    border: 1px solid #cfd6e0;
+    border-left-width: 4px;
+    border-radius: 4px;
+    padding: 2px 4px;
+    font-size: 10.5px;
+    line-height: 1.25;
+    cursor: grab;
+    box-shadow: 0 1px 2px rgba(20, 40, 70, .08);
+    overflow: hidden;
+    user-select: none;
+}
+.o_wc-card:hover { box-shadow: 0 2px 6px rgba(20, 40, 70, .18); }
+.o_wc-card--pickup { border-left-color: #e8872e; }
+.o_wc-card--delivery { border-left-color: #2d7fd3; }
+.o_wc-card--unassigned {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    max-width: 100%;
+    border-color: #d8c491;
+    border-left-color: #b99a3c;
+    background: #fffdf2;
+    cursor: grab;
+}
+.o_wc-card-top {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-weight: 600;
+    white-space: nowrap;
+}
+.o_wc-card-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex: 1 1 auto;
+    min-width: 0;
+}
+.o_wc-card-sub {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex-wrap: nowrap;
+    color: #5b6a7d;
+    white-space: nowrap;
+    overflow: hidden;
+}
+.o_wc-card-qty { font-weight: 700; color: #3f4753; }
+.o_wc-pill {
+    background: #e8872e;
+    color: #fff;
+    border-radius: 3px;
+    font-size: 9px;
+    font-weight: 800;
+    padding: 0 4px;
+    line-height: 13px;
+    flex: 0 0 auto;
+}
+.o_wc-card--delivery .o_wc-pill { background: #2d7fd3; }
+.o_wc-clock { font-size: 10px; }
+.o_wc-wait {
+    background: #fdf1d8;
+    color: #8a6d1a;
+    border-radius: 3px;
+    padding: 0 3px;
+    font-size: 9.5px;
+}
+.o_wc-proj-ico { color: #9aa4b2; font-size: 10px; }
+.o_wc-noclock { font-style: italic; font-size: 10px; }
+.o_wc-deadline {
+    background: #cf4a3c; color: #fff;
+    border-radius: 3px; font-weight: 800;
+    width: 12px; height: 12px; line-height: 12px;
+    text-align: center; font-size: 9px;
+    flex: 0 0 auto;
+}
+.o_wc-lift { color: #5b6a7d; font-size: 10px; }
+
+.o_wc-card-unassign {
+    border: 0;
+    background: transparent;
+    color: #b2b9c4;
+    padding: 0 2px;
+    flex: 0 0 auto;
+    font-size: 10px;
+    cursor: pointer;
+    line-height: 1;
+}
+.o_wc-card-unassign:hover { color: #cf4a3c; }
+
+.o_wc-temp-chip {
+    background: #d9ecfa;
+    color: #16618f;
+    border-radius: 3px;
+    padding: 0 3px;
+    font-size: 9.5px;
+    font-weight: 700;
+    flex: 0 0 auto;
+}
+.o_wc-risk { font-size: 11px; line-height: 1; flex: 0 0 auto; }
+.o_wc-risk--hard { color: #cf4a3c; }
+.o_wc-risk--soft { color: #d9a22a; }
+.o_wc-booking {
+    color: #2c5c92;
+    text-decoration: underline;
+    cursor: pointer;
+    font-size: 9.5px;
+    flex: 0 0 auto;
+}
+.o_wc-booking--dep { text-decoration: none; cursor: default; color: #7c8494; }
+.o_wc-date-chip {
+    background: #e3ecf7;
+    color: #2c5c92;
+    border-radius: 3px;
+    padding: 0 4px;
+    font-size: 9.5px;
+    font-weight: 700;
+    flex: 0 0 auto;
+}
+
+/* meta chips stay inline with their siblings (no visual wrapper) */
+.o_wc-meta-wrap { display: contents; }
+
+/* ── overview mode rows ─────────────────────────────────────────── */
+.o_wc-grid--overview {
+    display: block;
+    overflow: auto;
+    padding: 4px 6px 6px 0;
+}
+.o_wc-ov-row {
+    display: flex;
+    align-items: stretch;
+    margin-bottom: 6px;
+    min-width: max-content;
+}
+.o_wc-ov-rail {
+    flex: 0 0 132px;
+    position: sticky;
+    left: 0;
+    z-index: 4;
+    background: #eef1f5;
+    border: 1px solid #dfe3e9;
+    border-radius: 6px 0 0 6px;
+    display: flex;
+    flex-direction: column;
+    padding: 2px 4px;
+}
+.o_wc-ov-truck {
+    font-weight: 700;
+    font-size: 11px;
+    padding: 2px 2px 0;
+    height: 22px;              /* = mini day-head height (alignment) */
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    box-sizing: border-box;
+}
+/* space under the truck label equal to this row's untimed strip, so the
+   mini hour labels start at the lanes' 00:00 line */
+.o_wc-ov-spacer {
+    flex: 0 0 auto;
+    min-height: var(--o-wc-untimed, 0px);
+}
+.o_wc-ruler-body--mini {
+    flex: 0 0 auto;
+    flex-direction: column;
+    justify-content: flex-start;
+}
+.o_wc-hour-mini {
+    height: 32px;
+    box-sizing: border-box;
+    text-align: right;
+    padding-right: 4px;
+    font-size: 8.5px;
+    color: #9aa4b2;
+    line-height: 11px;
+    border-top: 1px solid rgba(0, 0, 0, .04);
+}
+.o_wc-day--ov {
+    min-width: 118px;
+    margin-left: 0;
+    border-radius: 0;
+    border-right: 0;
+    flex: 0 1 0;
+}
+.o_wc-day--ov:last-child { border-right: 1px solid #e2e6ec; }
+.o_wc-day-head--mini {
+    height: 22px;
+    min-height: 22px;
+    display: flex;
+    align-items: baseline;
+    gap: 4px;
+    padding: 2px 5px;
+    box-sizing: border-box;
+    overflow: hidden;
+}
+.o_wc-day-head--mini .o_wc-day-name { font-size: 10.5px; }
+.o_wc-day-head--mini .o_wc-day-date { font-size: 10px; }
+
+/* ── legend / misc ──────────────────────────────────────────────── */
+.o_wc-legend {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 3px 10px 6px;
+    font-size: 11px;
+    color: #5b6a7d;
+}
+.o_wc-legend i {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    margin-right: 3px;
+    border-radius: 2px;
+    vertical-align: -1px;
+}
+.o_wc-legend-pickup { background: #e8872e; }
+.o_wc-legend-delivery { background: #2d7fd3; }
+
+.o_wc-loading {
+    position: fixed;
+    top: 70px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(40, 45, 55, .92);
+    color: #fff;
+    border-radius: 6px;
+    padding: 8px 16px;
+    z-index: 50;
+    font-size: 12px;
+}

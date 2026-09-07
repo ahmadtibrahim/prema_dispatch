@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Weekly Capacity board (§TODO 9-13): menu + client action only. The
+    board itself is the OWL component registered for the
+    "weekly_capacity_board" tag (static/src/js/weekly_capacity_board.js).
+
+    Loads AFTER views/menus.xml (references menu_v4_operations).
+-->
+<odoo>
+    <record id="action_weekly_capacity_board" model="ir.actions.client">
+        <field name="name">Weekly Capacity</field>
+        <field name="tag">weekly_capacity_board</field>
+    </record>
+
+    <menuitem id="menu_v4_weekly_capacity"
+              name="Weekly Capacity"
+              parent="menu_v4_operations"
+              action="action_weekly_capacity_board"
+              sequence="21"/>
+</odoo>

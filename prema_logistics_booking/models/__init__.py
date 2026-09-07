@@ -72,3 +72,6 @@ from . import crm_lead_estimate_bridge
 # the Prema AI estimator (three scenarios, availability, intel, pairing,
 # route development). Engine side calls env["logistics.estimator.bridge"].
 from . import logistics_estimator_bridge
+
+# Weekly Capacity board RPCs (TODO 9-13).
+from . import dispatch_job_weekly_capacity
