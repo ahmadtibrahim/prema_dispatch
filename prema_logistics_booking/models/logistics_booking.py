@@ -2856,7 +2856,138 @@ class LogisticsBooking(models.Model):
         jobs = self.dispatch_job_ids.sudo().filtered(lambda j: not j.invoice_id)
         if jobs:
             jobs.write({"invoice_id": invoice.id})
+        # §TODO15: append draft lines for billable handling-event charges
+        # (prema.dispatch.freight.handling — when that model exists). Called
+        # on EVERY ensure so events approved AFTER the invoice was created
+        # are appended idempotently on the next completion-path run.
+        self._append_handling_event_charges(invoice)
         return invoice
+
+    # ── §TODO15 handling-event charges (prema.dispatch.freight.handling) ──
+    # Prema dispatch records per-pallet / per-labour handling events at the
+    # dock (parallel module). Approved billable events become extra DRAFT
+    # invoice lines next to the transport line — quantities and per-action
+    # labels only, priced 0.0: the repo has no labour/pallet rate convention
+    # for handling, so the human prices the lines at the dispatch-review
+    # gate (nothing is ever posted here). The whole hook is registry-
+    # guarded and field-defensive: when the parallel model does not exist
+    # (this branch) or a field is absent, behavior is byte-identical to the
+    # old flow.
+    _HANDLING_ACTION_LABELS = {
+        "built_pallet": "Pallet building (Built Pallet)",
+        "loaded_loose": "Loose-freight loading (Loaded Loose)",
+        "shipper_palletized": "Shipper-palletized receipt",
+        "exception": "Handling exception",
+    }
+
+    def _handling_event_field(self, event, name, default=False):
+        """Defensive field read: absent fields degrade to the default."""
+        if name not in event._fields:
+            return default
+        return event[name] or default
+
+    def _handling_event_charges(self):
+        """Billable freight-handling events linked to this booking (id asc).
+
+        Registry-guarded + field-defensive: returns an empty recordset when
+        the parallel model prema.dispatch.freight.handling is not installed
+        (as on this branch). An event is billable when its billable_pallets
+        / billable_labour flags (the approval marks — the parallel model has
+        no state field of its own) are set on fields that exist.
+        """
+        if "prema.dispatch.freight.handling" not in self.env.registry.models:
+            return self.env["prema.dispatch.job"].browse()  # empty recordset
+        FH = self.env["prema.dispatch.freight.handling"].sudo()
+        events = FH.search([("booking_id", "=", self.id)], order="id asc")
+        job_model = self.env["prema.dispatch.job"]
+        if "logistics_booking_id" in job_model._fields and "job_id" in FH._fields:
+            via_jobs = FH.search(
+                [("job_id.logistics_booking_id", "=", self.id)],
+                order="id asc")
+            events = (events | via_jobs).sorted(key=lambda e: e.id)
+        billable = events.filtered(
+            lambda e: bool(
+                self._handling_event_field(e, "billable_pallets", False))
+                or bool(
+                    self._handling_event_field(e, "billable_labour", False)))
+        return billable
+
+    def _append_handling_event_charges(self, invoice):
+        """Append one draft line per billable handling-event charge that is
+        not yet on the invoice. Idempotent — existing lines are recognized
+        by the deterministic label convention "Handling event #<id>" (the
+        repo's Detention-# idiom), so re-runs (new events arriving after
+        the invoice was created, repeated completion paths, refreshes)
+        append exactly the missing lines and never duplicate.
+
+        Rules: never posts, never emails, never touches the transport
+        line's solved price; pallets lines carry qty pallets_built or
+        pallets_loaded, labour lines carry qty labour_minutes; all lines
+        carry unit price 0.0 for human pricing at the dispatch-review
+        gate. Returns the number of lines appended.
+        """
+        if ("prema.dispatch.freight.handling"
+                not in self.env.registry.models):
+            return 0
+        self.ensure_one()
+        if not invoice or invoice.state != "draft":
+            return 0
+        invoice = invoice.sudo()
+        product, _country = self._select_freight_product()
+        if not product:
+            return 0  # missing product mapping — creation path flags review
+        tax_ids = []
+        if self.tax_rule_id:
+            tax_ids = [(6, 0, [self.tax_rule_id.id])]
+
+        added = 0
+        existing_names = [l.name or "" for l in invoice.invoice_line_ids]
+        for event in self._handling_event_charges():
+            action = (self._handling_event_field(event, "action", "") or "")
+            label = self._HANDLING_ACTION_LABELS.get(
+                action, "Handling (%s)" % action if action else "Handling")
+            event_tag = "Handling event #%s" % event.id
+
+            if self._handling_event_field(event, "billable_pallets", False):
+                qty = self._handling_event_field(event, "pallets_built", 0) \
+                    or self._handling_event_field(event, "pallets_loaded", 0)
+                if qty:
+                    name = "%s (%sp) — %s" % (label, qty, event_tag)
+                    if not any(
+                            event_tag in n and "labour" not in n
+                            for n in existing_names):
+                        # Odoo 18: lines go through the parent invoice (the
+                        # o2m command fills move_id — a bare create on
+                        # invoice_line_ids raises KeyError: 'move_id').
+                        invoice.write({"invoice_line_ids": [(0, 0, {
+                            "product_id": product.id,
+                            "name": name,
+                            "quantity": qty,
+                            "price_unit": 0.0,
+                            "tax_ids": tax_ids,
+                        })]})
+                        existing_names.append(name)
+                        added += 1
+            if self._handling_event_field(event, "billable_labour", False):
+                minutes = self._handling_event_field(event, "labour_minutes", 0)
+                if minutes:
+                    name = "%s (labour, %s min) — %s" % (
+                        label, "%.0f" % minutes, event_tag)
+                    if not any(
+                            event_tag in n and "labour" in n
+                            for n in existing_names):
+                        invoice.write({"invoice_line_ids": [(0, 0, {
+                            "product_id": product.id,
+                            "name": name,
+                            "quantity": minutes,
+                            "price_unit": 0.0,
+                            "tax_ids": tax_ids,
+                        })]})
+                        existing_names.append(name)
+                        added += 1
+        if added:
+            invoice.invalidate_recordset()
+        return added
 
     def _create_draft_invoice(self):
         """Create a draft customer invoice from this booking. Idempotent —
@@ -2975,6 +3106,11 @@ class LogisticsBooking(models.Model):
         # Try to apply AI description via the existing Generate from Text pipeline.
         # If it fails, the deterministic description is already valid.
         self._apply_ai_invoice_description(invoice, description)
+
+        # §TODO15: capture handling-event charges that were already approved
+        # by the time the draft invoice was created (idempotent — lines are
+        # deduped by the event-id label convention).
+        self._append_handling_event_charges(invoice)
 
         return invoice
 

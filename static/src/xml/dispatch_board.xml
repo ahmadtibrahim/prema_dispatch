@@ -228,6 +228,15 @@
                                         <span t-if="job.priority === 'urgent'"    class="o_dispatch_badge bg-warning text-dark">URGENT</span>
                                         <span t-if="job.priority === 'emergency'" class="o_dispatch_badge bg-danger text-white">EMERG</span>
                                         <span t-if="job.pallets"           class="o_dispatch_badge bg-light text-dark"><t t-esc="job.pallets"/>p</span>
+                                        <!-- §TODO14 engine risks: red RISKY when any hard reason,
+                                             yellow glyph when soft-only; click opens the popover. -->
+                                        <span t-if="riskReasonsOf(job).length"
+                                              t-on-click.stop="() => this.toggleRiskPopover(job)"
+                                              t-attf-class="o_dispatch_badge o_risk_badge #{jobHasHardRisk(job) ? 'bg-danger text-white' : 'bg-warning text-dark'}"
+                                              t-att-title="riskReasonsText(job)">
+                                            <t t-if="jobHasHardRisk(job)">⚠ RISKY</t>
+                                            <t t-else="">⚠</t>
+                                        </span>
                                     </div>
                                     <div class="job-actions mt-2 d-flex gap-1">
                                         <button class="btn btn-xs flex-grow-1"
@@ -241,6 +250,27 @@
                                                 t-on-click.stop="() => this.openJob(job.job_id)">
                                             <i class="fa fa-external-link"/>
                                         </button>
+                                    </div>
+                                    <!-- §TODO14 engine-risk popover: severity + message of every
+                                         persisted row. Same card-relative idiom as the calendar
+                                         popup; toggled by the risk badge. -->
+                                    <div t-if="state.riskPopoverJobId === job.job_id"
+                                         class="o_dispatch_risk_popover"
+                                         t-on-click.stop="">
+                                        <div class="popup-header o_dispatch_risk_popover_head">
+                                            <strong><i class="fa fa-shield me-1"/>Engine Risks</strong>
+                                            <button class="btn-close btn-close-white ms-auto"
+                                                    t-on-click.stop="() => this.toggleRiskPopover(job)"/>
+                                        </div>
+                                        <div class="o_dispatch_risk_popover_body">
+                                            <div t-foreach="riskReasonsOf(job)" t-as="r" t-key="r_index"
+                                                 class="risk-popover-row">
+                                                <span t-attf-class="risk-sev risk-sev-#{r.severity}">
+                                                    <t t-esc="r.severity === 'hard' ? 'HARD' : 'soft'"/>
+                                                </span>
+                                                <span class="risk-msg" t-esc="r.message || r.code"/>
+                                            </div>
+                                        </div>
                                     </div>
                                 </div>
                             </t>
@@ -442,7 +472,13 @@
                                              t-att-title="jobActionTooltip(job) + '\n' + job.route + '\n' + job.stop_count + ' stops' + '\n(drag to Unassigned to unassign)'"
                                              t-on-click.stop="() => this.openJob(job.job_id)">
                                             <div class="block-header d-flex align-items-center justify-content-between">
-                                                <span class="block-name" t-esc="job.job_name"/>
+                                                <span class="block-name flex-grow-1" t-esc="job.job_name"/>
+                                                <!-- §TODO14 engine risks: small colored pill, reasons
+                                                     in the native tooltip (no popover inside the
+                                                     scroll-clipped column). -->
+                                                <span t-if="riskReasonsOf(job).length"
+                                                      t-attf-class="o_risk_pill #{jobHasHardRisk(job) ? 'risk-pill-hard' : 'risk-pill-soft'}"
+                                                      t-att-title="riskReasonsText(job)">⚠</span>
                                                 <button class="block-unassign-btn"
                                                         t-on-click.stop="() => this.unassignJob(job.job_id)">×</button>
                                             </div>

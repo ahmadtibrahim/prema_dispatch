@@ -73,6 +73,7 @@ export class DispatchBoard extends Component {
             dragOverUnassign: false,
             assigningJobId:  null,
             calendarPopup:   null,
+            riskPopoverJobId: null,
 
             // Panel layout
             sidebarWidth:    parseInt(localStorage.getItem(LS_SIDEBAR_W) || "400"),
@@ -553,6 +554,7 @@ export class DispatchBoard extends Component {
     async loadData() {
         this.state.loading = true;
         this.state.assigningJobId = null;
+        this.state.riskPopoverJobId = null;  // fresh data → close stale popover
         try {
             const data = await this.orm.call(
                 "prema.dispatch.job",
@@ -971,6 +973,9 @@ export class DispatchBoard extends Component {
                 }
             } else {
                 this.notification.add(`Cannot assign: ${r.error}`, { type: "danger", sticky: true });
+                // Reload so the persisted §TODO14 engine-risk rows of the
+                // blocked attempt surface on the job card immediately.
+                await this.loadData();
             }
         } catch (e) {
             this.notification.add(`Assignment error: ${e.message}`, { type: "danger" });
@@ -1648,6 +1653,27 @@ export class DispatchBoard extends Component {
     get totalUnassigned() { return this.state.unassigned_jobs.length; }
 
     riskClass(job) { return { red: "risk-red", yellow: "risk-yellow", green: "risk-green" }[job.risk_level] || "risk-green"; }
+
+    // ── §TODO14 engine-risk payload helpers ─────────────────────────────
+    // risk_reasons: [{severity: 'hard'|'soft', code, message}] attached to
+    // unassigned cards + truck job blocks by get_dispatch_board_data from
+    // PERSISTED prema.dispatch.job.risk rows (never evaluated on load).
+    riskReasonsOf(job) {
+        return Array.isArray(job.risk_reasons) ? job.risk_reasons : [];
+    }
+    jobHasHardRisk(job) {
+        return this.riskReasonsOf(job).some(r => r && r.severity === "hard");
+    }
+    riskReasonsText(job) {
+        return this.riskReasonsOf(job)
+            .map(r => (r.severity === "hard" ? "HARD" : "soft")
+                + " — " + (r.message || r.code || ""))
+            .join("\n");
+    }
+    toggleRiskPopover(job) {
+        this.state.riskPopoverJobId =
+            this.state.riskPopoverJobId === job.job_id ? null : job.job_id;
+    }
     statusClass(truck) { return `status-${truck.status}`; }
     isDropTarget(truck) { return this.state.dragOverTruckId === truck.truck_id; }
     isAssignTarget() { return this.state.assigningJobId !== null; }

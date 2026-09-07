@@ -10,3 +10,4 @@ from . import estimator_scenario_service
 from . import customer_pricing_intel_service
 from . import load_pairing_service
 from . import route_development_service
+from . import job_risk_service

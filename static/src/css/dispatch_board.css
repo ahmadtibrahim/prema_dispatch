@@ -903,3 +903,62 @@
 .o_dispatch_board.o_layout_multi .o_dispatch_board_header {
     border-bottom: 2px solid #4a90d9;
 }
+
+/* ═══════════════════════════════════════════════════════════════
+   §TODO14 Engine-risk UI (badge / pill / popover)
+   risk_reasons arrive on unassigned cards and truck job blocks from
+   PERSISTED prema.dispatch.job.risk rows (see dispatch_board.js).
+═══════════════════════════════════════════════════════════════ */
+
+/* Popover is anchored to the job card, so cards become containing
+   blocks (no layout change: position:relative only). */
+.o_dispatch_job_card { position: relative; }
+
+.o_risk_badge { cursor: pointer; }
+
+.o_risk_pill {
+    font-size: 9px;
+    line-height: 1.4;
+    padding: 0 5px;
+    border-radius: 3px;
+    cursor: default;
+    flex-shrink: 0;
+}
+.o_risk_pill.risk-pill-hard { background: #e74c3c; color: #fff; }
+.o_risk_pill.risk-pill-soft { background: #f39c12; color: #fff; }
+
+.o_dispatch_risk_popover {
+    position: absolute;
+    top: calc(100% - 6px);
+    left: 10px;
+    right: 10px;
+    z-index: 210;
+    background: #1e2a3a;
+    color: #e8eaf0;
+    border-radius: 8px;
+    box-shadow: 0 8px 30px rgba(0,0,0,.4);
+    font-size: 11px;
+    overflow: hidden;
+}
+.o_dispatch_risk_popover_head { justify-content: space-between; }
+.o_dispatch_risk_popover_body { padding: 6px 10px 8px; max-height: 180px; overflow-y: auto; }
+.risk-popover-row {
+    display: flex;
+    gap: 8px;
+    align-items: flex-start;
+    padding: 5px 0;
+    border-top: 1px solid rgba(255,255,255,.08);
+}
+.risk-popover-row:first-child { border-top: none; }
+.risk-sev {
+    flex-shrink: 0;
+    font-size: 9px;
+    font-weight: 700;
+    padding: 1px 5px;
+    border-radius: 3px;
+    letter-spacing: .04em;
+    margin-top: 1px;
+}
+.risk-sev-hard { background: #e74c3c; color: #fff; }
+.risk-sev-soft { background: #f39c12; color: #1a1a2e; }
+.risk-msg { white-space: normal; line-height: 1.45; }
