@@ -145,10 +145,20 @@ export class InboxApp extends Component {
             if (ev.key !== "Escape") {
                 return;
             }
-            const overlay = this.el?.querySelector(".o_inbox_compose_overlay");
-            if (overlay && !overlay.contains(ev.target)) {
-                ev.preventDefault();
-                this.closeComposer();
+            try {
+                const overlay = this.el?.querySelector(".o_inbox_compose_overlay");
+                console.log("INBOX-ESC-TRACE", {
+                    elNull: !this.el, overlayFound: !!overlay,
+                    mode: this.state?.composer?.mode,
+                    targetCls: String(ev.target?.className || ev.target?.tagName).slice(0, 40),
+                    targetInOverlay: !!(overlay && overlay.contains(ev.target)),
+                });
+                if (overlay && !overlay.contains(ev.target)) {
+                    ev.preventDefault();
+                    this.closeComposer();
+                }
+            } catch (e) {
+                console.error("INBOX-ESC-TRACE error:", e);
             }
         };
         onMounted(async () => {
