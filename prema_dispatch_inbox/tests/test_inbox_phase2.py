@@ -29,6 +29,8 @@ class TestLinkCandidatesD5(InboxTestCase):
             "delivery_address": "50 Front St, Belleville ON K8N",
             "pickup_date": "2026-09-02",
             "pallets": 6,
+            "shipment_type": "ltl",
+            "temperature_mode": "dry",
             "state": "confirmed",
         })
         _, conv, _ = self.ingest(
@@ -192,6 +194,8 @@ class TestLinkBacklinkD5(InboxTestCase):
             "pickup_address": "1 King St",
             "delivery_address": "2 Queen St",
             "pallets": 6,
+            "shipment_type": "ltl",
+            "temperature_mode": "dry",
         })
         _, conv, _ = self.ingest(
             email_from="Acme <acme@link.test>", subject="Quote")
@@ -207,8 +211,8 @@ class TestLinkBacklinkD5(InboxTestCase):
         no raw HTML injection through email_from."""
         p = self._partner("Acme", "acme@link.test")
         _, conv, _ = self.ingest(
-            email_from="Acme <acme@link.test>",
-            subject='"><script>alert(1)</script>')
+            email_from='"><script>alert(1)</script> <acme@link.test>',
+            subject="Quote")
         lead = self.env["crm.lead"].create(
             {"name": "esc", "partner_id": p.id})
         conv.action_link_record("opportunity", lead.id)
