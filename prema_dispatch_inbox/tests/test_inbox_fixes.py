@@ -131,7 +131,10 @@ class TestWiringGuards(InboxTestCase):
         self.assertIn('t-model="state.composer.body"', xml)
         self.assertIn("t-on-keydown", xml)
         self.assertIn('t-on-click="() => this.closeComposer()"', xml)
-        self.assertIn("closeComposer()", js)
+        # method is declared with a default arg (force=false) — assert the
+        # definition, not a zero-arg call literal
+        self.assertIn("closeComposer(force = false)", js)
+        self.assertIn("this.closeComposer(true)", js)
         self.assertIn("_focusComposer()", js)
         self.assertNotIn("_scrollComposer", js)
         # the compose FIELDS moved into the overlay — the slimmed thread
