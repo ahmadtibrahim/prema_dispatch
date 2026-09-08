@@ -22,7 +22,7 @@ post-commit only.
 import base64
 import logging
 import re
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from odoo import _, api, fields, models
 from odoo.exceptions import AccessError, ValidationError
@@ -1573,6 +1573,171 @@ class InboxConversation(models.Model):
             "subject": "Re: %s" % _normalize_thread_subject(self.name),
             "body": "\n".join(body_lines),
             "quote": quote,
+        }
+
+    # ------------------------------------------------------------------
+    # F-3 — create booking from email (quote → confirmed booking)
+    # ------------------------------------------------------------------
+    def action_create_booking_from_email(self):
+        """F-3: confirm a booking from the email request — the final quoted
+        price (F-1) becomes the customer sell price.
+
+        This is the REVENUE event: booking creation is never a suggestion
+        and never auto-triggered — only the dispatcher's explicit click.
+        Validation order (each refusal is dispatcher-actionable):
+          1. trashed conversations are immutable (restore first);
+          2. a booking already exists → idempotent return (double-click /
+             RPC retry safe — the booking is never duplicated);
+          3. a converted custom quote already carries the booking → link it
+             and return, ZERO service calls;
+          4. partner must be confirmed (provisional = ambiguous sender);
+          5. a final quoted price must exist — never book at an invented
+             number;
+          6. both stops must resolve to a serviceable region;
+          7. the §8.7 acceptance hook re-checks capacity.
+
+        The booking goes through BookingOrchestrationService under a sudo
+        envelope (inbox users are read-only on logistics models — no ACL
+        change): normalize_request(source_channel="email") +
+        confirm_from_internal re-run the DETERMINISTIC corridor engine with
+        resolve_departures=True — capacity is re-validated NOW, and the
+        quoted sell price is carried via sell_price_override with a
+        recorded reason (the system price stays in the audit trail).
+        """
+        self.ensure_one()
+        if self.trashed:
+            raise ValidationError(_(
+                "This conversation is in Trash — restore it before "
+                "creating a booking."))
+        if self.booking_id:
+            return self._booking_payload()
+        if self.custom_quote_id and self.custom_quote_id.booking_id:
+            # The Rate Confirmation already became a booking — link it to
+            # the thread, never run the engine a second time.
+            self.write({"booking_id": self.custom_quote_id.booking_id.id})
+            self._post_target_backlink(
+                self, "logistics.booking", self.custom_quote_id.booking_id)
+            self._broadcast_read_change()
+            return self._booking_payload()
+        if not self.partner_id or self.partner_provisional:
+            raise ValidationError(_(
+                "Confirm the customer first — booking creation needs an "
+                "unambiguous customer."))
+        quote = self._quote_state()
+        if not quote["final_quoted_price"]:
+            raise ValidationError(_(
+                "No final quoted price yet — run 'Review & calculate quote' "
+                "(and adjust if needed) before creating a booking."))
+        ex = (self.ai_extraction or {}).get("fields") or {}
+        pricing = self.env["prema.inbox.pricing"]
+        pickup_fsa = pricing._resolve_fsa(ex.get("pickup"))
+        delivery_fsa = pricing._resolve_fsa(ex.get("delivery"))
+        if not pickup_fsa or not delivery_fsa:
+            unresolved = []
+            if not pickup_fsa:
+                unresolved.append("the pickup postal code")
+            if not delivery_fsa:
+                unresolved.append("the delivery postal code")
+            raise ValidationError(_(
+                "Booking cannot be created — %s could not be resolved to a "
+                "serviceable region. Fix the shipment location first."
+                % " and ".join(unresolved)))
+        if not pricing._revalidate_at_acceptance(self):
+            raise ValidationError(_(
+                "Capacity re-validation failed at acceptance — retry "
+                "shortly; the booking was NOT created."))
+
+        pallets = int(ex.get("pallets") or 0)
+        if pallets < 1:
+            raise ValidationError(_(
+                "No pallet count on the shipment — set it in the shipment "
+                "extraction before creating a booking."))
+
+        from odoo.addons.prema_dispatch_inbox.models.inbox_pricing import (
+            _ACCESSORIAL_LIFTGATE, _EQUIPMENT_TEMPERATURE_MODE)
+        equipment = str(ex.get("equipment") or "").lower()
+        temperature_mode = _EQUIPMENT_TEMPERATURE_MODE.get(equipment, "ltl")
+        accessorials = [str(a).lower() for a in
+                        (ex.get("accessorials") or [])]
+        final = float(quote["final_quoted_price"])
+        pickup_date = None
+        raw_date = str((ex.get("pickup") or {}).get("date") or "").strip()
+        if raw_date:
+            try:
+                pickup_date = datetime.strptime(raw_date[:10], "%Y-%m-%d")
+            except ValueError:
+                pickup_date = None
+
+        def _stop_dict(side):
+            s = ex.get(side) or {}
+            parts = [str(s.get(k) or "").strip()
+                     for k in ("city", "province", "postal_code")]
+            street = str(s.get("address") or "").strip()
+            return {
+                "postal_code": str(s.get("postal_code") or "").strip(),
+                "formatted_address": street or ", ".join(parts),
+                "street": street,
+                "city": str(s.get("city") or "").strip(),
+                "province": str(s.get("province") or "").strip(),
+            }
+
+        from odoo.addons.prema_logistics_booking.services.booking_orchestration_service import (  # noqa: E501
+            BookingOrchestrationService)
+        svc = BookingOrchestrationService(self.env.sudo())
+        norm = svc.normalize_request({
+            "partner_id": self.partner_id.id,
+            "pickup_stops": [_stop_dict("pickup")],
+            "delivery_stops": [_stop_dict("delivery")],
+            "pallets": pallets,
+            "weight_lbs": int(ex.get("weight_lbs") or 0),
+            "load_type": "ltl",
+            "equipment_type": temperature_mode,
+            "required_temperature_c": (
+                ex.get("temperature_c")
+                if temperature_mode == "reefer" else None),
+            "liftgate_pickup": any(
+                a in _ACCESSORIAL_LIFTGATE for a in accessorials),
+            "liftgate_delivery": False,
+            "requested_pickup_date": pickup_date,
+            "pricing_method": "corridor",
+            "agreed_rate": final,
+            "source_model": self._name,
+            "source_res_id": self.id,
+            "source_reference": self.name or "",
+            "custom_quote_id": self.custom_quote_id.id or False,
+            "idempotency_key": "email:%s" % self.id,
+        }, source_channel="email")
+        booking = svc.confirm_from_internal(
+            norm,
+            skip_invoice=True,
+            # The F-1 FINAL number is the customer sell price (revenue
+            # authority) — the engine's re-check at confirm stays as the
+            # system price; the difference is permanently explained.
+            sell_price_override=final,
+            sell_price_override_reason=(
+                "Quoted in the Dispatch Inbox for email request '%s'"
+                % (self.name or "")),
+        )
+        self.write({"booking_id": booking.id})
+        self._post_target_backlink(self, "logistics.booking", booking)
+        self.message_post(
+            body=_("Booking <b>%s</b> created from this email request "
+                   "(quoted price %s %.2f).")
+            % (booking.booking_number or booking.id,
+               quote["currency"], final),
+            subtype_xmlid="mail.mt_note")
+        self._broadcast_read_change()
+        return self._booking_payload()
+
+    def _booking_payload(self):
+        """The F-3 result block — booking id/number/state + deep link."""
+        booking = self.booking_id
+        return {
+            "booking_id": booking.id or None,
+            "number": self._safe_link_name(booking) if booking else None,
+            "state": booking.state if booking else None,
+            "url": ("/web#model=logistics.booking&id=%s" % booking.id)
+                   if booking else None,
         }
 
     # ------------------------------------------------------------------

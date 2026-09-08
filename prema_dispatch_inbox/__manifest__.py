@@ -1,6 +1,6 @@
 {
     "name": "Prema Dispatch Inbox",
-    "version": "18.0.1.10.0",
+    "version": "18.0.1.11.0",
     "summary": "Shared dispatch inbox for dispatcher@logistics.premafirm.com — conversations, follow-ups, CRM/booking/invoice links, AI assistant, pricing engine integration",
     "category": "Logistics",
     "description": """
@@ -60,6 +60,15 @@ available inside Prema Dispatch on erp.premafirm.com.
   existing deterministic PricingService — no second calculator, no invented
   rates. Price snapshot persisted on the conversation; quoted replies
   require human review.
+* Gmail-like full-window compose: Reply/Reply-all/Forward open the whole
+  thread READ-ONLY above a large clear writing box (the original email is
+  quoted into the SENT message only — the box never pre-fills), X/Escape
+  closes with a discard-confirm, drafts keep the window open.
+* Create booking from email (F-3): one explicit dispatcher click confirms
+  the quoted email as a logistics.booking via BookingOrchestrationService
+  (source_channel "email") — the corridor engine re-checks capacity and
+  rates at booking time, the final quoted price is carried as the customer
+  sell price with a recorded reason, invoicing stays with job completion.
 * Configurable rules (triggers/conditions/actions/owner/audit) with three
   permission levels; defaults are conservative (no autonomous sending).
 

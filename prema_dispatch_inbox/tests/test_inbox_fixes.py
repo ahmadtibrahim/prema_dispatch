@@ -147,6 +147,23 @@ class TestWiringGuards(InboxTestCase):
         self.assertIn('t-esc="m.body_plain"', xml)
         self.assertNotIn('t-raw="m.body_plain"', xml)
 
+    def test_f3_booking_wiring(self):
+        """F-3: button (XML) ↔ RPC (JS) ↔ method (Python) must stay in
+        sync — this audit's canonical-RPC regression, three sides."""
+        js = _src("static/src/js/inbox_app.js")
+        xml = _src("static/src/xml/inbox_app.xml")
+        self.assertIn(
+            '"prema.inbox.conversation", "action_create_booking_from_email"',
+            js)
+        self.assertIn("createBookingFromEmail()", xml)
+        self.assertIn("Create booking from email", xml)
+        # only reachable on a quoted, non-trashed, unbooked thread
+        self.assertIn("quoteState().final_quoted_price", xml)
+        self.assertIn("state.detail.conversation.trashed", xml)
+        self.assertIn("state.detail.booking.id", xml)
+        self.assertTrue(
+            hasattr(self.Conversation, "action_create_booking_from_email"))
+
 
 # ----------------------------------------------------------------------
 # composer contract (sections B–F)

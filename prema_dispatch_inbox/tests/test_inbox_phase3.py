@@ -5,8 +5,12 @@ is the single pricing authority), F-1 dispatcher price adjustment,
 F-2 deterministic Reply with Quote. F-3 (create booking from email)
 lives in this file too — its class was added with the F-3 commit.
 """
+import datetime
 from types import SimpleNamespace
 from unittest import mock
+
+from odoo import fields
+from odoo.exceptions import ValidationError
 
 from .common import InboxTestCase
 
@@ -380,3 +384,243 @@ class TestQuoteReplyF2(InboxTestCase):
             len(conv.inbox_message_ids.filtered(
                 lambda m: m.direction == "outgoing")), 0)
         self.assertEqual(res["quote"]["adjustment_reason"], "volume deal")
+
+
+class TestCreateBookingFromEmailF3(InboxTestCase):
+    """F-3 — the dispatcher's EXPLICIT click confirms the quoted email as a
+    logistics.booking. The booking engine (BookingOrchestrationService) is
+    faked exactly like the custom-quote lifecycle suite — these tests assert
+    the inbox gates and the request contract, never the engine itself.
+
+    The sudo envelope is part of the contract: inbox users are read-only on
+    logistics models, so the service call must ride self.env.sudo() (no ACL
+    CSV change) — test 8 pins that with a real inbox-group user.
+    """
+
+    def _quoted_conv(self):
+        """Confirmed partner + resolvable extraction + a quoted price."""
+        _, conv, _ = self.ingest(
+            subject="Rate quote: 6 pallets reefer",
+            body="Pickup Toronto. Delivery Belleville. 6 pallets.")
+        _seed_extraction(conv)
+        conv.write({
+            "engine_calculated_price": 200.0,
+            "price_snapshot": {"calculated_price": 200.0, "currency": "CAD",
+                               "price_lines": [{"label": "LTL linehaul",
+                                                "amount": 200.0}]},
+        })
+        return conv
+
+    def _mk_booking(self, env, partner):
+        """Minimal booking row exactly like the orchestration service does
+        (booking_number is readonly-after-create, so set at create)."""
+        return env["logistics.booking"].create({
+            "partner_id": partner.id,
+            "shipment_type": "ltl", "service_mode": "dedicated",
+            "load_type": "ltl", "temperature_mode": "dry",
+            "equipment_requirement": "dry",
+            "pallets": 6, "physical_pallets": 6, "weight_lbs": 4200.0,
+            "pickup_date": datetime.date(2026, 9, 9),
+            "estimated_delivery_date": datetime.date(2026, 9, 9),
+            "price_snapshot": [{"line": "F3 email booking test"}],
+            "booking_number":
+                env["logistics.booking"]._generate_booking_number(),
+        })
+
+    def _fake_orchestration(self, captured, counter=None):
+        """Replace BookingOrchestrationService so the booking engine never
+        runs (no geocoding, no pricing) — asserts the F-3 gates and the
+        request contract, not the engine. Returns the patch pair."""
+        from odoo.addons.prema_logistics_booking.services.booking_orchestration_service import (  # noqa: E501
+            BookingOrchestrationService)
+        mk_booking = self._mk_booking
+
+        def fake_normalize(self, request, **kwargs):
+            captured["request"] = request
+            captured["channel"] = kwargs.get("source_channel")
+            return {"request": request}
+
+        def fake_confirm(self, norm, **kwargs):
+            if counter is not None:
+                counter["calls"] += 1
+            captured["confirm"] = kwargs
+            partner = self.env["res.partner"].browse(
+                norm["request"]["partner_id"])
+            return mk_booking(self.env, partner)
+
+        return (mock.patch.object(
+            BookingOrchestrationService, "normalize_request",
+            fake_normalize),
+            mock.patch.object(
+                BookingOrchestrationService, "confirm_from_internal",
+                fake_confirm))
+
+    def test_trashed_conversation_refused(self):
+        conv = self._quoted_conv()
+        conv.write({"trashed": True, "trashed_at": fields.Datetime.now()})
+        captured, counter = {}, {"calls": 0}
+        with self._fake_orchestration(captured, counter):
+            with self.assertRaisesRegex(ValidationError, "Trash"):
+                conv.action_create_booking_from_email()
+        self.assertEqual(counter["calls"], 0)
+        self.assertFalse(conv.booking_id)
+
+    def test_provisional_partner_refused(self):
+        conv = self._quoted_conv()
+        conv.write({"partner_provisional": True,
+                    "partner_suggestions": [{"id": conv.partner_id.id}]})
+        captured, counter = {}, {"calls": 0}
+        with self._fake_orchestration(captured, counter):
+            with self.assertRaisesRegex(ValidationError,
+                                        "Confirm the customer first"):
+                conv.action_create_booking_from_email()
+        self.assertEqual(counter["calls"], 0)
+        self.assertFalse(conv.booking_id)
+
+    def test_requires_final_quoted_price(self):
+        """Never book at an invented number — no engine price, no booking."""
+        _, conv, _ = self.ingest(subject="Hello", body="How are you?")
+        _seed_extraction(conv)
+        captured, counter = {}, {"calls": 0}
+        with self._fake_orchestration(captured, counter):
+            with self.assertRaisesRegex(ValidationError,
+                                        "final quoted price"):
+                conv.action_create_booking_from_email()
+        self.assertEqual(counter["calls"], 0)
+
+    def test_requires_resolvable_fsas(self):
+        conv = self._quoted_conv()
+        # valid postal SHAPE, but no logistics.fsa row serves it
+        _seed_extraction(conv, delivery={"postal_code": "Z9Z9Z9"})
+        captured, counter = {}, {"calls": 0}
+        with self._fake_orchestration(captured, counter):
+            with self.assertRaisesRegex(ValidationError,
+                                        "delivery postal code"):
+                conv.action_create_booking_from_email()
+        self.assertEqual(counter["calls"], 0)
+        self.assertFalse(conv.booking_id)
+
+    def test_builds_email_booking_request_and_payload(self):
+        conv = self._quoted_conv()
+        captured, counter = {}, {"calls": 0}
+        with self._fake_orchestration(captured, counter):
+            res = conv.action_create_booking_from_email()
+        self.assertEqual(counter["calls"], 1)
+        # --- normalize_request contract ------------------------------
+        self.assertEqual(captured["channel"], "email")
+        req = captured["request"]
+        self.assertEqual(req["partner_id"], conv.partner_id.id)
+        self.assertEqual(len(req["pickup_stops"]), 1)
+        self.assertEqual(len(req["delivery_stops"]), 1)
+        pu, dl = req["pickup_stops"][0], req["delivery_stops"][0]
+        self.assertEqual(pu["postal_code"], "M5V3E1")
+        self.assertEqual(pu["city"], "Toronto")
+        self.assertEqual(pu["province"], "ON")
+        self.assertEqual(pu["formatted_address"], "Toronto, ON, M5V3E1")
+        self.assertEqual(dl["postal_code"], "K8N2S1")
+        self.assertEqual(dl["city"], "Belleville")
+        self.assertEqual(req["pallets"], 6)
+        self.assertEqual(req["weight_lbs"], 4200)
+        self.assertEqual(req["load_type"], "ltl")
+        # extraction "Reefer" → canonical temperature mode + reefer temp
+        self.assertEqual(req["equipment_type"], "reefer")
+        self.assertEqual(req["required_temperature_c"], 3)
+        self.assertTrue(req["liftgate_pickup"])  # accessorials contain it
+        # corridor re-pricing at confirm (resolve_departures) — the §8.7
+        # capacity re-check happens NOW, not at quote time
+        self.assertEqual(req["pricing_method"], "corridor")
+        self.assertEqual(req["agreed_rate"], 200.0)
+        self.assertEqual(req["idempotency_key"], "email:%s" % conv.id)
+        self.assertEqual(req["source_model"], "prema.inbox.conversation")
+        self.assertEqual(req["source_res_id"], conv.id)
+        # --- confirm_from_internal contract --------------------------
+        conf = captured["confirm"]
+        self.assertTrue(conf["skip_invoice"])
+        self.assertEqual(conf["sell_price_override"], 200.0)
+        self.assertIn(conv.name, conf["sell_price_override_reason"])
+        # --- result + conversation state -----------------------------
+        self.assertTrue(res["booking_id"])
+        booking = conv.booking_id
+        self.assertEqual(res["booking_id"], booking.id)
+        self.assertEqual(res["number"], booking.booking_number)
+        self.assertEqual(res["state"], booking.state)
+        self.assertIn("logistics.booking&id=%s" % booking.id, res["url"])
+        # audit note on the thread + backlink note on the booking
+        self.assertTrue(self.env["mail.message"].search_count([
+            ("model", "=", "prema.inbox.conversation"),
+            ("res_id", "=", conv.id),
+            ("body", "like", "%created from this email request%")]))
+        self.assertTrue(self.env["mail.message"].search_count([
+            ("model", "=", "logistics.booking"),
+            ("res_id", "=", booking.id),
+            ("body", "like", "%Dispatch Inbox conversation linked%")]))
+
+    def test_second_call_is_idempotent(self):
+        conv = self._quoted_conv()
+        captured, counter = {}, {"calls": 0}
+        with self._fake_orchestration(captured, counter):
+            first = conv.action_create_booking_from_email()
+            second = conv.action_create_booking_from_email()
+        # ONE service call, ONE booking — the booking_id guard returns the
+        # same payload (double-click / RPC retry safe) and never re-runs
+        # capacity/pricing
+        self.assertEqual(counter["calls"], 1)
+        self.assertEqual(first["booking_id"], second["booking_id"])
+        self.assertEqual(conv.booking_id.id, first["booking_id"])
+        self.assertEqual(conv.booking_id.id, second["booking_id"])
+
+    def test_converted_custom_quote_shortcut_skips_service(self):
+        """The Rate Confirmation already became a booking — F-3 links the
+        thread to it with ZERO engine calls (no second booking, no re-run
+        of capacity/pricing)."""
+        partner = self.env["res.partner"].create({
+            "name": "F3 Shortcut Produce", "is_company": True,
+            "email": "shortcut@demo-toronto-produce.test"})
+        corridor = self.env["logistics.corridor"].create({
+            "name": "F3 Shortcut Corridor", "equipment_type": "dry"})
+        departure = self.env["logistics.corridor.departure"].create({
+            "corridor_id": corridor.id,
+            "departure_date": datetime.date(2026, 9, 15)})
+        cq = self.env["logistics.custom.quote"].create({
+            "partner_id": partner.id,
+            "source": "internal",
+            "contact_name": partner.name,
+            "contact_email": partner.email,
+            "pickup_postal_code": "M5V 3E1",
+            "pickup_address": "300 Progress Ave, Toronto, ON M5V3E1",
+            "delivery_postal_code": "K8N 2S1",
+            "delivery_address": "55 Station St, Belleville, ON K8N2S1",
+            "pallets": 4, "weight_lbs": 2000.0,
+            "temperature_mode": "dry", "load_type": "ltl",
+            "commodity": "Shortcut widgets",
+            "system_calculated_price": 850.0,
+            "quoted_price": 850.0,
+            "departure_id": departure.id,
+            "state": "converted",
+        })
+        booking = self._mk_booking(self.env, partner)
+        cq.write({"booking_id": booking.id})
+        _, conv, _ = self.ingest(
+            email_from="Sender Shortcut <sender@shortcut-produce.test>",
+            subject="Rate quote", body="Pickup Toronto. Delivery Belleville.")
+        conv.write({"custom_quote_id": cq.id})
+        captured, counter = {}, {"calls": 0}
+        with self._fake_orchestration(captured, counter):
+            res = conv.action_create_booking_from_email()
+        self.assertEqual(counter["calls"], 0)
+        self.assertEqual(conv.booking_id.id, booking.id)
+        self.assertEqual(res["booking_id"], booking.id)
+
+    def test_sudo_envelope_runs_as_inbox_group_user(self):
+        """An inbox-group dispatcher (read-only on logistics models) can
+        create the booking — the service rides self.env.sudo() inside the
+        action, so no ACL CSV change is needed."""
+        user = self.make_user(login="ops.f3.booking")
+        conv = self._quoted_conv()
+        captured, counter = {}, {"calls": 0}
+        env = self.env(user=user.id)
+        with self._fake_orchestration(captured, counter):
+            res = conv.with_env(env).action_create_booking_from_email()
+        self.assertEqual(counter["calls"], 1)
+        self.assertTrue(res["booking_id"])
+        self.assertEqual(conv.booking_id.id, res["booking_id"])

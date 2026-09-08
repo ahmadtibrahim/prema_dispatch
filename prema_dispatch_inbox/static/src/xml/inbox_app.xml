@@ -753,6 +753,16 @@
                                         t-att-disabled="state.ai.busy">
                                     <i class="fa fa-paper-plane-o"/> Reply with Quote
                                 </button>
+
+                                <!-- F-3: confirm the email quote as a
+                                     booking (capacity re-checked at
+                                     booking time, price as quoted) -->
+                                <button class="btn btn-sm btn-success w-100 mt-1"
+                                        t-if="quoteState().final_quoted_price &amp;&amp; !state.detail.conversation.trashed &amp;&amp; !state.detail.booking.id"
+                                        t-on-click="() => this.createBookingFromEmail()"
+                                        t-att-disabled="state.ai.busy">
+                                    <i class="fa fa-check-circle-o"/> Create booking from email
+                                </button>
                             </div>
                         </div>
                     </div>

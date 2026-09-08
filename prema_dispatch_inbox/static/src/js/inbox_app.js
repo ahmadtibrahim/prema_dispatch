@@ -1210,6 +1210,55 @@ export class InboxApp extends Component {
     }
 
     // ------------------------------------------------------------------
+    // F-3 — create a confirmed booking from the email quote
+    // ------------------------------------------------------------------
+    async createBookingFromEmail() {
+        // Guard rail #1: this is the REVENUE event — only an explicit
+        // dispatcher click on a quoted, non-trashed, unbooked thread may
+        // reach the server (which re-validates everything anyway).
+        const conv = this.state.detail?.conversation || {};
+        const quote = this.quoteState();
+        if (conv.trashed) {
+            this.notification.add(
+                "Restore the conversation from Trash before creating a booking.",
+                { type: "warning" });
+            return;
+        }
+        if (this.state.detail?.booking?.id) {
+            return; // already booked — the button is hidden; belt & braces
+        }
+        if (!quote.final_quoted_price) {
+            this.notification.add(
+                "Set the final quoted price first — Review & calculate "
+                + "quote, then adjust if needed.",
+                { type: "warning" });
+            return;
+        }
+        const customer = conv.customer_label || "this customer";
+        const price = this.fmtMoney(quote.final_quoted_price, quote.currency);
+        if (!window.confirm(
+            `Create a confirmed booking for ${customer} at ${price}?`
+            + "\n\nThe corridor is re-checked for capacity and current "
+            + "rates at booking time — the quoted price stays as agreed.")) {
+            return;
+        }
+        try {
+            const res = await this.orm.call(
+                "prema.inbox.conversation", "action_create_booking_from_email",
+                [this.state.selectedId]);
+            this.notification.add(
+                `Booking ${res.number || res.booking_id} created — the `
+                + "corridor was re-validated at the quoted price.",
+                { type: "info" });
+            await this.reconcile();
+        } catch (e) {
+            this.notification.add(
+                this._rpcError(e, "Could not create the booking."),
+                { type: "danger" });
+        }
+    }
+
+    // ------------------------------------------------------------------
     // D-9 — editable shipment extraction (inline, provenance 'manual')
     // ------------------------------------------------------------------
     editExtraction(key) {
