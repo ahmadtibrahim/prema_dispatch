@@ -149,6 +149,19 @@ class TestWiringGuards(InboxTestCase):
         # pattern as the thread column (now in both blocks — never t-raw)
         self.assertIn('t-esc="m.body_plain"', xml)
         self.assertNotIn('t-raw="m.body_plain"', xml)
+        # OWL-2 compile guard: inline handlers must never contain `if`
+        # statements or block bodies — the template mini-language resolves
+        # `if` as a context identifier and emits ctx['if'](cond)stmt() —
+        # broken JS that fails the whole InboxApp compile in the browser.
+        # Branching lives in real JS methods (onExtractionKeydown /
+        # onAdjustmentKeydown / onComposerKeydown).
+        for line in xml.splitlines():
+            if "t-on-" in line:
+                self.assertNotIn("if (", line)
+                self.assertNotIn("=> {", line)
+        self.assertIn("onComposerKeydown(ev)", js)
+        self.assertIn("onExtractionKeydown(ev)", js)
+        self.assertIn("onAdjustmentKeydown(ev)", js)
 
     def test_f3_booking_wiring(self):
         """F-3: button (XML) ↔ RPC (JS) ↔ method (Python) must stay in

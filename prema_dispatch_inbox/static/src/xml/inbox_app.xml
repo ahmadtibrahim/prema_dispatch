@@ -577,7 +577,7 @@
                                     <span class="o_inbox_ai_val">
                                         <input class="form-control form-control-sm"
                                                t-model="state.ai.editValue"
-                                               t-on-keydown="(ev) => { if (ev.key === 'Enter') this.saveEditExtraction(); if (ev.key === 'Escape') this.cancelEditExtraction(); }"/>
+                                               t-on-keydown="(ev) => this.onExtractionKeydown(ev)"/>
                                     </span>
                                     <span class="o_inbox_ai_actions">
                                         <button class="btn btn-sm btn-link p-0"
@@ -728,7 +728,7 @@
                                                type="number" step="0.01"
                                                t-model="state.ai.adjInput"
                                                placeholder="+/- amount"
-                                               t-on-keydown="(ev) => { if (ev.key === 'Enter') this.saveAdjustment(); }"/>
+                                               t-on-keydown="(ev) => this.onAdjustmentKeydown(ev)"/>
                                         <input class="form-control form-control-sm"
                                                t-model="state.ai.adjReason"
                                                placeholder="Reason (optional)"/>
@@ -782,9 +782,7 @@
              only). X or Escape closes (discard-confirm when content typed
              and never saved as a draft). -->
         <div t-if="state.composer.mode" class="o_inbox_compose_overlay"
-             t-on-keydown="(ev) => {
-                 if (ev.key === 'Escape') this.closeComposer();
-             }">
+             t-on-keydown="(ev) => this.onComposerKeydown(ev)">
             <div class="o_inbox_compose_head">
                 <span class="o_inbox_compose_title" t-esc="composerTitle()"/>
                 <button type="button"
