@@ -31,6 +31,7 @@ class TestLinkCandidatesD5(InboxTestCase):
             "pallets": 6,
             "shipment_type": "ltl",
             "temperature_mode": "dry",
+            "weight_lbs": 2000,
             "state": "confirmed",
         })
         _, conv, _ = self.ingest(
@@ -196,6 +197,7 @@ class TestLinkBacklinkD5(InboxTestCase):
             "pallets": 6,
             "shipment_type": "ltl",
             "temperature_mode": "dry",
+            "weight_lbs": 2000,
         })
         _, conv, _ = self.ingest(
             email_from="Acme <acme@link.test>", subject="Quote")
