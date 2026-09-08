@@ -5,7 +5,8 @@
         <field name="model">logistics.corridor</field>
         <field name="arch" type="xml">
             <list default_order="default_vehicle_id, schedule_weekday_index, weekly_sequence, start_time, name"
-                  decoration-muted="not active">
+                  decoration-success="active"
+                  decoration-danger="not active">
                 <field name="name"/>
                 <field name="direction"/>
                 <field name="operating_days_display" string="Every Week"/>
@@ -44,7 +45,7 @@
                     <div class="oe_title">
                         <h1><field name="name"/></h1>
                         <span class="badge text-bg-success mt-1" invisible="not active">ACTIVE</span>
-                        <span class="badge text-bg-secondary mt-1" invisible="active">INACTIVE</span>
+                        <span class="badge text-bg-danger mt-1" invisible="active">INACTIVE</span>
                     </div>
                     <group>
                         <group>
@@ -315,5 +316,6 @@
         <field name="name">Corridors</field>
         <field name="res_model">logistics.corridor</field>
         <field name="view_mode">list,form</field>
+        <field name="context">{'active_test': False}</field>
     </record>
 </odoo>
