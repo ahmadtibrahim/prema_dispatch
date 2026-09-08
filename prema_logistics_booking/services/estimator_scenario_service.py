@@ -85,6 +85,27 @@ class EstimatorScenarioService:
         cases = max(int(payload.get("total_cases") or 0), 0)
         required_temperature_c = payload.get("required_temperature_c")
 
+        # §2/§6/§7 — request facts that must survive into every card:
+        # requested delivery date (never silently pulled to the natural
+        # drive end), the posting's own equipment/trailer requirement
+        # (verbatim), dimensions/reference/appointments, and the §1
+        # approximation flags (postal/city matches, manual override).
+        requested_delivery = self._as_date(
+            payload.get("requested_delivery_date"))
+        reference = str(payload.get("reference") or "").strip() or False
+        posted_equipment = str(
+            payload.get("posted_equipment") or "").strip() or False
+        dimensions = str(payload.get("dimensions") or "").strip() or False
+        appointments_required = bool(payload.get("appointments_required"))
+        approx_stops = [s for s in (payload.get("approx_stops") or [])
+                        if isinstance(s, dict)]
+        manual_route = payload.get("manual_route") or False
+        vehicle_reefer = bool(vehicle.x_reefer)
+        unit_text = " ".join(filter(None, (
+            vehicle.name or "", vehicle.license_plate or "",
+            vehicle.model_id.name if "model_id" in vehicle._fields
+            and vehicle.model_id else ""))).lower()
+
         if not stops:
             return {"scenarios": [], "fatal": "no_stops",
                     "message": "No operational stops were extracted."}
@@ -92,7 +113,9 @@ class EstimatorScenarioService:
             warnings.append(
                 "No routable stop-to-stop legs were returned (missing "
                 "coordinates) — dedicated drive times and costs cannot be "
-                "computed; only the scheduled network option can be priced.")
+                "computed%s; only the scheduled network option can be "
+                "priced." % (" (a manual road-distance override was not "
+                             "given)" if not manual_route else ""))
 
         # MP2: capacity validation uses the peak load aboard each route
         # segment (pickup → unloads → second pickup …), not merely the
@@ -157,7 +180,21 @@ class EstimatorScenarioService:
             "cases": cases,
             "required_temperature_c": required_temperature_c,
             "d0": d0, "date_requested": bool(requested_raw),
+            "requested_pickup_raw": self._iso(
+                self._as_date(requested_raw)),
             "warnings": warnings,
+            "requested_delivery": requested_delivery,
+            "reference": reference,
+            "posted_equipment": posted_equipment,
+            "dimensions": dimensions,
+            "appointments_required": appointments_required,
+            "approx_stops": approx_stops,
+            "manual_route": manual_route,
+            "route_approximate": bool(approx_stops) or bool(manual_route)
+            or bool(payload.get("manual_route")),
+            "vehicle_reefer": vehicle_reefer,
+            "unit_text": unit_text,
+            "unit_name": vehicle.name or vehicle.license_plate or "",
         }
 
         scenarios = [self._card_dedicated(service_context, round_trip=False)]
@@ -200,11 +237,22 @@ class EstimatorScenarioService:
             else:
                 round_block = None
             if round_block:
+                # §4 vocabulary: an unconfigured truck home makes the Round
+                # Trip variant itself unrealizable (infeasible); a return
+                # leg that could not be routed is missing data (estimate
+                # unavailable) — both explained, neither a $0 figure.
+                klass = ("infeasible" if not ctx["home"]
+                         else "estimate_unavailable")
                 return {
                     "key": "dedicated_round_trip",
                     "title": "Round Trip",
-                    "badge": "infeasible",
+                    "badge": klass,
                     "feasible": False,
+                    "feasibility_class": klass,
+                    "conditions": [],
+                    "conditional_reasons": [],
+                    "dispatch_verification": {"required": False,
+                                              "items": []},
                     "blocking": round_block,
                     "assumptions": [], "warnings": list(ctx["warnings"]),
                     "confidence": CONFIDENCE_LOW,
@@ -247,7 +295,45 @@ class EstimatorScenarioService:
         total_km = _r(total_km, 1)
         total_hrs = _r(total_hrs, 1)
 
-        blocking = list(ctx["capacity"]["blocking"]) + list(ctx["eld"]["blocking"])
+        # §6 — equipment-capability mismatches are CONDITIONS on a
+        # provisional estimate, never silent drops and never hard blocks:
+        # a reefer ask on a truck without a reefer unit stays visible and
+        # the card estimates with the condition shown.
+        blocking = [b for b in ctx["capacity"]["blocking"]
+                    if "Shipment needs a reefer" not in (b or "")]
+        conditions = []
+        if any("Shipment needs a reefer" in (b or "")
+               for b in ctx["capacity"]["blocking"]):
+            conditions.append(
+                "Posting requires reefer%s — the selected truck (%s) has "
+                "no reefer unit. Provisional estimate only: the "
+                "reefer-capable unit/vehicle substitution needs shipper "
+                "approval before dispatch, and pallet count/weight alone "
+                "do not establish acceptance."
+                % ((" (%s°C)" % _num(ctx.get("required_temperature_c"))
+                    if ctx.get("required_temperature_c") is not False
+                    else ""),
+                   ctx.get("unit_name") or "this truck"))
+        blocking += list(ctx["eld"]["blocking"])
+        # §6 — the posting's own equipment spec vs the estimated unit.
+        posted_eq = str(ctx.get("posted_equipment") or "").strip()
+        if posted_eq:
+            posted_eq_l = posted_eq.lower()
+            unit_text = ctx.get("unit_text") or ""
+            wants_trailer = any(k in posted_eq_l
+                                for k in ("trailer", "53", "53'", "53-ft",
+                                          "tractor"))
+            unit_is_trailer = any(k in unit_text
+                                  for k in ("trailer", "53", "53'",
+                                            "53-ft", "tractor"))
+            if wants_trailer and not unit_is_trailer:
+                conditions.append(
+                    "Posted equipment: %s — the estimate prices the %s "
+                    "(straight truck). Shipper approval required for the "
+                    "straight-truck substitution; pallet count/weight "
+                    "alone do not establish equipment acceptance "
+                    "(provisional estimate with this condition)."
+                    % (posted_eq, ctx.get("unit_name") or "selected truck"))
         warnings = list(ctx["warnings"]) + list(ctx["capacity"]["warnings"])
         warnings.extend(ctx["eld"]["warnings"])
         if not round_trip and ctx["return_km"] is not False and ctx["return_km"]:
@@ -256,17 +342,47 @@ class EstimatorScenarioService:
                 "One-way trip ends away from truck home — plan the "
                 "return/reposition before the next commitment.")
 
+        # §2 — the calendar honors the REQUESTED delivery date: a drive
+        # that would naturally end the day before the requested delivery
+        # holds overnight (costed below), never silently pulls the
+        # delivery forward to the drive's natural end.
+        sim = self._simulate_days(ctx, total_hrs, round_trip=round_trip,
+                                  requested_delivery=ctx.get(
+                                      "requested_delivery"))
+        hold_nights = int(sim.get("hold_nights") or 0)
+        if sim.get("missed_requested_delivery"):
+            warnings.append(
+                "Requested delivery %s cannot be met — the earliest "
+                "arrival this drive allows is %s (daily drive-hour "
+                "bound). The card shows the achievable date; meeting the "
+                "requested date needs a date change agreed with the "
+                "shipper."
+                % (self._iso(ctx.get("requested_delivery")),
+                   self._iso(sim["delivery_date"])))
+        # Reefer runtime = drive/service hours + 24 h per hold night (the
+        # unit keeps a frozen/reefer load at temperature while parked).
+        reefer_hours = 0.0
+        if ctx["equipment"] == "reefer" and ctx["vehicle_reefer"]:
+            reefer_hours = max(total_hrs or 0.0, 0.0) + 24.0 * hold_nights
+
         # Cost authority: the SAME PricingEngine the booking pipeline uses,
-        # evaluated on this card's own distance/duration/service.
+        # evaluated on this card's own distance/duration/service (reefer
+        # runtime and overnight holds are engine-side cost lines so the
+        # modal breakdown reconciles exactly with the displayed COST).
         cost = cost_source = cost_error = False
         cost_breakdown = False
         if total_km and total_hrs:
             cost, cost_error = self._cost_for(
                 vehicle, total_km, total_hrs, ctx["weight_lbs"],
-                ctx["overrides"])
+                ctx["overrides"], reefer_hours=reefer_hours,
+                overnight_nights=hold_nights,
+                drive_hrs=ctx["route_hrs"],
+                service_hrs=ctx["service_min"] / 60.0)
             cost_source = "PricingEngine (booking estimator authority)"
         else:
-            cost_error = "stop-to-stop distance/drive time is unknown"
+            cost_error = ("stop-to-stop distance/drive time is unknown"
+                          if not ctx.get("manual_route")
+                          else "manual override distance is missing")
         if cost is not False:
             cost_breakdown = cost
             cost = cost.get("total")
@@ -276,13 +392,10 @@ class EstimatorScenarioService:
             gross_on_revenue = _r(profit / sell * 100.0, 1) if sell else False
         else:
             sell = profit = markup_on_cost = gross_on_revenue = False
-            if cost_error:
-                blocking.append(
-                    "Operating cost unavailable (%s) — the card reads "
-                    "'requires estimate'; no $0-cost scenario is shown."
-                    % cost_error)
-
-        sim = self._simulate_days(ctx, total_hrs, round_trip=round_trip)
+            # No blocking here — a missing cost is an "Estimate
+            # unavailable"/"requires estimate" badge (never an
+            # infeasibility and never a $0 figure), explained in
+            # conditional_reasons below.
         conflicts = self.availability.occupancy_conflicts(
             vehicle.id, sim["interval_start"], sim["interval_end"])
         if conflicts:
@@ -293,10 +406,23 @@ class EstimatorScenarioService:
             warnings.append(
                 "Requested/planned timing overlaps %d existing commitment(s) "
                 "on this truck." % len(conflicts))
+        # §4 — a missing driver never blocks a provisional bid; it
+        # surfaces as the verification notice on the card.
+        verification_items = []
         if not ctx["eld"].get("driver_id"):
-            warnings.append("No driver assigned to the truck.")
+            verification_items.append("No driver is assigned to the truck.")
+        for w in ctx["eld"].get("warnings") or []:
+            if any(k in (w or "").lower()
+                   for k in ("re-verify", "stale", "unverified",
+                             "cannot be guaranteed", "not available")):
+                verification_items.append(w)
+        if not ctx["eld"].get("fresh", False) and \
+                ctx["eld"].get("driver_id"):
+            verification_items.append(
+                "ELD position data is stale — verify the truck's position "
+                "and duty before dispatch.")
 
-        feasible = not blocking
+        feasible = (not blocking) and cost is not False
         confidence = CONFIDENCE_HIGH
         if ctx["route_hrs"] <= 0 or ctx["service_min"] <= 0:
             confidence = CONFIDENCE_MEDIUM
@@ -309,8 +435,11 @@ class EstimatorScenarioService:
         conditional_reasons = []
         if cost is False:
             conditional_reasons.append(
-                "Operating cost could not be computed (%s)."
-                % (cost_error or "no route distance/duration"))
+                "Operating cost could not be computed (%s)%s."
+                % (cost_error or "no route distance/duration",
+                   (" — correct the stop addresses or use the manual "
+                    "road-distance override to get a cost"
+                    if not total_km else "")))
         if not (ctx["pallets"] or ctx["weight_lbs"] or ctx.get("cases")):
             conditional_reasons.append(
                 "No freight quantities are known — capacity is "
@@ -329,9 +458,31 @@ class EstimatorScenarioService:
             conditional_reasons.append(
                 "The truck has no configured payload — weight "
                 "feasibility is unverified.")
-        feasibility_class = ("infeasible" if blocking else
-                             "conditional" if conditional_reasons
-                             else "verified")
+        if conditions and not blocking:
+            conditional_reasons.append(
+                "Equipment condition(s) apply — provisional estimate; "
+                "shipper approval/confirmation required before dispatch.")
+        if sim.get("missed_requested_delivery"):
+            conditional_reasons.append(
+                "Requested delivery %s cannot be met — earliest arrival "
+                "is %s; the estimate prices the achievable date, which "
+                "needs shipper agreement."
+                % (self._iso(ctx.get("requested_delivery")),
+                   self._iso(sim["delivery_date"])))
+        # §4/§1 status vocabulary: INFEASIBLE is reserved for established
+        # operational conflicts; a missing route/cost reads "Estimate
+        # unavailable" (never a 0-km or $0 figure); a known route with an
+        # uncomputed cost reads "requires estimate"; missing driver/ELD
+        # evidence and equipment conditions downgrade to CONDITIONAL.
+        if blocking:
+            feasibility_class = "infeasible"
+        elif cost is False:
+            feasibility_class = ("estimate_unavailable" if not total_km
+                                 else "requires_estimate")
+        elif conditional_reasons or conditions:
+            feasibility_class = "conditional"
+        else:
+            feasibility_class = "verified"
 
         assumptions = [
             "Drive times are %s driving-route estimates; service time is "
@@ -343,20 +494,62 @@ class EstimatorScenarioService:
             "Suggested sell = operating cost × (1 + %.1f%% margin on cost) "
             "— the same formula the booking estimator uses." % ctx["margin_pct"],
         ]
+        if ctx["approx_stops"]:
+            assumptions.append(
+                "Stops matched from postal-code areas / city centres "
+                "(approximate — no street address was published): %s. "
+                "Exact addresses change distance and drive time; verify "
+                "before dispatch."
+                % "; ".join(dict.fromkeys(
+                    "%s (%s)" % (a.get("address") or a.get("name") or "?",
+                                 "postal area" if a.get("approx_level")
+                                 == "postal" else "city centre")
+                    for a in ctx["approx_stops"])))
+        if ctx.get("manual_route"):
+            assumptions.append(
+                "Manual road-distance override (%.0f km, ~%.0f h) — the "
+                "stops could not be routed; drive time is an estimate at "
+                "~70 km/h average. Verify before dispatch."
+                % (float(ctx["manual_route"].get("distance_km") or 0.0),
+                   float(ctx["manual_route"].get("duration_hrs") or 0.0)))
+        if hold_nights:
+            assumptions.append(
+                "Requested delivery is %s — the move arrives the day "
+                "before and holds overnight (%d night%s; driver off duty). "
+                "The hold is costed as a configured overnight fee plus "
+                "reefer runtime on the COST breakdown."
+                % (self._iso(ctx.get("requested_delivery")),
+                   hold_nights, "s" if hold_nights > 1 else ""))
+        # §2 — an appointment mentioned without any published time is a
+        # "time to confirm", never an invented slot; nothing is scheduled
+        # or costed for it.
+        if ctx.get("appointments_required") and not any(
+                str(s.get("time_window_type") or "any") != "any"
+                for s in ctx["stops"]):
+            assumptions.append(
+                "Appointments are required at the stops but no times were "
+                "published — 'time to confirm' with the shipper; waiting "
+                "time is not yet schedulable and nothing was costed for "
+                "it.")
         if round_trip:
             assumptions.append(
                 "Truck returns to its home base after the final delivery.")
 
         return {
             "key": key, "title": label,
-            "badge": (feasibility_class
-                      if feasibility_class != "infeasible"
-                      else ("requires_estimate"
-                            if cost is False and total_km
-                            else "infeasible")),
+            "badge": feasibility_class,
             "feasible": feasible,
             "feasibility_class": feasibility_class,
             "conditional_reasons": conditional_reasons,
+            "conditions": conditions,
+            "dispatch_verification": {
+                "required": bool(verification_items),
+                "items": verification_items,
+            },
+            "hold_nights": hold_nights,
+            "requested_delivery_date": self._iso(
+                ctx.get("requested_delivery")),
+            "approximate_route": bool(ctx["route_approximate"]),
             "truck": vehicle.name or vehicle.license_plate or "",
             "pickup_date": self._iso(sim["pickup_date"]),
             "delivery_date": self._iso(sim["delivery_date"]),
@@ -374,7 +567,9 @@ class EstimatorScenarioService:
             "markup_pct_on_cost": markup_on_cost,
             "gross_margin_pct": gross_on_revenue,
             "profit": profit,
-            "schedule": self._stop_schedule(ctx),
+            "schedule": self._stop_schedule(
+                ctx, hold_nights=hold_nights,
+                requested_delivery=ctx.get("requested_delivery")),
             "availability": {
                 "status": ("no_conflicts_found" if not conflicts
                            else "conflicts"),
@@ -402,14 +597,19 @@ class EstimatorScenarioService:
 
     # ── Corridor card (3 scheduled LTL / weekly corridor) ───────────
 
-    def _stop_schedule(self, ctx):
+    def _stop_schedule(self, ctx, hold_nights=0, requested_delivery=None):
         """§6 — stop-by-stop schedule from dispatch scheduling rules.
 
         Planned schedules only (truck home + planned bookings, never stale
         GPS): travel from the preceding stop, facility-hours/appointment
         waiting, saved-location service durations, driver-hours budget
         with overnight rolls, remaining onboard per stop. Existing
-        bookings are read — never moved or altered."""
+        bookings are read — never moved or altered.
+
+        §2 — hold_nights/requested_delivery: when the drive arrives the
+        day before the REQUESTED delivery date, the schedule ends with an
+        off-duty hold (a note row, not a fake driving leg) so the
+        timeline shows the requested date, not the natural drive end."""
         import pytz
         from .estimator_availability_service import local_datetime
         from .itinerary_planner import ItineraryPlanner
@@ -545,6 +745,15 @@ class EstimatorScenarioService:
                     break
         except Exception:
             pass
+        if hold_nights:
+            req = self._as_date(requested_delivery)
+            notes.append(
+                "Hold: the move arrives the day before the requested "
+                "delivery%s — driver off duty; the truck holds %d night%s "
+                "until the requested delivery date. Overnight fee and "
+                "reefer runtime are itemized in the COST breakdown."
+                % (" (%s)" % self._iso(req) if req else "",
+                   hold_nights, "s" if hold_nights > 1 else ""))
         return {
             "start_at": start.strftime("%Y-%m-%d %H:%M"),
             "stops": rows,
@@ -586,7 +795,8 @@ class EstimatorScenarioService:
         base = {
             "key": "scheduled_ltl",
             "title": "Scheduled LTL / weekly corridor",
-            "badge": "infeasible", "feasible": False,
+            "badge": "estimate_unavailable", "feasible": False,
+            "feasibility_class": "estimate_unavailable",
             "truck": "Network truck (assigned by the corridor schedule)",
             "pickup_date": False, "delivery_date": False,
             "date_requested": (self._iso(ctx["d0"])
@@ -598,23 +808,36 @@ class EstimatorScenarioService:
             "profit": False, "incremental_km": 0.0,
             "incremental_note": "Shares an already-scheduled corridor run.",
             "capacity": dict(ctx["capacity"]),
+            "conditions": [],
+            "conditional_reasons": [],
             "assumptions": [], "warnings": list(ctx["warnings"]),
             "blocking": [], "confidence": CONFIDENCE_MEDIUM,
             "alternatives": [], "availability": {"status": "n/a",
                                                  "conflicts": []},
         }
         if fsa_problems:
-            base["blocking"] = fsa_problems
-            base["warnings"].append(
-                "Until complete verified origin/destination addresses are "
-                "available the corridor option stays blocked (city/postal-"
-                "area estimates are allowed on the dedicated cards only).")
+            # §1/§4/§5 — an unresolvable stop is NEVER an infeasibility
+            # and the corridor needs no street address: without postal/FSA
+            # codes the network simply cannot produce an estimate, so the
+            # card says "Estimate unavailable" and explains exactly what
+            # to complete.
+            base["badge"] = base["feasibility_class"] = "estimate_unavailable"
+            base["conditional_reasons"] = fsa_problems + [
+                "The scheduled network prices FSA-to-FSA corridor service: "
+                "origin and destination postal/FSA codes are required "
+                "(street addresses are NOT — an approximate postal-area "
+                "match is enough). Complete the stop codes to get corridor "
+                "dates, or use the dedicated cards above."]
             return base
         if not pickup_fsa.pickup_supported:
-            base["blocking"].append("Pickup FSA does not support pickups.")
+            base["badge"] = base["feasibility_class"] = "infeasible"
+            base["blocking"].append(
+                "Pickup FSA does not support pickups — no scheduled "
+                "corridor service originates in that area.")
             return base
         if not ctx["pallets"] and not ctx["weight_lbs"] and not ctx.get("cases"):
-            base["blocking"].append(
+            base["badge"] = base["feasibility_class"] = "estimate_unavailable"
+            base["conditional_reasons"].append(
                 "No pallet/weight quantities are known — the network cannot "
                 "quote or reserve space without a shipment size.")
             return base
@@ -686,6 +909,9 @@ class EstimatorScenarioService:
                     "routing": ("hub transfer"
                                 if (result.route_snapshot or {})
                                 .get("leg_count", 1) > 1 else "direct"),
+                    # §5 — feeder legs / transfers / dates / vehicle so the
+                    # corridor service can be verified, not just trusted.
+                    "legs": self._legs_text(result.route_snapshot),
                 })
                 if result.pickup_date:
                     d_day = result.pickup_date + datetime.timedelta(days=1)
@@ -701,16 +927,18 @@ class EstimatorScenarioService:
                 "delivery_date": d_found[0]["delivery_date"]
                 if d_found else False,
                 "corridor": d_found[0]["corridor"] if d_found else False,
+                "legs": d_found[0].get("legs") if d_found else [],
                 "reason": (False if d_found else
                            d_reason or "no_departure"),
             })
 
         if all(not d["served_date"] for d in per_destination):
-            base["badge"] = "infeasible"
-            base["blocking"] = [
+            base["badge"] = base["feasibility_class"] = "estimate_unavailable"
+            base["conditional_reasons"] = [
                 "No scheduled corridor departure serves any destination "
-                "within %d days: %s. The dedicated cards above remain the "
-                "available options."
+                "within the %d-day scan (%s) — no corridor estimate can "
+                "be produced for this lane/timing; the dedicated cards "
+                "above remain the available options."
                 % (MAX_NETWORK_SCAN_DAYS,
                    "; ".join(all_served_reason[:4]) or "no_departure")]
             base["per_destination"] = per_destination
@@ -754,6 +982,8 @@ class EstimatorScenarioService:
                             .get("leg_count", 1) > 1 else "direct"),
                 "ftl_priced": bool((result.route_snapshot or {})
                                    .get("ftl_priced")),
+                # §5 — per-leg chain (corridor/feeder/hub/vehicle/dates)
+                "legs": self._legs_text(result.route_snapshot),
                 "note": capacity_note,
             })
             if len(combined) >= MAX_ALT_NETWORK_DATES:
@@ -762,11 +992,12 @@ class EstimatorScenarioService:
                 day = result.pickup_date + datetime.timedelta(days=1)
 
         if not combined:
-            base["badge"] = "infeasible"
-            base["blocking"] = [
-                "No scheduled corridor departure fits within %d days "
-                "(last resolver reason: %s). The dedicated cards above are "
-                "the available options for this timing."
+            base["badge"] = base["feasibility_class"] = "estimate_unavailable"
+            base["conditional_reasons"] = [
+                "No scheduled corridor departure fits within the %d-day "
+                "scan (last resolver reason: %s) — no corridor estimate "
+                "can be produced for this lane/timing; the dedicated cards "
+                "above are the available options for this request."
                 % (MAX_NETWORK_SCAN_DAYS, last_reason or "no_departure")]
             base["per_destination"] = per_destination
             return base
@@ -781,27 +1012,106 @@ class EstimatorScenarioService:
                 "at booking."
                 % "; ".join("%s (%s)" % (d["name"], d["reason"])
                             for d in unserved[:4]))
+
+        # §5 — FEASIBLE is reserved for a corridor service that actually
+        # matches the REQUESTED dates. A lane that only serves later days
+        # is a DATE-CHANGE ALTERNATIVE (class alternative_dates) with the
+        # reason spelled out — never a plain "feasible" badge on other
+        # dates.
+        requested_pickup = (self._as_date(ctx.get("requested_pickup_raw"))
+                            or False)
+        req_delivery = ctx.get("requested_delivery") or False
+        best_pk = self._as_date(best["date"])
+        best_dl = self._as_date(best["delivery_date"])
+        date_change_reason = False
+        if requested_pickup and requested_pickup < datetime.date.today():
+            date_change_reason = (
+                "The requested pickup %s has already passed — the "
+                "corridor service below runs on NEW dates and needs the "
+                "shipper's agreement to a date change."
+                % self._iso(requested_pickup))
+        elif requested_pickup and not (best_pk and best_pk == requested_pickup):
+            date_change_reason = (
+                "No scheduled corridor departure serves the requested "
+                "pickup %s within the %d-day scan (lane resolver: %s). "
+                "The dates shown are alternatives for a different day "
+                "than requested — the requested dates cannot be met on "
+                "this corridor and the shipper must agree the change."
+                % (self._iso(requested_pickup), MAX_NETWORK_SCAN_DAYS,
+                   last_reason or "no_departure"))
+        elif req_delivery and not (best_dl and best_dl == req_delivery):
+            date_change_reason = (
+                "The corridor serves the requested pickup %s, but its "
+                "scheduled delivery is %s — the requested delivery %s "
+                "cannot be met by that run. The dates shown deliver on "
+                "the corridor's own schedule and need shipper agreement."
+                % (self._iso(requested_pickup or best_pk) or "—",
+                   self._iso(best_dl) or "—",
+                   self._iso(req_delivery)))
+        if not date_change_reason and not ctx.get("date_requested"):
+            base["warnings"].append(
+                "No pickup date was requested — the corridor service "
+                "shown is the earliest available; confirm the date with "
+                "the shipper.")
+
+        # §5 — capacity on the found departure is part of the corridor
+        # verification: a confirmed shortage downgrades to CONDITIONAL
+        # with the reason; unknown free positions stay conditional too
+        # (never silently FEASIBLE).
+        capacity_reasons = []
+        if ctx["pallets"]:
+            free = best.get("free_pallets")
+            if free is False:
+                capacity_reasons.append(
+                    "Live free positions on the %s departure are unknown "
+                    "(no scheduled departure record resolved) — capacity "
+                    "must be verified at booking time."
+                    % (best["date"] or "found"))
+            elif free < ctx["pallets"]:
+                capacity_reasons.append(
+                    "The %s departure shows %d free positions for %d "
+                    "pallets — the whole load does not fit on that run; "
+                    "choose a later date with room or split the load."
+                    % (best["date"] or "found", free, ctx["pallets"]))
+
+        reasons = list(capacity_reasons)
+        if date_change_reason:
+            klass = "alternative_dates"
+        elif reasons:
+            klass = "conditional"
+        else:
+            klass = "feasible"
+
+        assumptions = [
+            "Corridor list pricing from PricingService (the booking "
+            "pricing authority).",
+            "Operating cost and margin for a network run depend on the "
+            "vehicle the corridor schedule assigns — execution-scenario "
+            "costing runs at booking conversion, not in this preview.",
+            "Capacity is validated per scheduled departure on each "
+            "found day (resolver against the assigned truck).",
+        ]
+        if date_change_reason:
+            assumptions.append(
+                "Every date on this card is a date-change alternative — "
+                "none of them is the requested date.")
         base.update({
-            "badge": "feasible", "feasible": True,
+            "badge": klass, "feasible": klass == "feasible",
+            "feasibility_class": klass,
+            "date_change_reason": date_change_reason,
             "pickup_date": best["date"],
             "delivery_date": best["delivery_date"],
             "suggested_sell": best["price"],
             "corridor": best["corridor"],
+            "legs": best.get("legs") or [],
             "alternatives": combined[1:],
             "per_destination": per_destination,
+            "conditional_reasons": reasons,
             "capacity": dict(ctx["capacity"], note=(
                 "Corridor capacity is validated by the departure resolver "
                 "against the assigned truck; live free positions are shown "
                 "per found date.")),
-            "assumptions": [
-                "Corridor list pricing from PricingService (the booking "
-                "pricing authority).",
-                "Operating cost and margin for a network run depend on the "
-                "vehicle the corridor schedule assigns — execution-scenario "
-                "costing runs at booking conversion, not in this preview.",
-                "Capacity is validated per scheduled departure on each "
-                "found day (resolver against the assigned truck).",
-            ],
+            "assumptions": assumptions,
         })
         if best.get("ftl_priced"):
             base["warnings"].append(
@@ -814,14 +1124,19 @@ class EstimatorScenarioService:
     # ── Shared helpers ──────────────────────────────────────────────
 
     def _cost_for(self, vehicle, distance_km, duration_hrs, weight_lbs,
-                  overrides):
+                  overrides, reefer_hours=0.0, overnight_nights=0,
+                  drive_hrs=None, service_hrs=None):
         """Own-fleet cost authority — returns (breakdown_dict, error) or
         (False, reason) when the estimator cannot price the move.
 
-        The breakdown reconciles EXACTLY with the displayed total: the
-        total shown on the card is the sum of the displayed component
+        §3 — the breakdown reconciles EXACTLY with the displayed total:
+        the total shown on the card is the sum of the displayed component
         amounts (each component is the engine's rounded value, so no
-        rounding drift between what the user sees and what was charged)."""
+        rounding drift between what the user sees and what was charged).
+        Reefer runtime and overnight holds are costed BY THE ENGINE (same
+        config parameters as the booking pipeline) so the modal rows sum
+        to the card's COST figure; a config parameter that was not set is
+        labeled "assumed default"."""
         try:
             from odoo.addons.premafirm_ai_engine.services.pricing_engine \
                 import PricingEngine
@@ -829,7 +1144,9 @@ class EstimatorScenarioService:
                 vehicle.id, max(distance_km or 0.0, 0.0),
                 max(duration_hrs or 0.0, 0.0),
                 overrides=overrides or None,
-                load_weight_lbs=weight_lbs or 0.0)
+                load_weight_lbs=weight_lbs or 0.0,
+                reefer_hours=max(float(reefer_hours or 0.0), 0.0),
+                overnight_nights=max(int(overnight_nights or 0), 0))
             total = costs.get("total_cost") or 0.0
             if total <= 0:
                 return False, "estimator returned a zero cost"
@@ -862,8 +1179,42 @@ class EstimatorScenarioService:
                 "qty": "%.1f h" % max(duration_hrs or 0.0, 0.0),
                 "rate": "$%s/h" % _num(costs.get("driver_rate_per_hr"), 2),
                 "amount": _r(costs.get("driver_cost") or 0.0, 2),
-                "note": "Drive + service duration",
+                "note": ("Driving %.1f h + service %.1f h — appointment "
+                         "waiting shows in the stop schedule"
+                         % (max(drive_hrs or duration_hrs or 0.0, 0.0),
+                            max(service_hrs or 0.0, 0.0))),
             }]
+            if (costs.get("reefer_fuel_cost") or 0.0) > 0:
+                components.append({
+                    "label": "Reefer unit fuel (runtime)",
+                    "qty": "%.1f h runtime × %.1f L/h" % (
+                        costs.get("reefer_runtime_hrs") or 0.0,
+                        costs.get("reefer_liters_per_hr") or 0.0),
+                    "rate": "$%s/L" % _num(
+                        costs.get("fuel_price_per_l"), 4),
+                    "amount": _r(costs.get("reefer_fuel_cost") or 0.0, 2),
+                    "note": ("estimator.reefer_liters_per_hr — %s"
+                             % ("configured"
+                                if costs.get("reefer_rate_configured")
+                                else "NOT configured — assumed default "
+                                     "2.6 L/h")),
+                })
+            if (costs.get("overnight_cost") or 0.0) > 0:
+                components.append({
+                    "label": "Overnight hold (accommodation)",
+                    "qty": "%d night%s" % (
+                        costs.get("overnight_nights") or 0,
+                        "s" if (costs.get("overnight_nights") or 0) > 1
+                        else ""),
+                    "rate": "$%s/night" % _num(
+                        costs.get("overnight_cost_per_night"), 2),
+                    "amount": _r(costs.get("overnight_cost") or 0.0, 2),
+                    "note": ("estimator.overnight_cost_per_night — %s"
+                             % ("configured"
+                                if costs.get("overnight_rate_configured")
+                                else "NOT configured — assumed default "
+                                     "$45/night")),
+                })
             if (costs.get("weight_surcharge") or 0.0) > 0:
                 components.append({
                     "label": "Weight surcharge",
@@ -887,8 +1238,21 @@ class EstimatorScenarioService:
         except Exception as exc:
             return False, str(exc)[:160]
 
-    def _simulate_days(self, ctx, total_hrs, round_trip=False):
-        """Date-walk simulation from the truck workday start (§10.6)."""
+    def _simulate_days(self, ctx, total_hrs, round_trip=False,
+                       requested_delivery=None):
+        """Date-walk simulation from the truck workday start (§10.6).
+
+        §2 — a REQUESTED delivery date is honored as a hold, never as a
+        silently changed schedule: when the drive would naturally finish
+        before the requested delivery date, the move arrives early and
+        holds overnight (hold_nights, driver off duty) until the
+        requested date. delivery_date is then the requested date (so a
+        pickup Sep 9 / delivery Sep 10 posting stays Sep 10 on every
+        card), and the hold extends the capacity-conflict window
+        (interval_end). A requested date EARLIER than the natural arrival
+        is not achievable by this drive — the natural (earliest) date is
+        kept and missed_requested_delivery is set so the caller can say
+        so instead of showing an impossible date."""
         from .estimator_availability_service import local_datetime
         limits = self.availability.hos_limits()
         start_hour = limits["workday_start_hour"]
@@ -907,14 +1271,26 @@ class EstimatorScenarioService:
             remaining -= take
             hours_today += take
             delivery_date = day
+        hold_nights = 0
+        missed_requested_delivery = False
+        req = self._as_date(requested_delivery)
+        if req:
+            if req > delivery_date:
+                hold_nights = (req - delivery_date).days
+                delivery_date = req
+            elif req < delivery_date:
+                missed_requested_delivery = True
         return_date = delivery_date if round_trip else False
         interval_start = local_datetime(pickup_date, start_hour, self.tz)
         interval_end = interval_start + datetime.timedelta(
-            hours=max(total_hrs or 8.0, 8.0) + 2.0)
+            hours=max(total_hrs or 8.0, 8.0) + 2.0
+            + 24.0 * hold_nights)
         return {
             "pickup_date": pickup_date, "delivery_date": delivery_date,
             "return_date": return_date,
             "interval_start": interval_start, "interval_end": interval_end,
+            "hold_nights": hold_nights,
+            "missed_requested_delivery": missed_requested_delivery,
         }
 
     def _free_pallets_on_departures(self, departure_ids):
@@ -969,4 +1345,49 @@ class EstimatorScenarioService:
 
     @staticmethod
     def _iso(value):
-        return value.isoformat() if value else False
+        # datetime/date -> ISO string; a bare ISO string passes through;
+        # False/None stay falsy (never crash on either shape).
+        if isinstance(value, (datetime.datetime, datetime.date)):
+            return value.isoformat()
+        return value or False
+
+    @staticmethod
+    def _legs_text(snapshot):
+        """§5 — human-readable per-leg service chain from a PricingService
+        route_snapshot: corridor legs, hub transfers, pickup/delivery
+        dates per leg and the assigned vehicle. Feeder legs and transfers
+        are visible here so the corridor claim can be verified rather
+        than trusted."""
+        legs = (snapshot or {}).get("legs") or []
+        out = []
+        for i, leg in enumerate(legs, 1):
+            parts = []
+            origin = str(leg.get("origin_region") or "").strip()
+            dest = str(leg.get("dest_region") or "").strip()
+            if origin:
+                parts.append(origin)
+            corr = str(leg.get("corridor_name") or "").strip()
+            hub = str(leg.get("hub_name") or "").strip()
+            if corr and hub:
+                parts.append("%s (hub %s)" % (corr, hub))
+            elif corr:
+                parts.append(corr)
+            elif hub:
+                parts.append("hub %s" % hub)
+            if dest:
+                parts.append(dest)
+            if not parts:
+                continue
+            meta = []
+            pk = str(leg.get("pickup_date") or "").strip()[:10]
+            dl = str(leg.get("delivery_date") or "").strip()[:10]
+            veh = str(leg.get("vehicle_name") or "").strip()
+            if pk:
+                meta.append("pickup %s" % pk)
+            if dl:
+                meta.append("delivered %s" % dl)
+            if veh:
+                meta.append(veh)
+            suffix = (" (%s)" % ", ".join(meta)) if meta else ""
+            out.append("Leg %d: %s%s" % (i, " → ".join(parts), suffix))
+        return out
