@@ -9,7 +9,8 @@ deliberately separate — reading is not completing.
 """
 import uuid
 
-from odoo import api, fields, models
+from odoo import _, api, fields, models
+from odoo.exceptions import ValidationError
 from odoo.tools import html2plaintext
 
 
@@ -39,6 +40,17 @@ class InboxMessage(models.Model):
         "res.users", string="Internal author",
         help="Set only when the author is an internal user (outgoing/notes).")
     email_from = fields.Char(string="From")
+    reply_to_header = fields.Char(
+        string="Reply-To",
+        help="The message's Reply-To header (RFC 5322) when present. Reply "
+             "recipient defaults prefer this address over the From header — "
+             "the sender's explicit redirect. Empty when the header was "
+             "absent.")
+    reply_to_partner_id = fields.Many2one(
+        "res.partner", string="Reply-To partner",
+        help="The partner resolved for the Reply-To address. Resolved ONCE "
+             "at ingest (where partner creation is allowed) — the reply "
+             "composer is a READ-only RPC and must never create partners.")
     recipient_ids = fields.Many2many(
         "res.partner", "prema_inbox_message_recipient_rel",
         "message_id", "partner_id", string="To")
@@ -57,6 +69,13 @@ class InboxMessage(models.Model):
         "ir.attachment", "prema_inbox_message_attachment_rel",
         "message_id", "attachment_id", string="Attachments")
     is_load_board = fields.Boolean(string="Load board alert", default=False)
+    partner_log_note_id = fields.Many2one(
+        "mail.message", string="Partner chatter note",
+        help="D-6: the mail.message row mirroring THIS inbox internal note "
+             "on the customer's chatter (mt_note, OdooBot author — never "
+             "emailed). Set once at mirror time: per-note dedupe — a retry "
+             "never duplicates, and a DIFFERENT note is never blocked "
+             "(each note carries its own row / key).")
     outbound_state = fields.Selection([
         ("draft", "Draft"),
         ("pending", "Pending send"),
@@ -66,6 +85,18 @@ class InboxMessage(models.Model):
         ("note", "Internal note"),
     ], string="Outbound state", default=False)
     send_error = fields.Text(string="Send error")
+    mail_mail_id = fields.Many2one(
+        "mail.mail", string="Server mail record", index=True,
+        ondelete="set null",
+        help="The mail.mail row this outbound message was sent through — "
+             "the Odoo-side record of the server mail. Provider identity: "
+             "the RFC Message-ID lives on BOTH rows (this message's "
+             "message_id equals mail.mail.message_id), so delivery-status "
+             "events recorded against the mail ledger "
+             "(premafirm.mail.provider.event — Message-ID correlated, "
+             "outside this module) join back to this thread message. Set "
+             "once at first send and REUSED on retries: a failed send "
+             "never spawns a second server record.")
     read_user_ids = fields.Many2many(
         "res.users", "prema_inbox_message_read_rel",
         "message_id", "user_id", string="Read by")
@@ -138,6 +169,10 @@ class InboxMessage(models.Model):
                     SELECT 1 FROM prema_inbox_message_read_rel r
                      WHERE r.message_id = m.id
                        AND r.user_id = %s)
+               AND EXISTS (
+                    SELECT 1 FROM prema_inbox_conversation c
+                     WHERE c.id = m.conversation_id
+                       AND c.trashed = FALSE)
             """, (user.id,))
         return [r[0] for r in self.env.cr.fetchall()]
 
@@ -157,6 +192,7 @@ class InboxMessage(models.Model):
                 FROM prema_inbox_message m
                 JOIN prema_inbox_conversation c ON c.id = m.conversation_id
                 WHERE m.direction = 'incoming'
+                  AND c.trashed = FALSE
                   AND NOT EXISTS (
                     SELECT 1 FROM prema_inbox_message_read_rel r
                      WHERE r.message_id = m.id AND r.user_id = %s)
@@ -254,8 +290,20 @@ class InboxMessage(models.Model):
         Status is honest end to end: draft → pending (queued with the mail
         gateway) → sent | failed. A message is 'sent' only after the SMTP
         server accepted it; any exception maps to 'failed' with the reason.
+
+        ONE server record per message: the mail.mail row is created on the
+        first real send and stored on mail_mail_id; a retry of a failed
+        send REUSES that same row (mail.mail.state exception → back to
+        outgoing → send again) instead of spawning a second mail.mail with
+        the same Message-ID — provider/webhook correlation by Message-ID
+        must never see two candidates. Sent messages are never re-sent
+        (idempotence guard below).
         """
         Mail = self.env["mail.mail"]
+        trashed = self.filtered(lambda m: m.conversation_id.trashed)
+        if trashed:
+            raise ValidationError(
+                _("This conversation is in Trash — restore it before sending."))
         for msg in self:
             if msg.direction != "outgoing":
                 continue
@@ -282,24 +330,44 @@ class InboxMessage(models.Model):
                            % ", ".join(missing.mapped("name"))))
                 continue
             try:
-                # Odoo 18 has no in_reply_to on mail.mail/mail.message —
-                # References alone carries the thread chain in the SMTP
-                # headers, and the reply-back path threads on it.
-                mail = Mail.create({
-                    "subject": msg.subject or "",
-                    "body_html": msg.body or "",
-                    "email_from": "dispatcher@logistics.premafirm.com",
-                    "reply_to": "dispatcher@logistics.premafirm.com",
-                    "recipient_ids": [(6, 0, msg.recipient_ids.ids)],
-                    "email_cc": ", ".join(
-                        p.email or p.name for p in msg.cc_ids),
-                    "attachment_ids": [(6, 0, msg.attachment_ids.ids)],
-                    "references": msg.references or "",
-                    "message_id": msg.message_id or "",
-                    "model": self._name,
-                    "res_id": msg.id,
-                    "auto_delete": False,
-                })
+                # One server record per message lifecycle: reuse the
+                # mail.mail row of a previous failed attempt (retry), else
+                # create it and remember it on mail_mail_id.
+                mail = msg.mail_mail_id
+                if mail and not mail.exists():
+                    mail = self.env["mail.mail"]  # stale pointer → fresh row
+                if not mail:
+                    # Odoo 18 has no in_reply_to on mail.mail/mail.message —
+                    # References alone carries the thread chain in the SMTP
+                    # headers, and the reply-back path threads on it.
+                    mail = Mail.create({
+                        "subject": msg.subject or "",
+                        "body_html": msg.body or "",
+                        "email_from": "dispatcher@logistics.premafirm.com",
+                        "reply_to": "dispatcher@logistics.premafirm.com",
+                        "recipient_ids": [(6, 0, msg.recipient_ids.ids)],
+                        "email_cc": ", ".join(
+                            p.email or p.name for p in msg.cc_ids),
+                        "attachment_ids": [(6, 0, msg.attachment_ids.ids)],
+                        "references": msg.references or "",
+                        "message_id": msg.message_id or "",
+                        "model": self._name,
+                        "res_id": msg.id,
+                        "auto_delete": False,
+                    })
+                    msg.mail_mail_id = mail.id
+                elif mail.state == "sent":
+                    # The gateway already accepted it on an earlier attempt
+                    # (local state fell out of sync) — reconcile, never
+                    # re-send.
+                    msg._set_outbound_state("sent")
+                    continue
+                else:
+                    # Retry of a failed attempt: back to 'outgoing' and try
+                    # again on the SAME server record (no duplicate
+                    # Message-ID candidates for provider webhooks).
+                    if mail.state == "exception":
+                        mail.mark_outgoing()
                 # Queued with the gateway — the honest intermediate state.
                 msg._set_outbound_state("pending")
                 mail.send(raise_exception=True)

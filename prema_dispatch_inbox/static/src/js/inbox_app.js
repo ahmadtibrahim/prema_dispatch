@@ -51,10 +51,12 @@ const LINK_MODELS = {
     job: "prema.dispatch.job",
     invoice: "account.move",
     opportunity: "crm.lead",
+    custom_quote: "logistics.custom.quote",
 };
 const LINK_LABELS = {
     booking: "Booking", job: "Job",
     invoice: "Invoice", opportunity: "Opportunity",
+    custom_quote: "Rate confirmation",
 };
 const OUTBOUND_LABELS = {
     sent: "Sent",
@@ -87,11 +89,15 @@ export class InboxApp extends Component {
                 mode: null, body: "", to: "", cc: "", subject: "",
                 attachments: [], draftId: null, sending: false,
             },
-            ai: { busy: false, panelOpen: true, conflictsOpen: false },
+            ai: { busy: false, panelOpen: true, conflictsOpen: false,
+                  editingKey: null, editValue: "",
+                  adjInput: "", adjReason: "" },
             linkCandidates: null,   // {model, records, manual}
             linkSearch: "",
             assignCandidates: null,
-            formattedMsg: null,     // per-message "view formatted HTML" toggle
+            plainMsg: null,     // per-message "view plain text" opt-out
+            checkedIds: {},     // row checkboxes for bulk actions (by conv id)
+            trashRetentionDays: 30, // prema_inbox.trash_retention_days (UI)
             mobileScreen: "list",   // list | conversation | ai (mobile stack)
         });
         // Odoo 18: env.userId does NOT exist (Odoo 16 legacy) — the uid
@@ -130,6 +136,13 @@ export class InboxApp extends Component {
         onMounted(async () => {
             await this.refreshFolders();
             await this.loadConversations();
+            try {
+                const days = await this.orm.call(
+                    "prema.inbox.conversation", "trash_retention_days", []);
+                this.state.trashRetentionDays = Number(days) || 30;
+            } catch (e) {
+                // non-fatal: default of 30 stays in the purge prompt
+            }
             this._timer = setInterval(() => this.reconcile(), 60000);
             try {
                 // A bus failure (websocket down) must never block the basic
@@ -285,6 +298,212 @@ export class InboxApp extends Component {
         this.state.folder = key;
         this.state.selectedId = null;
         this.state.detail = null;
+        this.clearChecked();
+        this.loadConversations();
+    }
+
+    // ------------------------------------------------------------------
+    // Trash lifecycle (§19.2) — soft trash everywhere, permanent delete
+    // ONLY from the Trash folder with a typed "DELETE" confirmation.
+    // ------------------------------------------------------------------
+    toggleChecked(id) {
+        const next = { ...this.state.checkedIds };
+        if (next[id]) {
+            delete next[id];
+        } else {
+            next[id] = true;
+        }
+        this.state.checkedIds = next;
+    }
+
+    clearChecked() {
+        this.state.checkedIds = {};
+    }
+
+    checkedIdsList() {
+        return Object.keys(this.state.checkedIds).map(Number);
+    }
+
+    async trashConversation(id) {
+        // Single conversation — delete-to-Trash (soft).
+        if (!window.confirm("Move this conversation to Trash?")) {
+            return;
+        }
+        await this._trash([id]);
+    }
+
+    async trashChecked() {
+        const ids = this.checkedIdsList();
+        if (!ids.length) {
+            return;
+        }
+        // R2: exact bulk confirm text.
+        if (!window.confirm(
+                `Move ${ids.length} conversation${ids.length === 1 ? "" : "s"} to Trash?`)) {
+            return;
+        }
+        await this._trash(ids);
+    }
+
+    async _trash(ids) {
+        try {
+            await this.orm.call(
+                "prema.inbox.conversation", "action_trash", [ids]);
+            this.notification.add(
+                `Moved ${ids.length} conversation${ids.length === 1 ? "" : "s"} to Trash.`,
+                { type: "info" });
+            this._afterBulkAction();
+        } catch (e) {
+            this.notification.add(this._rpcError(e, "Could not move to Trash."), {
+                type: "danger",
+            });
+        }
+    }
+
+    async restoreConversation(id) {
+        if (!window.confirm("Restore this conversation from Trash?")) {
+            return;
+        }
+        await this._restore([id]);
+    }
+
+    async restoreChecked() {
+        const ids = this.checkedIdsList();
+        if (!ids.length) {
+            return;
+        }
+        if (!window.confirm(
+                `Restore ${ids.length} conversation${ids.length === 1 ? "" : "s"} from Trash?`)) {
+            return;
+        }
+        await this._restore(ids);
+    }
+
+    async _restore(ids) {
+        try {
+            await this.orm.call(
+                "prema.inbox.conversation", "action_restore", [ids]);
+            this.notification.add("Conversation restored.", { type: "info" });
+            this._afterBulkAction();
+        } catch (e) {
+            this.notification.add(this._rpcError(e, "Could not restore."), {
+                type: "danger",
+            });
+        }
+    }
+
+    async deleteForever(id) {
+        // Permanent delete: typed confirmation, Trash only (server-enforced).
+        const typed = window.prompt(
+            "Type DELETE to permanently delete this conversation. " +
+            "This cannot be undone — messages, links and inbox attachments " +
+            "are removed. Server-side mail is never touched.");
+        if (typed === null) {
+            return;
+        }
+        if (typed.trim().toUpperCase() !== "DELETE") {
+            this.notification.add("Permanent delete cancelled — type DELETE to confirm.", {
+                type: "warning",
+            });
+            return;
+        }
+        await this._deleteForever([id], typed);
+    }
+
+    async deleteChecked() {
+        const ids = this.checkedIdsList();
+        if (!ids.length) {
+            return;
+        }
+        const typed = window.prompt(
+            `Type DELETE to permanently delete ${ids.length} conversations. ` +
+            "This cannot be undone — messages, links and inbox attachments " +
+            "are removed. Server-side mail is never touched.");
+        if (typed === null) {
+            return;
+        }
+        if (typed.trim().toUpperCase() !== "DELETE") {
+            this.notification.add("Permanent delete cancelled — type DELETE to confirm.", {
+                type: "warning",
+            });
+            return;
+        }
+        await this._deleteForever(ids, typed);
+    }
+
+    async _deleteForever(ids, typed) {
+        try {
+            await this.orm.call(
+                "prema.inbox.conversation", "action_delete_permanent",
+                [ids, typed]);
+            this.notification.add("Conversation permanently deleted.", {
+                type: "info",
+            });
+            this._afterBulkAction();
+        } catch (e) {
+            this.notification.add(
+                this._rpcError(e, "Permanent delete failed."), { type: "danger" });
+        }
+    }
+
+    async purgeTrash() {
+        // Explicit "purge trash older than N days" — NEVER automatic. The
+        // typed DELETE doubles as the confirmation; the server re-checks it.
+        const raw = window.prompt(
+            "Purge trash older than how many days?",
+            String(this.state.trashRetentionDays || 30));
+        if (raw === null) {
+            return;
+        }
+        const days = parseInt(raw, 10);
+        if (!Number.isFinite(days) || days < 0) {
+            this.notification.add("Purging cancelled — enter a number of days.", {
+                type: "warning",
+            });
+            return;
+        }
+        const typed = window.prompt(
+            `Type DELETE to permanently purge every conversation in Trash ` +
+            `older than ${days} day${days === 1 ? "" : "s"}. This cannot be undone.`);
+        if (typed === null) {
+            return;
+        }
+        if (typed.trim().toUpperCase() !== "DELETE") {
+            this.notification.add("Purge cancelled — type DELETE to confirm.", {
+                type: "warning",
+            });
+            return;
+        }
+        try {
+            const n = await this.orm.call(
+                "prema.inbox.conversation", "action_purge_trash", [[], days, typed]);
+            if (n) {
+                this.notification.add(
+                    `Purged ${n} conversation${n === 1 ? "" : "s"} from Trash.`,
+                    { type: "info" });
+            } else {
+                this.notification.add("Nothing in Trash is older than that.", {
+                    type: "info",
+                });
+            }
+            this._afterBulkAction();
+        } catch (e) {
+            this.notification.add(this._rpcError(e, "Purge failed."), {
+                type: "danger",
+            });
+        }
+    }
+
+    _afterBulkAction() {
+        // The thread may have been one of the victims — reset selection so
+        // stale detail never renders, then reload folder + counts.
+        this.state.selectedId = null;
+        this.state.detail = null;
+        this.clearChecked();
+        if (window.innerWidth < 900) {
+            this.state.mobileScreen = "list";
+        }
+        this.reconcile();
         this.loadConversations();
     }
 
@@ -390,6 +609,15 @@ export class InboxApp extends Component {
     startComposer(mode, opts = {}) {
         const detail = this.state.detail;
         const conv = detail?.conversation;
+        if (conv?.trashed) {
+            // The composer window is app-level now; composing into a
+            // trashed conversation is blocked (server-enforced too) —
+            // surface it instead of silently doing nothing.
+            this.notification.add(
+                "Restore the conversation from Trash to reply, forward or compose.",
+                { type: "warning" });
+            return;
+        }
         const defaults = detail?.reply_defaults || { to: [], subject: "" };
         const toEmails = (arr) => (arr || []).map((p) => p.email).join(", ");
         let composer = {
@@ -400,32 +628,39 @@ export class InboxApp extends Component {
             // reply_all carries its OWN to/cc defaults (sender + external
             // To/cc) — reading reply_defaults.to here would silently drop
             // the external To recipients of the incoming email.
+            // The original is NOT pre-filled into the box: the window stays
+            // clear to write in, and the server appends the quoted original
+            // to the SENT email only (compose_and_send "wrote:" logic).
             const replyDefaults = mode === "reply_all"
                 ? (detail?.reply_all_defaults || defaults) : defaults;
             composer.to = toEmails(replyDefaults.to);
             composer.cc = mode === "reply_all"
                 ? toEmails(detail.reply_all_defaults?.cc) : "";
             composer.subject = replyDefaults.subject || "";
-            const last = [...(detail?.messages || [])]
-                .reverse().find((m) => m.direction === "incoming");
-            composer.body = last
-                ? `\n\nOn ${this.fmtDate(last.date)}, ${last.author_name} wrote:\n${last.body_plain || ""}`
-                : "";
         } else if (mode === "forward") {
             composer.subject = conv ? `Fwd: ${conv.name}` : "";
-            const last = [...(detail?.messages || [])]
-                .reverse().find((m) => m.direction === "incoming");
-            composer.body = last
-                ? `\n\nOn ${this.fmtDate(last.date)}, ${last.author_name} wrote:\n${last.body_plain || ""}`
-                : "";
         } else if (mode === "compose") {
             composer.to = conv?.partner_email || "";
         }
         if (opts.body !== undefined) {
             composer.body = opts.body;
         }
+        if (opts.subject !== undefined) {
+            composer.subject = opts.subject;   // F-2: quote reply subject
+        }
         this.state.composer = composer;
-        this._scrollComposer();
+        if (mode === "reply" || mode === "reply_all") {
+            if (!composer.to.trim()) {
+                // D-3: no automatic reply recipient resolved (sender
+                // internal or no external email) — the dispatcher must add
+                // one manually; the server refuses an empty send.
+                this.notification.add(
+                    "No automatic reply recipient was found (sender is "
+                    + "internal or has no external email) — verify the To field.",
+                    { type: "warning" });
+            }
+        }
+        this._focusComposer();
     }
 
     async addNote() {
@@ -447,6 +682,35 @@ export class InboxApp extends Component {
         await this._compose(true);
     }
 
+    composerTitle() {
+        return {
+            reply: "Reply", reply_all: "Reply all", forward: "Forward",
+            compose: "New email", note: "Internal note",
+        }[this.state.composer.mode] || "Message";
+    }
+
+    closeComposer(force = false) {
+        // X / Escape — Gmail-style: ask only when there is typed content
+        // that was never saved as a draft. A saved draft survives in the
+        // Drafts folder and is discarded only through its own explicit
+        // action.
+        const c = this.state.composer;
+        if (!c.mode) {
+            return;
+        }
+        const hasContent = (c.body || "").trim()
+            || (c.subject || "").trim()
+            || (c.attachments || []).length > 0;
+        if (!force && hasContent && !c.draftId
+                && !window.confirm("Discard this message?")) {
+            return;
+        }
+        this.state.composer = {
+            mode: null, body: "", to: "", cc: "", subject: "",
+            attachments: [], draftId: null, sending: false,
+        };
+    }
+
     async _compose(sendNow, forceKind = null) {
         const c = this.state.composer;
         const kind = forceKind || c.mode;
@@ -455,9 +719,13 @@ export class InboxApp extends Component {
         }
         // Client-side validation mirrors the server: a Send without any
         // recipient is refused here, before the RPC, with the same message.
+        // Replies get the D-3 message — the sender had no resolvable
+        // external address; the recipient must be added manually.
         if (sendNow && kind !== "note" && !this._parseRecipients(c.to).length) {
             this.notification.add(
-                "No recipient — add the customer's email address before sending.",
+                kind === "reply" || kind === "reply_all"
+                    ? "No reply recipient — add the customer's email address manually before sending."
+                    : "No recipient — add the customer's email address before sending.",
                 { type: "danger" });
             return;
         }
@@ -483,16 +751,20 @@ export class InboxApp extends Component {
                 this.loadConversations();
             }
             const wasDraft = Boolean(c.draftId);
-            if (!sendNow || kind === "note") {
-                // Draft saved — keep the composer open so the user keeps
+            if (kind === "note") {
+                // A note lands in the thread immediately — the window is
+                // done (notes never create an outbound message).
+                this.notification.add(
+                    "Internal note added to the thread.", { type: "info" });
+                this.closeComposer(true);
+            } else if (!sendNow) {
+                // Draft saved — keep the window open so the user keeps
                 // editing; remember the id so the next Save edits the SAME
                 // message (a resumed draft never becomes a second row).
                 c.draftId = res?.id || c.draftId;
                 c.sending = false;
                 this.notification.add(
-                    kind === "note"
-                        ? "Internal note added to the thread."
-                        : (wasDraft ? "Draft updated." : "Draft saved to the Drafts folder."),
+                    wasDraft ? "Draft updated." : "Draft saved to the Drafts folder.",
                     { type: "info" });
             } else {
                 const label = OUTBOUND_LABELS[res?.outbound_state] || "Recorded";
@@ -507,10 +779,9 @@ export class InboxApp extends Component {
                             : `Message ${label.toLowerCase()}.`,
                         { type: "info" });
                 }
-                this.state.composer = {
-                    mode: null, body: "", to: "", cc: "", subject: "",
-                    attachments: [], draftId: null, sending: false,
-                };
+                // Sent or failed — the window closes either way: a failed
+                // send keeps its Retry button on the thread message row.
+                this.closeComposer(true);
             }
             await this.reconcile();
         } catch (e) {
@@ -537,7 +808,7 @@ export class InboxApp extends Component {
             draftId: draft.id,
             sending: false,
         };
-        this._scrollComposer();
+        this._focusComposer();
     }
 
     async discardDraft(draftId) {
@@ -700,8 +971,101 @@ export class InboxApp extends Component {
         });
     }
 
+    // ------------------------------------------------------------------
+    // D-4: partner resolution — deterministic, dispatcher-confirmed
+    // ------------------------------------------------------------------
+    openPartner() {
+        const conv = this.state.detail?.conversation;
+        if (!conv?.partner_id) {
+            return;
+        }
+        this.action.doAction({
+            type: "ir.actions.act_window",
+            res_model: "res.partner",
+            res_id: conv.partner_id,
+            views: [[false, "form"]],
+        });
+    }
+
+    async confirmPartner(partnerId) {
+        try {
+            await this.orm.call(
+                "prema.inbox.conversation", "action_confirm_partner",
+                [this.state.selectedId, partnerId]);
+            this.notification.add("Customer confirmed.", { type: "info" });
+        } catch (e) {
+            this.notification.add(
+                this._rpcError(e, "Could not confirm the customer."),
+                { type: "danger" });
+        }
+        await this.reconcile();
+        this.loadConversations();
+    }
+
+    async dismissProvisional() {
+        // "Leave unassigned" — clears the flag WITHOUT associating anything
+        // (a wrong customer is a high-severity error; never guess).
+        try {
+            await this.orm.call(
+                "prema.inbox.conversation", "action_confirm_partner",
+                [this.state.selectedId, false]);
+        } catch (e) {
+            /* keep the banner — the user decides next */
+        }
+        await this.reconcile();
+        this.loadConversations();
+    }
+
     linkTypeLabel(model) {
         return LINK_LABELS[model] || model;
+    }
+
+    // D-5: model-specific detail line under each link candidate — the
+    // dispatcher recognizes the right record at a glance.
+    linkDetail(r, model) {
+        const parts = [];
+        if (r.number && r.number !== r.name) {
+            parts.push(r.number);
+        }
+        if (model === "booking") {
+            if (r.pickup && r.delivery) {
+                parts.push(`${r.pickup} → ${r.delivery}`);
+            } else if (r.pickup || r.delivery) {
+                parts.push(r.pickup || r.delivery);
+            }
+        } else if (model === "job") {
+            if (r.route) {
+                parts.push(r.route);
+            }
+        } else if (model === "invoice") {
+            if (r.total !== null && r.total !== undefined) {
+                parts.push(this.fmtMoney(r.total));
+            }
+            if (r.payment_state) {
+                parts.push(r.payment_state);
+            }
+        } else if (model === "opportunity") {
+            if (r.stage) {
+                parts.push(r.stage);
+            }
+            if (r.salesperson) {
+                parts.push(r.salesperson);
+            }
+            if (r.activity) {
+                parts.push(`activity: ${r.activity}`);
+            }
+        } else if (model === "custom_quote") {
+            if (r.quote_state) {
+                parts.push(r.quote_state);
+            }
+            if (r.total !== null && r.total !== undefined) {
+                parts.push(this.fmtMoney(r.total));
+            }
+        }
+        if (r.date) {
+            parts.push(this.fmtDate(r.date));
+        }
+        return parts.join(" · ");
     }
 
     // ------------------------------------------------------------------
@@ -758,6 +1122,190 @@ export class InboxApp extends Component {
         }
     }
 
+    // ------------------------------------------------------------------
+    // D-10 / F-1 / F-2 — pricing state, dispatcher adjustment, quote reply
+    // ------------------------------------------------------------------
+    pricingState() {
+        // {state, label} — server-derived from the immutable snapshot.
+        return this.state.detail?.pricing?.state ||
+            { state: "NOT_PRICED", label: "Not priced" };
+    }
+
+    pricingStateClass(state) {
+        return {
+            READY: "o_inbox_ps_ready",
+            NEEDS_INFORMATION: "o_inbox_ps_warn",
+            PARTIAL_ESTIMATE: "o_inbox_ps_partial",
+            ENGINE_UNAVAILABLE: "o_inbox_ps_error",
+            NOT_PRICED: "o_inbox_ps_muted",
+        }[state] || "o_inbox_ps_muted";
+    }
+
+    quoteState() {
+        return this.state.detail?.pricing?.quote || {};
+    }
+
+    quoteBreakdown() {
+        return this.state.detail?.pricing?.breakdown || [];
+    }
+
+    async saveAdjustment() {
+        const quote = this.quoteState();
+        if (!quote.engine_calculated_price) {
+            this.notification.add(
+                "Run 'Review & calculate quote' first — there is no engine "
+                + "price to adjust.",
+                { type: "warning" });
+            return;
+        }
+        const raw = (this.state.ai.adjInput ?? "").toString().trim();
+        const amount = raw === "" ? null : Number(raw);
+        if (amount !== null && !Number.isFinite(amount)) {
+            this.notification.add("Adjustment must be a number.", { type: "warning" });
+            return;
+        }
+        const res = await this.orm.call(
+            "prema.inbox.conversation", "action_set_quoted_price",
+            [this.state.selectedId, amount ?? 0, this.state.ai.adjReason || ""]);
+        this.state.ai.adjInput = "";
+        if (res?.error) {
+            this.notification.add(res.error, { type: "warning" });
+            return;
+        }
+        this.notification.add(
+            amount === 0
+                ? "Quote reset to the engine price."
+                : `Final quoted price updated to ${this.fmtMoney(res.final_quoted_price, res.currency)}.`,
+            { type: "info" });
+        await this.reconcile();
+    }
+
+    async clearAdjustment() {
+        this.state.ai.adjInput = "";
+        this.state.ai.adjReason = "";
+        await this.orm.call(
+            "prema.inbox.conversation", "action_set_quoted_price",
+            [this.state.selectedId, 0, ""]);
+        await this.reconcile();
+    }
+
+    async quoteReply() {
+        // F-2: deterministic template → composer (dispatcher edits + sends).
+        // NEVER auto-sends.
+        const res = await this.orm.call(
+            "prema.inbox.conversation", "action_quote_reply",
+            [this.state.selectedId]);
+        if (res?.error) {
+            this.notification.add(res.error, { type: "warning" });
+            return;
+        }
+        this.startComposer("reply", { subject: res.subject, body: res.body });
+        if (window.innerWidth < 900) {
+            this.state.mobileScreen = "conversation";
+        }
+        this.notification.add(
+            "Quote reply placed in the composer — review and send.",
+            { type: "info" });
+        await this.reconcile();
+    }
+
+    // ------------------------------------------------------------------
+    // F-3 — create a confirmed booking from the email quote
+    // ------------------------------------------------------------------
+    async createBookingFromEmail() {
+        // Guard rail #1: this is the REVENUE event — only an explicit
+        // dispatcher click on a quoted, non-trashed, unbooked thread may
+        // reach the server (which re-validates everything anyway).
+        const conv = this.state.detail?.conversation || {};
+        const quote = this.quoteState();
+        if (conv.trashed) {
+            this.notification.add(
+                "Restore the conversation from Trash before creating a booking.",
+                { type: "warning" });
+            return;
+        }
+        if (this.state.detail?.booking?.id) {
+            return; // already booked — the button is hidden; belt & braces
+        }
+        if (!quote.final_quoted_price) {
+            this.notification.add(
+                "Set the final quoted price first — Review & calculate "
+                + "quote, then adjust if needed.",
+                { type: "warning" });
+            return;
+        }
+        const customer = conv.customer_label || "this customer";
+        const price = this.fmtMoney(quote.final_quoted_price, quote.currency);
+        if (!window.confirm(
+            `Create a confirmed booking for ${customer} at ${price}?`
+            + "\n\nThe corridor is re-checked for capacity and current "
+            + "rates at booking time — the quoted price stays as agreed.")) {
+            return;
+        }
+        try {
+            const res = await this.orm.call(
+                "prema.inbox.conversation", "action_create_booking_from_email",
+                [this.state.selectedId]);
+            this.notification.add(
+                `Booking ${res.number || res.booking_id} created — the `
+                + "corridor was re-validated at the quoted price.",
+                { type: "info" });
+            await this.reconcile();
+        } catch (e) {
+            this.notification.add(
+                this._rpcError(e, "Could not create the booking."),
+                { type: "danger" });
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // D-9 — editable shipment extraction (inline, provenance 'manual')
+    // ------------------------------------------------------------------
+    editExtraction(key) {
+        const f = this.state.detail?.ai?.extraction?.fields || {};
+        const current = key === "pickup" || key === "delivery"
+            ? (f[key]?.postal_code || "")
+            : (f[key] ?? "");
+        this.state.ai.editingKey = key;
+        this.state.ai.editValue = String(current ?? "");
+    }
+
+    cancelEditExtraction() {
+        this.state.ai.editingKey = null;
+        this.state.ai.editValue = "";
+    }
+
+    async saveEditExtraction() {
+        const key = this.state.ai.editingKey;
+        const raw = (this.state.ai.editValue || "").trim();
+        const f = this.state.detail?.ai?.extraction?.fields || {};
+        let updates = {};
+        if (key === "pickup" || key === "delivery") {
+            // stop edit → postal code (the fix-critical value for pricing)
+            const stop = { ...(f[key] || {}) };
+            stop.postal_code = raw || null;
+            updates[key] = stop;
+        } else if (key === "pallets" || key === "weight_lbs"
+                   || key === "temperature_c") {
+            updates[key] = raw === "" ? null : Number(raw);
+        } else {
+            updates[key] = raw;
+        }
+        const res = await this.orm.call(
+            "prema.inbox.conversation", "action_update_extraction",
+            [this.state.selectedId, updates]);
+        this.cancelEditExtraction();
+        if (res?.error) {
+            this.notification.add(res.error, { type: "warning" });
+            return;
+        }
+        this.notification.add(
+            `Extraction updated (${Object.keys(updates).join(", ")}) — `
+            + "recalculate the quote to refresh pricing.",
+            { type: "info" });
+        await this.reconcile();
+    }
+
     toggleAiPanel() {
         this.state.ai.panelOpen = !this.state.ai.panelOpen;
     }
@@ -781,6 +1329,7 @@ export class InboxApp extends Component {
             ["job", c.job_id, c.job_name],
             ["invoice", c.invoice_id, c.invoice_name],
             ["opportunity", c.opportunity_id, c.opportunity_name],
+            ["custom_quote", c.custom_quote_id, c.custom_quote_name],
         ]) {
             if (id) {
                 rows.push({ model, id, name, label: LINK_LABELS[model] });
@@ -808,7 +1357,7 @@ export class InboxApp extends Component {
             const postal = (stop.postal_code || "").trim();
             const fsa = postal.split(" ")[0] || "";
             rows.push({
-                label,
+                label, key,
                 value: city || stop.address || "",
                 fsa,
                 missing: !fsa,
@@ -818,7 +1367,7 @@ export class InboxApp extends Component {
         addStop("Delivery", "delivery");
         const scalar = (label, key, fmt = (v) => v) => {
             if (f[key] !== undefined && f[key] !== null && f[key] !== "") {
-                rows.push({ label, value: fmt(f[key]) });
+                rows.push({ label, key, value: fmt(f[key]) });
             }
         };
         scalar("Pallets", "pallets", (v) => `${v} pallet${v === 1 ? "" : "s"}`);
@@ -841,8 +1390,10 @@ export class InboxApp extends Component {
     }
 
     toggleFormatted(messageId) {
-        this.state.formattedMsg =
-            this.state.formattedMsg === messageId ? null : messageId;
+        // D-2: incoming HTML (sanitized at ingest) is the DEFAULT view;
+        // this toggles OUT to the plain-text rendering.
+        this.state.plainMsg =
+            this.state.plainMsg === messageId ? null : messageId;
     }
 
     // ------------------------------------------------------------------
@@ -923,11 +1474,12 @@ export class InboxApp extends Component {
         }
     }
 
-    _scrollComposer() {
-        // Bring the composer into view on small screens.
+    _focusComposer() {
+        // The compose window just opened — move the cursor into the body
+        // textarea (the full-window overlay is visible on every screen
+        // size, so scrolling is no longer needed).
         requestAnimationFrame(() => {
-            const el = this.el?.querySelector(".o_inbox_composer");
-            el?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+            this.el?.querySelector(".o_inbox_compose_input")?.focus();
         });
     }
 }
