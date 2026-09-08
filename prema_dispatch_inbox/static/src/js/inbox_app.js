@@ -21,7 +21,7 @@
 //   attachments              → /prema_inbox/attachment/<id>/<name> route
 //   badge                    → /prema_inbox/unread_counts (inbox_badge.js)
 
-import { Component, useState, onMounted, onWillUnmount, nextTick } from "@odoo/owl";
+import { Component, useState, onMounted, onWillUnmount } from "@odoo/owl";
 import { registry } from "@web/core/registry";
 import { Dropdown } from "@web/core/dropdown/dropdown";
 import { useDropdownState } from "@web/core/dropdown/dropdown_hooks";
@@ -1544,11 +1544,23 @@ export class InboxApp extends Component {
     _focusComposer() {
         // The compose window just opened — move the cursor into the body
         // textarea (the full-window overlay is visible on every screen
-        // size, so scrolling is no longer needed). nextTick: the overlay was
-        // only just rendered (state.composer assigned), so a raw rAF could
-        // fire BEFORE OWL's patch and find no textarea yet.
-        nextTick(() => {
-            this.el?.querySelector(".o_inbox_compose_input")?.focus();
+        // size, so scrolling is no longer needed). OWL renders on its own
+        // animation frame after state.composer was assigned, so the
+        // textarea may not exist on the first rAF — retry once. (Odoo 18's
+        // owl build exports no nextTick — importing it yields an undefined
+        // binding and a "not a function" TypeError here.)
+        const tryFocus = () => {
+            const input = this.el?.querySelector(".o_inbox_compose_input");
+            if (input) {
+                input.focus();
+                return true;
+            }
+            return false;
+        };
+        requestAnimationFrame(() => {
+            if (!tryFocus()) {
+                requestAnimationFrame(tryFocus);
+            }
         });
     }
 }
