@@ -87,7 +87,8 @@ export class InboxApp extends Component {
             loadError: null,
             composer: {
                 mode: null, body: "", to: "", cc: "", subject: "",
-                attachments: [], draftId: null, sending: false,
+                subjectPrefilled: "", attachments: [], draftId: null,
+                sending: false,
             },
             ai: { busy: false, panelOpen: true, conflictsOpen: false,
                   editingKey: null, editValue: "",
@@ -640,7 +641,7 @@ export class InboxApp extends Component {
         const defaults = detail?.reply_defaults || { to: [], subject: "" };
         const toEmails = (arr) => (arr || []).map((p) => p.email).join(", ");
         let composer = {
-            mode, body: "", to: "", cc: "", subject: "",
+            mode, body: "", to: "", cc: "", subject: "", subjectPrefilled: "",
             attachments: [], draftId: null, sending: false,
         };
         if (mode === "reply" || mode === "reply_all") {
@@ -667,6 +668,10 @@ export class InboxApp extends Component {
         if (opts.subject !== undefined) {
             composer.subject = opts.subject;   // F-2: quote reply subject
         }
+        // Whatever subject the code pre-filled (Re:/Fwd:/AI reply) is NOT
+        // user content: closing an untouched composer must not ask to
+        // discard it. Only subject text typed on top of the prefill counts.
+        composer.subjectPrefilled = composer.subject;
         this.state.composer = composer;
         if (mode === "reply" || mode === "reply_all") {
             if (!composer.to.trim()) {
@@ -709,16 +714,19 @@ export class InboxApp extends Component {
     }
 
     closeComposer(force = false) {
-        // X / Escape — Gmail-style: ask only when there is typed content
-        // that was never saved as a draft. A saved draft survives in the
-        // Drafts folder and is discarded only through its own explicit
-        // action.
+        // X / Escape — Gmail-style: ask only when there is content the user
+        // typed that was never saved as a draft. A saved draft survives in
+        // the Drafts folder and is discarded only through its own explicit
+        // action. The auto-prefilled subject (Re:/Fwd:/AI reply) is not user
+        // content — closing an untouched composer is silent.
         const c = this.state.composer;
         if (!c.mode) {
             return;
         }
+        const subjectEdited = (c.subject || "").trim()
+            !== (c.subjectPrefilled || "").trim();
         const hasContent = (c.body || "").trim()
-            || (c.subject || "").trim()
+            || subjectEdited
             || (c.attachments || []).length > 0;
         if (!force && hasContent && !c.draftId
                 && !window.confirm("Discard this message?")) {
@@ -726,7 +734,8 @@ export class InboxApp extends Component {
         }
         this.state.composer = {
             mode: null, body: "", to: "", cc: "", subject: "",
-            attachments: [], draftId: null, sending: false,
+            subjectPrefilled: "", attachments: [], draftId: null,
+            sending: false,
         };
     }
 
@@ -841,7 +850,8 @@ export class InboxApp extends Component {
             if (this.state.composer.draftId === draftId) {
                 this.state.composer = {
                     mode: null, body: "", to: "", cc: "", subject: "",
-                    attachments: [], draftId: null, sending: false,
+                    subjectPrefilled: "", attachments: [], draftId: null,
+                    sending: false,
                 };
             }
             this.notification.add("Draft discarded.", { type: "info" });
