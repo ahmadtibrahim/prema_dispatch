@@ -313,17 +313,28 @@ def _strip_markdown_artifacts(text):
 
     Headers (#), bullet glyphs (-, *, +), bold/italic (*, _, **), inline
     code/backticks, block fences and link syntax are removed or converted
-    to plain text. Never changes the words — only the markup.
+    to plain text. Fenced blocks (model-wrapped ```…``` sections) are
+    dropped wholesale — the fence is decoration, not thread narrative.
+    Otherwise never changes the words — only the markup.
     """
     if not text:
         return ""
     lines = []
+    in_fence = False
     for line in (text or "").splitlines():
         cleaned = line.strip()
         if not cleaned:
             continue
-        # fences and html-ish wrappers the model occasionally adds
-        if re.match(r"^```", cleaned) or re.match(r"^</?[a-z]+>$", cleaned):
+        # fences: the model wraps whole summaries in ``` blocks — the fence
+        # AND its wrapped content are formatting noise, not thread words
+        # (a fence opener/closer toggles; content between them is dropped).
+        if cleaned.startswith("```"):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        # html-ish wrappers the model occasionally adds
+        if re.match(r"^</?[a-z]+>$", cleaned):
             continue
         # headers: "### Shipment" → "Shipment"
         cleaned = re.sub(r"^\s{0,3}#{1,6}\s+", "", cleaned)

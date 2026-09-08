@@ -68,6 +68,11 @@ class InboxPricing(models.Model):
                     "label": "Engine unavailable"}
         if snap.get("available"):
             return {"state": "READY", "label": "Ready"}
+        if snap.get("calculated_price") and not snap.get("reason"):
+            # Legacy snapshots (persisted before available/reason existed)
+            # that carry an engine number were bookable verdicts — treat
+            # them as READY rather than mislabeling them partial.
+            return {"state": "READY", "label": "Ready"}
         return {"state": "PARTIAL_ESTIMATE", "label": "Partial estimate"}
 
     @api.model
@@ -193,6 +198,8 @@ class InboxPricing(models.Model):
 
         snapshot = {
             "calculated_price": result.calculated_price,
+            "available": bool(result.available),
+            "reason": result.reason,
             "currency": self.env.company.currency_id.name,
             "price_lines": list(result.price_lines or []),
             "schedule": result.schedule,

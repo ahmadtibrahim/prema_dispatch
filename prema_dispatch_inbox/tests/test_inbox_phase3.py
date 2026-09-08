@@ -394,7 +394,7 @@ class TestCreateBookingFromEmailF3(InboxTestCase):
     the inbox gates and the request contract, never the engine itself.
 
     The sudo envelope is part of the contract: inbox users are read-only on
-    logistics models, so the service call must ride self.env.sudo() (no ACL
+    logistics models, so the action must ride a sudo recordset env (no ACL
     CSV change) — test 8 pins that with a real inbox-group user.
     """
 
@@ -581,7 +581,8 @@ class TestCreateBookingFromEmailF3(InboxTestCase):
             "name": "F3 Shortcut Produce", "is_company": True,
             "email": "shortcut@demo-toronto-produce.test"})
         corridor = self.env["logistics.corridor"].create({
-            "name": "F3 Shortcut Corridor", "equipment_type": "dry"})
+            "name": "F3 Shortcut Corridor", "equipment_type": "dry",
+            "direction": "eastbound"})
         departure = self.env["logistics.corridor.departure"].create({
             "corridor_id": corridor.id,
             "departure_date": datetime.date(2026, 9, 15)})
@@ -617,8 +618,8 @@ class TestCreateBookingFromEmailF3(InboxTestCase):
 
     def test_sudo_envelope_runs_as_inbox_group_user(self):
         """An inbox-group dispatcher (read-only on logistics models) can
-        create the booking — the service rides self.env.sudo() inside the
-        action, so no ACL CSV change is needed."""
+        create the booking — the action rides a sudo envelope inside, so no
+        ACL CSV change is needed."""
         user = self.make_user(login="ops.f3.booking")
         conv = self._quoted_conv()
         captured, counter = {}, {"calls": 0}
