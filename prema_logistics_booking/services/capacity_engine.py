@@ -176,7 +176,7 @@ class CapacityEngine:
         return bool(booking) and (
             booking.load_type == "ftl" or booking.shipment_type == "ftl")
 
-    def compute_departure_peak(self, departure):
+    def compute_departure_peak(self, departure, exclude_booking_id=None):
         """Compute peak pallets and weight across all segments of a corridor departure.
 
         For each corridor stop (segment between consecutive stops), sums
@@ -216,11 +216,18 @@ class CapacityEngine:
         if len(stops) < 2:
             return dict(empty)
 
-        # All confirmed bookings on this departure.
+        # All confirmed bookings on this departure. A booking being
+        # confirmed RIGHT NOW is created (state=confirmed) before its own
+        # capacity lock runs — exclude_booking_id keeps it from counting
+        # itself in the peak it is validated against (the caller adds its
+        # pallets as the projected increment instead).
         bookings = self.env["logistics.booking"].search([
             ("departure_id", "=", departure.id),
             ("state", "=", "confirmed"),
         ])
+        if exclude_booking_id:
+            bookings = bookings.filtered(
+                lambda b: b.id != exclude_booking_id)
         from .departure_span_validator import DepartureSpanValidator
         span_validator = DepartureSpanValidator(self.env)
         integrity_conflicts = []

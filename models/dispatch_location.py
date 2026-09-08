@@ -914,6 +914,19 @@ class PremaDispatchLocation(models.Model):
         if self.env.context.get("_location_internal_write"):
             return super().write(vals)
 
+        # ── Poke the estimator structured-stop status recompute when the
+        # location's review state changes (the engine cannot depend on
+        # this cross-module path in @api.depends — see the note in
+        # premafirm.estimator.structured.stop._compute_status). ──
+        if ("verification_state" in vals or "google_verified" in vals):
+            try:
+                stops = self.env["premafirm.estimator.structured.stop"].sudo() \
+                    .search([("saved_location_id", "in", self.ids)])
+                if stops:
+                    stops.modified(["saved_location_id"])
+            except Exception:
+                pass
+
         res = super().write(vals)
 
         for rec in self:

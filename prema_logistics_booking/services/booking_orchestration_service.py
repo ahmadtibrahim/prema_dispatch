@@ -2019,7 +2019,8 @@ class BookingOrchestrationService:
                     "Departure %s's vehicle capacity is not configured and cannot be booked."
                 ) % dep.name)
 
-            peak = engine.compute_departure_peak(dep)
+            peak = engine.compute_departure_peak(
+                dep, exclude_booking_id=booking_id)
             # Exclusivity gate — FTL/Dedicated/Exclusive owns the whole
             # vehicle; LTL can never join a held truck.
             if service_type == "ftl":
