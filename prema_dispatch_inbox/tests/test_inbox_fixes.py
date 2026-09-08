@@ -168,6 +168,15 @@ class TestWiringGuards(InboxTestCase):
         self.assertIn("onComposerKeydown(ev)", js)
         self.assertIn("onExtractionKeydown(ev)", js)
         self.assertIn("onAdjustmentKeydown(ev)", js)
+        # Escape is ALSO handled at the app root (t-on-keydown on the root
+        # div → onAppKeydown): the overlay's own handler only hears events
+        # bubbling through the overlay, so an Esc pressed while focus still
+        # sits on the Reply button (outside the overlay) would be lost —
+        # the root handler of the LIVE instance closes it. Focus lands in
+        # the textarea via nextTick after the overlay renders.
+        self.assertIn("onAppKeydown(ev)", js)
+        self.assertIn('t-on-keydown="(ev) => this.onAppKeydown(ev)"', xml)
+        self.assertIn("this.closeComposer();", js)  # reset literal path
 
     def test_f3_booking_wiring(self):
         """F-3: button (XML) ↔ RPC (JS) ↔ method (Python) must stay in

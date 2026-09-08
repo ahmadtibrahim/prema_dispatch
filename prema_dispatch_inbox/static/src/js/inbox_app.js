@@ -21,7 +21,7 @@
 //   attachments              → /prema_inbox/attachment/<id>/<name> route
 //   badge                    → /prema_inbox/unread_counts (inbox_badge.js)
 
-import { Component, useState, onMounted, onWillUnmount } from "@odoo/owl";
+import { Component, useState, onMounted, onWillUnmount, nextTick } from "@odoo/owl";
 import { registry } from "@web/core/registry";
 import { Dropdown } from "@web/core/dropdown/dropdown";
 import { useDropdownState } from "@web/core/dropdown/dropdown_hooks";
@@ -134,31 +134,18 @@ export class InboxApp extends Component {
         this._premaEventCb = (payload) => {
             this._onEvent(payload);
         };
-        // Document-level Esc for the composer: the overlay's t-on-keydown
-        // only hears events bubbling through it, so an immediate Esc while
-        // focus is still on the Reply button (or anywhere outside the
-        // overlay) would silently do nothing — Gmail closes the window no
-        // matter where the focus is. Events originating inside the overlay
-        // bubble to its own handler first, which closes and resets the
-        // composer; this listener then sees mode===null and no-ops.
+        // Document-level Esc as a backstop for events outside the app root
+        // (Odoo shell chrome). The reliable in-app path is the root
+        // element's own t-on-keydown → onAppKeydown — the SAME instance
+        // that renders the UI. This listener additionally covers focus in
+        // the shell; on a stale instance (el nulled by unmount) it no-ops.
         this._globalKeydownCb = (ev) => {
-            if (ev.key !== "Escape") {
+            if (ev.key !== "Escape" || !this.el || !this.state?.composer?.mode) {
                 return;
             }
-            try {
-                const overlay = this.el?.querySelector(".o_inbox_compose_overlay");
-                console.log("INBOX-ESC-TRACE", {
-                    elNull: !this.el, overlayFound: !!overlay,
-                    mode: this.state?.composer?.mode,
-                    targetCls: String(ev.target?.className || ev.target?.tagName).slice(0, 40),
-                    targetInOverlay: !!(overlay && overlay.contains(ev.target)),
-                });
-                if (overlay && !overlay.contains(ev.target)) {
-                    ev.preventDefault();
-                    this.closeComposer();
-                }
-            } catch (e) {
-                console.error("INBOX-ESC-TRACE error:", e);
+            if (!this.el.contains(ev.target)) {
+                ev.preventDefault();
+                this.closeComposer();
             }
         };
         onMounted(async () => {
@@ -1341,6 +1328,20 @@ export class InboxApp extends Component {
         }
     }
 
+    onAppKeydown(ev) {
+        // Root-level Esc for the composer. The overlay's own t-on-keydown
+        // only hears events bubbling through the OVERLAY, so an immediate
+        // Esc while focus is still on the Reply button (or any other in-app
+        // control under the window) would do nothing. closeComposer no-ops
+        // when no window is open, and the inline field handlers (extraction
+        // cancel etc.) run first at their own target, so this never steals
+        // their Escape.
+        if (ev.key === "Escape") {
+            ev.preventDefault();
+            this.closeComposer();
+        }
+    }
+
     async saveEditExtraction() {
         const key = this.state.ai.editingKey;
         const raw = (this.state.ai.editValue || "").trim();
@@ -1543,8 +1544,10 @@ export class InboxApp extends Component {
     _focusComposer() {
         // The compose window just opened — move the cursor into the body
         // textarea (the full-window overlay is visible on every screen
-        // size, so scrolling is no longer needed).
-        requestAnimationFrame(() => {
+        // size, so scrolling is no longer needed). nextTick: the overlay was
+        // only just rendered (state.composer assigned), so a raw rAF could
+        // fire BEFORE OWL's patch and find no textarea yet.
+        nextTick(() => {
             this.el?.querySelector(".o_inbox_compose_input")?.focus();
         });
     }

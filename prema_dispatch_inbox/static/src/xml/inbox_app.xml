@@ -56,7 +56,8 @@
 
 <!-- ============================== APP ============================== -->
 <t t-name="prema_dispatch_inbox.InboxApp" owl="1">
-    <div class="o_inbox_app">
+    <div class="o_inbox_app"
+         t-on-keydown="(ev) => this.onAppKeydown(ev)">
         <!-- C1 · Folders -->
         <div class="o_inbox_col o_inbox_folders"
              t-att-class="{ 'o-inbox-show': state.mobileScreen === 'list' || state.selectedId === null }">
