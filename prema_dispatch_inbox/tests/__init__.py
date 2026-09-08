@@ -11,4 +11,5 @@ from . import test_inbox_gateway
 from . import test_inbox_fixes
 from . import test_inbox_phase1
 from . import test_inbox_phase2
+from . import test_inbox_phase3
 from . import test_inbox_trash
