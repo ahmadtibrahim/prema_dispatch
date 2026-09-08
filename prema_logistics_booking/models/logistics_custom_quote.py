@@ -1150,6 +1150,7 @@ class LogisticsCustomQuote(models.Model):
                 "booking-manager group and a recorded reason)."))
         return True
 
+    @api.returns("logistics.booking", lambda value: value.id)
     def action_convert_to_booking(self):
         """Convert accepted quote into a real booking using the canonical
         BookingOrchestrationService. Idempotent — returns existing booking
@@ -1160,9 +1161,10 @@ class LogisticsCustomQuote(models.Model):
             raise UserError(_(
                 "Set the quoted price before converting this Rate "
                 "Confirmation to a booking."))
-        # Idempotency: return existing booking
+        # Idempotency: return existing booking (records for in-process
+        # callers; the @api.returns downgrade hands remote RPC its id).
         if self.booking_id:
-            return
+            return self.booking_id
         if self.state != "accepted":
             raise UserError(_(
                 "Record the customer's acceptance first — only an accepted "

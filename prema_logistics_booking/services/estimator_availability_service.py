@@ -175,7 +175,8 @@ class EstimatorAvailabilityService:
     # ── Capacity warnings (§11.4/§11.5) ─────────────────────────────
 
     def capacity_report(self, vehicle, pallets, weight_lbs, equipment="dry",
-                        liftgate_pickup=False, liftgate_delivery=False):
+                        liftgate_pickup=False, liftgate_delivery=False,
+                        cases=0):
         """CapacityEngine verdict translated into honest warnings/blocks.
 
         Returns dict {ok, layout, max_pallets, payload_lbs, warnings,
@@ -212,7 +213,7 @@ class EstimatorAvailabilityService:
             warnings.append(
                 "%d positions needs the pin-wheel layout — dispatcher "
                 "override required before booking." % (pallets or 0))
-        if not pallets and not weight_lbs:
+        if not pallets and not weight_lbs and not cases:
             warnings.append(
                 "No pallet/weight quantities known — capacity cannot be "
                 "verified (do not assume the load fits).")
@@ -223,6 +224,22 @@ class EstimatorAvailabilityService:
             warnings.append(
                 "This truck has no configured payload (x_max_payload_lbs) — "
                 "weight feasibility unverified.")
+        # §8 loose freight: boxes/cases never require a pallet declaration
+        # and are never treated as zero-capacity freight. When the load
+        # occupies every pallet position and loose cases remain, space
+        # must be approved manually — the estimator cannot silently
+        # accept a fit it did not verify.
+        if cases and pallets and pallets >= max_pallets:
+            warnings.append(
+                "Pallet positions are full and %d loose case(s) remain — "
+                "loose-floor space must be approved manually before "
+                "booking." % int(cases))
+        elif cases and not pallets:
+            warnings.append(
+                "%d loose case(s) with no pallet declaration — "
+                "palletization and space fit are verified at dispatch; "
+                "manual space approval is required if the load cannot be "
+                "palletized." % int(cases))
         return {
             "ok": not blocking and not bool(result.reason_code in (
                 "no_vehicle_provided", "equipment_not_operational")),
