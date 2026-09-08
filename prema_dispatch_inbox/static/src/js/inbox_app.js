@@ -1275,6 +1275,33 @@ export class InboxApp extends Component {
         this.state.ai.editValue = "";
     }
 
+    onExtractionKeydown(ev) {
+        // Enter saves the in-place edit, Escape cancels — OWL 2 cannot
+        // compile `if` statements inside inline t-on-* expressions (the
+        // mini-language resolves `if` as a context identifier), so the
+        // branching lives in real JS.
+        if (ev.key === "Enter") {
+            ev.preventDefault();
+            this.saveEditExtraction();
+        } else if (ev.key === "Escape") {
+            this.cancelEditExtraction();
+        }
+    }
+
+    onAdjustmentKeydown(ev) {
+        if (ev.key === "Enter") {
+            ev.preventDefault();
+            this.saveAdjustment();
+        }
+    }
+
+    onComposerKeydown(ev) {
+        if (ev.key === "Escape") {
+            ev.preventDefault();
+            this.closeComposer();
+        }
+    }
+
     async saveEditExtraction() {
         const key = this.state.ai.editingKey;
         const raw = (this.state.ai.editValue || "").trim();
