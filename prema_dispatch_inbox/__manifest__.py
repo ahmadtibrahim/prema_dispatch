@@ -1,6 +1,6 @@
 {
     "name": "Prema Dispatch Inbox",
-    "version": "18.0.1.8.0",
+    "version": "18.0.1.11.0",
     "summary": "Shared dispatch inbox for dispatcher@logistics.premafirm.com — conversations, follow-ups, CRM/booking/invoice links, AI assistant, pricing engine integration",
     "category": "Logistics",
     "description": """
@@ -12,7 +12,14 @@ available inside Prema Dispatch on erp.premafirm.com.
 
 * Folders/queues: Inbox, Unread, Needs Review, Quote Requests, Load
   Opportunities, Active Shipments, Waiting for Reply, Tasks, Drafts, Sent,
-  Archived, Spam/Quarantine, Rules & Automation.
+  Archived, Trash, Spam/Quarantine, Rules & Automation.
+* Trash (§19.2): delete-to-Trash (single and bulk) is always soft — a
+  trashed thread leaves every working folder and keeps its state, links
+  and history; Restore puts it back exactly where it was. Permanent delete
+  exists ONLY inside Trash and demands a typed DELETE confirmation;
+  "purge trash older than N days" is an explicit action honoring
+  prema_inbox.trash_retention_days (default 30) — no cron ever auto-purges.
+  Trashing or deleting inbox records NEVER touches server-side mail.
 * One canonical conversation per thread (dedupe by Message-ID, threading by
   References/In-Reply-To). Per-message, per-user read state — personal unread
   is separate from the shared workflow state (Open / Waiting / Completed).
@@ -22,11 +29,22 @@ available inside Prema Dispatch on erp.premafirm.com.
   muted while keeping their count.
 * Email actions: compose / reply / reply-all / forward / internal note,
   draft autosave, attachments, assign, priority, read/unread,
-  archive/reopen, mark waiting/completed. Outbound goes through the
-  configured mail server From dispatcher@logistics.premafirm.com with
-  Reply-To pinned to the same address and Message-ID/References preserved
-  (replies thread back into the same conversation). Status is honest:
-  draft → pending (queued) → sent | failed.
+  archive/reopen, mark waiting/completed, move to Trash (single + bulk)
+  and restore. Outbound goes through the configured mail server From
+  dispatcher@logistics.premafirm.com with Reply-To pinned to the same
+  address and Message-ID/References preserved (replies thread back into
+  the same conversation). Status is honest: draft → pending (queued) →
+  sent | failed. Sent/Drafts folders exist in Odoo only — the module
+  cannot reconcile with the provider's servers (sends go through SMTP /
+  mail.mail and delivery webhooks live outside the module in
+  premafirm_ai_engine): each outbound message stores its provider identity
+  — the RFC Message-ID on the inbox message EQUALS the mail.mail
+  ledger message_id (kept on the conversation's message rows; one ledger
+  row per message, reused across retries), so Message-ID-correlated
+  provider delivery events join back to the thread.
+* Business links: tasks (mail.activity), optional CRM opportunity,
+  booking/job, rate confirmation (logistics.custom.quote), invoice
+  (read-only), save documents. Internal notes never leave the company.
 * Incoming routing: the dispatcher@logistics.premafirm.com alias and the
   fetchmail object_id route into prema.inbox.conversation.message_new —
   same dedupe and threading as the UI; attachments preserved.
@@ -42,6 +60,15 @@ available inside Prema Dispatch on erp.premafirm.com.
   existing deterministic PricingService — no second calculator, no invented
   rates. Price snapshot persisted on the conversation; quoted replies
   require human review.
+* Gmail-like full-window compose: Reply/Reply-all/Forward open the whole
+  thread READ-ONLY above a large clear writing box (the original email is
+  quoted into the SENT message only — the box never pre-fills), X/Escape
+  closes with a discard-confirm, drafts keep the window open.
+* Create booking from email (F-3): one explicit dispatcher click confirms
+  the quoted email as a logistics.booking via BookingOrchestrationService
+  (source_channel "email") — the corridor engine re-checks capacity and
+  rates at booking time, the final quoted price is carried as the customer
+  sell price with a recorded reason, invoicing stays with job completion.
 * Configurable rules (triggers/conditions/actions/owner/audit) with three
   permission levels; defaults are conservative (no autonomous sending).
 
