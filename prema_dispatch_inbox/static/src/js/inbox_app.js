@@ -133,6 +133,23 @@ export class InboxApp extends Component {
         this._premaEventCb = (payload) => {
             this._onEvent(payload);
         };
+        // Document-level Esc for the composer: the overlay's t-on-keydown
+        // only hears events bubbling through it, so an immediate Esc while
+        // focus is still on the Reply button (or anywhere outside the
+        // overlay) would silently do nothing — Gmail closes the window no
+        // matter where the focus is. Events originating inside the overlay
+        // bubble to its own handler first, which closes and resets the
+        // composer; this listener then sees mode===null and no-ops.
+        this._globalKeydownCb = (ev) => {
+            if (ev.key !== "Escape") {
+                return;
+            }
+            const overlay = this.el?.querySelector(".o_inbox_compose_overlay");
+            if (overlay && !overlay.contains(ev.target)) {
+                ev.preventDefault();
+                this.closeComposer();
+            }
+        };
         onMounted(async () => {
             await this.refreshFolders();
             await this.loadConversations();
@@ -144,6 +161,7 @@ export class InboxApp extends Component {
                 // non-fatal: default of 30 stays in the purge prompt
             }
             this._timer = setInterval(() => this.reconcile(), 60000);
+            document.addEventListener("keydown", this._globalKeydownCb);
             try {
                 // A bus failure (websocket down) must never block the basic
                 // inbox rendering or the reconcile timer — live updates are
@@ -164,6 +182,7 @@ export class InboxApp extends Component {
             clearTimeout(this._searchTimer);
             clearTimeout(this._linkTimer);
             this._timer = null;
+            document.removeEventListener("keydown", this._globalKeydownCb);
             try {
                 this.busService.deleteChannel(this.channel);
                 this.busService.unsubscribe("prema_inbox", this._premaEventCb);
