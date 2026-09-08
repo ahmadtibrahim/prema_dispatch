@@ -7,19 +7,48 @@ workflow_state (open/waiting/completed/archived) is shared, while personal
 read state is per-message/per-user on prema.inbox.message.read — reading is
 not completing.
 
+Trash is a SEPARATE soft flag (trashed/trashed_at/trashed_by) orthogonal to
+workflow_state: only the Trash folder lists trashed threads, permanent
+delete is available only from Trash with a typed confirmation, and no cron
+ever purges automatically (retention param prema_inbox.trash_retention_days
+only feeds the explicit "purge trash older than N days" action). Deleting
+an inbox record NEVER touches server-side mail (no IMAP/fetchmail/SMTP
+call; sent mail.mail ledger rows survive permanent delete).
+
 Real-time: every user of the inbox group subscribes to the bus channel
 prema_inbox:{uid}; new-message events and read-state changes are broadcast
 post-commit only.
 """
 import base64
+import logging
 import re
+from datetime import timedelta
 
 from odoo import _, api, fields, models
-from odoo.exceptions import ValidationError
-from odoo.tools import email_split, html2plaintext
+from odoo.exceptions import AccessError, ValidationError
+from odoo.tools import email_normalize, email_split, html2plaintext
 from odoo.tools.mail import html_sanitize
 
+_logger = logging.getLogger(__name__)
+
 _EMAIL_ADDR_RE = re.compile(r"<([^<>]+@[^<>]+)>")
+
+# RFC 5322 reply/forward subject prefixes (en/fr re, fwd, fw; de aw/antw;
+# sv sv/vs; pl odp; it rif; pt enc; no/da sv). Stacked prefixes collapse to
+# a single one — "Re: Re: quote" never grows "Re: Re: Re: …".
+_THREAD_PREFIX_RE = re.compile(
+    r"^\s*((re|fwd|fw|aw|sv|vs|antw|r|odp|rif|enc)\s*(\[[0-9]+\])?\s*:\s*)+",
+    re.I)
+
+
+def _normalize_thread_subject(subject):
+    """Strip stacked reply/forward prefixes — "Re: Re: quote" → "quote".
+
+    Used for reply subject defaults so repeated replies never stack
+    "Re: Re: Re: …". Non-prefixed subjects pass through verbatim.
+    """
+    cleaned = _THREAD_PREFIX_RE.sub("", subject or "").strip()
+    return cleaned or (subject or "").strip()
 
 # PremaFirm-internal email suffixes. Recipient defaults (reply / reply all)
 # and internal-address exclusion are decided on these — a PremaFirm address
@@ -98,7 +127,25 @@ class InboxConversation(models.Model):
     name = fields.Char(string="Subject", required=True)
     partner_id = fields.Many2one(
         "res.partner", string="Customer", index=True,
-        help="External counterparty. One canonical partner per conversation.")
+        help="External counterparty. One canonical partner per conversation. "
+             "When the customer is a company, this is the COMPANY "
+             "(commercial partner); the individual person goes on "
+             "contact_id — the same convention as crm.lead "
+             "(partner_id / logistics_contact_id).")
+    contact_id = fields.Many2one(
+        "res.partner", string="Contact", index=True,
+        help="The individual person when the customer is a company — the "
+             "commercial partner of partner_id. Set from the sender's exact "
+             "email match; never guessed.")
+    partner_provisional = fields.Boolean(
+        string="Customer not confirmed", default=False,
+        help="True when the sender's email matches MULTIPLE records — no "
+             "automatic association was made (a wrong customer is a "
+             "high-severity error). The dispatcher must confirm.")
+    partner_suggestions = fields.Json(
+        string="Ambiguous sender matches",
+        help="[{id, name, email, reason}] candidate partners when "
+             "partner_provisional is True.")
     category = fields.Selection([
         ("quote_request", "Quote Request"),
         ("load_opportunity", "Load Opportunity"),
@@ -115,6 +162,21 @@ class InboxConversation(models.Model):
         ("completed", "Completed"),
         ("archived", "Archived"),
     ], string="State", default="open", index=True)
+    # Trash is a SOFT flag orthogonal to workflow_state — never part of the
+    # workflow select. A trashed thread keeps its workflow state so Restore
+    # returns it exactly where it was. Nothing auto-purges (no cron): the
+    # retention param only feeds the explicit purge action.
+    trashed = fields.Boolean(
+        string="In Trash", default=False, index=True,
+        help="Soft-deleted: shown only in the Trash folder, excluded from "
+             "every other folder and from unread/badge counts. Restoring "
+             "clears the flag; permanent delete is possible ONLY while this "
+             "is True (typed confirmation required). Deleting never touches "
+             "server-side mail.")
+    trashed_at = fields.Datetime(string="Trashed at", index=True)
+    trashed_by = fields.Many2one(
+        "res.users", string="Trashed by",
+        help="The dispatcher who moved the thread to Trash.")
     priority = fields.Selection([
         ("normal", "Normal"),
         ("urgent", "Urgent"),
@@ -134,6 +196,12 @@ class InboxConversation(models.Model):
              "per user — not shared.")
     booking_id = fields.Many2one(
         "logistics.booking", string="Booking", ondelete="set null")
+    custom_quote_id = fields.Many2one(
+        "logistics.custom.quote", string="Rate confirmation",
+        ondelete="set null",
+        help="Rate confirmation (logistics.custom.quote) linked to this "
+             "thread — same authorized picker/link semantics as the other "
+             "business links (never auto-created per email).")
     job_id = fields.Many2one(
         "prema.dispatch.job", string="Dispatch job", ondelete="set null")
     opportunity_id = fields.Many2one(
@@ -165,6 +233,34 @@ class InboxConversation(models.Model):
         help="Immutable pricing result (price_lines + route_snapshot + "
              "calculated_price) from PricingService.calculate — the single "
              "pricing authority. Never AI-invented.")
+    # F-1 — dispatcher price adjustment. Engine price, dispatcher
+    # adjustment, final quoted price, quoted_by / quoted_at / reason are
+    # kept SEPARATELY: the snapshot (engine authority) is never overwritten
+    # by a dispatcher adjustment.
+    engine_calculated_price = fields.Float(
+        string="Engine price",
+        help="Copy of price_snapshot.calculated_price at snapshot time — "
+             "the system price stays visible even after the dispatcher "
+             "adjusts the quote.")
+    dispatcher_adjustment = fields.Float(
+        string="Dispatcher adjustment",
+        help="F-1: dispatcher-only price adjustment (e.g. goodwill, volume "
+             "deal). Applied on top of the engine price; the engine "
+             "snapshot is never modified.")
+    adjustment_reason = fields.Text(
+        string="Adjustment reason",
+        help="Why the dispatcher adjusted the price (optional).")
+    quoted_by = fields.Many2one(
+        "res.users", string="Quoted by",
+        help="Dispatcher who set the final quoted price.")
+    quoted_at = fields.Datetime(
+        string="Quoted at",
+        help="When the final quoted price was set.")
+    final_quoted_price = fields.Float(
+        string="Final quoted price", compute="_compute_final_quoted_price",
+        help="engine_calculated_price + dispatcher_adjustment — the number "
+             "the customer is actually quoted. 0.0 when no engine price "
+             "exists yet (never an invented quote).")
     inbox_message_ids = fields.One2many(
         "prema.inbox.message", "conversation_id", string="Messages")
     is_load_board = fields.Boolean(
@@ -202,7 +298,8 @@ class InboxConversation(models.Model):
     def _ingest_email(
             self, email_from, to_addrs, subject, body_html, body_plain,
             message_id, references=None, in_reply_to=None,
-            attachment_ids=None, is_load_board=False, date=None):
+            attachment_ids=None, is_load_board=False, date=None,
+            reply_to=None):
         """Create-or-thread an incoming message.
 
         Dedupe: message_id unique constraint on the message table (duplicate
@@ -210,6 +307,10 @@ class InboxConversation(models.Model):
         Threading: References/In-Reply-To are matched against existing
         inbox_message_ids — never by subject alone. Without a match a new
         conversation is created.
+
+        Partner: deterministic exact-email resolution (`_resolve_sender`) —
+        never a domain/name/address/tag/AI guess; an ambiguous match leaves
+        the conversation provisional for the dispatcher to confirm.
 
         Returns (message, conversation, created_bool). Broadcasts happen in
         the CALLER after commit (fetch-sim controller / future fetch path).
@@ -227,17 +328,42 @@ class InboxConversation(models.Model):
         # 2) thread-match by References / In-Reply-To
         conversation = self._find_by_references(references, in_reply_to)
 
-        # 3) partner resolution (display name + email)
-        partner = self._resolve_partner(email_from)
+        # 2b) a NEW incoming message threading into a TRASHED conversation
+        # restores it: an actual reply is an active signal (the customer is
+        # talking again) — never silently buried in Trash. The restore keeps
+        # workflow_state/category/links intact; only the soft trash flag
+        # clears, so the thread returns exactly where it was.
+        if conversation and conversation.trashed:
+            conversation.write({"trashed": False, "trashed_at": False,
+                                "trashed_by": False})
+            conversation._broadcast_read_change()
+
+        # 3) partner resolution — deterministic exact-email chain (D-4):
+        #    ambiguous → provisional, dispatcher confirms; never guessed.
+        resolved = self._resolve_sender(email_from)
+        partner = resolved["partner"]
+        contact = resolved["contact"]
 
         # 4) new conversation unless a thread matched
         created = not bool(conversation)
         if not conversation:
             conversation = self.create({
                 "name": subject or "(no subject)",
-                "partner_id": partner.id,
+                "partner_id": partner.id if partner else False,
+                "contact_id": contact.id if contact else False,
+                "partner_provisional": resolved["provisional"],
+                "partner_suggestions": resolved["suggestions"] or False,
                 "category": self._guess_category(subject or "", body_plain or ""),
-                "is_spam": self._is_spam_email(partner),
+                "is_spam": bool(partner) and self._is_spam_email(partner),
+            })
+        elif not conversation.partner_id and partner:
+            # a threaded reply into an as-yet-unidentified conversation can
+            # now resolve it — same deterministic chain, no guessing
+            conversation.write({
+                "partner_id": partner.id,
+                "contact_id": contact.id if contact else False,
+                "partner_provisional": resolved["provisional"],
+                "partner_suggestions": resolved["suggestions"] or False,
             })
 
         # 5) the message itself — body_html is UNTRUSTED email content and
@@ -248,8 +374,15 @@ class InboxConversation(models.Model):
             "conversation_id": conversation.id,
             "direction": "incoming",
             "date": date or fields.Datetime.now(),
-            "author_id": partner.id,
+            "author_id": partner.id if partner else False,
             "email_from": (email_from or "").strip(),
+            "reply_to_header": (reply_to or "").strip(),
+            # Reply-To identity is resolved HERE, at ingest, in the
+            # fetchmail/admin context — never inside the read-only reply
+            # composer RPC (a dispatcher without res.partner create rights
+            # must still be able to open a thread).
+            "reply_to_partner_id": (reply_to or "").strip()
+            and self._resolve_partner(reply_to).id or False,
             "recipient_ids": [(6, 0, [p.id for p in
                                       self._resolve_partners(to_addrs)])],
             "subject": subject,
@@ -288,24 +421,42 @@ class InboxConversation(models.Model):
         body = msg_dict.get("body") or ""
         message_id = msg_dict.get("message_id") or ""
         attachments = self._attachments_from_msgdict(msg_dict)
+        # Reply-To: Odoo 18's gateway msg_dict has NO reply_to key (verified
+        # mail_thread.py); the raw RFC 822 object survives as msg_dict["msg"]
+        # — parse the header there. The fetch-sim / tests may pass reply_to
+        # directly.
+        reply_to = msg_dict.get("reply_to") or ""
+        if not reply_to:
+            raw_msg = msg_dict.get("msg")
+            if raw_msg is not None and hasattr(raw_msg, "get"):
+                reply_to = raw_msg.get("Reply-To") or ""
         # A message_id we already know → a duplicate delivery: ingest will
         # no-op, and we must NOT announce it again. Anything else (new
         # thread OR reply into an existing thread) is a real new message.
         mid = (message_id or "").strip("<> ").strip()
         known = self.env["prema.inbox.message"].search(
             [("message_id", "=", mid)], limit=1)
+        # body_plain: the gateway's own text/plain part wins — it is what
+        # the MTA actually received (a message with NO html part carries
+        # only that plain text). When absent, derive the fallback from the
+        # SANITIZED html, never the raw body: the plain view must not echo
+        # script text that the sanitizer stripped from the html view.
+        plain = msg_dict.get("body_plain") or ""
+        if not plain.strip():
+            plain = html2plaintext(_sanitize_email_html(body))
         msg, conv, created = self._ingest_email(
             email_from=msg_dict.get("email_from") or "",
             to_addrs=email_split(msg_dict.get("to") or ""),
             subject=subject,
             body_html=body,
-            body_plain=html2plaintext(body) if body else "",
+            body_plain=plain,
             message_id=message_id,
             references=msg_dict.get("references") or "",
             in_reply_to=msg_dict.get("in_reply_to") or "",
             attachment_ids=[a.id for a in attachments],
             is_load_board=self._looks_like_load_board(subject, body),
             date=msg_dict.get("date") or None,
+            reply_to=reply_to,
         )
         # Files are created before the message row (res_id unknown); now
         # that the message exists, bind them to it.
@@ -404,14 +555,28 @@ class InboxConversation(models.Model):
         return msgs.conversation_id
 
     @api.model
+    def _find_partner_by_email(self, email, limit=None):
+        """Exact lookup on the NORMALIZED email — the canonical pattern used
+        across premafirm modules (prema_mail_tracking, crm_bulk_email).
+        Deterministic: the normalized address equals the partner's stored
+        normalized email. Never a domain / name / address similarity match."""
+        norm = email_normalize(email or "")
+        if not norm:
+            return self.env["res.partner"]
+        return self.env["res.partner"].search(
+            [("email_normalized", "=", norm)], limit=limit or 1)
+
+    @api.model
     def _resolve_partner(self, email_from):
-        """Find or create the res.partner for an RFC 5322 address."""
+        """Find-or-create the res.partner for a TYPED address (composer
+        To/Cc, message recipient list). Exact normalized-email match first,
+        else a NEW partner from the address itself — derived from the
+        address alone, never a domain/name/address/tag/AI guess."""
         email = _email_of(email_from)
         if not email:
             return self.env.ref("base.public_partner")
         display = re.sub(r"<[^<>]*>", "", email_from or "").strip(" \"'")
-        partner = self.env["res.partner"].search(
-            [("email", "=ilike", email)], limit=1)
+        partner = self._find_partner_by_email(email)
         if not partner:
             partner = self.env["res.partner"].create({
                 "name": display or email,
@@ -420,8 +585,124 @@ class InboxConversation(models.Model):
         return partner
 
     @api.model
+    def _partner_candidates_from_records(self, email):
+        """Deterministic partner evidence from raw-email records: prior
+        conversations and CRM leads carrying this EXACT email address.
+
+        No domain-only / name-similarity / address-similarity / tag / AI
+        evidence is ever considered — a wrong customer association is a
+        high-severity error.
+        """
+        candidates = self.env["res.partner"]
+        for m in self.env["prema.inbox.message"].search(
+                [("email_from", "ilike", email)], limit=200):
+            if _email_of(m.email_from or "") != email:
+                continue
+            if m.conversation_id.partner_id:
+                candidates |= m.conversation_id.partner_id
+        if "crm.lead" in self.env:
+            for lead in self.env["crm.lead"].search(
+                    [("email_from", "ilike", email)], limit=100):
+                if _email_of(lead.email_from or "") != email:
+                    continue
+                p = lead.partner_id or lead.logistics_contact_id
+                if p:
+                    candidates |= p
+        return candidates
+
+    @api.model
+    def _resolve_sender(self, email_from):
+        """Deterministic sender resolution for INCOMING mail (D-4).
+
+        Evidence chain — every step is an exact-email match on records that
+        carry this very address, in priority order:
+          1. a res.partner with the exact normalized email. A contact at a
+             company resolves to company + contact — the crm.lead
+             convention: partner_id = COMPANY, contact_id = the person.
+          2. prior inbox conversations whose messages carry this exact
+             email_from → their partner (the same person wrote before).
+          3. CRM leads whose email_from is exactly this address → their
+             partner / logistics contact.
+          4. nothing at all → a NEW partner from the sender's own display
+             name + email (derived from the message itself).
+
+        Multiple DISTINCT candidates → NO automatic association: partner
+        False + provisional True + suggestions for the dispatcher to
+        confirm (`action_confirm_partner`).
+
+        Returns {"partner", "contact", "provisional", "suggestions"}.
+        """
+        empty = {"partner": False, "contact": False,
+                 "provisional": False, "suggestions": False}
+        email = _email_of(email_from)
+        if not email:
+            return empty
+        display = re.sub(r"<[^<>]*>", "", email_from or "").strip(" \"'")
+        candidates = self._find_partner_by_email(email, limit=50)
+        if not candidates:
+            candidates = self._partner_candidates_from_records(email)
+        if len(candidates) == 1:
+            p = candidates
+            company = p.commercial_partner_id or p
+            return {
+                "partner": company,
+                "contact": p if company != p else False,
+                "provisional": False,
+                "suggestions": False,
+            }
+        if len(candidates) > 1:
+            return {
+                "partner": False,
+                "contact": False,
+                "provisional": True,
+                "suggestions": [{
+                    "id": p.id,
+                    "name": p.name or p.email,
+                    "email": p.email or email,
+                    "reason": ("Contact at %s" % p.parent_id.name)
+                              if p.parent_id and p.parent_id.name
+                              else "Partner",
+                } for p in candidates[:10]],
+            }
+        partner = self.env["res.partner"].create({
+            "name": display or email,
+            "email": email,
+        })
+        return {"partner": partner, "contact": False,
+                "provisional": False, "suggestions": False}
+
+    @api.model
     def _resolve_partners(self, addrs):
         return [self._resolve_partner(a) for a in addrs or []]
+
+    def action_confirm_partner(self, partner_id=None):
+        """Dispatcher resolves an ambiguous sender match (provisional).
+
+        partner_id False → "leave unassigned": clears the flag WITHOUT any
+        association. Otherwise sets partner (the company / commercial
+        partner) + contact (the confirmed record when it is a child
+        contact)."""
+        if partner_id:
+            partner = self.env["res.partner"].browse(int(partner_id))
+            if not partner.exists():
+                raise ValidationError(_("This partner no longer exists."))
+            company = partner.commercial_partner_id or partner
+            self.write({
+                "partner_id": company.id,
+                "contact_id": partner.id if company != partner else False,
+                "partner_provisional": False,
+                "partner_suggestions": False,
+            })
+        else:
+            self.write({
+                "partner_provisional": False,
+                "partner_suggestions": False,
+            })
+        # D-6 backfill: notes written before confirmation now have a
+        # partner to attach to — mirror each one independently.
+        self._backfill_mirrored_notes()
+        self._broadcast_read_change()
+        return True
 
     @api.model
     def _guess_category(self, subject, body_plain):
@@ -505,7 +786,10 @@ class InboxConversation(models.Model):
     # ------------------------------------------------------------------
     @api.model
     def _folder_domain(self, key):
-        base = [("is_spam", "=", False)]
+        """Computed folder domain. Trash is a soft flag orthogonal to
+        workflow_state: EVERY non-trash folder excludes trashed threads and
+        only the Trash folder lists them."""
+        base = [("is_spam", "=", False), ("trashed", "=", False)]
         if key == "inbox":
             return base + [("workflow_state", "=", "open")]
         if key == "needs_review":
@@ -520,10 +804,18 @@ class InboxConversation(models.Model):
         if key == "waiting_reply":
             return base + [("workflow_state", "=", "waiting")]
         if key == "archived":
-            return [("workflow_state", "=", "archived")]
+            return [("workflow_state", "=", "archived"),
+                    ("trashed", "=", False)]
+        if key == "trash":
+            return [("trashed", "=", True)]
         if key == "spam":
-            return [("is_spam", "=", True)]
-        # unread / tasks / drafts / sent are computed sets — no domain
+            return [("is_spam", "=", True), ("trashed", "=", False)]
+        if key in ("drafts", "sent", "unread", "tasks"):
+            # computed set keys: only the trash exclusion is a real domain
+            # (personal unread must never surface a trashed thread — the
+            # badge counts already exclude it)
+            return [("trashed", "=", False)]
+        # unknown key — nothing
         return []
 
     @api.model
@@ -560,7 +852,7 @@ class InboxConversation(models.Model):
             "active_shipments": "Active Shipments",
             "waiting_reply": "Waiting for Reply", "tasks": "Tasks",
             "drafts": "Drafts", "sent": "Sent", "archived": "Archived",
-            "spam": "Spam / Quarantine",
+            "trash": "Trash", "spam": "Spam / Quarantine",
         }
         return [{"key": k, "label": v, "count": len(self._folder_conversations(k))}
                 for k, v in labels.items()]
@@ -587,6 +879,21 @@ class InboxConversation(models.Model):
         return rows
 
     @api.model
+    def _safe_link_name(self, record):
+        """Name of a linked business record, or "" when the caller lacks
+        read access to that model.
+
+        Odoo 18 raises the model-level ACL check even when reading the name
+        of a NULL link, so an unreadable link target would otherwise take
+        the WHOLE conversation list down with it ("Could not load
+        conversations"). The list must degrade per-link, never 500.
+        """
+        try:
+            return record.name or ""
+        except AccessError:
+            return ""
+
+    @api.model
     def _conversation_row(self, conv):
         last = conv.inbox_message_ids.sorted(
             key=lambda m: m.date, reverse=True)[:1]
@@ -596,6 +903,14 @@ class InboxConversation(models.Model):
             "partner_id": conv.partner_id.id,
             "partner_name": conv.partner_id.name,
             "partner_email": conv.partner_id.email or "",
+            "contact_id": conv.contact_id.id,
+            "contact_name": conv.contact_id.name or "",
+            "partner_provisional": conv.partner_provisional,
+            "partner_suggestions": conv.partner_suggestions or False,
+            "customer_label": (
+                "%s / %s" % (conv.partner_id.name, conv.contact_id.name)
+                if conv.partner_id and conv.contact_id
+                else (conv.partner_id.name or "")),
             "category": conv.category,
             "priority": conv.priority,
             "workflow_state": conv.workflow_state,
@@ -606,14 +921,19 @@ class InboxConversation(models.Model):
             "is_spam": conv.is_spam,
             "is_load_board": conv.is_load_board,
             "has_attachment": bool(conv.inbox_message_ids.attachment_ids),
+            "trashed": conv.trashed,
+            "trashed_at": conv.trashed_at.isoformat() if conv.trashed_at else None,
+            "trashed_by_name": conv.trashed_by.name or "",
             "booking_id": conv.booking_id.id,
-            "booking_name": conv.booking_id.name or "",
+            "booking_name": self._safe_link_name(conv.booking_id),
             "job_id": conv.job_id.id,
-            "job_name": conv.job_id.name or "",
+            "job_name": self._safe_link_name(conv.job_id),
             "invoice_id": conv.invoice_id.id,
-            "invoice_name": conv.invoice_id.name or "",
+            "invoice_name": self._safe_link_name(conv.invoice_id),
             "opportunity_id": conv.opportunity_id.id,
-            "opportunity_name": conv.opportunity_id.name or "",
+            "opportunity_name": self._safe_link_name(conv.opportunity_id),
+            "custom_quote_id": conv.custom_quote_id.id,
+            "custom_quote_name": self._safe_link_name(conv.custom_quote_id),
         }
 
     @api.model
@@ -639,6 +959,8 @@ class InboxConversation(models.Model):
                 "subject": m.subject,
                 "body": m.body or "",
                 "body_plain": m.body_plain or "",
+                "message_id": m.message_id or "",
+                "mail_mail_id": m.mail_mail_id.id or None,
                 "is_read": m.is_read,
                 "outbound_state": m.outbound_state,
                 "send_error": m.send_error or "",
@@ -680,14 +1002,14 @@ class InboxConversation(models.Model):
                 "to": [{"id": p.id, "email": p.email or p.name}
                        for p in conv.env["res.partner"].browse(to_default)],
                 "cc": [],
-                "subject": "Re: %s" % conv.name,
+                "subject": "Re: %s" % _normalize_thread_subject(conv.name),
             },
             "reply_all_defaults": {
                 "to": [{"id": p.id, "email": p.email or p.name}
                        for p in conv.env["res.partner"].browse(to_default_all)],
                 "cc": [{"id": p.id, "email": p.email or p.name}
                        for p in conv.env["res.partner"].browse(cc_default_all)],
-                "subject": "Re: %s" % conv.name,
+                "subject": "Re: %s" % _normalize_thread_subject(conv.name),
             },
             "muted": self.env.user.id in conv.muted_user_ids.ids,
             "ai": {
@@ -695,7 +1017,29 @@ class InboxConversation(models.Model):
                 "summary": conv.ai_summary or "",
                 "extraction": conv.ai_extraction,
             },
-            "pricing": conv.price_snapshot,
+            # D-10: state + breakdown derive from the immutable snapshot;
+            # F-1: quote state carries engine/adjustment/final separately.
+            "pricing": {
+                **(conv.price_snapshot or {}),
+                "state": self.env["prema.inbox.pricing"]
+                    .pricing_state(conv),
+                "breakdown": self.env["prema.inbox.pricing"]
+                    .price_breakdown(conv),
+                "quote": conv._quote_state(),
+            },
+            # F-3/F-5: booking state + acceptance follow-up banner.
+            "booking": {
+                "id": conv.booking_id.id or None,
+                "number": self._safe_link_name(conv.booking_id),
+                "url": ("/web#model=logistics.booking&id=%s"
+                        % conv.booking_id.id) if conv.booking_id else None,
+            },
+            "acceptance": {
+                "booking_linked": bool(conv.booking_id),
+                "customer_replied_after_booking":
+                    conv._customer_replied_after_booking(),
+                "hint": conv._acceptance_hint(),
+            },
         }
 
     @api.model
@@ -705,6 +1049,7 @@ class InboxConversation(models.Model):
             "job": "prema.dispatch.job",
             "invoice": "account.move",
             "opportunity": "crm.lead",
+            "custom_quote": "logistics.custom.quote",
         }
 
     @api.model
@@ -712,6 +1057,7 @@ class InboxConversation(models.Model):
         return {
             "booking": "booking_id", "job": "job_id",
             "invoice": "invoice_id", "opportunity": "opportunity_id",
+            "custom_quote": "custom_quote_id",
         }
 
     @api.model
@@ -776,12 +1122,104 @@ class InboxConversation(models.Model):
             domain, limit=20,
             order="create_date desc" if model != "invoice"
             else "invoice_date desc nulls last")
-        return [{
-            "id": r.id, "name": r.name or "%s #%s" % (model, r.id),
-            "partner_id": r.partner_id.id,
-            "partner_name": r.partner_id.name or "",
-            "state": getattr(r, "state", None),
-        } for r in records]
+        rows = []
+        for r in records:
+            row = {
+                "id": r.id, "name": r.name or "%s #%s" % (model, r.id),
+                "partner_id": r.partner_id.id,
+                "partner_name": r.partner_id.name or "",
+                "state": self._safe_attr(r, "state"),
+            }
+            # D-5: model-specific enrichment so the dispatcher recognizes
+            # the right record at a glance — every read is defensive
+            # (unreadable/missing fields degrade to ""/None, never crash).
+            if model == "booking":
+                row.update({
+                    "number": self._safe_attr(r, "booking_number")
+                              or self._safe_attr(r, "name"),
+                    "pickup": self._safe_attr(r, "pickup_address")
+                              or self._safe_attr(r, "pickup_city"),
+                    "delivery": self._safe_attr(r, "delivery_address")
+                                or self._safe_attr(r, "delivery_city"),
+                    "date": self._fmt_date_attr(r, "pickup_date"),
+                })
+            elif model == "job":
+                row.update({
+                    "number": self._safe_attr(r, "ref")
+                              or self._safe_attr(r, "name"),
+                    "route": self._safe_attr(r, "planned_route_name")
+                             or self._safe_attr(r, "planning_anchor_name"),
+                    "date": self._fmt_date_attr(r, "scheduled_pickup"),
+                })
+            elif model == "invoice":
+                row.update({
+                    "number": self._safe_attr(r, "name"),
+                    "date": self._fmt_date_attr(r, "invoice_date"),
+                    "total": r.amount_total,
+                    "payment_state": self._safe_attr(r, "payment_state"),
+                })
+            elif model == "opportunity":
+                row.update({
+                    "stage": self._safe_attr(r, "stage_id.name"),
+                    "salesperson": self._safe_attr(r, "user_id.name"),
+                    "activity": self._latest_activity_label(r),
+                })
+            elif model == "custom_quote":
+                row.update({
+                    "number": self._safe_attr(r, "name")
+                              or self._safe_attr(r, "id"),
+                    "date": self._fmt_date_attr(r, "create_date"),
+                    "total": r.quoted_price,
+                    "quote_state": self._safe_attr(r, "state"),
+                })
+            rows.append(row)
+        return rows
+
+    @api.model
+    def _safe_attr(self, record, path):
+        """Read a field path ('stage_id.name') defensively — an unreadable
+        or missing field yields '' instead of raising (the list must never
+        500 because one candidate row has an odd ACL or schema)."""
+        try:
+            value = record
+            for part in path.split("."):
+                value = getattr(value, part, None)
+                if value is None:
+                    return ""
+            return value if isinstance(value, str) else str(value or "")
+        except AccessError:
+            return ""
+
+    @api.model
+    def _fmt_date_attr(self, record, field_name):
+        """Safe isoformat for a date/datetime field ('' when unreadable or
+        absent) — keeps candidate JSON plain and client-renderable."""
+        try:
+            value = getattr(record, field_name, None)
+        except AccessError:
+            return ""
+        if not value:
+            return ""
+        try:
+            return value.isoformat()
+        except Exception:
+            return ""
+
+    @api.model
+    def _latest_activity_label(self, lead):
+        """'summary · deadline' for the lead's latest mail.activity, or ''."""
+        try:
+            activities = lead.activity_ids.sorted(
+                key=lambda a: (a.date_deadline or a.create_date), reverse=True)
+        except AccessError:
+            return ""
+        if not activities:
+            return ""
+        act = activities[0]
+        bits = [b for b in
+                (act.summary or "", act.date_deadline
+                 and act.date_deadline.isoformat()) if b]
+        return " · ".join(bits)
 
     def action_link_record(self, model, record_id, search=None):
         """Link a record to the conversation — authorized server-side.
@@ -826,9 +1264,96 @@ class InboxConversation(models.Model):
                 raise ValidationError(
                     _("Not a valid candidate for this conversation — use "
                       "the picker search to find records first."))
+        # D-5: the conversation's partner may be stamped onto the OPPORTUNITY
+        # ONLY when the lead has no partner yet (or already carries the same
+        # one) — a lead belonging to a DIFFERENT customer is never
+        # re-associated (wrong-customer = high severity). Never a silent
+        # partner change on bookings/jobs/invoices: those are link-only.
+        if model == "opportunity" and conv.partner_id:
+            lead_partner = rec.partner_id
+            if not lead_partner \
+                    or lead_partner.id == conv.partner_id.id \
+                    or (lead_partner.commercial_partner_id
+                        and lead_partner.commercial_partner_id.id
+                        == conv.partner_id.id):
+                if not lead_partner:
+                    try:
+                        rec.write({"partner_id": conv.partner_id.id})
+                    except Exception:  # noqa: BLE001 — never block the link
+                        _logger.warning(
+                            "inbox: could not stamp opportunity %s partner",
+                            rec.id)
         self.write({field: rec.id})
+        self._post_target_backlink(conv, model_name, rec)
         self._broadcast_read_change()
         return True
+
+    def _post_target_backlink(self, conv, model_name, record):
+        """Chatter note on the TARGET record: "Dispatch Inbox conversation
+        linked" + sender/subject/date + a deep-link back to the thread.
+
+        Authored by OdooBot as an internal mt_note — never emailed to the
+        customer. Models without a chatter widget (logistics.booking has
+        none) still get the mail.message row via the raw path so the
+        backlink exists for queries; supported models get message_post.
+        Every access is defensive — an unreadable target degrades to a
+        no-op, never a failure of the link itself.
+        """
+        try:
+            partner_name = (conv.partner_id.name or "") \
+                if conv.partner_id else "(no customer)"
+            last = conv._latest_incoming()
+            body = (
+                "Dispatch Inbox conversation linked → "
+                "<a href=\"%s\">%s</a><br/>"
+                "Sender: %s<br/>Subject: %s<br/>Last message: %s"
+                % (self._inbox_conv_url(conv.id),
+                   self._escape_note(conv.name or "(no subject)"),
+                   self._escape_note(last and last.email_from or "—"),
+                   self._escape_note(conv.name or "—"),
+                   (last and last.date
+                    and last.date.strftime("%Y-%m-%d %H:%M")) or "—"))
+            target = record.sudo()
+            if hasattr(target, "message_post"):
+                odoo_bot = self.env.ref(
+                    "base.partner_root", raise_if_not_found=False)
+                try:
+                    target.message_post(
+                        body=body,
+                        message_type="comment",
+                        subtype_xmlid="mail.mt_note",
+                        author_id=(
+                            odoo_bot.id if odoo_bot else self.env.user.id))
+                    return True
+                except Exception:  # noqa: BLE001 — fall through to raw row
+                    _logger.debug("inbox backlink: message_post failed", exc_info=True)
+            self.env["mail.message"].sudo().create({
+                "model": model_name,
+                "res_id": record.id,
+                "body": body,
+                "message_type": "comment",
+                "subtype_id": self.env.ref("mail.mt_note").id,
+                "author_id": self.env.ref(
+                    "base.partner_root", raise_if_not_found=False).id
+                    or self.env.user.partner_id.id,
+            })
+            return True
+        except Exception:  # noqa: BLE001 — backlink is best-effort
+            _logger.warning("inbox backlink note failed", exc_info=True)
+            return False
+
+    @api.model
+    def _inbox_conv_url(self, conversation_id):
+        """Deep link back to a conversation inside the client action —
+        consumed by the ?conv= handler (Phase 5)."""
+        return "/web#action=prema_inbox_main&conv=%s" % conversation_id
+
+    @api.model
+    def _escape_note(self, text):
+        """Escape text interpolated into a chatter note body (the sender
+        address is untrusted email data — never echo it raw into HTML)."""
+        import html as _html
+        return _html.escape(str(text or ""))
 
     def action_unlink_record(self, model):
         """Remove a business link (the X on the chip)."""
@@ -870,7 +1395,243 @@ class InboxConversation(models.Model):
         """
         if self.ai_status == "none":
             self.env["prema.inbox.ai"].extract_shipment(self)
-        return self.env["prema.inbox.pricing"].calculate_price(self)
+        result = self.env["prema.inbox.pricing"].calculate_price(self)
+        snap = self.price_snapshot or {}
+        if snap.get("calculated_price"):
+            # D-10/F-1: keep the engine price visible even after a
+            # dispatcher adjustment — the snapshot itself is never touched.
+            self.engine_calculated_price = snap["calculated_price"]
+        return result
+
+    # ------------------------------------------------------------------
+    # F-1 — dispatcher price adjustment
+    # ------------------------------------------------------------------
+    @api.depends("engine_calculated_price", "dispatcher_adjustment")
+    def _compute_final_quoted_price(self):
+        for conv in self:
+            engine = conv.engine_calculated_price or 0.0
+            adj = conv.dispatcher_adjustment or 0.0
+            conv.final_quoted_price = engine + adj if engine else 0.0
+
+    def action_set_quoted_price(self, adjustment, reason=None):
+        """F-1: dispatcher sets/clears the price adjustment for a quote.
+
+        Keeps engine price and adjustment SEPARATE: only
+        dispatcher_adjustment / reason / quoted_by / quoted_at are written.
+        The engine snapshot is never overwritten — recalculating the price
+        later does not lose the dispatcher's number (it keeps applying
+        until cleared). Returns the quote state for the UI.
+        """
+        engine = self.engine_calculated_price or (
+            self.price_snapshot or {}).get("calculated_price") or 0.0
+        if not engine and not adjustment:
+            return {"error": "Run 'Review & calculate quote' first — there "
+                             "is no engine price to quote from."}
+        self.write({
+            "dispatcher_adjustment": adjustment or 0.0,
+            "adjustment_reason": reason or False,
+            "quoted_by": self.env.user.id,
+            "quoted_at": fields.Datetime.now(),
+        })
+        if not self.engine_calculated_price:
+            self.engine_calculated_price = engine
+        return self._quote_state()
+
+    def _quote_state(self):
+        """The F-1 quote state block for the detail payload."""
+        engine = self.engine_calculated_price or (
+            self.price_snapshot or {}).get("calculated_price") or 0.0
+        adj = self.dispatcher_adjustment or 0.0
+        return {
+            "engine_calculated_price": engine or None,
+            "dispatcher_adjustment": adj or None,
+            "final_quoted_price": (engine + adj) if engine else None,
+            "adjustment_reason": self.adjustment_reason or "",
+            "quoted_by": self.quoted_by.name if self.quoted_by else None,
+            "quoted_at": (self.quoted_at.isoformat()
+                          if self.quoted_at else None),
+            "currency": (self.price_snapshot or {}).get("currency")
+                        or self.env.company.currency_id.name,
+        }
+
+    # ------------------------------------------------------------------
+    # F-5 — acceptance follow-up (suggestion ONLY, dispatcher confirms)
+    # ------------------------------------------------------------------
+    def _customer_replied_after_booking(self):
+        """True when the newest incoming email landed after the booking
+        was created — i.e. the customer is actively replying to us."""
+        if not self.booking_id:
+            return False
+        booking_date = self.booking_id.create_date
+        if not booking_date:
+            return False
+        incoming = self.inbox_message_ids.filtered(
+            lambda m: m.direction == "incoming")
+        if not incoming:
+            return False
+        newest = incoming.sorted(key=lambda m: m.date, reverse=True)[0]
+        return bool(newest.date and newest.date > booking_date)
+
+    def _acceptance_hint(self):
+        """Deterministic keyword scan over the latest incoming message —
+        a SUGGESTION for the dispatcher, never an automated action.
+        Returns ("accept"|"decline"|"question"|None, matched text)."""
+        if not self.booking_id:
+            return (None, "")
+        incoming = self.inbox_message_ids.filtered(
+            lambda m: m.direction == "incoming")
+        if not incoming:
+            return (None, "")
+        latest = incoming.sorted(key=lambda m: m.date, reverse=True)[0]
+        text = html2plaintext(latest.body or "") if latest.body else (
+            latest.subject or "")
+        low = text.lower()
+        accept = ("confirm", "confirmed", "we accept", "accepted",
+                  "approved", "go ahead", "book it", "proceed",
+                  "yes, please", "perfect", "looks good")
+        decline = ("cancel", "decline", "cannot do", "can't do",
+                   "too expensive", "no thanks", "not interested")
+        for w in accept:
+            if w in low:
+                return ("accept", w)
+        for w in decline:
+            if w in low:
+                return ("decline", w)
+        if "?" in latest.subject or "?" in low:
+            return ("question", "?")
+        return (None, "")
+
+    # ------------------------------------------------------------------
+    # F-2 — Reply with Quote (deterministic template, NEVER auto-sent)
+    # ------------------------------------------------------------------
+    def action_quote_reply(self):
+        """Deterministic quote reply: shipment summary + engine breakdown
+        ± dispatcher adjustment = final quoted price.
+
+        Only values that exist in records/snapshot are used — no AI
+        calculation, no invented prices. Returns {subject, body, quote} and
+        the FRONTEND opens the composer with it (normal Reply threading,
+        dispatcher edits + sends — nothing is auto-sent).
+        """
+        if not self.partner_id:
+            return {"error": "Confirm the customer first — reply recipients "
+                             "are resolved from the confirmed partner."}
+        snap = self.price_snapshot or {}
+        ex = (self.ai_extraction or {}).get("fields") or {}
+        quote = self._quote_state()
+        if not quote["final_quoted_price"] and not snap:
+            return {"error": "No engine price yet — run 'Review & calculate "
+                             "quote' before quoting."}
+
+        def _stop(side):
+            return ex.get(side) or {}
+        pickup, delivery = _stop("pickup"), _stop("delivery")
+        lines = []
+        pallets = ex.get("pallets")
+        if pallets:
+            lines.append("%d pallet%s" % (pallets, "s" if pallets != 1 else ""))
+        if ex.get("weight_lbs"):
+            lines.append("%d lbs" % ex["weight_lbs"])
+        if ex.get("equipment"):
+            lines.append(str(ex["equipment"]))
+        if ex.get("temperature_c") is not None:
+            lines.append("%d C" % ex["temperature_c"])
+        shipment = ", ".join(lines) or "your shipment"
+
+        def _place(d):
+            return ", ".join(
+                str(d.get(k) or "").strip() for k in
+                ("city", "province", "postal_code")) or (
+                str(d.get("address") or "").strip())
+
+        body_lines = [
+            "Thank you for your inquiry — here is our quote:",
+            "",
+            "Shipment: %s" % shipment,
+            "Pickup:   %s" % (_place(pickup) or "to be confirmed"),
+            "Delivery: %s" % (_place(delivery) or "to be confirmed"),
+            "",
+        ]
+        for pl in (snap.get("price_lines") or []):
+            if isinstance(pl, dict) and pl.get("label") and pl.get("amount") is not None:
+                body_lines.append("- %s: %s %.2f"
+                                  % (pl["label"], quote["currency"],
+                                     pl["amount"]))
+        if quote["dispatcher_adjustment"]:
+            body_lines.append("- Dispatcher adjustment: %s %.2f"
+                              % (quote["currency"],
+                                 quote["dispatcher_adjustment"]))
+        body_lines += [
+            "",
+            "Total quoted price: %s %.2f"
+            % (quote["currency"], quote["final_quoted_price"]),
+            "",
+            "This quote reflects current corridor rates and availability. "
+            "We will confirm the final schedule with you before pickup.",
+        ]
+        return {
+            "subject": "Re: %s" % _normalize_thread_subject(self.name),
+            "body": "\n".join(body_lines),
+            "quote": quote,
+        }
+
+    # ------------------------------------------------------------------
+    # D-9 — editable shipment extraction (dispatcher overrides, no re-run)
+    # ------------------------------------------------------------------
+    def action_update_extraction(self, updates):
+        """Dispatcher edits extraction fields (D-9).
+
+        Validates against the canonical _EXTRACTION_SCHEMA (same schema the
+        AI is held to), merges into ai_extraction.fields, marks edited
+        fields provenance 'manual' (source_msg dropped), removes them from
+        missing. Never re-runs the AI, never re-prices automatically —
+        the dispatcher clicks calculate again after correcting.
+        """
+        from odoo.addons.prema_dispatch_inbox.models.inbox_ai import (
+            _EXTRACTION_SCHEMA)
+        if not isinstance(updates, dict) or not updates:
+            return {"error": "No updates provided."}
+        ex = dict(self.ai_extraction or {})
+        fields_ = dict(ex.get("fields") or {})
+        sources = dict(ex.get("sources") or {})
+        missing = list(ex.get("missing") or [])
+        conflicts = list(ex.get("conflicting") or [])
+        edits = {}
+
+        def _valid(flat_key, value):
+            if flat_key not in _EXTRACTION_SCHEMA:
+                return False
+            spec = _EXTRACTION_SCHEMA[flat_key]
+            if spec.get("type") == "integer":
+                try:
+                    return value is None or int(value) == value
+                except (TypeError, ValueError):
+                    return False
+            return True
+
+        for flat_key, value in updates.items():
+            if not isinstance(flat_key, str) or "." in flat_key:
+                # nested stop updates arrive as {pickup: {city: ...}} — the
+                # frontend only ever sends flat top-level keys today
+                continue
+            if not _valid(flat_key, value):
+                return {"error": "Invalid extraction field: %s" % flat_key}
+            fields_[flat_key] = value
+            sources[flat_key] = {"source_msg": None, "provenance": "manual"}
+            if flat_key in missing:
+                missing.remove(flat_key)
+            if flat_key in conflicts:
+                conflicts.remove(flat_key)
+            edits[flat_key] = value
+        if not edits:
+            return {"error": "No valid fields to update."}
+        ex.update({
+            "fields": fields_, "sources": sources, "missing": missing,
+            "conflicting": conflicts,
+            "edited_at": fields.Datetime.now().isoformat(),
+        })
+        self.write({"ai_extraction": ex})
+        return {"extraction": ex, "edited": list(edits)}
 
     # ------------------------------------------------------------------
     # composer — the SINGLE RPC behind every composer action
@@ -888,28 +1649,75 @@ class InboxConversation(models.Model):
 
     def _latest_incoming(self):
         """The newest incoming message of this thread (the thing a Reply
-        answers)."""
+        answers). Same-second messages tie on date — id breaks the tie, so
+        a reply answers the truly last message."""
         return self.inbox_message_ids.filtered(
             lambda m: m.direction == "incoming"
-        ).sorted(key=lambda m: m.date, reverse=True)[:1]
+        ).sorted(key=lambda m: (m.date, m.id), reverse=True)[:1]
 
     def _default_reply_recipients(self, kind):
-        """(to_ids, cc_ids) for reply / reply_all, computed from the latest
-        incoming message — the canonical sender, plus (for reply_all) the
-        external To/Cc recipients. Internal PremaFirm addresses and the
-        dispatcher's own address are always excluded."""
+        """(to_ids, cc_ids) for reply / reply_all — the D-3 safety chain.
+
+        Reply recipient resolution, in order:
+          1. the latest incoming message's Reply-To header — the sender's
+             EXPLICIT redirect — when the address is external;
+          2. the latest incoming message's external From author;
+          3. the conversation partner / contact — ONLY when that record has
+             an external email AND the relationship is unambiguous (the
+             sender is internal/unknown — a colleague forwarding on the
+             customer's behalf — or the sender's email IS this record).
+
+        If nothing resolves, [] is returned and compose_and_send refuses
+        with a clear error: the inbox NEVER guesses a recipient merely to
+        avoid an empty-recipient error.
+
+        reply_all: the resolved sender + the message's external To/Cc
+        recipients (internal PremaFirm addresses excluded, deduped).
+        """
         to_ids, cc_ids = [], []
         last = self._latest_incoming()
-        if not last:
-            return to_ids, cc_ids
-        if last.author_id and not self._is_internal_recipient(last.author_id):
-            to_ids.append(last.author_id.id)
+
+        sender_id = False
+        # 1) Reply-To header — the sender's explicit redirect. Identity was
+        #    resolved at ingest (reply_to_partner_id); for messages ingested
+        #    before that field existed, resolve EXISTING partners only —
+        #    this RPC is read-only and must never create one.
+        if last and (last.reply_to_header or "").strip():
+            rt = last.reply_to_partner_id or self._find_partner_by_email(
+                _email_of(last.reply_to_header))
+            if rt.id and not self._is_internal_recipient(rt):
+                sender_id = rt.id
+        # 2) external From author
+        if not sender_id and last and last.author_id \
+                and not self._is_internal_recipient(last.author_id):
+            sender_id = last.author_id.id
+        # 3) conversation partner/contact — external email AND unambiguous
+        #    relationship only (contact first: the person, then the company).
+        #    An empty thread has no sender to be ambiguous about — the
+        #    dispatcher's own association is the relationship.
+        if not sender_id:
+            candidate = self.contact_id or self.partner_id
+            sender_is_external = bool(
+                last and last.author_id
+                and not self._is_internal_recipient(last.author_id))
+            if candidate.id \
+                    and not self._is_internal_recipient(candidate) \
+                    and (not sender_is_external
+                         or last.author_id.id == candidate.id):
+                sender_id = candidate.id
+
+        if sender_id:
+            to_ids.append(sender_id)
         if kind == "reply_all":
+            seen = set(to_ids)
             for p in last.recipient_ids:
-                if p.id not in to_ids and not self._is_internal_recipient(p):
+                if p.id and p.id not in seen \
+                        and not self._is_internal_recipient(p):
                     to_ids.append(p.id)
+                    seen.add(p.id)
             for p in last.cc_ids:
-                if p.id not in to_ids and not self._is_internal_recipient(p):
+                if p.id and p.id not in seen \
+                        and not self._is_internal_recipient(p):
                     cc_ids.append(p.id)
         return to_ids, cc_ids
 
@@ -955,6 +1763,20 @@ class InboxConversation(models.Model):
         else:
             message = self.env["prema.inbox.message"]
 
+        # ---- Trash guard ---------------------------------------------
+        # A trashed thread is immutable for composition: nothing new may be
+        # added to it (reply / reply-all / forward / note / draft resume)
+        # until it is restored — restore is one click and the thread then
+        # returns exactly where it was. "New email" (compose, no draft)
+        # ALWAYS builds its own fresh conversation, so it stays allowed
+        # even while a trashed thread is open in the UI.
+        if not (kind == "compose" and not message):
+            active_conv = message.conversation_id if message else self
+            if active_conv and active_conv.trashed:
+                raise ValidationError(_(
+                    "This conversation is in Trash — restore it before "
+                    "composing or sending."))
+
         # ---- internal note: immediate, never emailed -----------------
         if kind == "note":
             if not (body or "").strip():
@@ -968,6 +1790,12 @@ class InboxConversation(models.Model):
                 # _new_outbound always creates a draft; a note is its own
                 # terminal state (never drafted, never sent)
                 message.outbound_state = "note"
+            # D-6: mirror THIS note to the customer's chatter (mt_note,
+            # OdooBot author — never emailed). Per-note dedupe: the inbox
+            # message's partner_log_note_id is set once, so retries never
+            # duplicate, and a different note is never blocked.
+            if not message.partner_log_note_id:
+                self._mirror_note_to_partner(message)
             self._touch()
             self._broadcast_read_change()
             return {"id": message.id, "conversation_id": self.id,
@@ -979,13 +1807,18 @@ class InboxConversation(models.Model):
         if kind in ("reply", "reply_all") and not to_ids:
             to_ids, cc_ids = self._default_reply_recipients(kind)
         if send_now and not to_ids:
+            if kind in ("reply", "reply_all"):
+                raise ValidationError(_(
+                    "No reply recipient — the sender has no resolvable "
+                    "external email address. Add the customer's email "
+                    "manually before sending."))
             raise ValidationError(
                 _("No recipient — add the customer's email address before sending."))
 
-        # ---- subject defaults ---------------------------------------
+        # ---- subject defaults (thread prefixes never stack) ---------
         subject = (subject or "").strip()
         if not subject and kind in ("reply", "reply_all"):
-            subject = "Re: %s" % self.name
+            subject = "Re: %s" % _normalize_thread_subject(self.name)
         elif not subject and kind == "forward":
             subject = "Fwd: %s" % self.name
 
@@ -1040,6 +1873,88 @@ class InboxConversation(models.Model):
         conv._touch()
         return {"id": message.id, "conversation_id": conv.id,
                 "outbound_state": message.outbound_state}
+
+    # ------------------------------------------------------------------
+    # D-6 — Internal Note → Partner Log Note (independent per-note mirror)
+    # ------------------------------------------------------------------
+    def _mirror_note_to_partner(self, note):
+        """Mirror ONE inbox internal note onto the customer's chatter as an
+        internal log note — mt_note, OdooBot author: never emailed, never
+        a customer notification.
+
+        Dedupe is PER-NOTE, not per-conversation: this inbox note's
+        partner_log_note_id is the linked partner mail_message id — set
+        once at mirror time. Retrying a note never creates a duplicate,
+        and a DIFFERENT note always mirrors independently (its own row,
+        its own key). No conversation-level Boolean anywhere.
+
+        Targets the conversation's partner (always the COMPANY /
+        commercial partner per the D-4 convention). Conversations without
+        a confirmed partner cannot mirror (nothing to attach to) — the
+        note stays inbox-only and the backfill on action_confirm_partner
+        mirrors it once a partner is confirmed.
+        """
+        if not note or note.direction != "note" or note.partner_log_note_id:
+            return False
+        partner = self.partner_id
+        if not partner:
+            return False
+        author = note.author_internal.name or self.env.user.name
+        sender = note.conversation_id._latest_incoming()
+        bits = [
+            "<b>Dispatch Inbox note</b> — %s · %s"
+            % (self._escape_note(author),
+               note.date.strftime("%Y-%m-%d %H:%M") if note.date else ""),
+            self._escape_note((note.body_plain or note.body or "").strip()),
+        ]
+        refs = []
+        if self.booking_id:
+            refs.append("Booking %s"
+                        % self._escape_note(
+                            self.booking_id.booking_number
+                            or self.booking_id.name))
+        if self.job_id:
+            refs.append("Job %s" % self._escape_note(self.job_id.name))
+        if self.invoice_id:
+            refs.append("Invoice %s"
+                        % self._escape_note(self.invoice_id.name))
+        if self.opportunity_id:
+            refs.append("Opportunity %s"
+                        % self._escape_note(self.opportunity_id.name))
+        if refs:
+            bits.append("Linked: " + ", ".join(refs))
+        if sender:
+            bits.append("Email: %s — %s"
+                        % (self._escape_note(sender.email_from or "—"),
+                           self._escape_note(sender.subject or "")))
+        bits.append('Source: <a href="%s">Dispatch Inbox conversation</a>'
+                    % self._inbox_conv_url(self.id))
+        body = "<br/>".join(bits)
+        try:
+            odoo_bot = self.env.ref(
+                "base.partner_root", raise_if_not_found=False)
+            posted = partner.message_post(
+                body=body,
+                message_type="comment",
+                subtype_xmlid="mail.mt_note",
+                author_id=odoo_bot.id if odoo_bot else self.env.user.id)
+        except Exception:  # noqa: BLE001 — mirroring is best-effort
+            _logger.warning(
+                "inbox: partner note mirror failed for note %s", note.id,
+                exc_info=True)
+            return False
+        note.write({"partner_log_note_id": posted.id})
+        return True
+
+    def _backfill_mirrored_notes(self):
+        """Mirror any notes that predate partner confirmation (a note
+        written while the sender was unassigned gets its mirror once the
+        dispatcher confirms the customer). Idempotent per note."""
+        for note in self.inbox_message_ids.filtered(
+                lambda m: m.direction == "note"
+                and not m.partner_log_note_id):
+            self._mirror_note_to_partner(note)
+        return True
 
     @api.model
     def _normalize_recipient_list(self, values):
@@ -1147,6 +2062,158 @@ class InboxConversation(models.Model):
                 conv.muted_user_ids = [(4, user.id)]
         return True
 
+    # ------------------------------------------------------------------
+    # Trash lifecycle (§19.2) — soft trash + guarded permanent delete.
+    # ------------------------------------------------------------------
+    @api.model
+    def trash_retention_days(self):
+        """prema_inbox.trash_retention_days (default 30), sanity-clamped.
+
+        Informational only: the retention window feeds the EXPLICIT "purge
+        trash older than N days" action. No cron anywhere reads this — the
+        inbox NEVER auto-purges.
+        """
+        try:
+            days = int(self.env["ir.config_parameter"].sudo().get_param(
+                "prema_inbox.trash_retention_days", "30"))
+        except (TypeError, ValueError):
+            return 30
+        return max(0, days)
+
+    def action_trash(self):
+        """Move conversation(s) to Trash — one-click single AND bulk.
+
+        SOFT delete: conversation, messages, attachments and links all stay
+        in place; only the trashed/trashed_at/trashed_by flag turns on and
+        the thread leaves every working folder. Open follow-up activities
+        are NOT touched (a trashed thread's task survives a restore) — they
+        only stop surfacing via the Tasks folder while trashed.
+
+        R5 — server-side mail safety: this is a pure ORM write. There is no
+        IMAP / fetchmail / SMTP call on this path or anywhere in the
+        module, so server-side mail is never altered by trashing.
+        """
+        now = fields.Datetime.now()
+        self.write({"trashed": True, "trashed_at": now,
+                    "trashed_by": self.env.user.id})
+        # Personal per-message unread markers are left untouched (another
+        # user's unread is not this user's to clear) — trashed threads are
+        # excluded from badges and the Unread/Tasks folders by the folder
+        # machinery, so the markers stay inert until a possible restore.
+        self._broadcast_read_change()
+        return True
+
+    def action_restore(self):
+        """Take conversation(s) out of Trash — back where they were.
+
+        The soft flag clears while workflow_state / category / links /
+        assignee survive untouched: a completed thread returns to the
+        Completed state, an archived one to Archived, etc. (folders derive
+        from the surviving state).
+        """
+        self.filtered(lambda c: c.trashed).write({
+            "trashed": False, "trashed_at": False, "trashed_by": False})
+        self._broadcast_read_change()
+        return True
+
+    def action_delete_permanent(self, confirmation=""):
+        """PERMANENT delete — Trash only, typed confirmation required.
+
+        §19.2: irreversible delete exists only inside Trash and demands the
+        word DELETE typed by the user (both UI prompt and server check).
+        Only rows whose trashed flag is set may be destroyed.
+
+        R5: only inbox rows die here. The mail.mail ledger rows of sent
+        messages (and their provider events, correlated by Message-ID)
+        survive — the server copy of the mail is untouched and history stays
+        correlatable. Attachments bound EXCLUSIVELY to the deleted messages
+        are removed; anything still referenced (other inbox threads, the
+        mail ledger, chatter) is kept.
+        """
+        if str(confirmation or "").strip().upper() != "DELETE":
+            raise ValidationError(_(
+                'Permanent delete requires typing "DELETE" to confirm.'))
+        if self.filtered(lambda c: not c.trashed):
+            raise ValidationError(_(
+                "Only conversations in Trash can be permanently deleted."))
+        self._unlink_inbox_only_attachments()
+        # orphan activities would point at deleted rows forever
+        self.env["mail.activity"].search([
+            ("res_model", "=", "prema.inbox.conversation"),
+            ("res_id", "in", self.ids),
+        ]).unlink()
+        self.unlink()  # inbox messages cascade on conversation_id
+        return True
+
+    def action_purge_trash(self, older_than_days=None, confirmation=""):
+        """Explicit "purge trash older than N days" (default: the
+        prema_inbox.trash_retention_days window). Never automatic — the
+        caller must be an explicit human action, and the same typed
+        confirmation as permanent delete is required."""
+        if str(confirmation or "").strip().upper() != "DELETE":
+            raise ValidationError(_(
+                'Purging requires typing "DELETE" to confirm.'))
+        try:
+            days = int(older_than_days)
+        except (TypeError, ValueError):
+            days = self.trash_retention_days()
+        if days < 0:
+            raise ValidationError(_("Retention days cannot be negative."))
+        cutoff = fields.Datetime.now() - timedelta(days=days)
+        doomed = self.search([("trashed", "=", True),
+                              ("trashed_at", "<=", cutoff)])
+        if self:
+            # scoped purge (explicit ids); the folder action passes none
+            doomed = doomed & self
+        if not doomed:
+            return 0
+        doomed._unlink_inbox_only_attachments()
+        self.env["mail.activity"].search([
+            ("res_model", "=", "prema.inbox.conversation"),
+            ("res_id", "in", doomed.ids),
+        ]).unlink()
+        doomed.unlink()
+        return len(doomed)
+
+    def _unlink_inbox_only_attachments(self):
+        """Unlink attachments bound EXCLUSIVELY to the messages of the
+        conversations being destroyed.
+
+        Called BEFORE the conversation unlink (the m2m rel rows must still
+        exist to identify the doomed set). After the cascade, every
+        attachment still referenced anywhere — by a surviving inbox
+        message, by the mail.mail ledger (mail.mail _inherits
+        mail.message), or by chatter mail.message rows — is kept. The
+        mailbox must never destroy a file the rest of Odoo still uses.
+        """
+        doomed_msgs = self.inbox_message_ids
+        candidates = doomed_msgs.attachment_ids
+        if not candidates:
+            return True
+        # Everything that STILL references a candidate must survive. The
+        # searches run BEFORE the conversation cascade (the m2m rel rows of
+        # the doomed messages still exist then — they die with the cascade
+        # and never protect anything).
+        keep_ids = set()
+        other_msgs = self.env["prema.inbox.message"].search([
+            ("id", "not in", doomed_msgs.ids),
+            ("attachment_ids", "in", candidates.ids)])
+        keep_ids.update(other_msgs.attachment_ids.ids)
+        # mail.mail ledger rows (_inherits mail.message → same attachment
+        # rel): sent-message attachments must survive permanent delete.
+        # mail.message covers both the ledger AND chatter rows.
+        ledger = self.env["mail.mail"].sudo().search(
+            [("attachment_ids", "in", candidates.ids)])
+        keep_ids.update(ledger.attachment_ids.ids)
+        chatter = self.env["mail.message"].sudo().search(
+            [("attachment_ids", "in", candidates.ids)])
+        keep_ids.update(chatter.attachment_ids.ids)
+        doomed = candidates.filtered(lambda a: a.id not in keep_ids)
+        if doomed:
+            # best-effort: owner/unlink ACL checks bypassed — every doomed
+            # file was verified unreferenced outside the deleted thread
+            doomed.sudo().unlink()
+        return True
 
 
 def _email_of(addr):
