@@ -29,3 +29,4 @@ from . import test_recurring_crm_bridge
 from . import test_crm_estimate_draft_bridge
 from . import test_d_b4_day_trip_optimizer
 from . import test_phone_booking_deprecation
+from . import test_crm_estimate_google_resolution

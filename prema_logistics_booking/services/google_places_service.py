@@ -58,11 +58,13 @@ class GooglePlacesService:
 
     # ── New Places API v1 ─────────────────────────────────────────────
 
+    _V1_PLACE_FIELDS = "id,formattedAddress,location,addressComponents,displayName"
+
     def _v1_details(self, place_id, api_key):
         url = "https://places.googleapis.com/v1/places/%s?key=%s" % (
             urllib.parse.quote(place_id), api_key)
         req = urllib.request.Request(url, headers={"X-Goog-FieldMask": (
-            "id,formattedAddress,location,addressComponents,displayName")})
+            self._V1_PLACE_FIELDS)})
         try:
             with urllib.request.urlopen(req, timeout=5) as resp:
                 return json.loads(resp.read())
@@ -70,11 +72,17 @@ class GooglePlacesService:
             _logger.debug("Places v1 details failed for %s: %s", place_id, exc)
             return None
 
-    def _v1_search(self, query, api_key):
+    def _v1_search(self, query, api_key, full=False):
+        """Text search.  With full=True each returned place also carries its
+        address components and coordinates, so the raw payloads decode to
+        complete candidates without a per-candidate details round-trip."""
         params = urllib.parse.urlencode({"query": query, "key": api_key})
         url = "https://places.googleapis.com/v1/places:searchText?%s" % params
-        req = urllib.request.Request(url, headers={"X-Goog-FieldMask": (
-            "places.id,places.formattedAddress")})
+        if full:
+            mask = "places.%s" % self._V1_PLACE_FIELDS.replace(",", ",places.")
+        else:
+            mask = "places.id,places.formattedAddress"
+        req = urllib.request.Request(url, headers={"X-Goog-FieldMask": mask})
         try:
             with urllib.request.urlopen(req, timeout=5) as resp:
                 data = json.loads(resp.read())
@@ -129,6 +137,50 @@ class GooglePlacesService:
                 out.setdefault(t, comp)
         return out
 
+    @classmethod
+    def _decode_place(cls, data, v1, fallback_id=""):
+        """Decode one raw Places payload (v1 or legacy shape) into the
+        canonical resolved dict; None when the coordinates are unusable.
+
+        Shared by resolve_place (single details payload) and
+        search_address_candidates (each search candidate), so every place
+        that reaches callers carries the identical physical shape.
+        """
+        if v1:
+            loc = data.get("location") or {}
+            lat, lng = loc.get("latitude"), loc.get("longitude")
+            comps = data.get("addressComponents") or []
+            canonical_id = data.get("id") or fallback_id
+            formatted = data.get("formattedAddress") or ""
+        else:
+            loc = (data.get("geometry") or {}).get("location") or {}
+            lat, lng = loc.get("lat"), loc.get("lng")
+            comps = data.get("address_components") or []
+            canonical_id = data.get("place_id") or fallback_id
+            formatted = data.get("formatted_address") or ""
+        if not valid_coordinate_pair(lat, lng):
+            return None
+        by_type = cls._comps_by_type(comps)
+        street_number = cls._long_name(by_type.get("street_number") or {})
+        route = cls._long_name(by_type.get("route") or {})
+        province = cls._long_name(by_type.get("administrative_area_level_1") or {})
+        return {
+            "place_id": canonical_id,
+            "latitude": float(lat),
+            "longitude": float(lng),
+            "formatted_address": formatted,
+            "street": " ".join(p for p in (street_number, route) if p),
+            "city": (cls._long_name(by_type.get("locality") or {})
+                     or cls._long_name(by_type.get("administrative_area_level_3") or {})
+                     or cls._long_name(by_type.get("sublocality") or {})
+                     or cls._long_name(by_type.get("postal_town") or {})),
+            "province": province,
+            "province_code": cls._short_name(
+                by_type.get("administrative_area_level_1") or {}),
+            "postal_code": cls._long_name(by_type.get("postal_code") or {}),
+            "country_code": cls._short_name(by_type.get("country") or {}),
+        }
+
     # ── Public API ────────────────────────────────────────────────────
 
     def resolve_place(self, place_id):
@@ -153,62 +205,62 @@ class GooglePlacesService:
             return None
 
         data = self._v1_details(place_id, api_key)
-        v1 = bool(data and data.get("formattedAddress"))
-        if not v1:
-            data = self._legacy_details(place_id, api_key)
-            if not data:
-                return None
-
-        if v1:
-            loc = data.get("location") or {}
-            lat, lng = loc.get("latitude"), loc.get("longitude")
-            comps = data.get("addressComponents") or []
-            canonical_id = data.get("id") or place_id
-        else:
-            loc = (data.get("geometry") or {}).get("location") or {}
-            lat, lng = loc.get("lat"), loc.get("lng")
-            comps = data.get("address_components") or []
-            canonical_id = data.get("place_id") or place_id
-
-        if not valid_coordinate_pair(lat, lng):
+        if data and data.get("formattedAddress"):
+            return self._decode_place(data, v1=True, fallback_id=place_id)
+        data = self._legacy_details(place_id, api_key)
+        if not data:
             return None
+        return self._decode_place(data, v1=False, fallback_id=place_id)
 
-        by_type = self._comps_by_type(comps)
-        street_number = self._long_name(by_type.get("street_number") or {})
-        route = self._long_name(by_type.get("route") or {})
-        province = self._long_name(by_type.get("administrative_area_level_1") or {})
-        return {
-            "place_id": canonical_id,
-            "latitude": float(lat),
-            "longitude": float(lng),
-            "formatted_address": (
-                data.get("formattedAddress") or data.get("formatted_address") or ""),
-            "street": " ".join(p for p in (street_number, route) if p),
-            "city": self._long_name(by_type.get("locality") or {}) or self._long_name(
-                by_type.get("administrative_area_level_3") or {}) or self._long_name(
-                by_type.get("sublocality") or {}) or self._long_name(
-                by_type.get("postal_town") or {}),
-            "province": province,
-            "province_code": self._short_name(
-                by_type.get("administrative_area_level_1") or {}),
-            "postal_code": self._long_name(by_type.get("postal_code") or {}),
-            "country_code": self._short_name(by_type.get("country") or {}),
-        }
+    def search_address_candidates(self, query, limit=5):
+        """Text-search an address; return up to ``limit`` full candidates.
+
+        Each candidate is the canonical resolved dict (same shape as
+        resolve_place: street/city/province/province_code/postal_code/
+        country_code/coordinates/place_id/formatted_address), so callers
+        can match against existing Saved Locations and present a manual
+        pick list WITHOUT an extra per-candidate details round-trip.
+
+        [] is returned when no API key is configured, the query is empty,
+        the APIs are unreachable, or no candidate carries usable
+        coordinates.  Candidates never carry verification: a Place ID from
+        this method means only "Google knows this address" — callers keep
+        google_verified=False until their own verification rules pass.
+        """
+        if not query or not str(query).strip():
+            return []
+        query = str(query).strip()
+        api_key = self._api_key()
+        if not api_key:
+            _logger.warning("Google Places: no %s configured", _ICP_KEY)
+            return []
+        candidates = []
+        for raw in self._v1_search(query, api_key, full=True):
+            decoded = self._decode_place(raw, v1=True)
+            if decoded:
+                candidates.append(decoded)
+            if len(candidates) >= limit:
+                return candidates
+        if candidates:
+            return candidates
+        # Legacy fallback: findplacefromtext returns ids only — resolve each
+        # candidate via details so the shapes are identical.
+        for cand in self._legacy_search(query, api_key):
+            if len(candidates) >= limit:
+                break
+            data = self._legacy_details(cand.get("place_id"), api_key)
+            if not data:
+                continue
+            decoded = self._decode_place(data, v1=False,
+                                         fallback_id=cand.get("place_id"))
+            if decoded:
+                candidates.append(decoded)
+        return candidates
 
     def search_address(self, query):
         """Text-search an address and return the first candidate's
         canonical Place ID, or None. Used to attach a Place ID to an
         existing address (repairs) — never marks anything verified on
         its own; callers must resolve_place() the returned ID."""
-        if not query or not str(query).strip():
-            return None
-        query = str(query).strip()
-        api_key = self._api_key()
-        if not api_key:
-            return None
-        places = self._v1_search(query, api_key)
-        if not places:
-            places = self._legacy_search(query, api_key)
-        if not places:
-            return None
-        return places[0].get("id") or places[0].get("place_id") or None
+        candidates = self.search_address_candidates(query, limit=1)
+        return candidates[0]["place_id"] if candidates else None
