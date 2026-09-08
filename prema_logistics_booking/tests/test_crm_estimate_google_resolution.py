@@ -258,8 +258,14 @@ class TestGoogleStopResolution(TransactionCase):
                          second["pickup"]["location"])
         self.assertEqual(first["delivery"]["location"],
                          second["delivery"]["location"])
-        self.assertEqual(self.Location.search_count(
-            [("verification_state", "=", "pending_review")]), 2)
+        # Exactly the two fixture rows exist as pending review — scoped to the
+        # fixture place_ids so committed real-world rows on the scratch DB
+        # (live smoke runs) can never skew the count.
+        self.assertEqual(self.Location.search_count([
+            ("verification_state", "=", "pending_review"),
+            ("google_place_id", "in",
+             [PICKUP_CANDIDATE["place_id"], DELIVERY_CANDIDATE["place_id"]]),
+        ]), 2)
 
     # ── legacy rows (postal + civic, no place id) are reused too ───────
 
@@ -532,10 +538,15 @@ class TestGoogleEstimateE2E(TransactionCase):
         # The canonical stub price (never invented by the reply path).
         self.assertEqual(draft.price_amount, STUB_QUOTE["calculated_price"])
         self.assertIn("TOK-A2B-TEST", draft.price_reference)
-        # Exactly TWO google-sourced Pending Review locations, created once.
+        # Exactly TWO google-sourced Pending Review locations, created once —
+        # scoped to the fixture place_ids so committed real-world rows from
+        # live smoke runs on the scratch DB can never skew this count.
         pending = self.Location.search([
             ("verification_state", "=", "pending_review"),
-            ("source_type", "=", "google_places")])
+            ("source_type", "=", "google_places"),
+            ("google_place_id", "in",
+             [PICKUP_CANDIDATE["place_id"], DELIVERY_CANDIDATE["place_id"]]),
+        ])
         self.assertEqual(len(pending), 2)
         self.assertEqual(self.Location.search_count([]),
                          locations_before + 2)
