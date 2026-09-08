@@ -1303,17 +1303,23 @@ class InboxConversation(models.Model):
         no-op, never a failure of the link itself.
         """
         try:
-            partner_name = (conv.partner_id.name or "") \
-                if conv.partner_id else "(no customer)"
             last = conv._latest_incoming()
+            # NOTE — never pre-escape these values with html.escape: in
+            # Odoo 18 mail.message bodies are sanitized/escaped by the
+            # pipeline on the way in (message_post text-escapes the whole
+            # body; the Html field sanitizes on every write). Pre-escaped
+            # entities get escaped a second time (&quot; → &amp;quot;) and
+            # render as raw codes in chatter. Raw untrusted values
+            # (sender address, subject) come out escaped exactly once and
+            # can never execute.
             body = (
                 "Dispatch Inbox conversation linked → "
                 "<a href=\"%s\">%s</a><br/>"
                 "Sender: %s<br/>Subject: %s<br/>Last message: %s"
                 % (self._inbox_conv_url(conv.id),
-                   self._escape_note(conv.name or "(no subject)"),
-                   self._escape_note(last and last.email_from or "—"),
-                   self._escape_note(conv.name or "—"),
+                   conv.name or "(no subject)",
+                   last and last.email_from or "—",
+                   conv.name or "—",
                    (last and last.date
                     and last.date.strftime("%Y-%m-%d %H:%M")) or "—"))
             target = record.sudo()
