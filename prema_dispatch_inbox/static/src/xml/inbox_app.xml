@@ -137,7 +137,7 @@
                               t-on-click.stop="() => this.toggleChecked(c.id)"
                               t-att-title="'Select for bulk action'">
                             <input type="checkbox" class="form-check-input"
-                                   t-att-checked="Boolean(state.checkedIds[c.id])"
+                                   t-att-checked="!!state.checkedIds[c.id]"
                                    t-on-click.stop="() => this.toggleChecked(c.id)"/>
                         </span>
                         <span class="o_inbox_conv_from"
