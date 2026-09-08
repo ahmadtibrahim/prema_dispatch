@@ -804,7 +804,10 @@ class InboxConversation(models.Model):
         if key == "waiting_reply":
             return base + [("workflow_state", "=", "waiting")]
         if key == "archived":
-            return [("workflow_state", "=", "archived"),
+            # Completed threads belong to the Archive view too: archiving is
+            # the dispatcher's "done + out of the way" shelf, and Completed
+            # (workflow auto-close after shipping) must stay reachable.
+            return [("workflow_state", "in", ("archived", "completed")),
                     ("trashed", "=", False)]
         if key == "trash":
             return [("trashed", "=", True)]
@@ -1424,7 +1427,7 @@ class InboxConversation(models.Model):
         """
         engine = self.engine_calculated_price or (
             self.price_snapshot or {}).get("calculated_price") or 0.0
-        if not engine and not adjustment:
+        if not engine:
             return {"error": "Run 'Review & calculate quote' first — there "
                              "is no engine price to quote from."}
         self.write({
@@ -1605,6 +1608,7 @@ class InboxConversation(models.Model):
         recorded reason (the system price stays in the audit trail).
         """
         self.ensure_one()
+        sudo_self = self.sudo()
         if self.trashed:
             raise ValidationError(_(
                 "This conversation is in Trash — restore it before "
@@ -1614,10 +1618,12 @@ class InboxConversation(models.Model):
         if self.custom_quote_id and self.custom_quote_id.booking_id:
             # The Rate Confirmation already became a booking — link it to
             # the thread, never run the engine a second time.
-            self.write({"booking_id": self.custom_quote_id.booking_id.id})
-            self._post_target_backlink(
-                self, "logistics.booking", self.custom_quote_id.booking_id)
-            self._broadcast_read_change()
+            sudo_self.write(
+                {"booking_id": self.custom_quote_id.booking_id.id})
+            sudo_self._post_target_backlink(
+                sudo_self, "logistics.booking",
+                self.custom_quote_id.booking_id)
+            sudo_self._broadcast_read_change()
             return self._booking_payload()
         if not self.partner_id or self.partner_provisional:
             raise ValidationError(_(
@@ -1628,8 +1634,11 @@ class InboxConversation(models.Model):
             raise ValidationError(_(
                 "No final quoted price yet — run 'Review & calculate quote' "
                 "(and adjust if needed) before creating a booking."))
+        # Everything below rides a sudo envelope: inbox users are read-only
+        # on the logistics models, while corridor pricing, the acceptance
+        # re-check and booking creation must read/write them (no ACL change).
         ex = (self.ai_extraction or {}).get("fields") or {}
-        pricing = self.env["prema.inbox.pricing"]
+        pricing = sudo_self.env["prema.inbox.pricing"]
         pickup_fsa = pricing._resolve_fsa(ex.get("pickup"))
         delivery_fsa = pricing._resolve_fsa(ex.get("delivery"))
         if not pickup_fsa or not delivery_fsa:
@@ -1642,7 +1651,7 @@ class InboxConversation(models.Model):
                 "Booking cannot be created — %s could not be resolved to a "
                 "serviceable region. Fix the shipment location first."
                 % " and ".join(unresolved)))
-        if not pricing._revalidate_at_acceptance(self):
+        if not pricing._revalidate_at_acceptance(sudo_self):
             raise ValidationError(_(
                 "Capacity re-validation failed at acceptance — retry "
                 "shortly; the booking was NOT created."))
@@ -1683,7 +1692,7 @@ class InboxConversation(models.Model):
 
         from odoo.addons.prema_logistics_booking.services.booking_orchestration_service import (  # noqa: E501
             BookingOrchestrationService)
-        svc = BookingOrchestrationService(self.env.sudo())
+        svc = BookingOrchestrationService(sudo_self.env)
         norm = svc.normalize_request({
             "partner_id": self.partner_id.id,
             "pickup_stops": [_stop_dict("pickup")],
@@ -1718,15 +1727,16 @@ class InboxConversation(models.Model):
                 "Quoted in the Dispatch Inbox for email request '%s'"
                 % (self.name or "")),
         )
-        self.write({"booking_id": booking.id})
-        self._post_target_backlink(self, "logistics.booking", booking)
-        self.message_post(
+        sudo_self.write({"booking_id": booking.id})
+        sudo_self._post_target_backlink(
+            sudo_self, "logistics.booking", booking)
+        sudo_self.message_post(
             body=_("Booking <b>%s</b> created from this email request "
                    "(quoted price %s %.2f).")
             % (booking.booking_number or booking.id,
                quote["currency"], final),
             subtype_xmlid="mail.mt_note")
-        self._broadcast_read_change()
+        sudo_self._broadcast_read_change()
         return self._booking_payload()
 
     def _booking_payload(self):
@@ -2295,7 +2305,7 @@ class InboxConversation(models.Model):
         are removed; anything still referenced (other inbox threads, the
         mail ledger, chatter) is kept.
         """
-        if str(confirmation or "").strip().upper() != "DELETE":
+        if str(confirmation or "").strip() != "DELETE":
             raise ValidationError(_(
                 'Permanent delete requires typing "DELETE" to confirm.'))
         if self.filtered(lambda c: not c.trashed):
@@ -2315,7 +2325,7 @@ class InboxConversation(models.Model):
         prema_inbox.trash_retention_days window). Never automatic — the
         caller must be an explicit human action, and the same typed
         confirmation as permanent delete is required."""
-        if str(confirmation or "").strip().upper() != "DELETE":
+        if str(confirmation or "").strip() != "DELETE":
             raise ValidationError(_(
                 'Purging requires typing "DELETE" to confirm.'))
         try:
