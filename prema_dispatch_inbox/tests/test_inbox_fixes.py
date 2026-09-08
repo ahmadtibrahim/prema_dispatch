@@ -118,6 +118,35 @@ class TestWiringGuards(InboxTestCase):
         self.assertNotIn("o_menu_systray", app_js)
         self.assertNotIn("o_topbar", app_js)
 
+    def test_compose_overlay_window_wiring(self):
+        """Gmail-like full-window compose: state.composer.mode renders the
+        overlay (Escape / X close, discard-confirm when content typed and
+        never saved), the body binds with t-model, and the client-side
+        quote pre-fill is GONE — the writing box starts clear; the quoted
+        original is appended server-side to the SENT email only."""
+        xml = _src("static/src/xml/inbox_app.xml")
+        js = _src("static/src/js/inbox_app.js")
+        # the overlay window exists, binds the body, closes on Escape / X
+        self.assertIn("o_inbox_compose_overlay", xml)
+        self.assertIn('t-model="state.composer.body"', xml)
+        self.assertIn("t-on-keydown", xml)
+        self.assertIn('t-on-click="() => this.closeComposer()"', xml)
+        self.assertIn("closeComposer()", js)
+        self.assertIn("_focusComposer()", js)
+        self.assertNotIn("_scrollComposer", js)
+        # the compose FIELDS moved into the overlay — the slimmed thread
+        # footer keeps only the launcher buttons (no leftover inline
+        # rows="4" textarea under the thread)
+        self.assertNotIn('rows="4"', xml)
+        self.assertNotIn("'Draft…'", xml)
+        # client-side pre-fill of the quoted original is removed
+        self.assertNotIn("author_name} wrote:", js)
+        self.assertNotIn("last.body_plain", js)
+        # the overlay thread preview renders the SAME escaped body_plain
+        # pattern as the thread column (now in both blocks — never t-raw)
+        self.assertIn('t-esc="m.body_plain"', xml)
+        self.assertNotIn('t-raw="m.body_plain"', xml)
+
 
 # ----------------------------------------------------------------------
 # composer contract (sections B–F)

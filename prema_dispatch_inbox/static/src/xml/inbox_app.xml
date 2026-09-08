@@ -514,9 +514,12 @@
                     <i class="fa fa-trash-o"/> This conversation is in Trash —
                     restore it to reply, forward, add notes or retry sends.
                 </div>
+                <!-- composer launch (C3): every mode opens the full-window
+                     compose overlay (see bottom of the app) — the buttons
+                     stay here so the thread keeps its one-line launcher -->
                 <div t-if="!state.detail.conversation.trashed"
                      class="o_inbox_composer">
-                    <div class="btn-group btn-group-sm mb-1">
+                    <div class="btn-group btn-group-sm">
                         <button class="btn btn-outline-primary"
                                 t-on-click="() => this.startComposer('reply')">Reply</button>
                         <button class="btn btn-outline-primary"
@@ -528,82 +531,6 @@
                         <button class="btn btn-outline-secondary"
                                 t-on-click="() => this.startComposer('note')">Internal note</button>
                     </div>
-                    <t t-if="state.composer.mode">
-                        <t t-if="state.composer.mode !== 'note'">
-                            <div class="o_inbox_comp_row">
-                                <label>To</label>
-                                <input class="form-control form-control-sm" type="text"
-                                       t-model="state.composer.to"
-                                       placeholder="customer@example.com"/>
-                            </div>
-                            <div class="o_inbox_comp_row"
-                                 t-if="state.composer.mode === 'reply_all' || state.composer.mode === 'compose'">
-                                <label>Cc</label>
-                                <input class="form-control form-control-sm" type="text"
-                                       t-model="state.composer.cc"
-                                       placeholder="cc@example.com"/>
-                            </div>
-                            <div class="o_inbox_comp_row">
-                                <label>Subject</label>
-                                <input class="form-control form-control-sm" type="text"
-                                       t-model="state.composer.subject"
-                                       placeholder="Subject"/>
-                            </div>
-                            <div t-if="state.composer.attachments.length"
-                                 class="o_inbox_comp_att">
-                                <span t-foreach="state.composer.attachments" t-as="a"
-                                      t-key="a.id" class="o_inbox_chip">
-                                    <i class="fa fa-paperclip"/> <t t-esc="a.name"/>
-                                    <button type="button" class="btn btn-link btn-sm p-0 ms-1"
-                                            t-att-title="'Remove ' + a.name"
-                                            t-on-click="() => this.removeAttachment(a.id)">
-                                        <i class="fa fa-times"/>
-                                    </button>
-                                </span>
-                            </div>
-                        </t>
-                        <textarea class="form-control form-control-sm"
-                                  rows="4" t-model="state.composer.body"
-                                  t-att-placeholder="state.composer.mode === 'note' ? 'Internal note — never emailed.' : 'Draft…'"/>
-                        <div class="mt-1 d-flex gap-1 flex-wrap align-items-center">
-                            <t t-if="state.composer.mode !== 'note'">
-                                <button class="btn btn-sm btn-secondary"
-                                        t-on-click="() => this.saveDraft()"
-                                        t-att-disabled="state.composer.sending">
-                                    Save draft
-                                </button>
-                                <button class="btn btn-sm btn-primary"
-                                        t-on-click="() => this.sendNow()"
-                                        t-att-disabled="state.composer.sending">
-                                    Send
-                                </button>
-                                <label class="btn btn-sm btn-outline-secondary mb-0"
-                                       title="Attach a file">
-                                    <i class="fa fa-paperclip"/> Attach
-                                    <input type="file" multiple="multiple" class="d-none"
-                                           t-on-change="(ev) => this.onFileSelected(ev)"/>
-                                </label>
-                                <span class="small text-muted">
-                                    From dispatcher@logistics.premafirm.com.
-                                </span>
-                            </t>
-                            <t t-else="">
-                                <button class="btn btn-sm btn-primary"
-                                        t-on-click="() => this.addNote()"
-                                        t-att-disabled="state.composer.sending">
-                                    Add note
-                                </button>
-                                <span class="small text-muted">
-                                    Internal note — never emailed.
-                                </span>
-                            </t>
-                            <button t-if="state.composer.draftId"
-                                    class="btn btn-sm btn-outline-danger ms-auto"
-                                    t-on-click="() => this.discardDraft(state.composer.draftId)">
-                                <i class="fa fa-trash-o"/> Discard
-                            </button>
-                        </div>
-                    </t>
                 </div>
             </t>
         </div>
@@ -836,6 +763,158 @@
                     </div>
                 </div>
             </t>
+        </div>
+
+        <!-- Full-window compose (Gmail-like) — covers the whole app while
+             state.composer.mode is set. The full thread stays visible
+             READ-ONLY above a large compose area; the writing box starts
+             clear (the original is quoted into the SENT email server-side
+             only). X or Escape closes (discard-confirm when content typed
+             and never saved as a draft). -->
+        <div t-if="state.composer.mode" class="o_inbox_compose_overlay"
+             t-on-keydown="(ev) => {
+                 if (ev.key === 'Escape') this.closeComposer();
+             }">
+            <div class="o_inbox_compose_head">
+                <span class="o_inbox_compose_title" t-esc="composerTitle()"/>
+                <button type="button"
+                        class="btn btn-link p-0 ms-auto o_inbox_compose_close"
+                        t-att-title="'Close (Esc)'"
+                        t-on-click="() => this.closeComposer()">
+                    <i class="fa fa-times"/>
+                </button>
+            </div>
+            <!-- read-only thread preview (a New email has no history yet) -->
+            <div t-if="state.composer.mode !== 'compose'"
+                 class="o_inbox_compose_thread">
+                <div t-foreach="state.detail.messages" t-as="m" t-key="m.id"
+                     class="o_inbox_msg"
+                     t-att-class="'o_inbox_' + m.direction">
+                    <div class="o_inbox_msg_head">
+                        <span class="o_inbox_msg_author" t-esc="m.author_name"/>
+                        <span t-if="m.direction === 'outgoing' &amp;&amp; m.to.length"
+                              class="o_inbox_msg_to"
+                              t-att-title="'To: ' + toLine(m)">
+                            → <t t-esc="toLine(m)"/>
+                        </span>
+                        <span class="o_inbox_msg_time" t-esc="fmtDate(m.date)"/>
+                        <span t-if="m.direction === 'outgoing'"
+                              class="o_inbox_chip"
+                              t-att-class="{'o_inbox_chip_failed': m.outbound_state === 'failed'}"
+                              t-att-title="m.send_error || ''"
+                              t-esc="m.outbound_state === 'intercepted' ? 'intercepted (never sent)' : (this.OUTBOUND_LABELS[m.outbound_state] || 'outgoing')"/>
+                        <span t-if="m.direction === 'note'"
+                              class="o_inbox_chip o_inbox_chip_note">Internal note</span>
+                    </div>
+                    <div t-if="m.direction === 'incoming' &amp;&amp; m.body &amp;&amp; state.plainMsg !== m.id"
+                         class="o_inbox_msg_body o_inbox_html" t-raw="m.body"/>
+                    <div t-else=""
+                         class="o_inbox_msg_body o_inbox_plain" t-esc="m.body_plain"/>
+                    <div class="o_inbox_msg_fmt">
+                        <button t-if="m.direction === 'incoming' &amp;&amp; m.body"
+                                class="btn btn-link btn-sm p-0"
+                                t-on-click="() => this.toggleFormatted(m.id)">
+                            <t t-esc="state.plainMsg === m.id ? 'View formatted' : 'View plain text'"/>
+                        </button>
+                    </div>
+                    <div t-if="m.attachments.length" class="o_inbox_att">
+                        <span t-foreach="m.attachments" t-as="a" t-key="a.id"
+                              class="o_inbox_att_row">
+                            <i class="fa" t-att-class="attIcon(a.mimetype)"/>
+                            <a class="o_inbox_att_link" target="_blank" rel="noopener"
+                               t-att-href="attHref(a)" t-att-title="a.name">
+                                <t t-esc="a.name"/>
+                            </a>
+                            <a class="o_inbox_att_dl" t-att-href="attDownloadHref(a)"
+                               t-att-title="'Download ' + a.name">
+                                <i class="fa fa-download"/>
+                            </a>
+                        </span>
+                    </div>
+                </div>
+            </div>
+            <div class="o_inbox_compose_body">
+                <t t-if="state.composer.mode === 'note'">
+                    <div class="o_inbox_compose_note">
+                        <i class="fa fa-sticky-note-o"/> Internal note — added
+                        to the thread, never emailed.
+                    </div>
+                </t>
+                <t t-else="">
+                    <div class="o_inbox_comp_row">
+                        <label>To</label>
+                        <input class="form-control form-control-sm" type="text"
+                               t-model="state.composer.to"
+                               placeholder="customer@example.com"/>
+                    </div>
+                    <div class="o_inbox_comp_row"
+                         t-if="state.composer.mode === 'reply_all' || state.composer.mode === 'compose'">
+                        <label>Cc</label>
+                        <input class="form-control form-control-sm" type="text"
+                               t-model="state.composer.cc"
+                               placeholder="cc@example.com"/>
+                    </div>
+                    <div class="o_inbox_comp_row">
+                        <label>Subject</label>
+                        <input class="form-control form-control-sm" type="text"
+                               t-model="state.composer.subject"
+                               placeholder="Subject"/>
+                    </div>
+                </t>
+                <div t-if="state.composer.attachments.length"
+                     class="o_inbox_comp_att">
+                    <span t-foreach="state.composer.attachments" t-as="a"
+                          t-key="a.id" class="o_inbox_chip">
+                        <i class="fa fa-paperclip"/> <t t-esc="a.name"/>
+                        <button type="button" class="btn btn-link btn-sm p-0 ms-1"
+                                t-att-title="'Remove ' + a.name"
+                                t-on-click="() => this.removeAttachment(a.id)">
+                            <i class="fa fa-times"/>
+                        </button>
+                    </span>
+                </div>
+                <textarea class="form-control o_inbox_compose_input"
+                          t-model="state.composer.body"
+                          t-att-placeholder="state.composer.mode === 'note' ? 'Internal note — never emailed.' : 'Write your message…'"/>
+                <div class="o_inbox_compose_actions">
+                    <t t-if="state.composer.mode !== 'note'">
+                        <button class="btn btn-sm btn-secondary"
+                                t-on-click="() => this.saveDraft()"
+                                t-att-disabled="state.composer.sending">
+                            Save draft
+                        </button>
+                        <button class="btn btn-sm btn-primary"
+                                t-on-click="() => this.sendNow()"
+                                t-att-disabled="state.composer.sending">
+                            Send
+                        </button>
+                        <label class="btn btn-sm btn-outline-secondary mb-0"
+                               title="Attach a file">
+                            <i class="fa fa-paperclip"/> Attach
+                            <input type="file" multiple="multiple" class="d-none"
+                                   t-on-change="(ev) => this.onFileSelected(ev)"/>
+                        </label>
+                        <span class="small text-muted">
+                            From dispatcher@logistics.premafirm.com.
+                        </span>
+                    </t>
+                    <t t-else="">
+                        <button class="btn btn-sm btn-primary"
+                                t-on-click="() => this.addNote()"
+                                t-att-disabled="state.composer.sending">
+                            Add note
+                        </button>
+                        <span class="small text-muted">
+                            Never emailed.
+                        </span>
+                    </t>
+                    <button t-if="state.composer.draftId"
+                            class="btn btn-sm btn-outline-danger ms-auto"
+                            t-on-click="() => this.discardDraft(state.composer.draftId)">
+                        <i class="fa fa-trash-o"/> Discard draft
+                    </button>
+                </div>
+            </div>
         </div>
     </div>
 </t>

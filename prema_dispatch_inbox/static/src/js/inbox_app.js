@@ -609,6 +609,15 @@ export class InboxApp extends Component {
     startComposer(mode, opts = {}) {
         const detail = this.state.detail;
         const conv = detail?.conversation;
+        if (conv?.trashed) {
+            // The composer window is app-level now; composing into a
+            // trashed conversation is blocked (server-enforced too) —
+            // surface it instead of silently doing nothing.
+            this.notification.add(
+                "Restore the conversation from Trash to reply, forward or compose.",
+                { type: "warning" });
+            return;
+        }
         const defaults = detail?.reply_defaults || { to: [], subject: "" };
         const toEmails = (arr) => (arr || []).map((p) => p.email).join(", ");
         let composer = {
@@ -619,24 +628,17 @@ export class InboxApp extends Component {
             // reply_all carries its OWN to/cc defaults (sender + external
             // To/cc) — reading reply_defaults.to here would silently drop
             // the external To recipients of the incoming email.
+            // The original is NOT pre-filled into the box: the window stays
+            // clear to write in, and the server appends the quoted original
+            // to the SENT email only (compose_and_send "wrote:" logic).
             const replyDefaults = mode === "reply_all"
                 ? (detail?.reply_all_defaults || defaults) : defaults;
             composer.to = toEmails(replyDefaults.to);
             composer.cc = mode === "reply_all"
                 ? toEmails(detail.reply_all_defaults?.cc) : "";
             composer.subject = replyDefaults.subject || "";
-            const last = [...(detail?.messages || [])]
-                .reverse().find((m) => m.direction === "incoming");
-            composer.body = last
-                ? `\n\nOn ${this.fmtDate(last.date)}, ${last.author_name} wrote:\n${last.body_plain || ""}`
-                : "";
         } else if (mode === "forward") {
             composer.subject = conv ? `Fwd: ${conv.name}` : "";
-            const last = [...(detail?.messages || [])]
-                .reverse().find((m) => m.direction === "incoming");
-            composer.body = last
-                ? `\n\nOn ${this.fmtDate(last.date)}, ${last.author_name} wrote:\n${last.body_plain || ""}`
-                : "";
         } else if (mode === "compose") {
             composer.to = conv?.partner_email || "";
         }
@@ -658,7 +660,7 @@ export class InboxApp extends Component {
                     { type: "warning" });
             }
         }
-        this._scrollComposer();
+        this._focusComposer();
     }
 
     async addNote() {
@@ -678,6 +680,35 @@ export class InboxApp extends Component {
 
     async sendNow() {
         await this._compose(true);
+    }
+
+    composerTitle() {
+        return {
+            reply: "Reply", reply_all: "Reply all", forward: "Forward",
+            compose: "New email", note: "Internal note",
+        }[this.state.composer.mode] || "Message";
+    }
+
+    closeComposer(force = false) {
+        // X / Escape — Gmail-style: ask only when there is typed content
+        // that was never saved as a draft. A saved draft survives in the
+        // Drafts folder and is discarded only through its own explicit
+        // action.
+        const c = this.state.composer;
+        if (!c.mode) {
+            return;
+        }
+        const hasContent = (c.body || "").trim()
+            || (c.subject || "").trim()
+            || (c.attachments || []).length > 0;
+        if (!force && hasContent && !c.draftId
+                && !window.confirm("Discard this message?")) {
+            return;
+        }
+        this.state.composer = {
+            mode: null, body: "", to: "", cc: "", subject: "",
+            attachments: [], draftId: null, sending: false,
+        };
     }
 
     async _compose(sendNow, forceKind = null) {
@@ -720,16 +751,20 @@ export class InboxApp extends Component {
                 this.loadConversations();
             }
             const wasDraft = Boolean(c.draftId);
-            if (!sendNow || kind === "note") {
-                // Draft saved — keep the composer open so the user keeps
+            if (kind === "note") {
+                // A note lands in the thread immediately — the window is
+                // done (notes never create an outbound message).
+                this.notification.add(
+                    "Internal note added to the thread.", { type: "info" });
+                this.closeComposer(true);
+            } else if (!sendNow) {
+                // Draft saved — keep the window open so the user keeps
                 // editing; remember the id so the next Save edits the SAME
                 // message (a resumed draft never becomes a second row).
                 c.draftId = res?.id || c.draftId;
                 c.sending = false;
                 this.notification.add(
-                    kind === "note"
-                        ? "Internal note added to the thread."
-                        : (wasDraft ? "Draft updated." : "Draft saved to the Drafts folder."),
+                    wasDraft ? "Draft updated." : "Draft saved to the Drafts folder.",
                     { type: "info" });
             } else {
                 const label = OUTBOUND_LABELS[res?.outbound_state] || "Recorded";
@@ -744,10 +779,9 @@ export class InboxApp extends Component {
                             : `Message ${label.toLowerCase()}.`,
                         { type: "info" });
                 }
-                this.state.composer = {
-                    mode: null, body: "", to: "", cc: "", subject: "",
-                    attachments: [], draftId: null, sending: false,
-                };
+                // Sent or failed — the window closes either way: a failed
+                // send keeps its Retry button on the thread message row.
+                this.closeComposer(true);
             }
             await this.reconcile();
         } catch (e) {
@@ -774,7 +808,7 @@ export class InboxApp extends Component {
             draftId: draft.id,
             sending: false,
         };
-        this._scrollComposer();
+        this._focusComposer();
     }
 
     async discardDraft(draftId) {
@@ -1391,11 +1425,12 @@ export class InboxApp extends Component {
         }
     }
 
-    _scrollComposer() {
-        // Bring the composer into view on small screens.
+    _focusComposer() {
+        // The compose window just opened — move the cursor into the body
+        // textarea (the full-window overlay is visible on every screen
+        // size, so scrolling is no longer needed).
         requestAnimationFrame(() => {
-            const el = this.el?.querySelector(".o_inbox_composer");
-            el?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+            this.el?.querySelector(".o_inbox_compose_input")?.focus();
         });
     }
 }

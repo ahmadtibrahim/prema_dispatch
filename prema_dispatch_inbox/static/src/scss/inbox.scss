@@ -584,6 +584,109 @@ $inbox-accent: #017e84;
         }
     }
 
+    // ----- full-window compose overlay (Gmail-like) -----
+    // Covers the whole app (z-40 sits above the 900-1199px AI drawer at
+    // z-30): read-only thread preview on top, large compose area below.
+    .o_inbox_compose_overlay {
+        position: absolute;
+        inset: 0;
+        z-index: 40;
+        display: flex;
+        flex-direction: column;
+        background: #fff;
+
+        .o_inbox_compose_head {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 10px 16px;
+            font-weight: 600;
+            font-size: 14px;
+            border-bottom: 1px solid $inbox-border;
+            flex-shrink: 0;
+
+            .o_inbox_compose_close {
+                color: $inbox-muted;
+                font-size: 15px;
+
+                &:hover { color: #b0413e; }
+            }
+        }
+
+        .o_inbox_compose_thread {
+            flex: 0 1 38%;
+            min-height: 120px;
+            overflow-y: auto;
+            padding: 10px 16px;
+            background: #f8f9fb;
+            border-bottom: 1px solid $inbox-border;
+
+            // preview bubbles span the full width — the thread-column
+            // max-width insets do not apply here
+            .o_inbox_msg { max-width: 100%; }
+        }
+
+        .o_inbox_compose_body {
+            flex: 1 1 auto;
+            display: flex;
+            flex-direction: column;
+            padding: 12px 16px;
+            min-height: 0;
+
+            .o_inbox_comp_row {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                margin-bottom: 6px;
+
+                label {
+                    font-size: 12px;
+                    font-weight: 600;
+                    color: $inbox-muted;
+                    min-width: 52px;
+                    text-align: right;
+                    margin: 0;
+                }
+
+                input { flex: 1 1 auto; min-width: 0; }
+            }
+
+            .o_inbox_comp_att {
+                margin-bottom: 6px;
+                display: flex;
+                flex-wrap: wrap;
+                gap: 4px;
+            }
+
+            .o_inbox_compose_note {
+                padding: 6px 10px;
+                border: 1px dashed #c9ccd6;
+                border-radius: 6px;
+                background: #f7f7f9;
+                color: #5b6272;
+                font-size: 12px;
+                margin-bottom: 8px;
+            }
+
+            .o_inbox_compose_input {
+                flex: 1 1 auto;
+                min-height: 200px;
+                resize: vertical;
+                font-size: 13px;
+                line-height: 1.5;
+            }
+
+            .o_inbox_compose_actions {
+                display: flex;
+                gap: 8px;
+                align-items: center;
+                flex-wrap: wrap;
+                padding-top: 8px;
+                flex-shrink: 0;
+            }
+        }
+    }
+
     // ----- link chips + picker -----
     .o_inbox_linkchip {
         display: inline-flex;
