@@ -6,6 +6,7 @@ F-2 deterministic Reply with Quote. F-3 (create booking from email)
 lives in this file too — its class was added with the F-3 commit.
 """
 import datetime
+from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest import mock
 
@@ -427,10 +428,13 @@ class TestCreateBookingFromEmailF3(InboxTestCase):
                 env["logistics.booking"]._generate_booking_number(),
         })
 
+    @contextmanager
     def _fake_orchestration(self, captured, counter=None):
         """Replace BookingOrchestrationService so the booking engine never
         runs (no geocoding, no pricing) — asserts the F-3 gates and the
-        request contract, not the engine. Returns the patch pair."""
+        request contract, not the engine. Yields while both patches are
+        active (a plain tuple return does not enter with `with`, hence
+        @contextmanager)."""
         from odoo.addons.prema_logistics_booking.services.booking_orchestration_service import (  # noqa: E501
             BookingOrchestrationService)
         mk_booking = self._mk_booking
@@ -448,12 +452,12 @@ class TestCreateBookingFromEmailF3(InboxTestCase):
                 norm["request"]["partner_id"])
             return mk_booking(self.env, partner)
 
-        return (mock.patch.object(
-            BookingOrchestrationService, "normalize_request",
-            fake_normalize),
-            mock.patch.object(
+        with mock.patch.object(
+                BookingOrchestrationService, "normalize_request",
+                fake_normalize), mock.patch.object(
                 BookingOrchestrationService, "confirm_from_internal",
-                fake_confirm))
+                fake_confirm):
+            yield
 
     def test_trashed_conversation_refused(self):
         conv = self._quoted_conv()
