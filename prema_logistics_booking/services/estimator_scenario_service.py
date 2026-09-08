@@ -180,7 +180,8 @@ class EstimatorScenarioService:
             "cases": cases,
             "required_temperature_c": required_temperature_c,
             "d0": d0, "date_requested": bool(requested_raw),
-            "requested_pickup_raw": self._iso(requested_raw),
+            "requested_pickup_raw": self._iso(
+                self._as_date(requested_raw)),
             "warnings": warnings,
             "requested_delivery": requested_delivery,
             "reference": reference,
@@ -1344,7 +1345,11 @@ class EstimatorScenarioService:
 
     @staticmethod
     def _iso(value):
-        return value.isoformat() if value else False
+        # datetime/date -> ISO string; a bare ISO string passes through;
+        # False/None stay falsy (never crash on either shape).
+        if isinstance(value, (datetime.datetime, datetime.date)):
+            return value.isoformat()
+        return value or False
 
     @staticmethod
     def _legs_text(snapshot):
