@@ -1,5 +1,9 @@
+import logging
+
 from odoo import _, api, fields, models
 from odoo.exceptions import UserError
+
+_logger = logging.getLogger(__name__)
 
 
 class SaleOrderBookWizard(models.TransientModel):
@@ -40,27 +44,89 @@ class SaleOrderBookWizard(models.TransientModel):
     required_temperature_c = fields.Float(string="Required Temperature")
     submitted_temperature_unit = fields.Selection(
         [("c", "°C"), ("f", "°F")], string="Temperature Unit", default="c")
-    temperature_confirmed = fields.Boolean(string="Temperature Confirmed")
+    temperature_c_readback = fields.Float(
+        string="Stored °C (canonical)", readonly=True,
+        compute="_compute_temperature_c_readback",
+        help="What will actually be stored at confirm: your entry converted "
+             "to canonical Celsius. Live — correct the value or the unit any "
+             "time before confirming.")
+    temperature_confirmed = fields.Boolean(
+        string="Temperature Confirmed",
+        help="Confirms that the numeric Reefer temperature was intentionally "
+             "entered; 0°C is valid. Editing the temperature or the unit "
+             "clears this box — confirm the corrected value again.")
     customer_reference = fields.Char()
     purchase_order = fields.Char()
     bol_reference = fields.Char(string="BOL / Reference")
     general_notes = fields.Text()
+    mapping_summary = fields.Text(
+        string="Auto-mapped (review)", readonly=True,
+        help="Deterministic fields already carried over from the Sales Order"
+             " (structured columns -> stored AI result -> line details)."
+             " Remaining gaps are entered manually — never guessed.")
+
+    @api.depends("equipment_type", "required_temperature_c",
+                 "submitted_temperature_unit")
+    def _compute_temperature_c_readback(self):
+        for wizard in self:
+            value = wizard.required_temperature_c
+            # Identity checks only — 0.0 is a VALID temperature (0°C).
+            if (wizard.equipment_type != "reefer"
+                    or value is False or value is None or value == ""):
+                wizard.temperature_c_readback = False
+                continue
+            try:
+                from odoo.addons.prema_logistics_booking.services.temperature_service import (  # noqa: E501
+                    parse_temperature)
+                canonical = parse_temperature(
+                    value, unit=wizard.submitted_temperature_unit or "c")
+            except Exception:
+                canonical = None
+            wizard.temperature_c_readback = (
+                False if canonical is None else round(canonical, 1))
+
+    @api.onchange("equipment_type", "required_temperature_c",
+                  "submitted_temperature_unit")
+    def _onchange_temperature_revalidate(self):
+        """Temperature edits re-validate immediately (never a stale block):
+        editing the value or the unit clears the earlier confirmation, and
+        Dry never carries a temperature value."""
+        for wizard in self:
+            if wizard.equipment_type != "reefer":
+                wizard.required_temperature_c = False
+                wizard.temperature_confirmed = False
+            else:
+                wizard.temperature_confirmed = False
 
     @api.model
     def default_get(self, fields_list):
         vals = super().default_get(fields_list)
         so = self.env["sale.order"].browse(
             self.env.context.get("active_id") or vals.get("sale_order_id"))
-        if so.exists():
-            vals.update({
-                "sale_order_id": so.id,
-                "partner_id": (so.partner_invoice_id or so.partner_id).id,
-                "customer_reference": so.client_order_ref or so.name,
-                "purchase_order": so.client_order_ref or "",
-                "scheduled_pickup": _local_8am_utc(
-                    self.env, so.date_order.date() if so.date_order else
-                    fields.Date.context_today(self)),
-            })
+        if not so.exists():
+            return vals
+        vals.update({
+            "sale_order_id": so.id,
+            "partner_id": (so.partner_invoice_id or so.partner_id).id,
+        })
+        # ONE shared deterministic mapping service (same ladder and rules as
+        # the invoice Book Load wizard — never invokes AI).
+        try:
+            from odoo.addons.prema_dispatch.services.book_load_mapping import (
+                BookLoadMappingService)
+            service = BookLoadMappingService(self.env)
+            mapped = service.suggest_for(so)
+            # Explicit default_* context values (caller intent) win.
+            applied = {}
+            for key, value in mapped.items():
+                if "default_%s" % key not in self.env.context:
+                    vals[key] = value
+                    applied[key] = value
+            vals["mapping_summary"] = "\n".join(
+                service.summary_for(so, applied))
+        except Exception:
+            _logger.warning("Book Load auto-map failed for sale.order %s",
+                            so.id, exc_info=True)
         return vals
 
     def action_confirm(self):
@@ -168,16 +234,3 @@ class SaleOrderBookWizard(models.TransientModel):
             "view_mode": "form",
             "target": "current",
         }
-
-
-def _local_8am_utc(env, date_obj):
-    """8:00 AM on date_obj in the user's timezone, stored as UTC (naive)."""
-    from datetime import datetime
-    import pytz
-    tz_name = env.context.get("tz") or env.user.tz or "UTC"
-    try:
-        user_tz = pytz.timezone(tz_name)
-    except Exception:
-        user_tz = pytz.utc
-    local_dt = user_tz.localize(datetime(date_obj.year, date_obj.month, date_obj.day, 8, 0))
-    return local_dt.astimezone(pytz.utc).replace(tzinfo=None)

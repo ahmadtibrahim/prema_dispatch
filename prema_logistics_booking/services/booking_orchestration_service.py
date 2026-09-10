@@ -2170,6 +2170,10 @@ class BookingOrchestrationService:
                 hub_stop = hub_stop_by_hub_id.get(hub_id)
                 if not hub_stop:
                     Hub = self.env["logistics.hub"].sudo().browse(hub_id)
+                    hub_location = Hub.saved_location_id
+                    hub_latitude = Hub.latitude or hub_location.pin_lat or 0.0
+                    hub_longitude = Hub.longitude or hub_location.pin_lng or 0.0
+                    hub_country_id = hub_location.country_id.id or False
                     hub_stop = Stop.create({
                         "booking_id": booking.id,
                         "sequence": 50,
@@ -2178,6 +2182,15 @@ class BookingOrchestrationService:
                         "street": Hub.saved_location_id.street or Hub.saved_location_id.address or "",
                         "city": Hub.saved_location_id.city or "",
                         "saved_location_id": ls.get("hub_location_id") or False,
+                        # Pin the hub boundary: capacity resolves a leg's
+                        # span from its own endpoints, and the hub is the
+                        # endpoint of every transfer leg. Created without
+                        # coordinates (0.0/0.0) the hub resolved to no
+                        # corridor region, so the feeder leg silently
+                        # reserved nothing on its own departure.
+                        "latitude": hub_latitude,
+                        "longitude": hub_longitude,
+                        "country_id": hub_country_id,
                         # Explicit marker: placeholder, never an
                         # operational stop, never customer-facing.
                         "hub_transfer_stop": True,

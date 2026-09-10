@@ -146,13 +146,75 @@ class PremaDispatchJob(models.Model):
                     key=lambda s: (s.sequence or 0, s.id))
             parts = []
             for s in stops[:4]:
-                loc = s.saved_location_id
-                label = (loc.business_name or loc.name
-                         if loc else (s.address or "").split(",")[0] or "")
+                label = job._stop_route_label(s)
                 parts.append(label or s.stop_type or f"Stop {s.id}")
             if len(stops) > 4:
                 parts.append("…")
             job.physical_route_text = " → ".join(parts)
+
+    def _stop_route_label(self, stop):
+        """Facility label of ONE stop on the physical route text.
+
+        A hub-transfer stop is an internal placeholder: its saved location
+        is the hub's own facility (a yard code such as 'PFL001'), which
+        tells the dispatcher nothing about where the truck actually goes.
+        The hub's network name is the label that reads correctly on both
+        cards ('… → Mississauga Hub', 'Mississauga Hub → …').
+        """
+        booking_stop = stop.logistics_booking_stop_id
+        if booking_stop and booking_stop.hub_transfer_stop:
+            return self._hub_display_name(stop)
+        loc = stop.saved_location_id
+        return (loc.business_name or loc.name
+                if loc else (stop.address or "").split(",")[0] or "")
+
+    def _hub_display_name(self, stop):
+        """How the network calls the hub behind a hub-transfer stop."""
+        hub = self.env["logistics.hub"].sudo().search(
+            [("saved_location_id", "=", stop.saved_location_id.id)], limit=1)
+        return (hub.name or hub.public_name) if hub else (
+            stop.company_name or "Transfer Hub")
+
+    @staticmethod
+    def _leg_caption(leg):
+        """Human caption of an execution leg — 'Friday Linehaul', the name
+        the dispatcher uses for that truck-run."""
+        leg_type = (leg.leg_type or "").replace("_", " ").title() or "Leg"
+        date = leg.pickup_date or leg.departure_id.departure_date
+        if not date:
+            return leg_type
+        return "%s %s" % (fields.Date.to_date(date).strftime("%A"), leg_type)
+
+    def _hub_handoff_label(self):
+        """Board/Planner handoff text for a hub-transfer execution leg.
+
+        The two trucks of a hub-transfer booking meet at a named hub: the
+        feeder ENDS there and the linehaul STARTS there, so each card must
+        name the hub and the other leg — the dispatcher's question is
+        always "which hub, and onto which leg". Returns "" for every job
+        that is not a hub-transfer leg, leaving the generic transfer /
+        cross-dock labels exactly as they were.
+        """
+        self.ensure_one()
+        leg = self.booking_leg_id
+        if not leg or not leg.booking_id:
+            return ""
+        hub_stop = self.stop_ids.filtered(
+            lambda s: s.logistics_booking_stop_id.hub_transfer_stop
+        ).sorted("sequence")[:1]
+        if not hub_stop:
+            return ""
+        hub_name = self._hub_display_name(hub_stop)
+        legs = leg.booking_id.leg_ids.sorted("sequence")
+        following = legs.filtered(lambda l: l.sequence > leg.sequence)[:1]
+        if following:
+            return "Handoff: %s → %s" % (
+                hub_name, self._leg_caption(following[0]))
+        previous = legs.filtered(lambda l: l.sequence < leg.sequence)[-1:]
+        if previous:
+            return "Received from %s / %s" % (
+                self._leg_caption(previous[0]), hub_name)
+        return ""
 
     _sql_constraints = [
         (

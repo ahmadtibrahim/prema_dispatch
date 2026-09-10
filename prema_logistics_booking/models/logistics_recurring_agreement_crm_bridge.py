@@ -43,7 +43,6 @@ cron generation, max 10 jobs, Google-verified locations):
   blocked.
 """
 import logging
-from datetime import timedelta
 
 from odoo import _, api, fields, models
 from odoo.exceptions import UserError
@@ -405,9 +404,10 @@ class LogisticsRecurringAgreement(models.Model):
 
         today = fields.Date.context_today(self)
         start_date = opportunity.start_date or today
-        end_date = opportunity.end_date \
-            or (start_date + timedelta(days=365))
-        if end_date < today:
+        # Blank end date stays blank: the agreement is open-ended (active
+        # until paused, cancelled, or expired manually) — never invent one.
+        end_date = opportunity.end_date
+        if end_date and end_date < today:
             raise UserError(_(
                 "Recurring opportunity #%(id)s ended on %(end)s — its "
                 "effective period is over. Extend the dates on the CRM "
@@ -467,8 +467,9 @@ class LogisticsRecurringAgreement(models.Model):
                 "agreement starts %s.", start_date))
         if not opportunity.end_date:
             note_lines.append(_(
-                "No end date on the CRM recurring opportunity — end date "
-                "defaulted to %(end)s (start + 365 days).", end=end_date))
+                "No end date on the CRM recurring opportunity — the "
+                "agreement is open-ended: ACTIVE until paused, cancelled, "
+                "or expired manually."))
         if opportunity.frequency_detail:
             note_lines.append(_(
                 "Cadence detail from CRM: %s",
@@ -486,10 +487,11 @@ class LogisticsRecurringAgreement(models.Model):
             "agreement_reference": _agreement_anchor(opportunity),
             "frequency": opportunity.frequency,
             "start_date": start_date,
-            "end_date": end_date,
             "service_notes": "\n".join(note_lines),
             "job_ids": [(0, 0, _job_vals(idx)) for idx in weekday_indexes],
         }
+        if end_date:
+            agreement_vals["end_date"] = end_date
         # Assignment is read from the lead only (never written on the CRM
         # record); when the lead has no salesperson the agreement keeps its
         # own default (the acting user).

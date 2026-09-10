@@ -49,21 +49,28 @@
                                 automatic bookings require Google-verified pickup and delivery addresses.
                             </div>
                             <field name="job_ids" context="{'default_agreement_id': id}">
+                                <!-- Fixed column widths (supported by the Odoo 18 list renderer):
+                                     the important recurring-route columns never get crushed on
+                                     narrow windows — the list scrolls horizontally instead,
+                                     which keeps the surrounding form and chatter at full width. -->
                                 <list editable="bottom">
-                                    <field name="sequence" widget="handle"/>
-                                    <field name="name"/>
-                                    <field name="pickup_kind"/>
-                                    <field name="pickup_location_id" optional="show"/>
-                                    <field name="pickup_region_id" domain="[('is_official_ltl_region','=',True)]" optional="show"/>
-                                    <field name="delivery_kind"/>
-                                    <field name="delivery_location_id" optional="show"/>
-                                    <field name="delivery_region_id" domain="[('is_official_ltl_region','=',True)]" optional="show"/>
-                                    <field name="frequency"/>
-                                    <field name="preferred_weekday"/>
-                                    <field name="pallets"/>
-                                    <field name="auto_generate"/>
-                                    <field name="next_shipment_date" readonly="1"/>
-                                    <field name="active" column_invisible="True"/>
+                                    <field name="sequence" widget="handle" width="52px"/>
+                                    <field name="name" width="150px"/>
+                                    <field name="pickup_location_id" string="Pickup Address" width="215px" optional="show"/>
+                                    <field name="pickup_region_id" string="Pickup Region" domain="[('is_official_ltl_region','=',True)]" width="145px" optional="show"/>
+                                    <field name="delivery_location_id" string="Delivery Address" width="215px" optional="show"/>
+                                    <field name="delivery_region_id" string="Delivery Region" domain="[('is_official_ltl_region','=',True)]" width="145px" optional="show"/>
+                                    <field name="frequency" width="95px"/>
+                                    <field name="preferred_weekday" string="Preferred Weekday" width="115px"/>
+                                    <field name="pallets" width="70px"/>
+                                    <field name="weight_lbs" string="Weight (lb)" width="90px"/>
+                                    <field name="auto_generate" string="Auto Generate" width="105px"/>
+                                    <field name="next_shipment_date" string="Next Shipment" readonly="1" width="110px"/>
+                                    <field name="active" string="Active" width="65px"/>
+                                    <!-- Kind columns stay available via the optional-columns
+                                         picker (… ▾) so the row is never cluttered. -->
+                                    <field name="pickup_kind" string="Pickup Kind" optional="hide"/>
+                                    <field name="delivery_kind" string="Delivery Kind" optional="hide"/>
                                 </list>
                                 <form string="Recurring Job">
                                     <sheet>

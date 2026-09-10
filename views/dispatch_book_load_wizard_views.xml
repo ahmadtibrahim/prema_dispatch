@@ -21,6 +21,7 @@
                             <field name="submitted_temperature_unit"
                                    invisible="equipment_type != 'reefer'"
                                    string="Temperature Unit"/>
+                            <field name="temperature_c_readback" invisible="equipment_type != 'reefer'"/>
                             <field name="temperature_confirmed" invisible="equipment_type != 'reefer'"/>
                             <field name="requires_liftgate"/>
                             <field name="expected_skids"/>
@@ -34,6 +35,12 @@
                         <field name="bol_reference"/>
                         <field name="general_notes"/>
                     </group>
+                    <div class="alert alert-info" role="alert" invisible="not mapping_summary">
+                        <strong>Auto-mapped from the Invoice</strong> (structured
+                        columns → stored AI result → line details — review, then edit
+                        anything wrong):<br/>
+                        <field name="mapping_summary" readonly="1" nolabel="1"/>
+                    </div>
                     <div class="alert alert-info" role="alert" invisible="booking_mode != 'scheduled_ltl'">
                         Scheduled LTL uses Corridor pricing, reserves exact departure capacity and assigns Planner jobs to that departure's Truck.
                     </div>

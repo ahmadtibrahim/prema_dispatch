@@ -197,10 +197,14 @@ class LogisticsWeeklyPlan(models.Model):
         Reservation = self.env["logistics.weekly.plan.reservation"]
         start = self.week_start
         end = start + timedelta(days=6)
+        # Blank agreement end date = open-ended: the job runs through the
+        # whole week unless its agreement is paused/cancelled/expired.
         jobs = Job.search([
             ("active", "=", True),
             ("agreement_id.state", "=", "active"),
             ("agreement_id.active", "=", True),
+            "|",
+            ("agreement_id.end_date", "=", False),
             ("agreement_id.end_date", ">=", end),
         ])
         created = 0

@@ -964,6 +964,23 @@ class PremaDispatchStop(models.Model):
         if booking:
             booking.sync_state_from_dispatch()
 
+    def _maybe_invoice_on_pickup_arrival(self):
+        """Bridge for the §P/Q/R arrival invoice (spec): hands each arriving
+        stop to logistics_booking._arrival_invoice_trigger, which owns the
+        first-customer-pickup gate, the cancellation guard and the
+        idempotency (booking.invoice_id). Dispatch-only bookings / installs
+        without the logistics module simply skip — invoice creation keeps
+        its completion path there. Never raises."""
+        for stop in self:
+            job = stop.job_id
+            if not job or "logistics_booking_id" not in job._fields:
+                continue
+            booking = job.logistics_booking_id
+            if not booking or not callable(
+                    getattr(booking, "_arrival_invoice_trigger", None)):
+                continue
+            booking._arrival_invoice_trigger(stop)
+
     def action_mark_en_route(self):
         self.write({"status": "en_route"})
         self._sync_booking_state()
@@ -979,6 +996,15 @@ class PremaDispatchStop(models.Model):
             notes=self.name or self.address,
             stop=self,
         )
+        # §P/Q/R (spec): 'I'M HERE' at the first customer pickup creates the
+        # booking's single DRAFT customer invoice for the dispatch-review
+        # gate. Never blocks arrival — mirrors the detention-refresh
+        # precedent; the trigger is idempotent inside logistics_booking.
+        try:
+            self._maybe_invoice_on_pickup_arrival()
+        except Exception:
+            _logger.exception(
+                "Arrival invoice trigger failed for stop %s", self.id)
 
     # ── §18 facility-timing recorder (check-in / dock start / release) ──
     # One server-side helper stamps each timing event on the stop (so the
@@ -1455,7 +1481,15 @@ class PremaDispatchStop(models.Model):
         pickups = self.job_id.stop_ids.filtered(
             lambda s: s.stop_type == "pickup"
         ).sorted("sequence")
-        return pickups[:1] if len(pickups) == 1 else self.env["prema.dispatch.stop"]
+        if len(pickups) == 1:
+            return pickups[:1]
+        if self.stop_type == "cross_dock_pickup":
+            # A linehaul that RECEIVES at the hub has no customer pickup
+            # stop: the freight is already at this stop, so the handoff
+            # point is its own origin. Jobs that do carry a single pickup
+            # stop keep that pickup as their origin, unchanged.
+            return self
+        return self.env["prema.dispatch.stop"]
 
     def _items_for_custody_transition(self):
         self.ensure_one()
