@@ -87,7 +87,8 @@ export class InboxApp extends Component {
             loadError: null,
             composer: {
                 mode: null, body: "", to: "", cc: "", subject: "",
-                attachments: [], draftId: null, sending: false,
+                subjectPrefilled: "", attachments: [], draftId: null,
+                sending: false,
             },
             ai: { busy: false, panelOpen: true, conflictsOpen: false,
                   editingKey: null, editValue: "",
@@ -133,6 +134,20 @@ export class InboxApp extends Component {
         this._premaEventCb = (payload) => {
             this._onEvent(payload);
         };
+        // Document-level Esc as a backstop for events outside the app root
+        // (Odoo shell chrome). The reliable in-app path is the root
+        // element's own t-on-keydown → onAppKeydown — the SAME instance
+        // that renders the UI. This listener additionally covers focus in
+        // the shell; on a stale instance (el nulled by unmount) it no-ops.
+        this._globalKeydownCb = (ev) => {
+            if (ev.key !== "Escape" || !this.el || !this.state?.composer?.mode) {
+                return;
+            }
+            if (!this.el.contains(ev.target)) {
+                ev.preventDefault();
+                this.closeComposer();
+            }
+        };
         onMounted(async () => {
             await this.refreshFolders();
             await this.loadConversations();
@@ -144,6 +159,7 @@ export class InboxApp extends Component {
                 // non-fatal: default of 30 stays in the purge prompt
             }
             this._timer = setInterval(() => this.reconcile(), 60000);
+            document.addEventListener("keydown", this._globalKeydownCb);
             try {
                 // A bus failure (websocket down) must never block the basic
                 // inbox rendering or the reconcile timer — live updates are
@@ -164,6 +180,7 @@ export class InboxApp extends Component {
             clearTimeout(this._searchTimer);
             clearTimeout(this._linkTimer);
             this._timer = null;
+            document.removeEventListener("keydown", this._globalKeydownCb);
             try {
                 this.busService.deleteChannel(this.channel);
                 this.busService.unsubscribe("prema_inbox", this._premaEventCb);
@@ -621,7 +638,7 @@ export class InboxApp extends Component {
         const defaults = detail?.reply_defaults || { to: [], subject: "" };
         const toEmails = (arr) => (arr || []).map((p) => p.email).join(", ");
         let composer = {
-            mode, body: "", to: "", cc: "", subject: "",
+            mode, body: "", to: "", cc: "", subject: "", subjectPrefilled: "",
             attachments: [], draftId: null, sending: false,
         };
         if (mode === "reply" || mode === "reply_all") {
@@ -648,6 +665,10 @@ export class InboxApp extends Component {
         if (opts.subject !== undefined) {
             composer.subject = opts.subject;   // F-2: quote reply subject
         }
+        // Whatever subject the code pre-filled (Re:/Fwd:/AI reply) is NOT
+        // user content: closing an untouched composer must not ask to
+        // discard it. Only subject text typed on top of the prefill counts.
+        composer.subjectPrefilled = composer.subject;
         this.state.composer = composer;
         if (mode === "reply" || mode === "reply_all") {
             if (!composer.to.trim()) {
@@ -690,16 +711,19 @@ export class InboxApp extends Component {
     }
 
     closeComposer(force = false) {
-        // X / Escape — Gmail-style: ask only when there is typed content
-        // that was never saved as a draft. A saved draft survives in the
-        // Drafts folder and is discarded only through its own explicit
-        // action.
+        // X / Escape — Gmail-style: ask only when there is content the user
+        // typed that was never saved as a draft. A saved draft survives in
+        // the Drafts folder and is discarded only through its own explicit
+        // action. The auto-prefilled subject (Re:/Fwd:/AI reply) is not user
+        // content — closing an untouched composer is silent.
         const c = this.state.composer;
         if (!c.mode) {
             return;
         }
+        const subjectEdited = (c.subject || "").trim()
+            !== (c.subjectPrefilled || "").trim();
         const hasContent = (c.body || "").trim()
-            || (c.subject || "").trim()
+            || subjectEdited
             || (c.attachments || []).length > 0;
         if (!force && hasContent && !c.draftId
                 && !window.confirm("Discard this message?")) {
@@ -707,7 +731,8 @@ export class InboxApp extends Component {
         }
         this.state.composer = {
             mode: null, body: "", to: "", cc: "", subject: "",
-            attachments: [], draftId: null, sending: false,
+            subjectPrefilled: "", attachments: [], draftId: null,
+            sending: false,
         };
     }
 
@@ -822,7 +847,8 @@ export class InboxApp extends Component {
             if (this.state.composer.draftId === draftId) {
                 this.state.composer = {
                     mode: null, body: "", to: "", cc: "", subject: "",
-                    attachments: [], draftId: null, sending: false,
+                    subjectPrefilled: "", attachments: [], draftId: null,
+                    sending: false,
                 };
             }
             this.notification.add("Draft discarded.", { type: "info" });
@@ -1275,6 +1301,47 @@ export class InboxApp extends Component {
         this.state.ai.editValue = "";
     }
 
+    onExtractionKeydown(ev) {
+        // Enter saves the in-place edit, Escape cancels — OWL 2 cannot
+        // compile `if` statements inside inline t-on-* expressions (the
+        // mini-language resolves `if` as a context identifier), so the
+        // branching lives in real JS.
+        if (ev.key === "Enter") {
+            ev.preventDefault();
+            this.saveEditExtraction();
+        } else if (ev.key === "Escape") {
+            this.cancelEditExtraction();
+        }
+    }
+
+    onAdjustmentKeydown(ev) {
+        if (ev.key === "Enter") {
+            ev.preventDefault();
+            this.saveAdjustment();
+        }
+    }
+
+    onComposerKeydown(ev) {
+        if (ev.key === "Escape") {
+            ev.preventDefault();
+            this.closeComposer();
+        }
+    }
+
+    onAppKeydown(ev) {
+        // Root-level Esc for the composer. The overlay's own t-on-keydown
+        // only hears events bubbling through the OVERLAY, so an immediate
+        // Esc while focus is still on the Reply button (or any other in-app
+        // control under the window) would do nothing. closeComposer no-ops
+        // when no window is open, and the inline field handlers (extraction
+        // cancel etc.) run first at their own target, so this never steals
+        // their Escape.
+        if (ev.key === "Escape") {
+            ev.preventDefault();
+            this.closeComposer();
+        }
+    }
+
     async saveEditExtraction() {
         const key = this.state.ai.editingKey;
         const raw = (this.state.ai.editValue || "").trim();
@@ -1477,9 +1544,23 @@ export class InboxApp extends Component {
     _focusComposer() {
         // The compose window just opened — move the cursor into the body
         // textarea (the full-window overlay is visible on every screen
-        // size, so scrolling is no longer needed).
+        // size, so scrolling is no longer needed). OWL renders on its own
+        // animation frame after state.composer was assigned, so the
+        // textarea may not exist on the first rAF — retry once. (Odoo 18's
+        // owl build exports no nextTick — importing it yields an undefined
+        // binding and a "not a function" TypeError here.)
+        const tryFocus = () => {
+            const input = this.el?.querySelector(".o_inbox_compose_input");
+            if (input) {
+                input.focus();
+                return true;
+            }
+            return false;
+        };
         requestAnimationFrame(() => {
-            this.el?.querySelector(".o_inbox_compose_input")?.focus();
+            if (!tryFocus()) {
+                requestAnimationFrame(tryFocus);
+            }
         });
     }
 }

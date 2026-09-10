@@ -269,10 +269,17 @@ class TestPermanentDelete(InboxTestCase):
             "prema_inbox.trash_retention_days", "7")
         self.assertEqual(self.Conversation.trash_retention_days(), 7)
         # the retention window feeds the EXPLICIT action only — and no cron
-        # for trash/purge exists anywhere in the module
+        # for trash/purge exists anywhere in the module (Odoo 18 ir.cron
+        # targets server actions; trash-named actions on the inbox model
+        # would be the only thing that could ever auto-purge)
         crons = self.env["ir.cron"].sudo().search([
-            ("model", "=", "prema.inbox.conversation"),
-            ("function", "ilike", "%trash%"),
+            ("ir_actions_server_id.model_id.model",
+             "=", "prema.inbox.conversation"),
+            "|",
+            ("ir_actions_server_id.name", "ilike", "trash"),
+            "|",
+            ("ir_actions_server_id.code", "ilike", "trash"),
+            ("cron_name", "ilike", "trash"),
         ])
         self.assertEqual(len(crons), 0)
         # default = soft trash, never auto-purge: a just-trashed thread

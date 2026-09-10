@@ -6,6 +6,7 @@ F-2 deterministic Reply with Quote. F-3 (create booking from email)
 lives in this file too — its class was added with the F-3 commit.
 """
 import datetime
+from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest import mock
 
@@ -393,7 +394,7 @@ class TestCreateBookingFromEmailF3(InboxTestCase):
     the inbox gates and the request contract, never the engine itself.
 
     The sudo envelope is part of the contract: inbox users are read-only on
-    logistics models, so the service call must ride self.env.sudo() (no ACL
+    logistics models, so the action must ride a sudo recordset env (no ACL
     CSV change) — test 8 pins that with a real inbox-group user.
     """
 
@@ -427,10 +428,13 @@ class TestCreateBookingFromEmailF3(InboxTestCase):
                 env["logistics.booking"]._generate_booking_number(),
         })
 
+    @contextmanager
     def _fake_orchestration(self, captured, counter=None):
         """Replace BookingOrchestrationService so the booking engine never
         runs (no geocoding, no pricing) — asserts the F-3 gates and the
-        request contract, not the engine. Returns the patch pair."""
+        request contract, not the engine. Yields while both patches are
+        active (a plain tuple return does not enter with `with`, hence
+        @contextmanager)."""
         from odoo.addons.prema_logistics_booking.services.booking_orchestration_service import (  # noqa: E501
             BookingOrchestrationService)
         mk_booking = self._mk_booking
@@ -448,12 +452,12 @@ class TestCreateBookingFromEmailF3(InboxTestCase):
                 norm["request"]["partner_id"])
             return mk_booking(self.env, partner)
 
-        return (mock.patch.object(
-            BookingOrchestrationService, "normalize_request",
-            fake_normalize),
-            mock.patch.object(
+        with mock.patch.object(
+                BookingOrchestrationService, "normalize_request",
+                fake_normalize), mock.patch.object(
                 BookingOrchestrationService, "confirm_from_internal",
-                fake_confirm))
+                fake_confirm):
+            yield
 
     def test_trashed_conversation_refused(self):
         conv = self._quoted_conv()
@@ -577,7 +581,8 @@ class TestCreateBookingFromEmailF3(InboxTestCase):
             "name": "F3 Shortcut Produce", "is_company": True,
             "email": "shortcut@demo-toronto-produce.test"})
         corridor = self.env["logistics.corridor"].create({
-            "name": "F3 Shortcut Corridor", "equipment_type": "dry"})
+            "name": "F3 Shortcut Corridor", "equipment_type": "dry",
+            "direction": "eastbound"})
         departure = self.env["logistics.corridor.departure"].create({
             "corridor_id": corridor.id,
             "departure_date": datetime.date(2026, 9, 15)})
@@ -613,8 +618,8 @@ class TestCreateBookingFromEmailF3(InboxTestCase):
 
     def test_sudo_envelope_runs_as_inbox_group_user(self):
         """An inbox-group dispatcher (read-only on logistics models) can
-        create the booking — the service rides self.env.sudo() inside the
-        action, so no ACL CSV change is needed."""
+        create the booking — the action rides a sudo envelope inside, so no
+        ACL CSV change is needed."""
         user = self.make_user(login="ops.f3.booking")
         conv = self._quoted_conv()
         captured, counter = {}, {"calls": 0}

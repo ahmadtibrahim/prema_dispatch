@@ -131,7 +131,10 @@ class TestWiringGuards(InboxTestCase):
         self.assertIn('t-model="state.composer.body"', xml)
         self.assertIn("t-on-keydown", xml)
         self.assertIn('t-on-click="() => this.closeComposer()"', xml)
-        self.assertIn("closeComposer()", js)
+        # method is declared with a default arg (force=false) — assert the
+        # definition, not a zero-arg call literal
+        self.assertIn("closeComposer(force = false)", js)
+        self.assertIn("this.closeComposer(true)", js)
         self.assertIn("_focusComposer()", js)
         self.assertNotIn("_scrollComposer", js)
         # the compose FIELDS moved into the overlay — the slimmed thread
@@ -146,6 +149,34 @@ class TestWiringGuards(InboxTestCase):
         # pattern as the thread column (now in both blocks — never t-raw)
         self.assertIn('t-esc="m.body_plain"', xml)
         self.assertNotIn('t-raw="m.body_plain"', xml)
+        # OWL-2 compile guards: inline handlers must never contain `if`
+        # statements or block bodies — the template mini-language resolves
+        # `if` as a context identifier and emits ctx['if'](cond)stmt() —
+        # broken JS that fails the whole InboxApp compile in the browser.
+        # Branching lives in real JS methods (onExtractionKeydown /
+        # onAdjustmentKeydown / onComposerKeydown). Same for globals
+        # outside OWL's whitelist: Boolean(...) compiled to
+        # ctx.Boolean(...) and raised "TypeError: ctx.Boolean is not a
+        # function" while rendering the conversation rows — use !!x.
+        for line in xml.splitlines():
+            if "t-on-" in line:
+                self.assertNotIn("if (", line)
+                self.assertNotIn("=> {", line)
+            if "t-att-" in line or "t-esc" in line or "t-if" in line:
+                self.assertNotIn("Boolean(", line)
+                self.assertNotIn("JSON.", line)
+        self.assertIn("onComposerKeydown(ev)", js)
+        self.assertIn("onExtractionKeydown(ev)", js)
+        self.assertIn("onAdjustmentKeydown(ev)", js)
+        # Escape is ALSO handled at the app root (t-on-keydown on the root
+        # div → onAppKeydown): the overlay's own handler only hears events
+        # bubbling through the overlay, so an Esc pressed while focus still
+        # sits on the Reply button (outside the overlay) would be lost —
+        # the root handler of the LIVE instance closes it. Focus lands in
+        # the textarea via nextTick after the overlay renders.
+        self.assertIn("onAppKeydown(ev)", js)
+        self.assertIn('t-on-keydown="(ev) => this.onAppKeydown(ev)"', xml)
+        self.assertIn("this.closeComposer();", js)  # reset literal path
 
     def test_f3_booking_wiring(self):
         """F-3: button (XML) ↔ RPC (JS) ↔ method (Python) must stay in

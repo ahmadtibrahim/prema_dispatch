@@ -28,6 +28,10 @@ class TestLinkCandidatesD5(InboxTestCase):
             "pickup_address": "100 King St, Toronto ON M5V",
             "delivery_address": "50 Front St, Belleville ON K8N",
             "pickup_date": "2026-09-02",
+            "pallets": 6,
+            "shipment_type": "ltl",
+            "temperature_mode": "dry",
+            "weight_lbs": 2000,
             "state": "confirmed",
         })
         _, conv, _ = self.ingest(
@@ -77,7 +81,9 @@ class TestLinkCandidatesD5(InboxTestCase):
         rows = conv.inbox_link_candidates("invoice", conv.id)
         self.assertTrue(rows)
         row = next(r for r in rows if r["id"] == inv.id)
-        self.assertEqual(row["number"], inv.name)
+        # unposted invoice: number column renders '' while the move's name
+        # is still False — the candidate list never shows "False"
+        self.assertEqual(row["number"], inv.name or "")
         self.assertIn("2026-09-01", row["date"] or "")
         self.assertEqual(row["total"], 542.00)
         self.assertIn("payment_state", row)
@@ -132,14 +138,19 @@ class TestLinkBacklinkD5(InboxTestCase):
         self.assertIn("Dispatch Inbox conversation linked", note.body)
         self.assertIn(str(conv.id), note.body)  # deep link carries conv id
         self.assertNotIn("bob@demo-toronto-produce.test@", note.body)
-        self.assertEqual(note.subtype_id.xml_id, "mail.mt_note")
+        self.assertEqual(note.subtype_id, self.env.ref("mail.mt_note"))
 
     def test_opportunity_partner_stamped_only_when_empty(self):
         p = self._partner("Acme", "acme@link.test")
-        lead = self.env["crm.lead"].create({"name": "no partner yet"})
+        lead = self.env["crm.lead"].create(
+            {"name": "Acme Q3 freight (new customer)"})
         _, conv, _ = self.ingest(
             email_from="Acme <acme@link.test>", subject="Quote")
-        conv.action_link_record("opportunity", lead.id)
+        # A partnerless lead can only be surfaced through the picker's
+        # MANUAL search (auto scope = this conversation's partner only) —
+        # the search query that matched it rides along on the link RPC.
+        conv.action_link_record(
+            "opportunity", lead.id, "Acme Q3 freight")
         self.assertEqual(lead.partner_id.id, p.id)
 
     def test_opportunity_partner_never_overwritten(self):
@@ -149,7 +160,9 @@ class TestLinkBacklinkD5(InboxTestCase):
             "name": "other's lead", "partner_id": p2.id})
         _, conv, _ = self.ingest(
             email_from="Acme <acme@link.test>", subject="Quote")
-        conv.action_link_record("opportunity", lead.id)
+        # cross-customer link rides the manual picker search (customer
+        # name), exactly like a dispatcher searching "Other" live
+        conv.action_link_record("opportunity", lead.id, "Other")
         # the OTHER customer's lead is never re-associated
         self.assertEqual(lead.partner_id.id, p2.id)
         self.assertEqual(conv.opportunity_id.id, lead.id)  # link still set
@@ -181,6 +194,10 @@ class TestLinkBacklinkD5(InboxTestCase):
             "partner_id": p.id,
             "pickup_address": "1 King St",
             "delivery_address": "2 Queen St",
+            "pallets": 6,
+            "shipment_type": "ltl",
+            "temperature_mode": "dry",
+            "weight_lbs": 2000,
         })
         _, conv, _ = self.ingest(
             email_from="Acme <acme@link.test>", subject="Quote")
@@ -194,10 +211,10 @@ class TestLinkBacklinkD5(InboxTestCase):
     def test_link_backlink_escapes_sender_email(self):
         """The backlink body escapes the (untrusted) sender address —
         no raw HTML injection through email_from."""
-        _, conv, _ = self.ingest(
-            email_from="Acme <acme@link.test>",
-            subject='"><script>alert(1)</script>')
         p = self._partner("Acme", "acme@link.test")
+        _, conv, _ = self.ingest(
+            email_from='"><script>alert(1)</script> <acme@link.test>',
+            subject="Quote")
         lead = self.env["crm.lead"].create(
             {"name": "esc", "partner_id": p.id})
         conv.action_link_record("opportunity", lead.id)
@@ -218,8 +235,11 @@ class TestPartnerNoteMirrorD6(InboxTestCase):
             {"name": name, "email": email})
 
     def _partner_notes(self, partner):
+        # body filter: Odoo 18 auto-posts a "Contact created" mt_note on
+        # every new partner — only the mirrored Dispatch Inbox notes count
         return self.env["mail.message"].search([
             ("model", "=", "res.partner"), ("res_id", "=", partner.id),
+            ("body", "like", "%Dispatch Inbox note%"),
         ])
 
     def test_note_mirrors_to_partner_chatter(self):
@@ -233,7 +253,7 @@ class TestPartnerNoteMirrorD6(InboxTestCase):
         self.assertEqual(len(notes), 1)
         self.assertIn("Call them back on Monday", notes[0].body)
         self.assertIn("Dispatch Inbox note", notes[0].body)
-        self.assertEqual(notes[0].subtype_id.xml_id, "mail.mt_note")
+        self.assertEqual(notes[0].subtype_id, self.env.ref("mail.mt_note"))
         self.assertIsInstance(note.partner_log_note_id.id, int)
         self.assertEqual(note.partner_log_note_id.id, notes[0].id)
 

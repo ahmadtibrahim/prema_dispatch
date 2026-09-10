@@ -18,13 +18,22 @@ copy data):
   4. saved-location resolution   (city/province text -> exactly one active
      saved location of the customer or global; ambiguous -> left blank)
 
-Fields with NO deterministic source (expected_skids, total_weight_lbs,
-requires_liftgate, temperature_confirmed) are deliberately NEVER guessed:
-the dispatcher enters them and the wizard validation confirms them.
-Attachments/AI remain available as a separate user-invoked step on the
-source document (engine invoice/quote AI) whose stored results this
-service then maps on the next open — AI is never invoked to copy data
-that the cascade already produced.
+Ladder 2 also carries the shipment figures the AI flow already wrote into
+the service-note text as LABELLED FIELDS — ``Load: N pallets / W lb`` and
+``Commodity: …``. Those are the stored extraction result, read back
+verbatim (comma thousands separators accepted); they are only ever used
+when the label is actually present, and a temperature carried from the
+same stored text sets ``temperature_confirmed`` because the value came
+from the customer's own document rather than a keystroke. Nothing is
+inferred from a bare number: a figure with no label is left to the
+dispatcher.
+
+Fields with NO deterministic source (requires_liftgate) are deliberately
+NEVER guessed: the dispatcher enters them and the wizard validation
+confirms them. Attachments/AI remain available as a separate
+user-invoked step on the source document (engine invoice/quote AI) whose
+stored results this service then maps on the next open — AI is never
+invoked to copy data that the cascade already produced.
 """
 
 import re
@@ -38,6 +47,17 @@ _EQUIPMENT_RE = re.compile(
 _TEMPERATURE_RE = re.compile(
     r"(-?\d{1,3}(?:\.\d+)?)\s*(?:°)?\s*([CF])\b", re.IGNORECASE)
 _DATE_RE = re.compile(r"Date:\s*([A-Za-z]{3,9}\s+\d{1,2},?\s+\d{4})")
+# Labelled shipment figures written by the AI flow into the service note
+# ("Load: 12 pallets / 12,000 lb", "Commodity: FROZEN BAKERY"). The label
+# is what makes the value deterministic — an unlabelled number is ignored.
+_LOAD_RE = re.compile(
+    r"Load:\s*(\d[\d,]*)\s*(?:pallets?|skids?)\s*/\s*"
+    r"(\d[\d,]*(?:\.\d+)?)\s*(?:lb|lbs|pounds)\b", re.IGNORECASE)
+_LOAD_PROSE_RE = re.compile(
+    r"(\d[\d,]*)\s*(?:pallets?|skids?)\s*\(\s*"
+    r"(\d[\d,]*(?:\.\d+)?)\s*(?:lb|lbs|pounds)\s*\)", re.IGNORECASE)
+_COMMODITY_RE = re.compile(
+    r"Commodity:\s*([^\n\r]{2,80}?)\s*(?=\n|\r|$)", re.IGNORECASE)
 _PICKUP_WINDOW_RE = re.compile(
     r"Pickup:\s*(\d{1,2}:\d{2})\s*(AM|PM)", re.IGNORECASE)
 _ROUTE_RE = re.compile(
@@ -72,6 +92,7 @@ class BookLoadMappingService:
         self._map_references(source, out)
         self._map_cities(source, out)
         self._map_line_details(source, out)
+        self._map_document_figures(source, out)
         self._map_schedule(source, out)
         self._resolve_locations(source, out)
         return out
@@ -88,6 +109,8 @@ class BookLoadMappingService:
             "equipment_type": "Equipment",
             "required_temperature_c": "Reefer temperature",
             "commodity": "Commodity",
+            "expected_skids": "Pallets",
+            "total_weight_lbs": "Weight (lb)",
             "scheduled_pickup": "Pickup window",
             "pickup_saved_location_id": "Pickup address",
             "delivery_saved_location_id": "Delivery address",
@@ -99,12 +122,17 @@ class BookLoadMappingService:
             if field == "scheduled_pickup":
                 return str(value)[:16].replace("T", " ")
             if field == "required_temperature_c":
-                return "%s °C" % value
+                suffix = " (confirmed)" if mapped.get(
+                    "temperature_confirmed") else ""
+                return "%s °C%s" % (value, suffix)
+            if field == "total_weight_lbs":
+                return "%g lb" % value
             return value
         for field in (
                 "purchase_order", "bol_reference", "customer_reference",
                 "service_type", "equipment_type", "required_temperature_c",
-                "commodity", "scheduled_pickup", "pickup_saved_location_id",
+                "commodity", "expected_skids", "total_weight_lbs",
+                "scheduled_pickup", "pickup_saved_location_id",
                 "delivery_saved_location_id"):
             if field in mapped:
                 lines.append("%s auto-filled: %s" % (
@@ -210,12 +238,72 @@ class BookLoadMappingService:
         if temperature is not None:
             out["required_temperature_c"] = temperature
             out["submitted_temperature_unit"] = "c"
+            # The figure came from the stored document, not a keystroke:
+            # it is carried pre-confirmed. Any edit to the value or the
+            # unit clears the box again (wizard onchange), so a corrected
+            # temperature is re-confirmed by the dispatcher.
+            out["temperature_confirmed"] = True
         if commodity_names:
             seen = []
             for name in commodity_names:
                 if name not in seen:
                     seen.append(name)
             out["commodity"] = ", ".join(seen)
+
+    # ── ladder 2: labelled shipment figures from the stored AI note ────
+
+    def _map_document_figures(self, source, out):
+        """Pallet count, weight and commodity as the stored AI result
+        already recorded them — read back from the labelled lines of the
+        service note, never inferred from an unlabelled number."""
+        note = self._service_note(source)
+        if not note:
+            return
+        load = self._load_figures(note)
+        if load:
+            pallets, weight = load
+            out.setdefault("expected_skids", pallets)
+            out.setdefault("total_weight_lbs", weight)
+        # An explicit "Commodity: …" label outranks a product display name
+        # (ladder 2 above ladder 3).
+        commodity = self._label_value(_COMMODITY_RE, note)
+        if commodity:
+            out["commodity"] = commodity
+
+    @staticmethod
+    def _load_figures(text):
+        """``(pallets, weight_lbs)`` from the labelled Load line, else from
+        the summary prose's ``N pallets (W lbs)`` form — first hit wins."""
+        for pattern in (_LOAD_RE, _LOAD_PROSE_RE):
+            match = pattern.search(text)
+            if match:
+                pallets = BookLoadMappingService._number(match.group(1))
+                weight = BookLoadMappingService._number(match.group(2))
+                if pallets and pallets > 0 and weight is not None:
+                    return int(pallets), weight
+        return None
+
+    @staticmethod
+    def _number(text):
+        try:
+            return float(str(text).replace(",", "").strip())
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _label_value(pattern, text):
+        match = pattern.search(text)
+        if not match:
+            return None
+        value = " ".join(match.group(1).split())
+        if not value:
+            return None
+        # The AI writes ALL CAPS labels; present them the way the source
+        # document does ("FROZEN BAKERY" -> "Frozen Bakery"). Mixed-case
+        # values are already human-formatted and left untouched.
+        if value.isupper():
+            value = value.title()
+        return value
 
     def _map_schedule(self, source, out):
         so = source._name == "sale.order"

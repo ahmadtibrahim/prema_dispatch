@@ -160,6 +160,10 @@ class InboxMessage(models.Model):
         to record-rule/ORM overhead.
         """
         user = user or self.env.user
+        # Raw SQL never triggers ORM autoflush — pending ORM writes (e.g. a
+        # trashed flag set moments ago) must hit the DB first or this query
+        # returns stale rows.
+        self.env.flush_all()
         self.env.cr.execute(
             """
             SELECT m.id
@@ -180,6 +184,9 @@ class InboxMessage(models.Model):
     def _unread_counts(self, users=None):
         """{user_id: {'total': n, 'load_board': n, 'spam': n}} for the users."""
         users = users or self.env["res.users"].search([])
+        # Same raw-SQL/autoflush contract as _unread_message_ids: flush the
+        # ORM queue once before the loop so every count sees committed state.
+        self.env.flush_all()
         res = {}
         for u in users:
             self.env.cr.execute(
