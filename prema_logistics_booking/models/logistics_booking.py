@@ -2049,9 +2049,15 @@ class LogisticsBooking(models.Model):
         destination_is_hub = bool(
             destination_stop and destination_stop.hub_transfer_stop)
         # This leg's own freight: the same goods ride both trucks, but each
-        # leg reserves and reports what ITS truck carries.
-        leg_pallets = leg.pallets or self.physical_pallets or self.pallets
-        leg_weight_lbs = leg.weight_lbs or self.weight_lbs
+        # leg reserves and reports what ITS truck carries. A CUSTOM (no-leg)
+        # operation — the path every sale.order / custom-quote / portal
+        # booking takes — has no leg at all here: `leg` is the False sentinel
+        # the caller passes, so its freight is the booking's own.
+        # Reading `.pallets` off that sentinel crashed with
+        # "'bool' object has no attribute 'pallets'" and took the whole
+        # confirmation down, leaving a booking with no dispatch job.
+        leg_pallets = (leg.pallets if leg else 0) or self.physical_pallets or self.pallets
+        leg_weight_lbs = (leg.weight_lbs if leg else 0.0) or self.weight_lbs
 
         created_origin = created_destination = False
         if origin_stop:
