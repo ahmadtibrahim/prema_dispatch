@@ -146,6 +146,7 @@ class PremaDispatchLocation(models.Model):
 
     location_type = fields.Selection([
         ("warehouse",  "Warehouse"),
+        ("distribution_center", "Distribution Center"),
         ("customer",   "Customer"),
         ("relay",      "Relay / Transfer Point"),
         ("rest_area",  "Rest Area"),
