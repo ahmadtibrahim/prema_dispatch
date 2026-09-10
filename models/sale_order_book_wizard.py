@@ -18,6 +18,7 @@ class SaleOrderBookWizard(models.TransientModel):
     """
 
     _name = "prema.dispatch.so.book.wizard"
+    _inherit = ["prema.dispatch.book.load.timing.mixin"]
     _description = "Book Load from Sales Order"
 
     sale_order_id = fields.Many2one("sale.order", required=True, ondelete="cascade")
@@ -188,14 +189,24 @@ class SaleOrderBookWizard(models.TransientModel):
                 "instructions": self.general_notes or "",
             }
 
+        def timing_values(side):
+            """TIER 2 §2/§4: the dispatcher's (auto-filled, then edited)
+            timing for this side — the customer's window on one channel,
+            the dock's own hours on the other."""
+            values = self._timing_stop_values(side)
+            values["timezone"] = "America/Toronto"
+            return values
+
         service = BookingOrchestrationService(self.env)
         request = service.normalize_request({
             "partner_id": self.partner_id.id,
             "source_model": "sale.order",
             "source_res_id": so.id,
             "source_reference": so.name,
-            "pickup_stops": [location_values(self.pickup_saved_location_id, True)],
-            "delivery_stops": [location_values(self.delivery_saved_location_id, False)],
+            "pickup_stops": [dict(location_values(
+                self.pickup_saved_location_id, True), **timing_values("pickup"))],
+            "delivery_stops": [dict(location_values(
+                self.delivery_saved_location_id, False), **timing_values("delivery"))],
             "pallets": self.expected_skids,
             "weight_lbs": self.total_weight_lbs,
             "load_type": "ltl" if self.service_type == "ltl" else "ftl",

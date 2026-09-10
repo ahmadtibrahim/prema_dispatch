@@ -1854,6 +1854,54 @@ class BookingOrchestrationService:
         dispatch_id = stop_dict.get("saved_location_id") or False
         return dispatch_id, False
 
+    def _facility_hours_snapshot(self, dispatch_id, stop_type, stop_dict):
+        """Frozen per-weekday facility-hours snapshot for ONE booking stop.
+
+        The master facility (prema.dispatch.location.facility_hours_ids) is
+        the hours AUTHORITY and is snapshotted with the house helper; the
+        shipment's own declared dock hours (from the tender document, via
+        the wizard) only FILL a weekday the master does not cover — a
+        master row is never overwritten by a document, and a document is
+        never overwritten by a later master edit (the snapshot is frozen).
+
+        Returns {weekday(str 0=Mon..6): [open, close] or None} or False
+        when nothing at all is known.
+        """
+        snapshot = {}
+        location = (self.env["prema.dispatch.location"].sudo()
+                    .browse(int(dispatch_id)) if dispatch_id else False)
+        if location and location.exists():
+            try:
+                from odoo.addons.prema_logistics_booking.services.itinerary_planner import (  # noqa: E501
+                    snapshot_facility_hours)
+                snapshot = snapshot_facility_hours(
+                    self.env, location,
+                    "pickup" if stop_type == "pickup" else "delivery")
+            except Exception:  # pragma: no cover — never block a booking
+                _logger.warning(
+                    "facility-hours snapshot failed for location %s",
+                    dispatch_id, exc_info=True)
+                snapshot = {}
+        declared = self._declared_facility_window(stop_dict)
+        if declared:
+            for key in ("0", "1", "2", "3", "4", "5", "6"):
+                if not snapshot.get(key):
+                    snapshot[key] = list(declared)
+        return snapshot or False
+
+    @staticmethod
+    def _declared_facility_window(stop_dict):
+        """(open, close) the shipment's own document declared for this
+        stop's dock, or None. Sane window only: close after open."""
+        try:
+            opens = float(stop_dict.get("facility_open_time"))
+            closes = float(stop_dict.get("facility_close_time"))
+        except (TypeError, ValueError):
+            return None
+        if closes > opens:
+            return (opens, closes)
+        return None
+
     def _create_booking_stops(self, booking, pickup_stops, delivery_stops):
         """Create real booking stops from raw pickup/delivery stop dicts.
         THE single stop-creation path for every channel — no channel may
@@ -1893,7 +1941,16 @@ class BookingOrchestrationService:
                 "appointment_time": pu.get("appointment_time") or False,
                 "hard_deadline": pu.get("hard_deadline") or False,
                 "service_time_minutes": pu.get("service_time_minutes") or 15,
-                "operating_hours_snapshot": pu.get("operating_hours_snapshot") or False,
+                # TIER 2 §4: the dock's own hours and the shipment's
+                # appointment coexist — the declared hours are never
+                # overwritten by the window, and they fill the frozen
+                # snapshot on days the master facility does not cover.
+                "facility_open_time": pu.get("facility_open_time") or False,
+                "facility_close_time": pu.get("facility_close_time") or False,
+                "operating_hours_snapshot": (
+                    pu.get("operating_hours_snapshot")
+                    or self._facility_hours_snapshot(dispatch_id, "pickup", pu)
+                    or False),
                 "timezone": pu.get("timezone") or "",
             })
             seq += 10
@@ -1930,7 +1987,13 @@ class BookingOrchestrationService:
                 "appointment_time": dl.get("appointment_time") or False,
                 "hard_deadline": dl.get("hard_deadline") or False,
                 "service_time_minutes": dl.get("service_time_minutes") or 15,
-                "operating_hours_snapshot": dl.get("operating_hours_snapshot") or False,
+                # TIER 2 §4 — same two-channel rule as the pickup stop.
+                "facility_open_time": dl.get("facility_open_time") or False,
+                "facility_close_time": dl.get("facility_close_time") or False,
+                "operating_hours_snapshot": (
+                    dl.get("operating_hours_snapshot")
+                    or self._facility_hours_snapshot(dispatch_id, "delivery", dl)
+                    or False),
                 "timezone": dl.get("timezone") or "",
             })
             seq += 10

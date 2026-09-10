@@ -36,10 +36,17 @@ stored results this service then maps on the next open — AI is never
 invoked to copy data that the cascade already produced.
 """
 
+import base64
+import io
 import re
 from datetime import datetime
 
 import pytz
+
+try:  # optional: the tender reader degrades to the text ladders without it
+    from pdfminer.high_level import extract_text
+except Exception:  # pragma: no cover
+    extract_text = None
 
 _FREIGHT_KIND_RE = re.compile(r"\b(LTL|FTL|Dedicated)\b", re.IGNORECASE)
 _EQUIPMENT_RE = re.compile(
@@ -60,6 +67,37 @@ _COMMODITY_RE = re.compile(
     r"Commodity:\s*([^\n\r]{2,80}?)\s*(?=\n|\r|$)", re.IGNORECASE)
 _PICKUP_WINDOW_RE = re.compile(
     r"Pickup:\s*(\d{1,2}:\d{2})\s*(AM|PM)", re.IGNORECASE)
+# ── TIER 2 timing (§2/§3): appointment windows, facility hours, deadline ──
+_TIME = r"(\d{1,2}:\d{2})\s*(AM|PM)"
+# "11:00 AM–12:00 PM", "2:30 PM - 3:30 PM", "02:30 PM to 03:30 PM",
+# "08:00 to 12:00" (24h) — the separators real tenders use.
+_SEP = r"\s*(?:–|—|—|-|to|until|thru|through)\s*"
+_PICKUP_APPT_RE = re.compile(
+    r"Pickup:\s*(?:Appointment\s+required\s+)?%s%s%s" % (_TIME, _SEP, _TIME),
+    re.IGNORECASE)
+_DELIVERY_APPT_RE = re.compile(
+    r"Delivery:\s*(?:Appointment\s+required\s+)?%s%s%s" % (_TIME, _SEP, _TIME),
+    re.IGNORECASE)
+# The bare "Appointment required 11:00 AM to 12:00 PM" form used by the
+# carrier tender's Accessorials line (side resolved by the section).
+_ANY_APPT_RE = re.compile(
+    r"Appointment\s+required\s+%s%s%s" % (_TIME, _SEP, _TIME), re.IGNORECASE)
+_HOURS_RE = re.compile(
+    r"Hours\s+%s%s%s" % (_TIME, _SEP, _TIME), re.IGNORECASE)
+_APPT_REQUIRED_RE = re.compile(
+    r"appointments?\s+required", re.IGNORECASE)
+_PICKUP_APPT_REQ_RE = re.compile(
+    r"pickup[^.\n]{0,80}?appointments?\s+required", re.IGNORECASE)
+_DELIVERY_APPT_REQ_RE = re.compile(
+    r"delivery[^.\n]{0,80}?appointments?\s+required", re.IGNORECASE)
+_BOTH_APPT_REQ_RE = re.compile(
+    r"pickup\s+and\s+delivery\s+appointments?\s+required", re.IGNORECASE)
+# "STOP 1 - PICKUP" / "STOP 2 - DELIVERY" section headers on a tender PDF.
+_SECTION_RE = re.compile(
+    r"STOP\s+\d+\s*[-–—]\s*(PICKUP|DELIVERY)", re.IGNORECASE)
+# A dock whose documented "hours" span less than this is not a facility
+# window (it is a slot/appointment artefact) — see _valid_facility_hours.
+_MIN_FACILITY_SPAN_HOURS = 2.0
 _ROUTE_RE = re.compile(
     r"Route:\s*([^\n→]{2,90}?)\s*→\s*([^\n]{2,90})", re.IGNORECASE)
 _FROM_TO_RE = re.compile(
@@ -94,6 +132,7 @@ class BookLoadMappingService:
         self._map_line_details(source, out)
         self._map_document_figures(source, out)
         self._map_schedule(source, out)
+        self._map_timing(source, out)
         self._resolve_locations(source, out)
         return out
 
@@ -111,9 +150,27 @@ class BookLoadMappingService:
             "commodity": "Commodity",
             "expected_skids": "Pallets",
             "total_weight_lbs": "Weight (lb)",
-            "scheduled_pickup": "Pickup window",
+            "scheduled_pickup": "Pickup date/time",
             "pickup_saved_location_id": "Pickup address",
             "delivery_saved_location_id": "Delivery address",
+            "pickup_window_type": "Pickup window type",
+            "pickup_window_start": "Pickup window start",
+            "pickup_window_end": "Pickup window end",
+            "pickup_appointment_required": "Pickup appointment",
+            "pickup_facility_open_time": "Pickup facility open",
+            "pickup_facility_close_time": "Pickup facility close",
+            "delivery_window_type": "Delivery window type",
+            "delivery_window_start": "Delivery window start",
+            "delivery_window_end": "Delivery window end",
+            "delivery_deadline": "Delivery deadline",
+            "delivery_appointment_required": "Delivery appointment",
+            "delivery_facility_open_time": "Delivery facility open",
+            "delivery_facility_close_time": "Delivery facility close",
+        }
+        window_types = {
+            "flexible": "Flexible", "facility_hours": "Facility Hours",
+            "earliest_time": "Earliest Time", "time_window": "Time Window",
+            "exact_appointment": "Exact Appointment", "deadline": "Deadline",
         }
         def _display(field, value):
             if field.endswith("_saved_location_id"):
@@ -121,19 +178,38 @@ class BookLoadMappingService:
                 return "%s (%s)" % (loc.display_name, loc.city) if loc else value
             if field == "scheduled_pickup":
                 return str(value)[:16].replace("T", " ")
+            if field.endswith("_window_type"):
+                return window_types.get(value, value)
+            if field == "delivery_deadline":
+                return str(value)[:16].replace("T", " ")
             if field == "required_temperature_c":
                 suffix = " (confirmed)" if mapped.get(
                     "temperature_confirmed") else ""
                 return "%s °C%s" % (value, suffix)
             if field == "total_weight_lbs":
                 return "%g lb" % value
+            if field != "expected_skids" and isinstance(value, (int, float)) \
+                    and not isinstance(value, bool):
+                # Every remaining numeric timing field is a 24h float the
+                # document quoted — window starts/ends and the facility's
+                # own open/close. (Counts, weights and the temperature are
+                # consumed above, so this can never eat them.)
+                minutes = int(round(float(value) * 60))
+                return "%02d:%02d" % ((minutes // 60) % 24, minutes % 60)
             return value
         for field in (
                 "purchase_order", "bol_reference", "customer_reference",
                 "service_type", "equipment_type", "required_temperature_c",
                 "commodity", "expected_skids", "total_weight_lbs",
                 "scheduled_pickup", "pickup_saved_location_id",
-                "delivery_saved_location_id"):
+                "delivery_saved_location_id",
+                "pickup_window_type", "pickup_window_start",
+                "pickup_window_end", "pickup_appointment_required",
+                "pickup_facility_open_time", "pickup_facility_close_time",
+                "delivery_window_type", "delivery_window_start",
+                "delivery_window_end", "delivery_deadline",
+                "delivery_appointment_required",
+                "delivery_facility_open_time", "delivery_facility_close_time"):
             if field in mapped:
                 lines.append("%s auto-filled: %s" % (
                     labels[field], _display(field, mapped[field])))
@@ -328,6 +404,251 @@ class BookLoadMappingService:
             pickup = note_pickup
         if pickup:
             out["scheduled_pickup"] = pickup
+
+    # ── TIER 2 §3: deterministic timing ladder ────────────────────────
+
+    def _map_timing(self, source, out):
+        """Pickup/delivery window type + facility hours, by the §3 ladder.
+
+        1. explicit structured source columns  — none exist for shipment
+           timing on either source model, so the ladder starts at 2 (the
+           reader is written defensively so a future column is picked up);
+        2. the LATEST AI extraction stored for this record — but only when
+           it is tied to the attachments the record carries NOW;
+        3. the line details / service note text (the freight line);
+        4. the source's own ATTACHMENTS, and only for whatever is still
+           missing (the tender's per-stop "Hours" line).
+
+        A specific appointment is NEVER flattened to Flexible: when a
+        window is found the window type follows it. Nothing is guessed —
+        a side with no evidence keeps the wizard's own default.
+        """
+        found = {"pickup": None, "delivery": None,
+                 "pickup_hours": None, "delivery_hours": None,
+                 "appointment_required": {}}
+        for text in self._timing_ladder_texts(source):
+            partial = self._timing_from_text(text)
+            for key, value in partial.items():
+                if key == "appointment_required":
+                    for side, flag in value.items():
+                        found.setdefault("appointment_required", {})
+                        if flag and not found["appointment_required"].get(side):
+                            found["appointment_required"][side] = True
+                elif value and not found.get(key):
+                    found[key] = value
+            if found["pickup"] and found["delivery"]:
+                break
+
+        # Ladder 4 — the tender attachment, only for gaps the text left.
+        if not (found["pickup_hours"] and found["delivery_hours"]
+                and found["pickup"] and found["delivery"]):
+            for key, value in self._timing_from_attachments(source).items():
+                if value and not found.get(key):
+                    found[key] = value
+
+        self._emit_timing(found, out)
+
+    def _timing_ladder_texts(self, source):
+        """Text blobs in §3 priority order: stored AI extraction (tied to
+        the CURRENT attachments), then the line/note text."""
+        texts = []
+        stored = self._stored_extraction_text(source)
+        if stored:
+            texts.append(stored)
+        note = self._service_note(source)
+        if note and note not in texts:
+            texts.append(note)
+        return texts
+
+    def _stored_extraction_text(self, source):
+        """Ladder 2 — the stored AI extraction, returned ONLY when it is
+        tied to the attachments this record carries right now. A snapshot
+        that names attachments the record no longer has is stale and is
+        skipped (the line text then answers, ladder 3)."""
+        snap = self._snapshot(source)
+        if not snap:
+            return ""
+        declared = snap.get("source_attachment_ids") or []
+        if declared:
+            current = set(self._source_attachment_ids(source))
+            if current and not (set(declared) & current):
+                return ""
+        chunks = []
+        for key, value in sorted(snap.items()):
+            if isinstance(value, str) and key.startswith("line:") \
+                    and key.endswith(":name"):
+                chunks.append(value)
+        summary = getattr(source, "x_ai_summary", "") or ""
+        if summary:
+            chunks.append(summary)
+        return "\n".join(chunks)
+
+    def _timing_from_text(self, text):
+        """Windows + per-side appointment flags from one text blob.
+
+        An appointment requirement is only ever attributed per SIDE: the
+        window itself is proof, and a side-labelled "…appointment
+        required…" sentence is the weaker evidence. The plural phrasing
+        ("Pickup and delivery appointments required") names both sides
+        explicitly and is the only case that sets both at once.
+        """
+        text = text or ""
+        found = {"appointment_required": {}}
+        for side, pattern in (("pickup", _PICKUP_APPT_RE),
+                              ("delivery", _DELIVERY_APPT_RE)):
+            match = pattern.search(text)
+            if match:
+                window = self._window_floats(match.group(1), match.group(2),
+                                             match.group(3), match.group(4))
+                if window:
+                    found[side] = window
+        for side, pattern in (("pickup", _PICKUP_APPT_REQ_RE),
+                              ("delivery", _DELIVERY_APPT_REQ_RE)):
+            if pattern.search(text):
+                found["appointment_required"][side] = True
+        if _BOTH_APPT_REQ_RE.search(text):
+            found["appointment_required"].update(
+                {"pickup": True, "delivery": True})
+        return found
+
+    def _timing_from_attachments(self, source):
+        """Ladder 4 — parse the source's own PDF attachments for the
+        per-stop 'Hours' line and any appointment the text ladder missed.
+
+        Sectioned tenders name each stop ("STOP 1 - PICKUP"), which is what
+        makes a per-side facility window attributable at all. A text 'Hours'
+        line with no section is deliberately NOT attributed to a side.
+        """
+        found = {}
+        for text in self._attachment_texts(source):
+            sections = self._split_sections(text)
+            if not sections:
+                continue
+            for side, body in sections.items():
+                window = found.get(side)
+                appointment = (self._timing_from_text(body).get(side)
+                               if _ANY_APPT_RE.search(body) else None)
+                if appointment and not window:
+                    found[side] = appointment
+                hours = _HOURS_RE.search(body)
+                if hours:
+                    span = self._window_floats(*hours.groups())
+                    if self._valid_facility_hours(span, appointment or window):
+                        found["%s_hours" % side] = span
+        return found
+
+    @staticmethod
+    def _split_sections(text):
+        """{'pickup': body, 'delivery': body} from a sectioned tender."""
+        if not text:
+            return {}
+        markers = list(_SECTION_RE.finditer(text))
+        if not markers:
+            return {}
+        sections = {}
+        for index, marker in enumerate(markers):
+            end = (markers[index + 1].start()
+                   if index + 1 < len(markers) else len(text))
+            side = marker.group(1).lower()
+            sections.setdefault(side, text[marker.end():end])
+        return sections
+
+    @staticmethod
+    def _valid_facility_hours(span, appointment):
+        """A documented 'Hours' span is the DOCK's hours only when it is a
+        real facility window: sane order, at least a couple of hours wide,
+        and — when the stop also has an appointment — wide enough to
+        contain it. A 30-minute 'hours' line is a slot artefact, not a
+        facility (worst case it would tell the ETA engine the dock shuts
+        before the appointment it just gave)."""
+        if not span:
+            return False
+        opens, closes = span
+        if closes <= opens:
+            return False
+        if closes - opens < _MIN_FACILITY_SPAN_HOURS:
+            return False
+        if appointment and not (opens <= appointment[0] and closes >= appointment[1]):
+            return False
+        return True
+
+    def _attachment_texts(self, source):
+        """Decoded text of the source's own PDF attachments (capped, and
+        never fatal: an unreadable attachment is skipped)."""
+        texts = []
+        if extract_text is None:
+            return texts
+        for attachment in self._source_attachments(source)[:3]:
+            try:
+                raw = attachment.datas
+                if not raw:
+                    continue
+                stream = io.BytesIO(base64.b64decode(raw))
+                if (attachment.mimetype or "").endswith("pdf") or \
+                        (attachment.name or "").lower().endswith(".pdf"):
+                    texts.append(extract_text(stream) or "")
+                else:
+                    texts.append(stream.read().decode("utf-8", "replace"))
+            except Exception:
+                continue
+        return texts
+
+    def _source_attachments(self, source):
+        attachments = self.env["ir.attachment"].sudo().search([
+            ("res_model", "=", source._name), ("res_id", "=", source.id),
+        ], order="id desc")
+        declared = self._snapshot(source).get("source_attachment_ids") or []
+        if declared:
+            attachments |= self.env["ir.attachment"].sudo().browse(
+                [int(a) for a in declared])
+        return attachments
+
+    def _source_attachment_ids(self, source):
+        return [a.id for a in self._source_attachments(source)]
+
+    def _emit_timing(self, found, out):
+        """Ladder result → wizard fields. The window TYPE follows the
+        evidence — a specific appointment is never silently replaced by
+        'Flexible' (§3): a quoted appointment window becomes Exact
+        Appointment, facility hours alone become Facility Hours, and a
+        side with no evidence keeps the wizard's own default."""
+        required = found.get("appointment_required") or {}
+        for side in ("pickup", "delivery"):
+            window = found.get(side)
+            hours = found.get("%s_hours" % side)
+            if hours:
+                out["%s_facility_open_time" % side] = hours[0]
+                out["%s_facility_close_time" % side] = hours[1]
+            if window:
+                out["%s_window_type" % side] = "exact_appointment"
+                out["%s_window_start" % side] = window[0]
+                out["%s_window_end" % side] = window[1]
+                out["%s_appointment_required" % side] = True
+            elif hours:
+                out["%s_window_type" % side] = "facility_hours"
+            if required.get(side) and "%s_appointment_required" % side not in out:
+                out["%s_appointment_required" % side] = True
+
+    @staticmethod
+    def _window_floats(h1, ap1, h2, ap2):
+        """('11:00', 'AM', '12:00', 'PM') → (11.0, 12.0); None if unusable
+        or inverted (an inverted window is a parse artefact, not a window)."""
+        def _one(hhmm, suffix):
+            try:
+                hour, minute = (int(part) for part in hhmm.split(":"))
+            except (TypeError, ValueError):
+                return None
+            if not 0 <= hour <= 23 or not 0 <= minute <= 59:
+                return None
+            hour %= 12
+            if (suffix or "").upper() == "PM":
+                hour += 12
+            return hour + minute / 60.0
+        start = _one(h1, ap1)
+        end = _one(h2, ap2)
+        if start is None or end is None or end <= start:
+            return None
+        return (start, end)
 
     # ── ladder 4: city text → exactly one saved location ──────────────
 

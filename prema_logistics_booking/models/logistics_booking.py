@@ -1671,6 +1671,41 @@ class LogisticsBooking(models.Model):
             })
         return movements
 
+    def _job_timing_vals(self, pickup_stop, delivery_stop, day):
+        """TIER 2 §6 — the dispatch JOB's window header, derived from the
+        booking stops that actually carry the timing.
+
+        This replaces the hardcoded ``pickup_window_type = "flexible"`` /
+        ``delivery_window_type = "flexible"`` pair that made every Planner
+        card look unconstrained no matter what the customer booked.
+
+        The job header states the CUSTOMER's commitment only. Facility
+        hours are NOT a job window type — they are the building's own
+        hours and stay on the stops (facility_open_time/close_time plus
+        the frozen operating_hours_snapshot), so the two never overwrite
+        each other (§4).
+        """
+        vals = {
+            "pickup_window_type": "flexible",
+            "delivery_window_type": "flexible",
+        }
+        pickup = pickup_stop[:1] if pickup_stop else pickup_stop
+        delivery = delivery_stop[:1] if delivery_stop else delivery_stop
+        if pickup:
+            vals.update(pickup._job_timing_vals(day, "pickup"))
+        if delivery:
+            vals.update(delivery._job_timing_vals(day, "delivery"))
+        # Job-level flags: the appointment flag is the union of the stops
+        # (either end needing a booked slot pins the day), and the hard
+        # deadline flag follows a real deadline binding.
+        vals["appointment_required"] = bool(
+            (pickup and pickup.appointment_required)
+            or (delivery and delivery.appointment_required))
+        vals["hard_deadline"] = bool(
+            delivery and delivery.timing_type == "deadline"
+            and delivery.hard_deadline)
+        return vals
+
     def _create_dispatch_route_from_movements(self):
         """Milk-run bridge: one dispatch route job with ordered operational
         stops and canonical items derived from booking.stop_ids and booking
@@ -1799,8 +1834,14 @@ class LogisticsBooking(models.Model):
             ),
             "approximate_skids": self.physical_pallets or self.pallets,
             "planned_delivery_date": fields.Date.to_date(operation_date),
-            "pickup_window_type": "flexible",
-            "delivery_window_type": "flexible",
+            # TIER 2 §6: the Planner card's window header is DERIVED from
+            # the booking stops that actually carry the timing — the
+            # hardcoded "flexible"/"flexible" pair is gone. Facility hours
+            # stay on the stops (never folded into the customer window).
+            **self._job_timing_vals(
+                stops.filtered(lambda s: s.stop_type == "pickup")[:1],
+                stops.filtered(lambda s: s.stop_type == "delivery")[:1],
+                operation_date),
             "route_definition_mode": "exact_stops",
             "stops_confirmation_state": "confirmed",
             "planned_route_name": self.booking_number,
@@ -1935,10 +1976,10 @@ class LogisticsBooking(models.Model):
             "scheduled_pickup": scheduled_at,
             "planned_delivery_date": fields.Date.to_date(operation_date),
             "requested_delivery_date": self.estimated_delivery_date or fields.Date.to_date(operation_date),
-            "pickup_window_type": "flexible",
-            "pickup_exact_time": False,
-            "delivery_window_type": "flexible",
-            "delivery_exact_time": False,
+            # TIER 2 §6 — same derivation as the movement_v1 bridge: the
+            # job header states the booking stops' real commitment.
+            **self._job_timing_vals(origin_stop, destination_stop,
+                                    operation_date),
             "service_type": "ltl" if self.shipment_type == "ltl" else "ftl",
             "equipment_type": self.temperature_mode,
             "requires_reefer": self.temperature_mode == "reefer",

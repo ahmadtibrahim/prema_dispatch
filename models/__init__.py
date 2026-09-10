@@ -24,6 +24,7 @@ from . import dispatch_load_plan_event
 from . import dispatch_document
 from . import dispatch_load_plan
 from . import dispatch_load_plan_optimizer
+from . import book_load_timing_mixin
 from . import dispatch_book_load_wizard
 from . import sale_order_book_wizard
 from . import dispatch_location_photo
