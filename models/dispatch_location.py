@@ -616,6 +616,13 @@ class PremaDispatchLocation(models.Model):
             )
 
             # ── Display label ──
+            # Built from the most specific name parts available. The legacy
+            # stored ``name`` is free-form and OFTEN already contains the
+            # city ("Healthy Planet - Belleville") — appending the city
+            # unconditionally produced "… Belleville — Belleville". The
+            # city is now appended only when the label does not name it yet,
+            # and when a second ACTIVE facility of the same brand serves the
+            # same city the street is appended to tell them apart.
             label = ""
             if loc.chain_name:
                 if loc.location_number_normalized:
@@ -628,12 +635,74 @@ class PremaDispatchLocation(models.Model):
                 label = loc.name or ""
 
             if loc.branch_name:
+                # A branch pins the location (branch implies the city)
                 label = "%s — %s" % (label, loc.branch_name) if label else loc.branch_name
             elif loc.city and label:
-                # Only append city when there is no branch (branch implies location)
-                label = "%s — %s" % (label, loc.city)
+                label = self._append_location_city(label, loc.city)
+
+            if label and loc.city and self._needs_street_disambiguation(loc):
+                label = "%s — %s" % (label, (loc.street or loc.address or "").strip())
 
             loc.location_display_label = label or loc.address or "Location"
+
+    def _location_brand_of(self, loc):
+        """Compact brand token used to group facilities for display: chain
+        name, else business name, else the head of the legacy free-form name
+        (everything before the first '-/—' separator)."""
+        brand = (loc.chain_name or loc.business_name or "").strip()
+        if not brand:
+            brand = re.split(r"\s*[-–—]\s*", (loc.name or "").strip(), 1)[0].strip()
+        return re.sub(r"[^a-z0-9]", "", (brand or "").lower())
+
+    @staticmethod
+    def _compact_text(value):
+        return re.sub(r"[^a-z0-9]", "", (value or "").lower())
+
+    def _append_location_city(self, label, city):
+        """Append ``— City`` to a display label exactly once.
+
+        - City not in the label yet → plain append.
+        - Label ends with ``- City`` / ``— City`` (legacy free-form names
+          store the city verbatim) → re-join the head with the canonical
+          em dash, so "Healthy Planet - Belleville" displays as
+          "Healthy Planet — Belleville".
+        - City mentioned elsewhere (an address that contains the city) →
+          label left untouched (no city suffix, no duplication).
+        """
+        city = (city or "").strip()
+        if not label or not city:
+            return label
+        if self._compact_text(city) not in self._compact_text(label):
+            return "%s — %s" % (label, city)
+        trailing = re.search(
+            r"\s*[-–—]\s*%s\s*$" % re.escape(city), label, re.IGNORECASE)
+        if trailing:
+            return label[:trailing.start()].strip() + " — " + city
+        return label
+
+    def _needs_street_disambiguation(self, loc):
+        """True when another ACTIVE location of the same brand serves the
+        same city at a different street — the plain "Brand — City" label is
+        then ambiguous and the street should be shown."""
+        city = (loc.city or "").strip()
+        if not city or not loc.active or not (loc.street or loc.address):
+            return False
+        others = self.env["prema.dispatch.location"].search([
+            ("city", "=", city),
+            ("active", "=", True),
+            ("id", "!=", loc.id),
+        ], limit=25)
+        if not others:
+            return False
+        brand = self._location_brand_of(loc)
+        street_token = self._compact_text(loc.street or loc.address)
+        for other in others:
+            if (self._location_brand_of(other) != brand
+                    or not (other.street or other.address)):
+                continue
+            if self._compact_text(other.street or other.address) != street_token:
+                return True
+        return False
 
     @api.model
     def _search_location_anywhere(self, operator, value):
@@ -887,6 +956,62 @@ class PremaDispatchLocation(models.Model):
     # ═══════════════════════════════════════════════════════════════════════
     # CRUD Overrides
     # ═══════════════════════════════════════════════════════════════════════
+
+    @api.model
+    def _find_matching_existing(self, vals):
+        """Search-reuse-before-create: return the ACTIVE existing location
+        that already IS the physical place described by ``vals``, or an
+        empty recordset when no confident match exists (callers then create).
+
+        Match ladder — most specific first:
+        1. same Google Place ID;
+        2. same street + city (+ province) + compact postal, when every
+           address part is present; an identical unit narrows the hit, and a
+           different unit makes the match ambiguous (no auto-reuse);
+        3. street + city alone is NOT enough (two facilities can share a
+           street) — never auto-reuse on that.
+        """
+        Location = self.env["prema.dispatch.location"]
+        place_id = (vals.get("google_place_id") or "").strip()
+        if place_id:
+            hit = Location.search([
+                ("google_place_id", "=", place_id),
+                ("active", "=", True),
+            ], limit=1)
+            if hit:
+                return hit
+
+        street = (vals.get("street") or "").strip()
+        city = (vals.get("city") or "").strip()
+        postal = self._normalize_postal(vals.get("postal_code") or "")
+        if not (street and city and postal):
+            return Location.browse()
+        domain = [
+            ("street", "=ilike", street),
+            ("city", "=ilike", city),
+            ("active", "=", True),
+        ]
+        province = (vals.get("province_code") or "").strip()
+        if province:
+            domain.append(("province_code", "=ilike", province))
+        matches = Location.search(domain, limit=20)
+        if not matches:
+            return Location.browse()
+
+        postal_hits = matches.filtered(
+            lambda m: self._normalize_postal(m.postal_code) == postal)
+        if not postal_hits:
+            return Location.browse()
+        unit = (vals.get("unit") or "").strip()
+        if unit:
+            unit_hits = postal_hits.filtered(
+                lambda m: self._normalize_unit(m.unit) == self._normalize_unit(unit))
+            if unit_hits:
+                return unit_hits[:1]
+            if any(self._normalize_unit(m.unit) for m in postal_hits):
+                # Same building, different suite — ambiguous, let create decide
+                return Location.browse()
+        return postal_hits[:1]
 
     @api.model_create_multi
     def create(self, vals_list):

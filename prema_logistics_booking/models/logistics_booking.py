@@ -1,7 +1,10 @@
 import datetime
 import json
 import logging
+import re
 import secrets
+
+from markupsafe import Markup, escape
 
 import pytz
 
@@ -1981,11 +1984,28 @@ class LogisticsBooking(models.Model):
             "planned_route_name": corridor.name if corridor else "Custom / Expedited",
         })
 
+        # ── Leg endpoints: customer facility vs transfer hub ──
+        # A hub-transfer booking runs on two trucks: the feeder ENDS at the
+        # transfer hub and the linehaul STARTS there. The hub boundary is a
+        # handoff, not a customer visit — typing it as a customer pickup /
+        # dropoff demanded a customer POP/POD that can never exist and put
+        # the customer's final destination on the feeder card. The existing
+        # cross-dock stop types already carry exactly this semantics
+        # (custody transitions, item resolution, no customer proof), so the
+        # hub endpoints reuse them instead of a new subsystem.
+        origin_is_hub = bool(origin_stop and origin_stop.hub_transfer_stop)
+        destination_is_hub = bool(
+            destination_stop and destination_stop.hub_transfer_stop)
+        # This leg's own freight: the same goods ride both trucks, but each
+        # leg reserves and reports what ITS truck carries.
+        leg_pallets = leg.pallets or self.physical_pallets or self.pallets
+        leg_weight_lbs = leg.weight_lbs or self.weight_lbs
+
         created_origin = created_destination = False
         if origin_stop:
             created_origin = Stop.create({
                 "job_id": job.id,
-                "stop_type": "pickup",
+                "stop_type": "cross_dock_pickup" if origin_is_hub else "pickup",
                 "sequence": 10,
                 "partner_id": self.partner_id.id,
                 "saved_location_id": origin_stop.saved_location_id.id or False,
@@ -1997,8 +2017,8 @@ class LogisticsBooking(models.Model):
                 "longitude": origin_stop.longitude,
                 "coordinate_source": "booking_stop",
                 "scheduled_time": scheduled_at,
-                "pallets_in": self.pallets,
-                "weight_in_lbs": self.weight_lbs,
+                "pallets_in": leg_pallets,
+                "weight_in_lbs": leg_weight_lbs,
                 "dispatcher_notes": origin_stop.instructions or "",
                 # Stop-level requirements + timing thread-through (legacy
                 # path previously hardcoded flexible / dropped everything).
@@ -2007,13 +2027,16 @@ class LogisticsBooking(models.Model):
                 "service_time_minutes": origin_stop.service_time_minutes or 15,
                 "operating_hours_snapshot": origin_stop.operating_hours_snapshot or False,
                 "tz_name": origin_stop.timezone or "America/Toronto",
-                "pop_required": True,
+                # Customer pickup evidence (POP/BOL) belongs to the leg that
+                # collects from the customer; a hub transfer-out is evidence
+                # of a handoff, handled by the cross-dock semantics.
+                "pop_required": not origin_is_hub,
                 **origin_stop._dispatch_timing_vals(operation_date),
             })
         if destination_stop:
             created_destination = Stop.create({
                 "job_id": job.id,
-                "stop_type": "dropoff",
+                "stop_type": "cross_dock_drop" if destination_is_hub else "dropoff",
                 "sequence": 20,
                 "partner_id": self.partner_id.id,
                 "saved_location_id": destination_stop.saved_location_id.id or False,
@@ -2025,15 +2048,18 @@ class LogisticsBooking(models.Model):
                 "longitude": destination_stop.longitude,
                 "coordinate_source": "booking_stop",
                 "scheduled_time": delivery_at,
-                "pallets_out": self.pallets,
-                "weight_out_lbs": self.weight_lbs,
+                "pallets_out": leg_pallets,
+                "weight_out_lbs": leg_weight_lbs,
                 "dispatcher_notes": destination_stop.instructions or "",
                 "requires_liftgate": destination_stop.liftgate_required,
                 "appointment_required": destination_stop.appointment_required,
                 "service_time_minutes": destination_stop.service_time_minutes or 15,
                 "operating_hours_snapshot": destination_stop.operating_hours_snapshot or False,
                 "tz_name": destination_stop.timezone or "America/Toronto",
-                "pod_required": True,
+                # The customer's proof of delivery belongs to the leg that
+                # actually delivers to them (the linehaul). A hub arrival is
+                # a handoff, evidenced by the cross-dock custody event.
+                "pod_required": not destination_is_hub,
                 **destination_stop._dispatch_timing_vals(operation_date),
             })
         # ── Create dispatch stops for each delivery (prema.dispatch.stop, NOT logistics.booking.stop) ──
@@ -2049,6 +2075,14 @@ class LogisticsBooking(models.Model):
             and (s.pallet_count > 0 or s.saved_location_id)
         )
         dispatch_delivery_stops = self.env["prema.dispatch.stop"]
+        if destination_is_hub:
+            # The feeder ends at the hub: it has no customer delivery stop
+            # to expand. Attaching the booking's other customer deliveries
+            # here put Belleville (the linehaul's destination) on the
+            # Thursday card — the freight simply does not go there on
+            # Thursday. The item's delivery stop IS the hub.
+            customer_delivery_stops = BStop
+            dispatch_delivery_stops |= created_destination
         for idx, bstop in enumerate(customer_delivery_stops):
             if created_destination and idx == 0:
                 # First delivery: update the already-created destination stop
@@ -2243,14 +2277,12 @@ class LogisticsBooking(models.Model):
 
         jobs = self.env["prema.dispatch.job"]
         sequence = 1
-        first_job = None
         for leg in self.leg_ids.sorted("sequence"):
             pickup_date = leg.pickup_date or leg.departure_id.departure_date or self.pickup_date
             delivery_date = leg.delivery_date or pickup_date or self.estimated_delivery_date
             if pickup_date and delivery_date and pickup_date != delivery_date:
                 job1 = self._create_dispatch_operation(leg, "pickup", pickup_date, origin_stop=leg.origin_stop_id, sequence=sequence)
                 jobs |= job1
-                if not first_job: first_job = job1
                 sequence += 1
                 jobs |= self._create_dispatch_operation(leg, "delivery", delivery_date, destination_stop=leg.destination_stop_id, sequence=sequence)
                 sequence += 1
@@ -2258,7 +2290,6 @@ class LogisticsBooking(models.Model):
                 role = leg.leg_type if leg.leg_type in ("feeder", "linehaul", "final_delivery") else "combined"
                 job1 = self._create_dispatch_operation(leg, role, pickup_date or delivery_date, origin_stop=leg.origin_stop_id, destination_stop=leg.destination_stop_id, sequence=sequence)
                 jobs |= job1
-                if not first_job: first_job = job1
                 sequence += 1
 
         if not jobs:
@@ -2268,19 +2299,34 @@ class LogisticsBooking(models.Model):
             operation_date = self.pickup_date or fields.Date.context_today(self)
             job1 = self._create_dispatch_operation(False, "custom", operation_date, origin_stop=pickups[:1], destination_stop=deliveries[-1:], sequence=sequence)
             jobs |= job1
-            if not first_job: first_job = job1
 
-        # Canonical pallets: subsequent jobs reference first job's items
-        canonical_items = first_job.item_ids.filtered(lambda i: i.status != 'cancelled')
+        # Canonical pallets WITHIN one leg: a leg split across two dates
+        # (pickup card + delivery card) is ONE physical movement, so the
+        # later card references the first card's items instead of
+        # duplicating them.
+        #
+        # Scoped per leg on purpose. A hub-transfer booking's feeder and
+        # linehaul are two trucks on two days carrying the same goods:
+        # cancelling the linehaul's items because the feeder already has
+        # them left Friday's truck visibly empty in the Planner and on its
+        # Load Plan. Nothing is double-billed either way — the commercial
+        # document is the booking's single invoice, not the items.
+        jobs_by_leg = {}
         for job in jobs:
-            if job.id == first_job.id or not canonical_items:
+            jobs_by_leg.setdefault(job.booking_leg_id.id or 0, []).append(job)
+        for leg_jobs in jobs_by_leg.values():
+            canonical_job = leg_jobs[0]
+            canonical_items = canonical_job.item_ids.filtered(
+                lambda i: i.status != 'cancelled')
+            if not canonical_items:
                 continue
-            dupes = job.item_ids.filtered(lambda i: i.status != 'cancelled')
-            # Transfer stop allocations from duplicates to canonical items
-            for dup_item, canonical in zip(dupes, canonical_items):
-                dup_item.stop_allocation_ids.write({'dispatch_item_id': canonical.id})
-            dupes.mapped('stop_allocation_ids').write({'active': False})
-            dupes.write({'status': 'cancelled'})
+            for job in leg_jobs[1:]:
+                dupes = job.item_ids.filtered(lambda i: i.status != 'cancelled')
+                # Transfer stop allocations from duplicates to canonical items
+                for dup_item, canonical in zip(dupes, canonical_items):
+                    dup_item.stop_allocation_ids.write({'dispatch_item_id': canonical.id})
+                dupes.mapped('stop_allocation_ids').write({'active': False})
+                dupes.write({'status': 'cancelled'})
 
         self.dispatch_job_id = jobs[0].id
         self._sync_load_plan_for_jobs(jobs)
@@ -2609,96 +2655,100 @@ class LogisticsBooking(models.Model):
                 return product, country
         return None, country
 
-    def _generate_invoice_description(self):
-        """Build a deterministic structured booking summary for the invoice.
-        Uses stop_ids when available, falls back to legacy pickup/delivery fields."""
+    def _invoice_line_analytic_distribution(self):
+        """§Q revenue analytic for the freight invoice line ("analytic truck
+        if available"): the analytic configured on the vehicle of the
+        booking's first dispatch job (earliest operation date, then id).
+
+        Returns {"<analytic_id>": 100.0} — or {} when the booking has no
+        dispatch job, the job has no vehicle, the vehicle has no analytic
+        mapping (all other trucks invoice without one until configured),
+        or the analytic belongs to another company. Never an error."""
         self.ensure_one()
-        lines = []
-        lines.append("Freight / Delivery Service")
-        temp_mode = self.temperature_mode or "Dry"
-        lines.append(f"Service: {temp_mode.title()}")
-        if self.required_temperature:
-            lines.append(f"Required Temperature: {self.required_temperature}")
+        jobs = self.dispatch_job_ids.sudo().search(
+            [("logistics_booking_id", "=", self.id)],
+            order="operation_date asc, id asc", limit=1)
+        vehicle = jobs.vehicle_id if jobs else False
+        if not vehicle:
+            return {}
+        analytic = vehicle.analytic_account_id
+        if not analytic:
+            return {}
+        company = self.env.company
+        if analytic.company_id and (not company
+                                    or analytic.company_id.id != company.id):
+            return {}
+        return {str(analytic.id): 100.0}
+
+    def _customer_pickup_booking_stops(self):
+        """Keyed CUSTOMER pickup snapshots (hub/transfer placeholders
+        excluded), by sequence. Shared by the invoice Route label and the
+        §P/Q/R first-pickup-arrival gate."""
+        self.ensure_one()
+        return self.stop_ids.filtered(
+            lambda s: s.stop_type == "pickup" and not s.hub_transfer_stop
+        ).sorted("sequence")
+
+    def _customer_delivery_booking_stops(self):
+        """Keyed CUSTOMER delivery snapshots (hub/transfer placeholders
+        excluded), by sequence — the last one closes the invoice Route."""
+        self.ensure_one()
+        return self.stop_ids.filtered(
+            lambda s: s.stop_type == "delivery" and not s.hub_transfer_stop
+        ).sorted("sequence")
+
+    def _first_customer_pickup_booking_stop(self):
+        """The booking's first customer pickup snapshot — the dispatch stop
+        whose driver 'I'M HERE' tap creates the draft invoice. Empty when
+        the booking has no keyed stops (legacy bookings invoice on the
+        completion path only)."""
+        self.ensure_one()
+        return self._customer_pickup_booking_stops()[:1]
+
+    def _stop_route_label(self, stop):
+        """One route endpoint: 'City, PROV' when the snapshot has a city,
+        else the company name, else the first address line."""
+        if stop.city:
+            return ("%s, %s" % (stop.city, stop.province_state)
+                    if stop.province_state else stop.city)
+        if stop.company_name:
+            return stop.company_name
+        address = (stop.formatted_address or stop.street or "").strip()
+        return address.splitlines()[0][:60] if address else ""
+
+    def _invoice_route_label(self):
+        """'Woodbridge, ON → Belleville, ON' — first customer pickup to last
+        customer delivery (INV/2026/00091 presentation). Hub/transfer
+        placeholders never appear; legacy bookings without keyed stops fall
+        back to the legacy pickup/delivery company fields."""
+        self.ensure_one()
+        pickups = self._customer_pickup_booking_stops()
+        deliveries = self._customer_delivery_booking_stops()
+        origin = self._stop_route_label(pickups[0]) if pickups else ""
+        destination = self._stop_route_label(deliveries[-1]) if deliveries else ""
+        if not origin and not deliveries and not self.stop_ids:
+            # Legacy single-pickup/single-delivery fields only.
+            origin = self.pickup_company or ""
+            destination = self.delivery_company or ""
+        if origin and destination:
+            return "%s → %s" % (origin, destination)
+        return origin or destination
+
+    def _generate_invoice_description(self):
+        """Deterministic customer description (INV/2026/00091 presentation):
+        a three-line summary — 'Freight / Delivery Service' header, Route
+        (first pickup → last customer delivery), service Date. The product
+        line carries the product's own name and the §7 payment block lives
+        in the narration, so the customer document stays clean: no
+        contacts, URLs, internal ids, PO/BOL refs or per-stop dumps (those
+        live on the invoice's dedicated ref fields)."""
+        self.ensure_one()
+        lines = ["Freight / Delivery Service"]
+        route = self._invoice_route_label()
+        if route:
+            lines.append("Route: %s" % route)
         if self.pickup_date:
-            lines.append(f"Date: {self.pickup_date.strftime('%B %d, %Y')}")
-        lines.append(f"Pallets: {self.pallets}")
-        lines.append(f"Weight: {self.weight_lbs:,.0f} lb")
-        if self.po_number:
-            lines.append(f"PO: {self.po_number}")
-        if self.reference:
-            lines.append(f"Internal Load Reference: {self.reference}")
-        if self.bol_number:
-            lines.append(f"BOL #: {self.bol_number}")
-        if self.customer_reference and self.customer_reference != self.reference:
-            lines.append(f"Reference: {self.customer_reference}")
-
-        # Use stop_ids when available (keyed stops only for movement_v1 —
-        # hub/transfer leg placeholders are not invoiced as stops).
-        if self.stop_ids:
-            if self.route_model_version == "movement_v1":
-                stops = self.stop_ids.filtered(
-                    lambda s: s.stop_key and not s.hub_transfer_stop)
-            else:
-                stops = self.stop_ids
-            pickups = stops.filtered(lambda s: s.stop_type == "pickup")
-            deliveries = stops.filtered(lambda s: s.stop_type == "delivery")
-            if pickups:
-                lines.append("")
-                for i, s in enumerate(pickups, 1):
-                    lines.append(f"Pickup {i}:")
-                    lines.append(f"{s.company_name or '—'}")
-                    lines.append(f"{s.formatted_address or s.street or '—'}")
-                    if s.unit:
-                        lines.append(f"Unit: {s.unit}")
-                    if s.pallet_count:
-                        lines.append(f"Pallets: {s.pallet_count}")
-                    if s.reference:
-                        lines.append(f"Ref: {s.reference}")
-                    if s.instructions:
-                        lines.append(s.instructions)
-            if deliveries:
-                lines.append("")
-                for i, s in enumerate(deliveries, 1):
-                    lines.append(f"Delivery {i}:")
-                    lines.append(f"{s.company_name or '—'}")
-                    lines.append(f"{s.formatted_address or s.street or '—'}")
-                    if s.unit:
-                        lines.append(f"Unit: {s.unit}")
-                    if s.pallet_count:
-                        lines.append(f"Pallets: {s.pallet_count}")
-                    lines.append(f"Liftgate: {'Yes' if s.liftgate_required else 'No'}")
-                    if s.instructions:
-                        lines.append(s.instructions)
-        else:
-            # Legacy single-pickup/single-delivery fallback
-            lines.append("")
-            lines.append("Pickup From:")
-            lines.append(f"{self.pickup_company or '—'}")
-            lines.append(f"{self.pickup_address}")
-            if self.pickup_contact_name:
-                lines.append(f"Contact: {self.pickup_contact_name}")
-            lines.append(f"Pickup Liftgate: {'Yes' if self.liftgate_pickup else 'No'}")
-            lines.append("")
-            lines.append("Deliver To:")
-            lines.append(f"{self.delivery_company or '—'}")
-            lines.append(f"{self.delivery_address}")
-            if self.delivery_contact_name:
-                lines.append(f"Contact: {self.delivery_contact_name}")
-            lines.append(f"Delivery Liftgate: {'Yes' if self.liftgate_delivery else 'No'}")
-            if self.pickup_instructions:
-                lines.append("")
-                lines.append("Special Instructions:")
-                lines.append(self.pickup_instructions)
-
-        # §7 (D-B2): customer payment block — due-date terms, applicable
-        # fees, e-Transfer instructions / secure card link, QuickPay
-        # numbers. Printed on the invoice line description.
-        payment_block = self._customer_payment_block()
-        if payment_block:
-            lines.append("")
-            lines.append("Payment:")
-            lines.extend("  " + line for line in payment_block)
-
+            lines.append("Date: %s" % self.pickup_date.strftime('%B %d, %Y'))
         return "\n".join(lines)
 
     # ════════════════════════════════════════════════════════════════
@@ -2730,6 +2780,13 @@ class LogisticsBooking(models.Model):
             base = base.rsplit(".", 1)[0] if "." in base else base
             pod = base.strip()[:64]
         if not pod:
+            if self._context.get("logistics_invoice_at_arrival"):
+                # Arrival-time invoice (§P/Q/R): the trip has just started —
+                # no delivery evidence exists yet, and §6 says the POD
+                # number comes ONLY from uploaded evidence, never invented.
+                # The Job-Complete final-evidence flow fills the invoice's
+                # dedicated POD ref field when the real POD lands.
+                return ""
             pod = "%s-POD" % (self.booking_number or "B%d" % self.id)
         self.write({"pod_number": pod})  # write() audit trail row
         return pod
@@ -2836,22 +2893,45 @@ class LogisticsBooking(models.Model):
                 f"(original balance {original:.2f} without the discount).")
         return lines
 
+    def _payment_block_html(self):
+        """§7 payment block as narration HTML. The standard Odoo invoice
+        report prints the narration on the customer document, so the
+        due-date terms / method / fees / instructions / QuickPay stay
+        visible there without polluting the invoice lines. Empty string
+        when no payment terms are configured."""
+        self.ensure_one()
+        block = self._customer_payment_block()
+        if not block:
+            return ""
+        from markupsafe import escape
+        return "<br/>".join(escape(line) for line in block)
+
     def _ensure_completion_invoice(self):
-        """DEFERRED INVOICE: create the draft customer invoice only when the
-        operational shipment has completed — called from the dispatch-job
-        completion paths (dispatch_job._check_all_stops_done /
-        action_mark_completed), i.e. after Pickup → Delivery → required POD
-        complete → all dispatch jobs of the booking completed. The booking
-        is never invoiced at confirmation anymore.
+        """DEFERRED INVOICE: create the booking's single DRAFT customer
+        invoice. Two triggers — whichever fires first wins, the other
+        reuses it:
+
+        * §P/Q/R — driver 'I'M HERE' at the FIRST customer pickup
+          (dispatch_stop.action_mark_arrived →
+          _arrival_invoice_trigger): the invoice exists for the
+          dispatch-review gate while the freight is in transit;
+        * completion — all dispatch jobs of the booking completed
+          (dispatch_job._check_all_stops_done / action_mark_completed),
+          the historical trigger that still covers bookings whose pickup
+          was never tapped (legacy / unlinked stops).
+
+        The booking is never invoiced at confirmation anymore. The invoice
+        stays DRAFT — nothing here posts or emails; the user reviews →
+        posts → sends at the dispatch-review gate (§R).
 
         Idempotent: returns the booking's existing invoice if one is
         already linked (booking.invoice_id or any account.move carrying
         logistics_booking_id — _create_draft_invoice reuses it); repeated
-        completion actions / page refreshes / webhook / driver updates can
-        never create a second invoice. Every dispatch job of the booking is
-        linked to the invoice (jobs created before the invoice existed have
-        no invoice_id), so the multi-leg "ALL jobs complete + POD" gate
-        keeps working.
+        arrival taps, page refreshes, retries, webhook / driver updates and
+        the later completion path can never create a second invoice. Every
+        dispatch job of the booking is linked to the invoice (jobs created
+        before the invoice existed have no invoice_id), so the multi-leg
+        "ALL jobs complete + POD" gate keeps working.
 
         Returns the invoice record, or False when creation is not possible
         (missing product mapping — the booking is flagged for review and
@@ -2877,6 +2957,254 @@ class LogisticsBooking(models.Model):
         # are appended idempotently on the next completion-path run.
         self._append_handling_event_charges(invoice)
         return invoice
+
+    def _arrival_invoice_trigger(self, dispatch_stop):
+        """§P/Q/R — driver 'I'M HERE' at the FIRST PICKUP LOCATION creates
+        the booking's single draft customer invoice for the dispatch-review
+        gate (the invoice stays DRAFT — never posted or sent from here; the
+        user reviews → posts → sends, §R).
+
+        Called from dispatch_stop.action_mark_arrived via the never-
+        blocking bridge _maybe_invoice_on_pickup_arrival (mirrors the
+        detention-refresh precedent). Gate — exactly one trigger per
+        booking:
+
+        * only when this dispatch stop carries the booking's FIRST customer
+          pickup booking stop (hub/transfer placeholders excluded — the
+          linehaul hub stop is typed "pickup" but must never trigger);
+        * cancelled bookings never invoice;
+        * bookings without keyed stops (or dispatch stops without a
+          booking-stop link) are invoiced by the existing completion path
+          only.
+
+        Idempotent by construction: _ensure_completion_invoice returns the
+        existing invoice (booking.invoice_id) — repeated taps, refreshes,
+        retries and the later all-jobs-complete path can never create a
+        second invoice. Returns the invoice, or False when the gate did not
+        fire or creation was not possible."""
+        self = self.sudo()  # driver-triggered — mirror of dispatch_job
+        self.ensure_one()
+        if self.state == "cancelled":
+            return False
+        if not dispatch_stop or "logistics_booking_stop_id" \
+                not in dispatch_stop._fields:
+            return False
+        bstop = dispatch_stop.logistics_booking_stop_id
+        first_pickup = self._first_customer_pickup_booking_stop()
+        if not first_pickup or not bstop or bstop.id != first_pickup.id:
+            return False
+        # Arrival-time creation: no delivery evidence exists yet — never
+        # invent a POD placeholder (the final-evidence flow at Job Complete
+        # fills the dedicated ref fields when the real POD lands).
+        invoice = self.with_context(
+            logistics_invoice_at_arrival=True)._ensure_completion_invoice()
+        if invoice:
+            _logger.info(
+                "Booking %s: %s ensured on first-pickup arrival "
+                "(dispatch stop %s)",
+                self.booking_number or "B%s" % self.id,
+                invoice.name or "draft invoice", dispatch_stop.id)
+        return bool(invoice)
+
+    # ── spec U/V/W (AG step 13): Job Complete → final AI reference fill ──
+    # The second important automation point. When the LAST dispatch job of
+    # the booking completes with its POD (the same all-jobs gate that arms
+    # the dispatch-review READY marker), the final evidence is already on
+    # the draft invoice (upload-time + completion-time copies) and this
+    # fill runs ONE final AI Generate against it — through the EXISTING
+    # shared engine (InvoiceAIService.extract_reference_only), never a
+    # new parser in Prema Dispatch (spec V). It fills ONLY the dedicated
+    # reference columns (PO / BOL / POD / load reference) that could not
+    # exist when the job started; the customer-facing description stays
+    # clean (spec W). That engine entry point never writes the engine's
+    # ML / feedback / baseline learning data — the existing AI
+    # feedback/learning behavior remains intact by construction.
+    _AI_REF_MARKER = "<b>Job-complete AI reference extraction</b>"
+
+    @staticmethod
+    def _split_ai_reference_tokens(ref_text):
+        """Split the shared engine's canonical reference string
+        ("BOL-KP01967 | PO-E260327, P2 | REF-…") into
+        {PREFIX: [values…]}. The prefixes are the engine's own
+        PS/BOL/DEL/PO/REF tokens (see _REF_PATTERNS and the extraction
+        prompts in premafirm_ai_engine) — this is deterministic plumbing
+        over the engine's output, not another AI parser."""
+        tokens = {}
+        if not ref_text:
+            return tokens
+        for part in str(ref_text).split("|"):
+            m = re.match(r"\s*(PS|BOL|DEL|PO|REF)\s*-\s*(.+?)\s*$", part, re.I)
+            if not m:
+                continue
+            prefix = m.group(1).upper()
+            values = [v.strip() for v in m.group(2).split(",") if v.strip()]
+            if values:
+                tokens.setdefault(prefix, []).extend(values)
+        return tokens
+
+    def _final_evidence_ai_reference_fill(self):
+        """spec U/V/W — Job Complete → final AI Generate on the final
+        evidence, filling the booking's and invoice's DEDICATED reference
+        fields ONLY (PO/BOL/POD/load reference). Called from the
+        all-jobs-complete-with-POD gate (dispatch_job
+        _finalize_invoice_references → here) — never blocking, idempotent.
+
+        Deterministic first, AI second, everything fill-only:
+
+        1. §6 POD capture from the REAL uploaded evidence. The arrival-
+           time invoice left premafirm_pod empty on purpose; the gate only
+           passes once the POD exists, so this closes that gap with the
+           proof's own filename stem — never an invented number.
+        2. Mirror the booking's po/bol/internal-load-reference onto the
+           invoice's dedicated columns.
+        3. Run the EXISTING shared engine reference extraction against
+           the evidence attachments now on the invoice
+           (extract_reference_only: regex over PDF text first, DeepSeek
+           vision only for scanned files).
+        4. Map the engine's canonical BOL-/PO-/REF-/DEL- tokens onto the
+           dedicated fields, fill-only: BOL → premafirm_bol + booking.
+           bol_number; PO → premafirm_po + booking.po_number; REF →
+           load_reference (a load/booking Ref# found on the signed docs —
+           booking.reference is PremaFirm's INTERNAL load reference and
+           is never customer-derived, so there is no booking mirror); DEL
+           → premafirm_pod only when the deterministic capture left it
+           blank (a delivery-note # on the proof is a real POD document
+           number). PS- (packing slips) has no dedicated column and is
+           only reported in the outcome line.
+
+        Idempotent: the deterministic pass is repeatable (fill-only +
+        _capture_pod_number's own guard), and the AI call itself runs at
+        most once per invoice — a chatter marker, same convention as the
+        READY-FOR-DISPATCH-REVIEW gate. A FAILED extraction posts no
+        marker, so a later completion event retries."""
+        self = self.sudo()
+        self.ensure_one()
+        if self.state == "cancelled":
+            return
+        invoice = self.invoice_id.sudo()
+        if not invoice or invoice.state != "draft":
+            return
+        if invoice.partner_id.id != self.commercial_partner_id.id:
+            return
+
+        Invoice = self.env["account.move"].sudo()
+
+        def _col(name):
+            return name in Invoice._fields
+
+        # ── 1+2. deterministic POD capture + booking → invoice mirror ──
+        updates = {}
+        try:
+            pod = self._capture_pod_number()
+            if pod and _col("premafirm_pod") and not invoice.premafirm_pod:
+                updates["premafirm_pod"] = pod
+        except Exception:
+            _logger.exception(
+                "Final POD capture failed for booking %s",
+                self.booking_number or "B%s" % self.id)
+        if _col("premafirm_po") and not invoice.premafirm_po and self.po_number:
+            updates["premafirm_po"] = self.po_number
+        bol = self.bol_number or ""
+        if not bol and self.dispatch_job_ids:
+            bol = (self.dispatch_job_ids.sudo()
+                   .filtered("bol_number").mapped("bol_number")[:1]) or ""
+        if _col("premafirm_bol") and not invoice.premafirm_bol and bol:
+            updates["premafirm_bol"] = bol
+        if _col("load_reference") and not invoice.load_reference \
+                and self.reference:
+            updates["load_reference"] = self.reference
+        if updates:
+            invoice.write(updates)
+
+        # AI marker gate — the deterministic pass above stays repeatable.
+        if invoice.message_ids.filtered(
+                lambda m: self._AI_REF_MARKER in (m.body or "")):
+            return
+
+        # ── 3. existing shared engine extraction on the final evidence ──
+        try:
+            from odoo.addons.premafirm_ai_engine.services.invoice_ai_service \
+                import InvoiceAIService
+            ref = InvoiceAIService(self.env).extract_reference_only(invoice)
+        except Exception as exc:
+            # No marker on failure: a later completion event retries.
+            _logger.exception(
+                "Final AI reference extraction failed for booking %s "
+                "(invoice %s)", self.booking_number or "B%s" % self.id,
+                invoice.id)
+            try:
+                # Markup: Odoo 18 escapes plain-str chatter bodies, which
+                # would store literal &lt;b&gt; and break the idempotency
+                # gate below (raw-marker match). Same pattern as the
+                # driver-update mirror notes.
+                invoice.message_post(
+                    body=(
+                        Markup("<b>AI reference extraction failed</b> — ")
+                        + escape(
+                            f"{type(exc).__name__}: {exc}. Deterministic "
+                            f"POD/PO/BOL mirror already applied; retries "
+                            f"on the next completion event."
+                        )
+                    )
+                )
+            except Exception:
+                pass
+            return
+
+        # ── 4. token → dedicated fields (fill-only) + outcome note ──
+        booking_vals = {}
+        inv_vals = {}
+        leftovers = []
+        for prefix, values in self._split_ai_reference_tokens(ref).items():
+            joined = ", ".join(values)[:120]
+            if prefix == "BOL":
+                if _col("premafirm_bol") and not invoice.premafirm_bol:
+                    inv_vals["premafirm_bol"] = joined
+                if not self.bol_number:
+                    booking_vals["bol_number"] = joined
+            elif prefix == "PO":
+                if _col("premafirm_po") and not invoice.premafirm_po:
+                    inv_vals["premafirm_po"] = joined
+                if not self.po_number:
+                    booking_vals["po_number"] = joined
+            elif prefix == "REF":
+                if _col("load_reference") and not invoice.load_reference:
+                    inv_vals["load_reference"] = joined
+            elif prefix == "DEL":
+                if _col("premafirm_pod") and not invoice.premafirm_pod:
+                    inv_vals["premafirm_pod"] = joined
+            else:  # PS — packing slips: no dedicated column
+                echo = joined
+                # The engine keeps document-printed prefixes in the value
+                # ("Packing Slip Number: PS-8812" -> canonical "PS-PS-8812")
+                # — echo a single prefix in the outcome note.
+                m_ps = re.match(r"^PS\s*[-]\s*(.+)$", echo, re.I)
+                leftovers.append("PS-%s" % (m_ps.group(1) if m_ps else echo))
+        if booking_vals:
+            self.write(booking_vals)
+        if inv_vals:
+            invoice.write(inv_vals)
+
+        applied = dict(updates)
+        applied.update(inv_vals)
+        filled = []
+        for label, field in (("POD", "premafirm_pod"), ("PO", "premafirm_po"),
+                             ("BOL", "premafirm_bol"),
+                             ("Load ref", "load_reference")):
+            if applied.get(field):
+                filled.append("%s %s" % (label, applied[field]))
+        note = (
+            " — filled: %s." % "; ".join(filled)
+            if filled else " — nothing new to fill.")
+        if leftovers:
+            note += " No dedicated field for: %s." % "; ".join(leftovers)
+        note += " Customer-facing description untouched."
+        # Markup keeps the raw marker in the stored body so the idempotency
+        # gate above can match it; the note text itself is escaped.
+        invoice.message_post(body=Markup(self._AI_REF_MARKER) + note)
+        _logger.info(
+            "Booking %s: job-complete AI reference extraction%s",
+            self.booking_number or "B%s" % self.id, note)
 
     # ── §TODO15 handling-event charges (prema.dispatch.freight.handling) ──
     # Prema dispatch records per-pallet / per-labour handling events at the
@@ -3037,8 +3365,13 @@ class LogisticsBooking(models.Model):
         # uploaded during the existing completion flow (never invented).
         pod_number = self._capture_pod_number()
 
-        # Build invoice description
+        # Build invoice description — INV/2026/00091 presentation: the
+        # product line carries the product's own name, a clean line_note
+        # carries the route/date summary, and the §7 payment block goes to
+        # the narration (the standard report prints it on the customer
+        # document). No huge descriptions anywhere.
         description = self._generate_invoice_description()
+        narration_html = self._payment_block_html()
 
         # Create draft invoice using the resolved freight tax
         partner = self.commercial_partner_id
@@ -3055,6 +3388,10 @@ class LogisticsBooking(models.Model):
         line_price = self._line_unit_price_for_tax_mode(
             self.calculated_price, tax=self.tax_rule_id)
 
+        # §Q revenue analytic on the freight line ("analytic truck if
+        # available") — {} when the truck is unmapped/not assigned yet.
+        analytic_distribution = self._invoice_line_analytic_distribution()
+
         # Resolved payment instructions (e-Transfer text / card link) —
         # the snapshot the customer document shows at issue time.
         payment_instructions = self._payment_instructions_resolved()
@@ -3069,14 +3406,21 @@ class LogisticsBooking(models.Model):
             "invoice_origin": self.booking_number,
             "ref": self.po_number or self.customer_reference or "",
             "logistics_booking_id": self.id,
-            "narration": description,
-            "invoice_line_ids": [(0, 0, {
-                "product_id": product.id,
-                "name": description,
-                "quantity": 1,
-                "price_unit": line_price,
-                "tax_ids": line_tax_ids,
-            })],
+            "narration": narration_html,
+            "invoice_line_ids": [
+                (0, 0, {
+                    "product_id": product.id,
+                    "name": product.display_name or product.name,
+                    "quantity": 1,
+                    "price_unit": line_price,
+                    "tax_ids": line_tax_ids,
+                    "analytic_distribution": analytic_distribution,
+                }),
+                (0, 0, {
+                    "display_type": "line_note",
+                    "name": description,
+                }),
+            ],
         }
         if "load_reference" in Invoice._fields:
             invoice_vals["load_reference"] = self.reference or ""

@@ -42,7 +42,9 @@ class LogisticsRecurringAgreement(models.Model):
     billing_notes = fields.Text()
     service_notes = fields.Text()
     start_date = fields.Date(required=True, default=fields.Date.context_today)
-    end_date = fields.Date(required=True)
+    end_date = fields.Date(help=(
+        "Leave blank for an open-ended agreement: it stays ACTIVE until "
+        "it is paused, cancelled, or expired manually."))
     contract_months = fields.Integer(compute="_compute_contract_months", store=True)
     state = fields.Selection(STATES, default="draft", tracking=True)
     active = fields.Boolean(default=True)
@@ -215,7 +217,9 @@ class LogisticsRecurringJob(models.Model):
     required_temperature_c = fields.Float(string="Required Temperature °C")
     temperature_confirmed = fields.Boolean(
         string="Temperature Confirmed",
-        help="Confirms that the numeric Reefer temperature was intentionally entered; 0°C is valid.",
+        help="Confirms that the numeric Reefer temperature was intentionally "
+             "entered; 0°C is valid. Correcting the temperature or the mode "
+             "resets this box — confirm the corrected value again.",
     )
     commodity = fields.Char()
     stackable = fields.Boolean(default=True)
@@ -237,20 +241,128 @@ class LogisticsRecurringJob(models.Model):
         for job in self:
             job.booking_count = len(job.booking_ids)
 
+    # ── Region auto-derivation ────────────────────────────────────────
+    # Region fields mirror the job's Saved Location anchors (RegionResolver
+    # canonical chain: location postal → FSA → official-LTL logistics.region)
+    # so a location-kind job always carries the region its address sits in
+    # for planning / weekly board / corridor matching. A region set by hand
+    # is never overwritten; a region that merely mirrored the previous
+    # address follows the address when it moves. Unresolvable locations
+    # leave the region blank (never an error).
+
+    @api.onchange("pickup_location_id", "delivery_location_id")
+    def _onchange_auto_derive_regions(self):
+        for job in self:
+            origin = job._origin
+            previous = None
+            if origin and origin.id:
+                previous = {origin.id: (
+                    origin.pickup_location_id.id or None,
+                    origin.delivery_location_id.id or None,
+                )}
+            job._derive_regions_for_locations(previous)
+
+    @api.onchange("temperature_mode", "required_temperature_c")
+    def _onchange_temperature_revalidate(self):
+        """Temperature edits re-validate immediately (never a stale block):
+        any change to the setpoint or the mode clears the earlier
+        confirmation, and Dry never carries a temperature value."""
+        for job in self:
+            if job.temperature_mode != "reefer":
+                job.required_temperature_c = False
+                job.temperature_confirmed = False
+            else:
+                job.temperature_confirmed = False
+
+    def _derive_regions_for_locations(self, previous_locations=None):
+        """Fill or refresh ``pickup_region_id`` / ``delivery_region_id``
+        from the job's Saved Locations. ``previous_locations`` maps job id
+        → (old pickup id, old delivery id) when a location change is in
+        flight, letting derived regions follow their address."""
+        from ..services.region_resolver import RegionResolver
+        resolver = RegionResolver(self.env)
+        previous_locations = previous_locations or {}
+        old_ids = {
+            oid for pair in previous_locations.values() for oid in pair if oid
+        }
+        old_by_id = {
+            loc.id: loc
+            for loc in self.env["prema.dispatch.location"].browse(old_ids)
+        }
+        for job in self:
+            old_pickup, old_delivery = previous_locations.get(job.id, (None, None))
+            for loc_field, region_field, old_id in (
+                    ("pickup_location_id", "pickup_region_id", old_pickup),
+                    ("delivery_location_id", "delivery_region_id", old_delivery)):
+                location = job[loc_field]
+                if not location:
+                    continue
+                new_region = resolver.canonical_region(location)
+                if not new_region:
+                    continue
+                region = job[region_field]
+                if not region:
+                    job[region_field] = new_region.id
+                    continue
+                old_location = old_by_id.get(old_id)
+                if old_id and old_id != location.id and old_location:
+                    old_region = resolver.canonical_region(old_location)
+                    if (old_region and region.id == old_region.id
+                            and region.id != new_region.id):
+                        job[region_field] = new_region.id
+
     @api.model_create_multi
     def create(self, values_list):
         jobs = super().create(values_list)
         for agreement in jobs.mapped("agreement_id"):
             if len(agreement.job_ids) > 10:
                 raise ValidationError(_("A customer agreement may contain at most 10 recurring jobs."))
+        # Backfill regions for programmatic creation (e.g. the CRM
+        # recurring-opportunity bridge) — a region explicitly supplied in
+        # the vals is already set and therefore kept.
+        jobs._derive_regions_for_locations()
         return jobs
 
     def write(self, values):
         previous = self.mapped("agreement_id")
+        old_locations = {}
+        if "pickup_location_id" in values or "delivery_location_id" in values:
+            for job in self:
+                old_locations[job.id] = (
+                    job.pickup_location_id.id or None,
+                    job.delivery_location_id.id or None,
+                )
+        # Stale-confirmation guard (step 8): a confirmation confirms the
+        # SPECIFIC number it was given for. Correcting the setpoint or the
+        # mode invalidates it — unless the same write deliberately carries a
+        # fresh temperature_confirmed. Dry never carries a setpoint.
+        old_temperatures = {}
+        if "temperature_mode" in values or "required_temperature_c" in values:
+            for job in self:
+                old_temperatures[job.id] = (
+                    job.temperature_mode, job.required_temperature_c)
         result = super().write(values)
         for agreement in previous | self.mapped("agreement_id"):
             if len(agreement.job_ids) > 10:
                 raise ValidationError(_("A customer agreement may contain at most 10 recurring jobs."))
+        if old_locations:
+            self._derive_regions_for_locations(old_locations)
+        for job in self:
+            old = old_temperatures.get(job.id)
+            if old is None:
+                continue
+            old_mode, old_temp = old
+            new_mode = values.get("temperature_mode", old_mode)
+            new_temp = values.get("required_temperature_c", old_temp)
+            if new_mode == old_mode and new_temp == old_temp:
+                continue
+            updates = {}
+            if new_mode != "reefer":
+                updates["required_temperature_c"] = False
+            if "temperature_confirmed" not in values:
+                updates["temperature_confirmed"] = False
+            if updates:
+                job.write(updates)
         return result
 
     @api.constrains(
@@ -362,7 +474,9 @@ class LogisticsRecurringJob(models.Model):
         due = self.next_shipment_date or self._next_occurrence(today)
         if due < today:
             due = self._next_occurrence(today)
-        if due > self.agreement_id.end_date:
+        # Blank agreement end date = open-ended (active until paused,
+        # cancelled, or expired manually) — never compare against it.
+        if self.agreement_id.end_date and due > self.agreement_id.end_date:
             self.next_shipment_date = False
             return False
         if due != today:

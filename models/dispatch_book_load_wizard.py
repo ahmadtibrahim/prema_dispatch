@@ -1,5 +1,9 @@
+import logging
+
 from odoo import _, api, fields, models
 from odoo.exceptions import UserError
+
+_logger = logging.getLogger(__name__)
 
 
 class PremaDispatchBookLoadWizard(models.TransientModel):
@@ -30,18 +34,89 @@ class PremaDispatchBookLoadWizard(models.TransientModel):
     required_temperature_c = fields.Float(string="Required Temperature")
     submitted_temperature_unit = fields.Selection(
         [("c", "°C"), ("f", "°F")], string="Temperature Unit", default="c")
-    temperature_confirmed = fields.Boolean(string="Temperature Confirmed")
+    temperature_c_readback = fields.Float(
+        string="Stored °C (canonical)", readonly=True,
+        compute="_compute_temperature_c_readback",
+        help="What will actually be stored at confirm: your entry converted "
+             "to canonical Celsius. Live — correct the value or the unit any "
+             "time before confirming.")
+    temperature_confirmed = fields.Boolean(
+        string="Temperature Confirmed",
+        help="Confirms that the numeric Reefer temperature was intentionally "
+             "entered; 0°C is valid. Editing the temperature or the unit "
+             "clears this box — confirm the corrected value again.")
     customer_reference = fields.Char()
     purchase_order = fields.Char()
     bol_reference = fields.Char(string="BOL / Reference")
     general_notes = fields.Text()
+    mapping_summary = fields.Text(
+        string="Auto-mapped (review)", readonly=True,
+        help="Deterministic fields already carried over from the Invoice"
+             " (structured columns -> stored AI result -> line details)."
+             " Remaining gaps are entered manually — never guessed.")
+
+    @api.depends("equipment_type", "required_temperature_c",
+                 "submitted_temperature_unit")
+    def _compute_temperature_c_readback(self):
+        for wizard in self:
+            value = wizard.required_temperature_c
+            # Identity checks only — 0.0 is a VALID temperature (0°C).
+            if (wizard.equipment_type != "reefer"
+                    or value is False or value is None or value == ""):
+                wizard.temperature_c_readback = False
+                continue
+            try:
+                from odoo.addons.prema_logistics_booking.services.temperature_service import (  # noqa: E501
+                    parse_temperature)
+                canonical = parse_temperature(
+                    value, unit=wizard.submitted_temperature_unit or "c")
+            except Exception:
+                canonical = None
+            wizard.temperature_c_readback = (
+                False if canonical is None else round(canonical, 1))
+
+    @api.onchange("equipment_type", "required_temperature_c",
+                  "submitted_temperature_unit")
+    def _onchange_temperature_revalidate(self):
+        """Temperature edits re-validate immediately (never a stale block):
+        editing the value or the unit clears the earlier confirmation, and
+        Dry never carries a temperature value."""
+        for wizard in self:
+            if wizard.equipment_type != "reefer":
+                wizard.required_temperature_c = False
+                wizard.temperature_confirmed = False
+            else:
+                wizard.temperature_confirmed = False
 
     @api.model
     def default_get(self, fields_list):
         vals = super().default_get(fields_list)
-        move = self.env["account.move"].browse(self.env.context.get("active_id") or vals.get("move_id"))
-        if move.exists():
-            vals.update({"move_id": move.id, "partner_id": move.partner_id.id, "customer_reference": move.ref or move.name, "purchase_order": getattr(move, "premafirm_po", "") or "", "bol_reference": getattr(move, "premafirm_bol", "") or "", "scheduled_pickup": move._resolve_scheduled_pickup()})
+        move = self.env["account.move"].browse(
+            self.env.context.get("active_id") or vals.get("move_id"))
+        if not move.exists():
+            return vals
+        vals.update({
+            "move_id": move.id,
+            "partner_id": move.partner_id.id,
+        })
+        # ONE shared deterministic mapping service (same ladder and rules as
+        # the Sales Order Book Load wizard — never invokes AI).
+        try:
+            from odoo.addons.prema_dispatch.services.book_load_mapping import (
+                BookLoadMappingService)
+            service = BookLoadMappingService(self.env)
+            mapped = service.suggest_for(move)
+            # Explicit default_* context values (caller intent) win.
+            applied = {}
+            for key, value in mapped.items():
+                if "default_%s" % key not in self.env.context:
+                    vals[key] = value
+                    applied[key] = value
+            vals["mapping_summary"] = "\n".join(
+                service.summary_for(move, applied))
+        except Exception:
+            _logger.warning("Book Load auto-map failed for account.move %s",
+                            move.id, exc_info=True)
         return vals
 
     def action_confirm(self):

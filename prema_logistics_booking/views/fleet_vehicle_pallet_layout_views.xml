@@ -23,4 +23,22 @@
             </xpath>
         </field>
     </record>
+
+    <!-- Revenue analytic charged 100% on the freight invoice line when this
+         truck moves a booking (spec Q "analytic truck if available").
+         Read by logistics_booking._invoice_line_analytic_distribution at
+         draft-invoice creation — INV/2026/00091's {"20": 100.0} shape. -->
+    <record id="view_fleet_vehicle_form_inherit_revenue_analytic" model="ir.ui.view">
+        <field name="name">fleet.vehicle.form.inherit.revenue.analytic</field>
+        <field name="model">fleet.vehicle</field>
+        <field name="inherit_id" ref="fleet.fleet_vehicle_view_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//sheet" position="inside">
+                <group string="Revenue Accounting" colspan="4">
+                    <field name="analytic_account_id"
+                           options="{'no_create': True, 'no_create_edit': True}"/>
+                </group>
+            </xpath>
+        </field>
+    </record>
 </odoo>

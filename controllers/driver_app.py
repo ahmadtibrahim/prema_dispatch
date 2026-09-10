@@ -498,6 +498,13 @@ class DriverAppController(http.Controller):
         if vals.get("address_formatted") and "address_validated" not in vals:
             vals["address_validated"] = True
 
+        # Search-reuse-before-create: never mint a duplicate when the same
+        # physical place already exists as an ACTIVE saved location (same
+        # Google Place ID, or same street/city/province/postal).
+        existing = Location._find_matching_existing(vals)
+        if existing:
+            return {"success": True, "location": existing._driver_payload(), "reused_existing": True}
+
         lat = values.get("lat")
         lng = values.get("lng")
         pin_source = "driver_map" if (lat and lng and values.get("exact_pin_confirmed")) else ("google_place" if vals.get("google_place_id") and lat and lng else None)

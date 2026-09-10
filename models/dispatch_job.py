@@ -2174,6 +2174,13 @@ class PremaDispatchJob(models.Model):
             return local.strftime("%I:%M %p").lstrip("0"), local.strftime("%d/%m/%Y")
 
         def route_label(job):
+            # The job's own stops are the physical route. A hub-transfer leg
+            # runs facility→hub (Thursday) then hub→customer (Friday): its
+            # city pair collapses to "ON → ON" and hides which end is the
+            # internal hub. physical_route_text names the real endpoints;
+            # the city pair stays the fallback for a job with no stops yet.
+            if "physical_route_text" in job._fields and job.physical_route_text:
+                return job.physical_route_text
             return f"{job.pickup_city} → {job.delivery_cities}" if job.pickup_city else job.name
 
         def skids(job):
@@ -2248,8 +2255,14 @@ class PremaDispatchJob(models.Model):
             # board's column space now shows LIVE PROGRESS instead.
             progress = job._board_live_progress()
 
-            handoff_label = ""
-            if transfer_boundary:
+            # Hub-transfer legs speak a richer handoff language (named hub +
+            # the other execution leg). That helper lives in the logistics
+            # extension, where the booking/leg fields are; a core-only
+            # install falls through to the generic labels below.
+            handoff_label = (
+                job._hub_handoff_label()
+                if hasattr(job, "_hub_handoff_label") else "")
+            if not handoff_label and transfer_boundary:
                 if transfer_boundary.transfer_to_vehicle_id:
                     handoff_label = f"Staged → {transfer_boundary.transfer_to_vehicle_id.display_name}"
                 elif pickup_done:
@@ -2912,6 +2925,10 @@ class PremaDispatchJob(models.Model):
                 for j in all_jobs
             )
             if all_done:
+                # AG step 13 / spec U-V-W: fill the dedicated reference
+                # fields from the final evidence BEFORE the dispatcher
+                # sees READY FOR DISPATCH REVIEW.
+                self._finalize_invoice_references()
                 self._mark_invoice_ready_for_dispatch_review()
                 self._post_timeline(
                     self, "invoice_completed",
@@ -3510,6 +3527,7 @@ class PremaDispatchJob(models.Model):
                         inv.sudo().message_post(body=job._build_completion_summary())
                         all_jobs = inv.sudo().dispatch_job_ids
                         if all(j.stage_id.is_completed and j.pod_complete for j in all_jobs):
+                            job._finalize_invoice_references()
                             job._mark_invoice_ready_for_dispatch_review()
 
     def _check_all_stops_cancelled(self):
@@ -3578,12 +3596,31 @@ class PremaDispatchJob(models.Model):
             ]).mapped("name")
         )
 
+        # Spec T — no duplicate attachments: driver_add_evidence already
+        # copies every fresh pop/pod upload onto the DRAFT invoice at
+        # upload time (_copy_evidence_to_invoice), tagged by its source
+        # attachment ("__evidence_source:<id>__"). In the arrival-invoice
+        # flow (§P-Q-R) that draft exists while the trip runs, so the
+        # completion-time pass here must NOT re-copy the same binary under
+        # the renamed scheme. Sources that already have their tagged copy
+        # on this invoice are skipped.
+        tagged_sources = set()
+        for att in Att.search([
+            ("res_model", "=", "account.move"),
+            ("res_id", "=", invoice.id),
+        ]):
+            m = re.match(r"^__evidence_source:(\d+)__", att.description or "")
+            if m:
+                tagged_sources.add(int(m.group(1)))
+
         job_ref = _safe_fname(self.name)
         inv_ref = _safe_fname(invoice.name or invoice.ref or "INV")
         attached = 0
 
         def _link_attachment(att, stop_seq=None, category="DOC"):
             nonlocal attached
+            if att.id in tagged_sources:
+                return
             ext = att.name.rsplit(".", 1)[-1] if "." in att.name else "bin"
             stop_part = f"_STOP{stop_seq}" if stop_seq else ""
             # category must never contain "POD"/"BOL": see the base_automation
@@ -3674,6 +3711,41 @@ class PremaDispatchJob(models.Model):
                 f"Jobs: {', '.join(j.name for j in invoice.dispatch_job_ids)}"
             )
         )
+
+    def _finalize_invoice_references(self):
+        """AG step 13 / spec U-V-W: at the all-jobs-complete-with-POD
+        gate, run ONE final AI reference extraction against the final
+        evidence now attached to the draft invoice — the second important
+        automation point after the "I'M HERE" arrival invoice. Fills the
+        DEDICATED reference fields only (PO/BOL/POD/load reference); the
+        customer-facing description stays clean (spec W).
+
+        Booking-scoped via the logistics runtime guard (same pattern as
+        _maybe_invoice_on_pickup_arrival in dispatch_stop): plain dispatch
+        jobs without a logistics booking keep the historical behavior. The
+        actual fill lives in prema_logistics_booking
+        (logistics.booking._final_evidence_ai_reference_fill) and is
+        idempotent (fill-only + one-shot AI marker). Never blocking — the
+        dispatch-review gate proceeds even when the extraction fails."""
+        invoice = self.invoice_id.sudo() if self.invoice_id else False
+        if not invoice or invoice.state != "draft":
+            return
+        if invoice.partner_id.id != self.partner_id.id:
+            return
+        booking = (self.logistics_booking_id.sudo()
+                   if "logistics_booking_id" in self._fields
+                   and self.logistics_booking_id else False)
+        if not booking:
+            return
+        fill = getattr(type(booking), "_final_evidence_ai_reference_fill",
+                       None)
+        if not callable(fill):
+            return
+        try:
+            booking._final_evidence_ai_reference_fill()
+        except Exception:
+            _logger.exception(
+                "Final AI reference fill failed for job %s", self.name)
 
     # ── Driver App API ────────────────────────────────────────────
 

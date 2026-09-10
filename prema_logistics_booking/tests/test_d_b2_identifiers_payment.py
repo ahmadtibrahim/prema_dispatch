@@ -677,10 +677,31 @@ class TestDB2IdentifiersPayment(TransactionCase):
             "quickpay_deadline_days": 10,
             "calculated_price": 1000.0,
         })
-        narration = booking._generate_invoice_description()
-        self.assertIn("Internal Load Reference: REF-INV-1", narration)
-        self.assertIn("PO: PO-INV-9", narration)
-        self.assertIn("Payment:", narration)
+        # INV/2026/00091 presentation: the deterministic description is a
+        # CLEAN summary — no internal refs / PO / payment text / dumps.
+        description = booking._generate_invoice_description()
+        self.assertTrue(description.startswith("Freight / Delivery Service"))
+        self.assertIn("Date: September 22, 2026", description)
+        self.assertNotIn("Internal Load Reference: REF-INV-1", description)
+        self.assertNotIn("PO: PO-INV-9", description)
+        self.assertNotIn("Payment:", description)
+
+        invoice = booking._create_draft_invoice()
+        self.assertTrue(invoice)
+        self.assertAlmostEqual(invoice.amount_total, 1000.0, places=2)
+        product_line = invoice.invoice_line_ids.filtered(
+            lambda line: line.display_type == "product")[:1]
+        note_line = invoice.invoice_line_ids.filtered(
+            lambda line: line.display_type == "line_note")[:1]
+        self.assertTrue(product_line)
+        self.assertTrue(note_line)
+        product, _country = booking._select_freight_product()
+        self.assertEqual(product_line.name,
+                         product.display_name or product.name)
+        self.assertEqual(note_line.name, description)
+        # The §7 payment deal travels in the NARRATION (printed by the
+        # report on the customer document), never in the lines.
+        narration = invoice.narration or ""
         self.assertIn("Terms: %s" % self.terms30.name, narration)
         self.assertIn("Method: Interac e-Transfer", narration)
         self.assertIn("pay@premafirm.test", narration)
@@ -688,7 +709,3 @@ class TestDB2IdentifiersPayment(TransactionCase):
         self.assertIn("deduct 3% (30.00)", narration)
         self.assertIn("balance due 970.00", narration)
         self.assertIn("original balance 1000.00", narration)
-
-        invoice = booking._create_draft_invoice()
-        self.assertTrue(invoice)
-        self.assertAlmostEqual(invoice.amount_total, 1000.0, places=2)

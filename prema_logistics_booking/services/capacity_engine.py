@@ -221,13 +221,34 @@ class CapacityEngine:
         # capacity lock runs — exclude_booking_id keeps it from counting
         # itself in the peak it is validated against (the caller adds its
         # pallets as the projected increment instead).
-        bookings = self.env["logistics.booking"].search([
+        #
+        # The EXECUTION LEGS are the authority. A hub-transfer booking
+        # (feeder + linehaul) stores booking.departure_id as its FIRST
+        # leg's departure only, so a parent-departure search left every
+        # later leg invisible: the Frontline Friday linehaul reserved two
+        # pallets on its truck while that truck's departure still reported
+        # 13/13 sellable and could be oversold. A booking therefore counts
+        # on every departure one of its legs reserves. Bookings with no leg
+        # on this departure keep the parent-departure search (legacy /
+        # single-leg / manually dispatched bookings), which is also what
+        # keeps a booking from being counted twice.
+        Leg = self.env["logistics.booking.leg"]
+        legs = Leg.search([
             ("departure_id", "=", departure.id),
-            ("state", "=", "confirmed"),
+            ("booking_id.state", "=", "confirmed"),
         ])
         if exclude_booking_id:
-            bookings = bookings.filtered(
+            legs = legs.filtered(
+                lambda leg: leg.booking_id.id != exclude_booking_id)
+        leg_bookings = legs.mapped("booking_id")
+        parent_bookings = self.env["logistics.booking"].search([
+            ("departure_id", "=", departure.id),
+            ("state", "=", "confirmed"),
+        ]) - leg_bookings
+        if exclude_booking_id:
+            parent_bookings = parent_bookings.filtered(
                 lambda b: b.id != exclude_booking_id)
+        bookings = leg_bookings | parent_bookings
         from .departure_span_validator import DepartureSpanValidator
         span_validator = DepartureSpanValidator(self.env)
         integrity_conflicts = []
@@ -261,10 +282,10 @@ class CapacityEngine:
         exclusive = [b for b in bookings if self._is_exclusive_service(b)]
         exclusive_ids = [b.id for b in exclusive]
 
-        # Build per-booking segment occupancy (movement-aware).
+        # Build per-booking segment occupancy (movement-aware, leg-aware).
         booking_segments = []
         for bk in bookings:
-            segments = self._booking_segments(stops, bk)
+            segments = self._departure_segments(stops, bk, departure)
             booking_segments.extend(segments)
 
         # Compute load on each segment (between consecutive stops)
@@ -350,23 +371,46 @@ class CapacityEngine:
             "integrity_conflicts": [],
         }
 
-    def _leg_regions(self, leg):
-        origin = leg.origin_region_id
-        destination = leg.destination_region_id
-        if origin and destination:
-            return origin, destination
-        for snapshot in (leg.booking_id.route_snapshot or {}).get("legs") or []:
+    def _snapshot_leg_regions(self, booking, leg):
+        """Frozen route-snapshot regions of ONE execution leg (canonical).
+
+        One convention for the whole engine: the snapshot stores the same
+        region under several key generations (canonical ``*_region_id``,
+        the legacy ``origin_region_code`` / ``dest_region_code`` pair, and
+        the plain ``origin_region`` / ``dest_region`` code strings), so
+        every read goes through the canonical resolver instead of assuming
+        one key name. Assuming the legacy pair is what made the segment
+        fallback dead code: those keys never exist, so a leg whose span the
+        FSA anchor could not express (a feeder ending at the transfer hub)
+        silently counted zero."""
+        if not booking or not leg or not leg.departure_id:
+            return False, False
+        for snapshot in (booking.route_snapshot or {}).get("legs") or []:
             if snapshot.get("departure_id") != leg.departure_id.id:
                 continue
-            origin = self._canonical_region(
-                snapshot.get("origin_region_id") or snapshot.get("origin_region_code")
-                or snapshot.get("origin_region")
+            return (
+                self._canonical_region(
+                    snapshot.get("origin_region_id")
+                    or snapshot.get("origin_region_code")
+                    or snapshot.get("origin_region")
+                ),
+                self._canonical_region(
+                    snapshot.get("dest_region_id")
+                    or snapshot.get("dest_region_code")
+                    or snapshot.get("destination_region_code")
+                    or snapshot.get("dest_region")
+                ),
             )
-            destination = self._canonical_region(
-                snapshot.get("dest_region_id") or snapshot.get("dest_region_code")
-                or snapshot.get("dest_region")
-            )
-            break
+        return False, False
+
+    def _leg_regions(self, leg):
+        origin = self._canonical_region(leg.origin_region_id)
+        destination = self._canonical_region(leg.destination_region_id)
+        if not origin or not destination:
+            snapshot_origin, snapshot_destination = self._snapshot_leg_regions(
+                leg.booking_id, leg)
+            origin = origin or snapshot_origin
+            destination = destination or snapshot_destination
         # Manual/negotiated legs carry no region fields and no route
         # snapshot; fall back to the booking's own FSA-anchored regions so
         # span validation is meaningful (and the booking counts) instead of
@@ -388,6 +432,89 @@ class CapacityEngine:
         # (1-20) must be bridged to the official set (142+) that corridor
         # stops and span validation are keyed on.
         return RegionResolver(self.env).canonical_region(value)
+
+    def _departure_segments(self, corridor_stops, booking, departure):
+        """Segment occupancy of one confirmed booking on ONE departure.
+
+        A hub-transfer booking occupies a different corridor span per
+        execution leg: the feeder ends at the transfer hub (never at the
+        customer's final delivery), the linehaul starts there. Each leg
+        reserving on this departure therefore contributes its OWN span,
+        resolved from its own endpoints. Only a booking with no leg on
+        this departure falls through to the booking-level (FSA-anchored /
+        movement) resolution — the same single-leg behaviour as before.
+        """
+        legs = booking.leg_ids.filtered(
+            lambda leg: leg.departure_id.id == departure.id)
+        if legs:
+            segments = []
+            for leg in legs.sorted("sequence"):
+                segments.extend(self._leg_segments(corridor_stops, booking, leg))
+            if segments:
+                return segments
+        return self._booking_segments(corridor_stops, booking)
+
+    def _leg_segments(self, corridor_stops, booking, leg):
+        """Segment span of ONE execution leg on the corridor.
+
+        The leg's own pallet/weight reservation is what rides its truck:
+        a 2-pallet feeder reserves 2 positions on the feeder departure and
+        the linehaul leg reserves its own 2 on the linehaul departure —
+        the same physical freight, two different trucks at two different
+        times, never a double count on one vehicle."""
+        pickup_idx, delivery_idx = self._leg_stop_indices(corridor_stops, leg)
+        if pickup_idx is None or delivery_idx is None:
+            return []
+        if delivery_idx <= pickup_idx:
+            # A leg that does not advance along this corridor visits no
+            # segment: the span is meaningless rather than zero-length.
+            return []
+        return [{
+            "pallets": int(
+                leg.pallets or booking.physical_pallets or booking.pallets or 1),
+            "weight": leg.weight_lbs or booking.weight_lbs or 0.0,
+            "pickup_idx": pickup_idx,
+            "delivery_idx": delivery_idx,
+            "exclusive": self._is_exclusive_service(booking),
+        }]
+
+    def _leg_stop_indices(self, corridor_stops, leg):
+        """Corridor stop indices of a leg's OWN origin and destination.
+
+        The leg endpoints are the authority: a hub-transfer feeder ends at
+        the transfer hub, never at the customer's final delivery (which the
+        following leg owns). Resolution order — leg region records, the
+        frozen snapshot's regions for this leg (through the canonical
+        resolver), then the leg stops' own pins — so the hub boundary
+        survives even when only coordinates are available.
+        """
+        idx_by_region = {
+            stop.region_id.id: index
+            for index, stop in enumerate(corridor_stops)
+            if stop.region_id
+        }
+        origin_region = self._canonical_region(leg.origin_region_id)
+        destination_region = self._canonical_region(leg.destination_region_id)
+        pickup_idx = idx_by_region.get(origin_region.id) if origin_region else None
+        delivery_idx = (
+            idx_by_region.get(destination_region.id) if destination_region else None)
+        if pickup_idx is None or delivery_idx is None:
+            snapshot_origin, snapshot_destination = self._snapshot_leg_regions(
+                leg.booking_id, leg)
+            if pickup_idx is None and snapshot_origin:
+                pickup_idx = idx_by_region.get(snapshot_origin.id)
+            if delivery_idx is None and snapshot_destination:
+                delivery_idx = idx_by_region.get(snapshot_destination.id)
+        if pickup_idx is None or delivery_idx is None:
+            from .region_resolver import RegionResolver
+            resolver = RegionResolver(self.env)
+            if pickup_idx is None and leg.origin_stop_id:
+                pickup_idx = self._region_stop_index(
+                    resolver, corridor_stops, leg.origin_stop_id)
+            if delivery_idx is None and leg.destination_stop_id:
+                delivery_idx = self._region_stop_index(
+                    resolver, corridor_stops, leg.destination_stop_id)
+        return pickup_idx, delivery_idx
 
     def _booking_segments(self, corridor_stops, booking):
         """Segment occupancy of one confirmed booking on the corridor.
@@ -479,18 +606,40 @@ class CapacityEngine:
                 for i, stop in enumerate(corridor_stops)
                 if stop.region_id
             }
+            # Read the snapshot's regions through the canonical resolver
+            # (all key generations), never one assumed key name: the old
+            # read of origin_region_code / dest_region_code matched keys
+            # the snapshot never writes, so this fallback never fired.
+
             for leg in (booking.route_snapshot or {}).get("legs") or []:
-                if pickup_idx is None and leg.get("origin_region_code") in idx_by_code:
-                    pickup_idx = idx_by_code[leg["origin_region_code"]]
-                if delivery_idx is None and leg.get("dest_region_code") in idx_by_code:
-                    delivery_idx = idx_by_code[leg["dest_region_code"]]
+                origin_region = self._canonical_region(
+                    leg.get("origin_region_id") or leg.get("origin_region_code")
+                    or leg.get("origin_region"))
+                dest_region = self._canonical_region(
+                    leg.get("dest_region_id") or leg.get("dest_region_code")
+                    or leg.get("destination_region_code")
+                    or leg.get("dest_region"))
+                if pickup_idx is None and origin_region and origin_region.code in idx_by_code:
+                    pickup_idx = idx_by_code[origin_region.code]
+                if delivery_idx is None and dest_region and dest_region.code in idx_by_code:
+                    delivery_idx = idx_by_code[dest_region.code]
+                if pickup_idx is not None and delivery_idx is not None:
+                    break
         if pickup_idx is None or delivery_idx is None:
             from .region_resolver import RegionResolver
             resolver = RegionResolver(self.env)
+            # Booking-level fallback: the CUSTOMER endpoints. The transfer
+            # hub is an internal placeholder (no pallets, no pin) and is
+            # never the customer's pickup or delivery — reading it here is
+            # what made a hub-transfer booking resolve its destination to
+            # the wrong end of the corridor. Leg endpoints are handled by
+            # _leg_segments before this point.
             pu_stop = booking.stop_ids.filtered(
-                lambda s: s.stop_type == "pickup")[:1]
+                lambda s: s.stop_type == "pickup"
+                and not s.hub_transfer_stop)[:1]
             de_stop = booking.stop_ids.filtered(
-                lambda s: s.stop_type == "delivery")[:1]
+                lambda s: s.stop_type == "delivery"
+                and not s.hub_transfer_stop)[:1]
             if pu_stop and de_stop:
                 pu_idx = self._region_stop_index(resolver, corridor_stops, pu_stop)
                 de_idx = self._region_stop_index(resolver, corridor_stops, de_stop)
@@ -508,13 +657,28 @@ class CapacityEngine:
         return result
 
     @staticmethod
+    def _stop_pin(stop):
+        """Effective pin of a booking stop: its own coordinates, else the
+        saved location's pin. The master facility is the coordinate
+        authority — a transfer hub stop created without a pin (0.0/0.0)
+        still has one on its facility, and losing it dropped the hub
+        boundary out of every coordinate-based span resolution."""
+        if stop.latitude and stop.longitude:
+            return stop.latitude, stop.longitude
+        location = stop.saved_location_id
+        if location and location.pin_lat and location.pin_lng:
+            return location.pin_lat, location.pin_lng
+        return None, None
+
+    @staticmethod
     def _region_stop_index(resolver, corridor_stops, stop):
         """Index of the corridor stop whose region contains the booking
         stop's pin (resolved once per stop); None when unresolvable."""
-        if not (stop.latitude and stop.longitude):
+        latitude, longitude = CapacityEngine._stop_pin(stop)
+        if not (latitude and longitude):
             return None
         region = resolver.resolve(
-            stop.latitude, stop.longitude,
+            latitude, longitude,
             country=stop.country_id.id if stop.country_id else None,
         ).matched_region
         if not region:
