@@ -187,6 +187,16 @@ class PremaDispatchBookLoadWizard(models.TransientModel):
             "requested_pickup_date": self.scheduled_pickup.date(),
             "pricing_method": "corridor" if self.booking_mode == "scheduled_ltl" else "imported_invoice",
             "agreed_rate": 0.0 if self.booking_mode == "scheduled_ltl" else (move.amount_untaxed or move.amount_total),
+            # Tier 1 (same class as the Sales Order Book Load): the requested
+            # pickup date is binding — never silently rolled forward to the
+            # next scheduled departure — and the corridor's pallet-threshold
+            # "auto price as FTL" rule never reclassifies the sold service.
+            # The PRICE rule stays as-is here on purpose: an invoice total can
+            # aggregate non-freight lines, so "the document amount is the
+            # freight price" needs its own decision (Tier 2) rather than a
+            # silent assumption.
+            "enforce_requested_pickup_date": True,
+            "allow_ftl_autoupgrade": False,
             "existing_invoice_id": move.id,
             "idempotency_key": f"invoice:{move.id}:{self.booking_mode}",
         }, source_channel="invoice")

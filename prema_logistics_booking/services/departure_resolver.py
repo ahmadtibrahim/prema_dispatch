@@ -342,6 +342,43 @@ class DepartureResolver:
             if eligible:
                 yield departure, vehicle
 
+    def available_pickup_dates(self, origin_region, dest_region, equipment,
+                               pallets, weight_lbs, start_date=None,
+                               service_type="ltl", limit=24):
+        """The PICKUP dates this exact request can actually be served on.
+
+        Deterministic walk of the same resolve() authority the quote and
+        confirmation use: resolve from a cursor, take the leg's real pickup
+        date (departure date + the segment's pickup_day_offset), then step
+        the cursor past that departure — so direct, transfer, LTL and FTL
+        all report exactly the dates the pricing engine will accept. Never
+        invents a date, creates nothing.
+
+        Used to answer "the requested date cannot be served — what can?"
+        instead of silently moving the shipment.
+        """
+        equipment = to_canonical_temperature_mode(equipment)
+        cursor = start_date or datetime.date.today()
+        dates = []
+        horizon_end = cursor + datetime.timedelta(days=MAX_LOOKAHEAD_DAYS)
+        while cursor <= horizon_end and len(dates) < limit:
+            resolution = self.resolve(
+                origin_region, dest_region, equipment, pallets, weight_lbs,
+                earliest_pickup_date=cursor, service_type=service_type,
+            )
+            if not resolution.available:
+                break
+            first = resolution.legs[0]
+            departure_date = first.departure.departure_date
+            segment = first.departure.corridor_id.resolve_region_segment(
+                first.origin_region, first.dest_region)
+            pickup_date = departure_date + datetime.timedelta(
+                days=(segment or {}).get("pickup_day_offset") or 0)
+            if pickup_date not in dates:
+                dates.append(pickup_date)
+            cursor = departure_date + datetime.timedelta(days=1)
+        return sorted(dates)
+
     def evaluate_departure(self, departure, equipment, pallets, weight_lbs,
                            allow_pinwheel_override=False, service_type="ltl",
                            origin_region=None, dest_region=None):

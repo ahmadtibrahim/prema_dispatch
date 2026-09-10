@@ -136,6 +136,17 @@ class LogisticsBooking(models.Model):
     equipment_profile_id = fields.Many2one("logistics.equipment.profile")
 
     pickup_date = fields.Date()
+    # Requested-date provenance (Tier 1): the date the CUSTOMER asked for,
+    # frozen at confirmation, kept next to pickup_date (what the scheduled
+    # network actually resolved). They differ only when a fallback was
+    # explicitly agreed — a silent roll-forward is refused by the booking
+    # service, so an audit reads "Requested: Sep 11 / Resolved: Sep 16"
+    # instead of an unexplained moved date.
+    requested_pickup_date = fields.Date(
+        readonly=True, copy=False,
+        help="Customer's requested pickup date as accepted on the source "
+             "document. Never rewritten by later rescheduling; compare with "
+             "Pickup Date (the resolved scheduled date).")
     estimated_delivery_date = fields.Date()
 
     # ── Phase 3: Canonical service selections ────────────────────────
@@ -2408,8 +2419,81 @@ class LogisticsBooking(models.Model):
     # Freight Tax Decision Engine
     # ═══════════════════════════════════════════════════════════════════
 
+    def _tax_twin_excluded(self, tax):
+        """The same-rate tax-EXCLUDED twin of `tax`, or an empty recordset.
+
+        Every jurisdiction is configured in Settings → Freight Tax
+        Configuration as a single account.tax record, and the chart of
+        accounts carries both twins of a rate (e.g. "13% HST" and
+        "13% HST Included"). Which one is billable depends on the price
+        basis the customer agreed, not on the mapping alone."""
+        self.ensure_one()
+        return self.env["account.tax"].sudo().search([
+            ("id", "!=", tax.id),
+            ("company_id", "=", tax.company_id.id),
+            ("amount", "=", tax.amount),
+            ("amount_type", "=", tax.amount_type),
+            ("type_tax_use", "=", tax.type_tax_use),
+            ("active", "=", True),
+            ("price_include_override", "!=", "tax_included"),
+        ], limit=1)
+
+    def _tax_matching_price_mode(self, tax):
+        """Reconcile the jurisdiction's mapped tax with this booking's agreed
+        price basis (price_tax_mode). Returns the billable tax, or nothing.
+
+        A price agreed EXCLUSIVE of tax must be taxed by a tax-EXCLUDED
+        account.tax so the tax is ADDED on top of the agreed amount. Billing
+        an exclusive price through a tax-INCLUDED tax makes Odoo back-solve
+        the taxable base out of the agreed price (a $400 agreed freight
+        becomes 353.98 + 46.02 = 400.00), so the customer pays the agreed
+        amount all-in and the tax is silently under-billed — both the
+        customer document and the tax remitted are wrong.
+
+        Inclusive bookings need no correction: _line_unit_price_for_tax_mode
+        already solves the line price so the invoice total is the agreed
+        amount, and it does so with either twin.
+
+        When the mapped tax contradicts the basis and no same-rate excluded
+        twin exists the tax is refused (empty), which flags the booking for
+        manual tax review — never a silent wrong tax."""
+        self.ensure_one()
+        if not tax or self.price_tax_mode != "exclusive" \
+                or tax.price_include_override != "tax_included":
+            return tax
+        twin = self._tax_twin_excluded(tax)
+        if not twin:
+            _logger.warning(
+                "Booking %s: freight tax %s (%s%%) is tax-INCLUDED but the "
+                "agreed price is EXCLUSIVE of tax, and no same-rate excluded "
+                "twin exists — refusing the tax so the booking is flagged "
+                "for manual tax review instead of grossing the agreed price "
+                "down.", self.booking_number, tax.name, tax.amount)
+            return twin
+        _logger.warning(
+            "Booking %s: freight tax mapping points at %s (tax-INCLUDED) but "
+            "the agreed price is EXCLUSIVE of tax — applying %s (%s%%, tax "
+            "added on top) so the agreed price is not grossed down.",
+            self.booking_number, tax.name, twin.name, twin.amount)
+        return twin
+
     def _resolve_freight_tax(self, partner, delivery_province,
                              billing_rel=None, tax_treatment=None):
+        """Freight tax for this booking: the jurisdiction's mapped tax,
+        reconciled with the price basis the customer actually agreed
+        (see _tax_matching_price_mode)."""
+        tax, reason = self._resolve_freight_tax_raw(
+            partner, delivery_province,
+            billing_rel=billing_rel, tax_treatment=tax_treatment)
+        if tax:
+            billable = self._tax_matching_price_mode(tax)
+            if not billable:
+                return None, reason + "_no_tax_mode_twin"
+            tax = billable
+        return tax, reason
+
+    def _resolve_freight_tax_raw(self, partner, delivery_province,
+                                 billing_rel=None, tax_treatment=None):
         """Determine the correct freight tax based on billing relationship
         and final delivery province. Returns (account.tax record, reason string).
 

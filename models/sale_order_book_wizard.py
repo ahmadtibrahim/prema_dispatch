@@ -158,12 +158,17 @@ class SaleOrderBookWizard(models.TransientModel):
         except ImportError as exc:
             raise UserError(_("Prema Logistics Booking is required before a Sales Order load can be booked.")) from exc
 
+        # The order's ACCEPTED commercial amount is the customer price —
+        # for BOTH booking modes. A priced Sales Order is a closed deal: the
+        # booking carries it, and the corridor quote is calculated for
+        # routing and audit only (never substituted for it, and never a $0).
         agreed_rate = so.amount_untaxed or so.amount_total
-        if self.booking_mode == "custom" and not agreed_rate:
+        if not agreed_rate:
             raise UserError(_(
-                "Custom / Expedited booking from a Sales Order carries the "
-                "order's amount as its agreed rate — price the order first."
-            ))
+                "Sales Order %s carries no accepted amount — price the order "
+                "before booking the load; the accepted price is what the "
+                "customer will be billed."
+            ) % so.name)
 
         def location_values(location, pickup):
             return {
@@ -204,7 +209,15 @@ class SaleOrderBookWizard(models.TransientModel):
             "instructions": self.general_notes or "",
             "requested_pickup_date": self.scheduled_pickup.date(),
             "pricing_method": "corridor" if self.booking_mode == "scheduled_ltl" else "manual",
-            "agreed_rate": 0.0 if self.booking_mode == "scheduled_ltl" else agreed_rate,
+            # Tier 1 — a confirmed Sales Order's terms are authoritative:
+            # the accepted amount IS the customer price (the corridor quote
+            # stays an internal/audit figure), the requested pickup date is
+            # never silently rolled forward, and the pallet threshold never
+            # converts the sold LTL service into Dedicated FTL pricing.
+            "agreed_rate": agreed_rate,
+            "agreed_rate_authoritative": True,
+            "enforce_requested_pickup_date": True,
+            "allow_ftl_autoupgrade": False,
             "existing_sale_order_id": so.id,
             "idempotency_key": f"sale.order:{so.id}:{self.booking_mode}",
         }, source_channel="sale_order")

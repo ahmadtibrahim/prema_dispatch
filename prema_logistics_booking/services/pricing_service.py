@@ -24,6 +24,11 @@ class PricingResult:
         self.route_snapshot = kwargs.get("route_snapshot", {})  # immutable at confirm
         self.manual_review_required = kwargs.get("manual_review_required", False)
         self.recommend_ftl = kwargs.get("recommend_ftl", False)
+        # Binding-requested-date refusal detail (see calculate()):
+        # what the customer asked for and what the network can serve.
+        self.requested_pickup_date = kwargs.get("requested_pickup_date")
+        self.available_pickup_dates = kwargs.get("available_pickup_dates") or []
+        self.detail_reason = kwargs.get("detail_reason")
 
 
 class PricingService:
@@ -54,6 +59,48 @@ class PricingService:
         return minimum_charge, adjustment
 
     @staticmethod
+    def _as_date(value):
+        """Coerce a date / datetime / ISO string to a datetime.date (None
+        when it is nothing usable) — requests carry all three shapes."""
+        if not value:
+            return None
+        if isinstance(value, datetime.datetime):
+            return value.date()
+        if isinstance(value, datetime.date):
+            return value
+        try:
+            return datetime.date.fromisoformat(str(value)[:10])
+        except ValueError:
+            return None
+
+    def _requested_date_not_served(self, dep_resolver, origin_region,
+                                   dest_region, equipment, pallets, weight_lbs,
+                                   service_type, requested_date, detail_reason):
+        """The requested pickup date is binding and the scheduled corridor
+        cannot serve it. Refuse — with the dates the network CAN serve so
+        the caller (and the customer) can choose explicitly.
+
+        Never a silent roll-forward: the freight is not moved, and the
+        caller surfaces requested vs. available.
+        """
+        requested = self._as_date(requested_date)
+        try:
+            available = dep_resolver.available_pickup_dates(
+                origin_region, dest_region, equipment, pallets, weight_lbs,
+                start_date=requested or datetime.date.today(),
+                service_type=service_type,
+            )
+        except Exception:  # never let the message path itself break a refusal
+            available = []
+        return PricingResult(
+            False,
+            reason="requested_pickup_date_not_served",
+            requested_pickup_date=requested,
+            available_pickup_dates=available,
+            detail_reason=detail_reason,
+        )
+
+    @staticmethod
     def _select_pricing_anchor(topology_legs, origin_region):
         """Pick the corridor that owns pricing for this shipment: the leg
         serving the origin region, otherwise the first leg."""
@@ -69,8 +116,29 @@ class PricingService:
                    pallets, weight_lbs, liftgate_pickup=False, liftgate_delivery=False,
                    appointment=False, residential=False, same_day_requested=False,
                    partner=None, reference_dt=None, required_temperature_c=None,
-                   resolve_departures=False):
-        """Price a configured corridor itinerary and optionally freeze departures."""
+                   resolve_departures=False, enforce_requested_pickup_date=False,
+                   allow_ftl_autoupgrade=True):
+        """Price a configured corridor itinerary and optionally freeze departures.
+
+        ``enforce_requested_pickup_date`` (internal Book Load from a priced
+        document): the requested pickup date is BINDING. The departure search
+        is forward-looking by design — a requested date no scheduled
+        departure can serve resolves to the next eligible one, which is a
+        legitimate quote behavior but a silent shipment move when the date
+        came from an accepted Sales Order. With this flag set, such a
+        request comes back unavailable (``requested_pickup_date_not_served``)
+        with the dates the network can actually serve, so the caller shows
+        the customer's requested date and the alternatives instead of
+        moving the freight.
+
+        ``allow_ftl_autoupgrade=False`` (same channel): the corridor's
+        pallet-threshold "auto price as FTL" rule never converts an
+        LTL-sold shipment into Dedicated FTL pricing. An EXPLICIT FTL
+        request (``shipment_type == "ftl"``) is unaffected — only the
+        silent commercial reclassification is refused; a threshold hit is
+        still reported as ``recommend_ftl`` so staff can upgrade
+        deliberately.
+        """
         # Validate inputs
         if not pickup_fsa or not pickup_fsa.pickup_supported:
             return PricingResult(False, reason="pickup_fsa_not_supported")
@@ -115,6 +183,14 @@ class PricingService:
                 service_type=shipment_type,
             )
             if not resolution.available:
+                if enforce_requested_pickup_date:
+                    # Same refusal, expressed for the customer's date: the
+                    # network has nothing at all on/after the request.
+                    return self._requested_date_not_served(
+                        dep_resolver, origin_region, destination_region,
+                        equipment, pallets, weight_lbs, shipment_type,
+                        earliest, resolution.reason,
+                    )
                 return PricingResult(False, reason=resolution.reason)
             for resolved in resolution.legs:
                 segment = resolved.departure.corridor_id.resolve_region_segment(
@@ -126,6 +202,25 @@ class PricingService:
                     segment, hub=resolved.hub,
                     departure=resolved.departure, vehicle=resolved.vehicle,
                 ))
+            # Binding requested date: the resolved FIRST pickup date must be
+            # the requested one. The forward search above legitimately rolls
+            # past an unservable date (next scheduled departure); for an
+            # internal Book Load whose date came from an accepted document
+            # that would be a silent shipment move, so it is refused here
+            # with the dates the network can actually serve. Compared
+            # against the resolved PICKUP date (departure + the segment's
+            # pickup_day_offset), never the raw departure date: a leg whose
+            # pickup legitimately precedes its linehaul day still serves
+            # the requested date.
+            if enforce_requested_pickup_date and topology_legs:
+                served = topology_legs[0].get("pickup_date")
+                served_date = self._as_date(served)
+                if served_date != earliest:
+                    return self._requested_date_not_served(
+                        dep_resolver, origin_region, destination_region,
+                        equipment, pallets, weight_lbs, shipment_type,
+                        earliest, "requested_pickup_date_not_served",
+                    )
         else:
             from .route_resolver import RouteResolver
             route = RouteResolver(self.env).resolve(
@@ -180,7 +275,18 @@ class PricingService:
             recommend_ftl = bool(
                 threshold_hit and pricing_anchor.ftl_behavior == "recommend" and not requested_ftl
             )
-            use_ftl = requested_ftl or (threshold_hit and pricing_anchor.ftl_behavior == "auto_price")
+            use_ftl = requested_ftl or (
+                threshold_hit
+                and pricing_anchor.ftl_behavior == "auto_price"
+                and allow_ftl_autoupgrade
+            )
+            if (threshold_hit and not requested_ftl and not allow_ftl_autoupgrade
+                    and pricing_anchor.ftl_behavior == "auto_price"):
+                # The pallet threshold was reached but this channel's sold
+                # service is authoritative: stay LTL and NOTE the size
+                # instead — never silently reclassify the customer's
+                # service or substitute FTL pricing for it.
+                recommend_ftl = True
         if use_ftl and len(topology_legs) != 1:
             return PricingResult(
                 False, reason="ftl_requires_dedicated_direct_service",
