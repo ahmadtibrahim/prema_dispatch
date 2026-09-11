@@ -32,7 +32,11 @@
          Confirmation flow (logistics.custom.quote). -->
     <menuitem id="menu_v4_phone" name="Phone Booking (Legacy)" parent="menu_v4_bookings" action="action_logistics_phone_booking" sequence="20"/>
     <menuitem id="menu_v4_recurring" name="Recurring Agreements" parent="menu_v4_bookings" action="action_logistics_recurring_agreement" sequence="30"/>
-    <menuitem id="menu_v4_quotes" name="Custom Quotes" parent="menu_v4_bookings" action="action_logistics_custom_quote" sequence="40"/>
+    <!-- §1: the Custom Quotes workflow is retired — the Sales quotation is
+         the only commercial quotation. This menu is the archive of the Rate
+         Confirmations already issued: read-only, no New button, no workflow
+         buttons on the form. -->
+    <menuitem id="menu_v4_quotes" name="Rate Confirmations (History)" parent="menu_v4_bookings" action="action_logistics_custom_quote" sequence="40"/>
     <menuitem id="menu_v4_wa" name="WhatsApp Negotiations" parent="menu_v4_bookings" action="agent_wa.action_wa_negotiations" sequence="50"/>
     <menuitem id="menu_v4_locations" name="Locations" parent="menu_v4_bookings" sequence="60"/>
 

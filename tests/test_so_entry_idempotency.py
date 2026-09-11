@@ -21,6 +21,7 @@ Coverage (synthetic fixtures, no external calls):
 from datetime import datetime
 
 from odoo.exceptions import ValidationError
+from odoo.tests import tagged
 from odoo.tests.common import TransactionCase
 
 
@@ -66,7 +67,19 @@ class JobCreateRecorder:
         self._model_cls.create = self._orig
 
 
+@tagged("post_install", "-at_install")
 class TestSoEntryIdempotency(TransactionCase):
+    """post_install, not at_install, and it has to be.
+
+    Every test here books a load, and booking goes through
+    `logistics.booking`, which lives in prema_logistics_booking — a module
+    that DEPENDS ON THIS ONE, so it is always loaded after it. An
+    at_install test runs inside this module's own step of the load graph
+    (`odoo/modules/loading.py`), i.e. before that model exists, so
+    `_logistics_loaded()` answers False and all eight booking tests error
+    out on the guard rather than exercising anything. They had been
+    passing as "0 failed" only because errors are not failures.
+    """
 
     @classmethod
     def setUpClass(cls):

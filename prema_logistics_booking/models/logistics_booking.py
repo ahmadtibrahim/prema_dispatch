@@ -136,6 +136,17 @@ class LogisticsBooking(models.Model):
     equipment_profile_id = fields.Many2one("logistics.equipment.profile")
 
     pickup_date = fields.Date()
+    # Requested-date provenance (Tier 1): the date the CUSTOMER asked for,
+    # frozen at confirmation, kept next to pickup_date (what the scheduled
+    # network actually resolved). They differ only when a fallback was
+    # explicitly agreed — a silent roll-forward is refused by the booking
+    # service, so an audit reads "Requested: Sep 11 / Resolved: Sep 16"
+    # instead of an unexplained moved date.
+    requested_pickup_date = fields.Date(
+        readonly=True, copy=False,
+        help="Customer's requested pickup date as accepted on the source "
+             "document. Never rewritten by later rescheduling; compare with "
+             "Pickup Date (the resolved scheduled date).")
     estimated_delivery_date = fields.Date()
 
     # ── Phase 3: Canonical service selections ────────────────────────
@@ -1660,6 +1671,41 @@ class LogisticsBooking(models.Model):
             })
         return movements
 
+    def _job_timing_vals(self, pickup_stop, delivery_stop, day):
+        """TIER 2 §6 — the dispatch JOB's window header, derived from the
+        booking stops that actually carry the timing.
+
+        This replaces the hardcoded ``pickup_window_type = "flexible"`` /
+        ``delivery_window_type = "flexible"`` pair that made every Planner
+        card look unconstrained no matter what the customer booked.
+
+        The job header states the CUSTOMER's commitment only. Facility
+        hours are NOT a job window type — they are the building's own
+        hours and stay on the stops (facility_open_time/close_time plus
+        the frozen operating_hours_snapshot), so the two never overwrite
+        each other (§4).
+        """
+        vals = {
+            "pickup_window_type": "flexible",
+            "delivery_window_type": "flexible",
+        }
+        pickup = pickup_stop[:1] if pickup_stop else pickup_stop
+        delivery = delivery_stop[:1] if delivery_stop else delivery_stop
+        if pickup:
+            vals.update(pickup._job_timing_vals(day, "pickup"))
+        if delivery:
+            vals.update(delivery._job_timing_vals(day, "delivery"))
+        # Job-level flags: the appointment flag is the union of the stops
+        # (either end needing a booked slot pins the day), and the hard
+        # deadline flag follows a real deadline binding.
+        vals["appointment_required"] = bool(
+            (pickup and pickup.appointment_required)
+            or (delivery and delivery.appointment_required))
+        vals["hard_deadline"] = bool(
+            delivery and delivery.timing_type == "deadline"
+            and delivery.hard_deadline)
+        return vals
+
     def _create_dispatch_route_from_movements(self):
         """Milk-run bridge: one dispatch route job with ordered operational
         stops and canonical items derived from booking.stop_ids and booking
@@ -1788,8 +1834,14 @@ class LogisticsBooking(models.Model):
             ),
             "approximate_skids": self.physical_pallets or self.pallets,
             "planned_delivery_date": fields.Date.to_date(operation_date),
-            "pickup_window_type": "flexible",
-            "delivery_window_type": "flexible",
+            # TIER 2 §6: the Planner card's window header is DERIVED from
+            # the booking stops that actually carry the timing — the
+            # hardcoded "flexible"/"flexible" pair is gone. Facility hours
+            # stay on the stops (never folded into the customer window).
+            **self._job_timing_vals(
+                stops.filtered(lambda s: s.stop_type == "pickup")[:1],
+                stops.filtered(lambda s: s.stop_type == "delivery")[:1],
+                operation_date),
             "route_definition_mode": "exact_stops",
             "stops_confirmation_state": "confirmed",
             "planned_route_name": self.booking_number,
@@ -1924,10 +1976,10 @@ class LogisticsBooking(models.Model):
             "scheduled_pickup": scheduled_at,
             "planned_delivery_date": fields.Date.to_date(operation_date),
             "requested_delivery_date": self.estimated_delivery_date or fields.Date.to_date(operation_date),
-            "pickup_window_type": "flexible",
-            "pickup_exact_time": False,
-            "delivery_window_type": "flexible",
-            "delivery_exact_time": False,
+            # TIER 2 §6 — same derivation as the movement_v1 bridge: the
+            # job header states the booking stops' real commitment.
+            **self._job_timing_vals(origin_stop, destination_stop,
+                                    operation_date),
             "service_type": "ltl" if self.shipment_type == "ltl" else "ftl",
             "equipment_type": self.temperature_mode,
             "requires_reefer": self.temperature_mode == "reefer",
@@ -1997,9 +2049,15 @@ class LogisticsBooking(models.Model):
         destination_is_hub = bool(
             destination_stop and destination_stop.hub_transfer_stop)
         # This leg's own freight: the same goods ride both trucks, but each
-        # leg reserves and reports what ITS truck carries.
-        leg_pallets = leg.pallets or self.physical_pallets or self.pallets
-        leg_weight_lbs = leg.weight_lbs or self.weight_lbs
+        # leg reserves and reports what ITS truck carries. A CUSTOM (no-leg)
+        # operation — the path every sale.order / custom-quote / portal
+        # booking takes — has no leg at all here: `leg` is the False sentinel
+        # the caller passes, so its freight is the booking's own.
+        # Reading `.pallets` off that sentinel crashed with
+        # "'bool' object has no attribute 'pallets'" and took the whole
+        # confirmation down, leaving a booking with no dispatch job.
+        leg_pallets = (leg.pallets if leg else 0) or self.physical_pallets or self.pallets
+        leg_weight_lbs = (leg.weight_lbs if leg else 0.0) or self.weight_lbs
 
         created_origin = created_destination = False
         if origin_stop:
@@ -2408,8 +2466,81 @@ class LogisticsBooking(models.Model):
     # Freight Tax Decision Engine
     # ═══════════════════════════════════════════════════════════════════
 
+    def _tax_twin_excluded(self, tax):
+        """The same-rate tax-EXCLUDED twin of `tax`, or an empty recordset.
+
+        Every jurisdiction is configured in Settings → Freight Tax
+        Configuration as a single account.tax record, and the chart of
+        accounts carries both twins of a rate (e.g. "13% HST" and
+        "13% HST Included"). Which one is billable depends on the price
+        basis the customer agreed, not on the mapping alone."""
+        self.ensure_one()
+        return self.env["account.tax"].sudo().search([
+            ("id", "!=", tax.id),
+            ("company_id", "=", tax.company_id.id),
+            ("amount", "=", tax.amount),
+            ("amount_type", "=", tax.amount_type),
+            ("type_tax_use", "=", tax.type_tax_use),
+            ("active", "=", True),
+            ("price_include_override", "!=", "tax_included"),
+        ], limit=1)
+
+    def _tax_matching_price_mode(self, tax):
+        """Reconcile the jurisdiction's mapped tax with this booking's agreed
+        price basis (price_tax_mode). Returns the billable tax, or nothing.
+
+        A price agreed EXCLUSIVE of tax must be taxed by a tax-EXCLUDED
+        account.tax so the tax is ADDED on top of the agreed amount. Billing
+        an exclusive price through a tax-INCLUDED tax makes Odoo back-solve
+        the taxable base out of the agreed price (a $400 agreed freight
+        becomes 353.98 + 46.02 = 400.00), so the customer pays the agreed
+        amount all-in and the tax is silently under-billed — both the
+        customer document and the tax remitted are wrong.
+
+        Inclusive bookings need no correction: _line_unit_price_for_tax_mode
+        already solves the line price so the invoice total is the agreed
+        amount, and it does so with either twin.
+
+        When the mapped tax contradicts the basis and no same-rate excluded
+        twin exists the tax is refused (empty), which flags the booking for
+        manual tax review — never a silent wrong tax."""
+        self.ensure_one()
+        if not tax or self.price_tax_mode != "exclusive" \
+                or tax.price_include_override != "tax_included":
+            return tax
+        twin = self._tax_twin_excluded(tax)
+        if not twin:
+            _logger.warning(
+                "Booking %s: freight tax %s (%s%%) is tax-INCLUDED but the "
+                "agreed price is EXCLUSIVE of tax, and no same-rate excluded "
+                "twin exists — refusing the tax so the booking is flagged "
+                "for manual tax review instead of grossing the agreed price "
+                "down.", self.booking_number, tax.name, tax.amount)
+            return twin
+        _logger.warning(
+            "Booking %s: freight tax mapping points at %s (tax-INCLUDED) but "
+            "the agreed price is EXCLUSIVE of tax — applying %s (%s%%, tax "
+            "added on top) so the agreed price is not grossed down.",
+            self.booking_number, tax.name, twin.name, twin.amount)
+        return twin
+
     def _resolve_freight_tax(self, partner, delivery_province,
                              billing_rel=None, tax_treatment=None):
+        """Freight tax for this booking: the jurisdiction's mapped tax,
+        reconciled with the price basis the customer actually agreed
+        (see _tax_matching_price_mode)."""
+        tax, reason = self._resolve_freight_tax_raw(
+            partner, delivery_province,
+            billing_rel=billing_rel, tax_treatment=tax_treatment)
+        if tax:
+            billable = self._tax_matching_price_mode(tax)
+            if not billable:
+                return None, reason + "_no_tax_mode_twin"
+            tax = billable
+        return tax, reason
+
+    def _resolve_freight_tax_raw(self, partner, delivery_province,
+                                 billing_rel=None, tax_treatment=None):
         """Determine the correct freight tax based on billing relationship
         and final delivery province. Returns (account.tax record, reason string).
 

@@ -8,6 +8,7 @@ _logger = logging.getLogger(__name__)
 
 class PremaDispatchBookLoadWizard(models.TransientModel):
     _name = "prema.dispatch.book.load.wizard"
+    _inherit = ["prema.dispatch.book.load.timing.mixin"]
     _description = "Book Dispatch Load"
 
     move_id = fields.Many2one("account.move", required=True, ondelete="cascade")
@@ -165,14 +166,23 @@ class PremaDispatchBookLoadWizard(models.TransientModel):
                 "instructions": self.general_notes or "",
             }
 
+        def timing_values(side):
+            """TIER 2 §2/§4 — same two timing channels as the Sales Order
+            Book Load wizard (one shared mixin)."""
+            values = self._timing_stop_values(side)
+            values["timezone"] = "America/Toronto"
+            return values
+
         service = BookingOrchestrationService(self.env)
         request = service.normalize_request({
             "partner_id": self.partner_id.id,
             "source_model": "account.move",
             "source_res_id": move.id,
             "source_reference": move.name or move.ref or "",
-            "pickup_stops": [location_values(self.pickup_saved_location_id, True)],
-            "delivery_stops": [location_values(self.delivery_saved_location_id, False)],
+            "pickup_stops": [dict(location_values(
+                self.pickup_saved_location_id, True), **timing_values("pickup"))],
+            "delivery_stops": [dict(location_values(
+                self.delivery_saved_location_id, False), **timing_values("delivery"))],
             "pallets": self.expected_skids,
             "weight_lbs": self.total_weight_lbs,
             "load_type": "ltl" if self.service_type == "ltl" else "ftl",
@@ -187,6 +197,16 @@ class PremaDispatchBookLoadWizard(models.TransientModel):
             "requested_pickup_date": self.scheduled_pickup.date(),
             "pricing_method": "corridor" if self.booking_mode == "scheduled_ltl" else "imported_invoice",
             "agreed_rate": 0.0 if self.booking_mode == "scheduled_ltl" else (move.amount_untaxed or move.amount_total),
+            # Tier 1 (same class as the Sales Order Book Load): the requested
+            # pickup date is binding — never silently rolled forward to the
+            # next scheduled departure — and the corridor's pallet-threshold
+            # "auto price as FTL" rule never reclassifies the sold service.
+            # The PRICE rule stays as-is here on purpose: an invoice total can
+            # aggregate non-freight lines, so "the document amount is the
+            # freight price" needs its own decision (Tier 2) rather than a
+            # silent assumption.
+            "enforce_requested_pickup_date": True,
+            "allow_ftl_autoupgrade": False,
             "existing_invoice_id": move.id,
             "idempotency_key": f"invoice:{move.id}:{self.booking_mode}",
         }, source_channel="invoice")

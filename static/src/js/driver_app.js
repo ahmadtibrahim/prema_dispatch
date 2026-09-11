@@ -1486,6 +1486,16 @@ function renderStopDetail() {
     const isActive=["arrived","en_route"].includes(stop.status);
     const phone=stop.contact_phone||"";
     const pickupInfo=isPickup ? pickupSummary(stop) : null;
+    // TIER 2 §7 — the dock's own hours and the customer's commitment are
+    // two separate facts and are shown as two separate lines. §8 — a
+    // breach of either is an ADVISORY warning, never a block.
+    const timing=stop.timing||{};
+    const facilityLine=timing.facility
+        ?`<div class="da-detail-meta">🕒 Facility hours: <strong>${esc(timing.facility)}</strong> <span class="da-timing-hint">dock's own hours</span></div>`
+        :(stop.facility_hours?`<div class="da-detail-meta">🕒 Facility hours today: <strong>${esc(stop.facility_hours)}</strong></div>`:"");
+    const commitmentLine=(timing.label&&timing.kind!=="facility_hours")
+        ?`<div class="da-detail-meta da-timing-${esc(timing.kind)}">${timing.kind==="hard_appointment"?"🔒":"📅"} <strong>${esc(timing.label)}</strong>${timing.appointment_required?' <span class="da-timing-hint">appointment required</span>':""}</div>`
+        :(stop.appointment?`<div class="da-detail-meta">📅 <strong>${esc(stop.appointment)}</strong></div>`:"");
 
     // Post-arrival order (spec §14): 1. header/status, 2. ARRIVED/ISSUE at
     // top, 3. general POP/POD evidence, 4. pickup/delivery progress,
@@ -1529,8 +1539,9 @@ function renderStopDetail() {
             <button class="da-svc-btn" onclick="bumpSvcTime(5)">+</button>
         </div>`:"")+
         (stop.dock_door?`<div class="da-detail-dock">🚪 Dock: ${esc(stop.dock_door)}</div>`:"")+
-        (stop.facility_hours?`<div class="da-detail-meta">🕒 Facility hours today: <strong>${esc(stop.facility_hours)}</strong></div>`:"")+
-        (stop.appointment?`<div class="da-detail-meta">📅 <strong>${esc(stop.appointment)}</strong></div>`:"")+
+        facilityLine+
+        commitmentLine+
+        (stop.timing_warning?`<div class="da-timing-warn">⚠️ ${esc(stop.timing_warning)}</div>`:"")+
         (stop.liftgate_required?`<div class="da-detail-meta">🛗 <strong>Liftgate required</strong></div>`:"")+
         (stop.instructions?`<div class="da-detail-notes">📋 ${esc(stop.instructions)}</div>`:"")+
         (phone?`<a href="tel:${esc(phone)}" class="da-phone-link">📞 ${esc(stop.contact_name||stop.partner||phone)}</a>`:"")+
@@ -5060,9 +5071,25 @@ async function callStop(id,action,data){
     try{
         const r=await rpc("/dispatch/driver/stop/status",{stop_id:id,action,data});
         if(!r?.success && r?.error) toast(r.error);
+        if(r?.success) surfaceTimingWarning(r);
         return !!r?.success;
     }
     catch(e){ toast("Error: "+(e.message||"failed")); return false; }
+}
+
+// TIER 2 §8 — the server judges the action's own timing and returns any
+// breach. The action has ALREADY succeeded: this warns the driver so the
+// dispatcher can be called. It never cancels, blocks or reschedules.
+function surfaceTimingWarning(r){
+    const w=r?.timing_warning;
+    if(!w) return;
+    if(typeof toast==="function") toast("⚠️ "+w);
+    const stop=S.stop;
+    if(stop && r.stop_id===stop.id){
+        stop.timing_warning=w;
+        if(r.timing) stop.timing=r.timing;
+        renderStopDetail();
+    }
 }
 
 // ── Native Maps Navigation ────────────────────────────────────────

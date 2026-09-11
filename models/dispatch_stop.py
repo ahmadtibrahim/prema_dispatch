@@ -367,6 +367,21 @@ class PremaDispatchStop(models.Model):
     hard_deadline = fields.Boolean(string="Hard Deadline",
         help="Missing this deadline is unacceptable. System will block or warn if ETA exceeds it.")
     appointment_confirmed = fields.Boolean(string="Appointment Confirmed")
+    # TIER 2 (§4/§5): the FACILITY's own hours, carried SEPARATELY from the
+    # customer's window above (earliest/latest/exact/deadline_time). An
+    # appointment never overwrites the dock's opening hours and vice
+    # versa; the frozen operating_hours_snapshot stays the per-weekday
+    # channel the ETA/route planners evaluate against.
+    facility_open_time = fields.Float(
+        string="Facility Open (24h float)",
+        help="Facility's own opening time on this stop's operating day "
+             "(e.g. 6.0 = 06:00) — from the shipment's tender document or "
+             "the master facility. Never the customer's window.")
+    facility_close_time = fields.Float(
+        string="Facility Close (24h float)",
+        help="Facility's own closing time on this stop's operating day "
+             "(e.g. 16.0 = 16:00) — from the shipment's tender document or "
+             "the master facility. Never the customer's window.")
     requires_liftgate = fields.Boolean(
         string="Liftgate Required",
         help="Stop-level liftgate requirement (milk-run stops carry their "

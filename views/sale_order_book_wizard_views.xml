@@ -29,6 +29,36 @@
                             <field name="commodity"/>
                         </group>
                     </group>
+                    <group string="Timing">
+                        <group string="Pickup">
+                            <field name="pickup_facility_open_time" widget="float_time"/>
+                            <field name="pickup_facility_close_time" widget="float_time"/>
+                            <field name="pickup_window_type"/>
+                            <field name="pickup_window_start" widget="float_time"
+                                   invisible="pickup_window_type in ('flexible', 'facility_hours')"/>
+                            <field name="pickup_window_end" widget="float_time"
+                                   invisible="pickup_window_type in ('flexible', 'facility_hours', 'earliest_time')"/>
+                            <field name="pickup_appointment_required"/>
+                        </group>
+                        <group string="Delivery">
+                            <field name="delivery_facility_open_time" widget="float_time"/>
+                            <field name="delivery_facility_close_time" widget="float_time"/>
+                            <field name="delivery_window_type"/>
+                            <field name="delivery_window_start" widget="float_time"
+                                   invisible="delivery_window_type in ('flexible', 'facility_hours', 'deadline')"/>
+                            <field name="delivery_window_end" widget="float_time"
+                                   invisible="delivery_window_type in ('flexible', 'facility_hours', 'deadline')"/>
+                            <field name="delivery_deadline"
+                                   invisible="delivery_window_type != 'deadline'"/>
+                            <field name="delivery_appointment_required"/>
+                        </group>
+                    </group>
+                    <div class="alert alert-info" role="alert">
+                        Facility hours are the dock's own open/close; the window is what the
+                        customer committed to. They are stored separately and both reach the
+                        Planner and the driver — an appointment never overwrites the dock's
+                        hours. Edit anything above before confirming.
+                    </div>
                     <group string="References">
                         <field name="customer_reference"/>
                         <field name="purchase_order"/>

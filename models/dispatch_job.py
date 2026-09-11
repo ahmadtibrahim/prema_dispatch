@@ -2,7 +2,9 @@ import logging
 import math
 import re
 import secrets
-from datetime import datetime
+from datetime import datetime, timedelta
+
+import pytz
 
 from odoo import _, api, exceptions, fields, models
 from pytz import timezone as tz
@@ -2374,6 +2376,12 @@ class PremaDispatchJob(models.Model):
                 "requested_delivery_date": job.requested_delivery_date.isoformat() if job.requested_delivery_date else None,
                 "delivery_deadline":       job.delivery_deadline.isoformat() if job.delivery_deadline else None,
                 "hard_deadline":           job.hard_deadline,
+                # TIER 2 §7 — per-side timing as the Planner must see it:
+                # the customer's commitment (kind + window) and the dock's
+                # own hours are separate facts and are never collapsed into
+                # a generic "Flexible" while a real window exists.
+                "pickup_timing":           self._job_side_timing(job, "pickup"),
+                "delivery_timing":         self._job_side_timing(job, "delivery"),
                 "risk_level":              job.risk_level or "green",
                 "corridor_tag":            job.corridor_tag or "",
                 "service_type":            job.service_type or "",
@@ -3398,6 +3406,11 @@ class PremaDispatchJob(models.Model):
                     "appointment_required": bool(stop.appointment_required),
                     "appointment_text": self._stop_appointment_text(stop),
                     "facility_hours": self._stop_facility_hours(stop),
+                    # TIER 2 §7/§8 — kind-aware timing (HARD APPT vs
+                    # appointment vs window vs deadline, with the dock's own
+                    # hours alongside) and the advisory execution warning.
+                    "timing": self._stop_timing_display(stop),
+                    "timing_warning": self._stop_timing_warning(stop),
                     "pop_required": bool(stop.pop_required),
                     "pod_required": bool(stop.pod_required),
                 })
@@ -3918,6 +3931,12 @@ class PremaDispatchJob(models.Model):
             # ── Milk-run per-stop data ─────────────────────────────
             "facility_hours":    self._stop_facility_hours(s),
             "appointment":        self._stop_appointment_text(s),
+            # TIER 2 §7/§8 — the driver card distinguishes a HARD APPT from
+            # a plain appointment / window / deadline, shows the dock's own
+            # hours as a separate fact, and carries the advisory breach
+            # warning (§8 warns; it never cancels or reschedules).
+            "timing":            self._stop_timing_display(s),
+            "timing_warning":    self._stop_timing_warning(s),
             "liftgate_required": s.requires_liftgate,
             "appointment_required": s.appointment_required,
             "pop_required":      s.pop_required,
@@ -4078,6 +4097,309 @@ class PremaDispatchJob(models.Model):
             return "By %s" % fields.Datetime.context_timestamp(
                 self, s.deadline_time).strftime("%H:%M")
         return ""
+
+    # ── TIER 2 §7 — planner timing display ────────────────────────────
+    # The Planner must SEE which kind of commitment each end carries.
+    # Four kinds are distinguished, and they are never collapsed into a
+    # generic "Flexible":
+    #   hard_appointment  a booked slot the facility will not move (red)
+    #   appointment       a booked slot (no hard flag)
+    #   window            a time window
+    #   deadline          a must-finish-by moment
+    # Facility hours ride ALONGSIDE whichever kind applies — the dock's
+    # own opening hours are not the customer's commitment (§4) and the
+    # two are rendered as separate facts.
+    TIMING_KIND_LABELS = {
+        "hard_appointment": "HARD APPT",
+        "appointment": "APPT",
+        "window": "WINDOW",
+        "deadline": "DEADLINE",
+        "facility_hours": "FACILITY HOURS",
+        "flexible": "",
+    }
+    TIMING_KIND_CLASSES = {
+        "hard_appointment": "bg-danger text-white",
+        "appointment": "bg-warning text-dark",
+        "window": "bg-info text-dark",
+        "deadline": "bg-danger text-white",
+        "facility_hours": "bg-secondary text-white",
+        "flexible": "bg-light text-muted",
+    }
+
+    @api.model
+    def _hm_utc(self, dt, tz_name=None):
+        """24h HH:MM for a UTC-naive Datetime in the stop's own timezone
+        band — the timezone a dock's hours are actually quoted in."""
+        if not dt:
+            return ""
+        import pytz
+        if dt.tzinfo is None:
+            dt = pytz.utc.localize(dt)
+        return dt.astimezone(
+            pytz.timezone(tz_name or "America/Toronto")).strftime("%H:%M")
+
+    @api.model
+    def _hm_float(self, value, allow_close=False):
+        """24h HH:MM for a 24h-float time (6.0 -> '06:00').
+
+        `allow_close` marks a facility CLOSING time: 0.0 is then midnight
+        at the END of the operating day (a dock the snapshot describes as
+        open 00:00–24:00), not an empty value, and 24.0 is rendered as
+        "24:00" so a round-the-clock dock never displays as the nonsense
+        "–00:00".
+        """
+        if not value and not allow_close:
+            return ""
+        value = float(value or 0.0)
+        base = int(value)
+        hh = base % 24
+        mm = int(round((value - base) * 60))
+        if mm == 60:
+            hh = (hh + 1) % 24
+            mm = 0
+        if allow_close and value >= 24.0 and hh == 0 and mm == 0:
+            hh = 24
+        return "%02d:%02d" % (hh, mm)
+
+    @api.model
+    def _stop_facility_window(self, s):
+        """(open, close) 24h floats for this stop's operating day, or
+        (None, None) when genuinely unknown.
+
+        TIER 2 §4/§5: the explicit facility_open_time / facility_close_time
+        channel is what the shipment declared and what the wizard showed
+        the dispatcher, so it wins; the frozen per-weekday snapshot is the
+        fallback for stops created before those fields existed. The dock's
+        hours are never inferred from the appointment window — inventing
+        them would be exactly the overwrite §4 forbids.
+        """
+        try:
+            opens, closes = s.facility_open_time, s.facility_close_time
+            if closes:
+                return (opens or 0.0, closes)
+        except Exception:
+            pass
+        snapshot = s.operating_hours_snapshot or None
+        if not snapshot and "logistics_booking_stop_id" in s._fields:
+            bstop = s.sudo().logistics_booking_stop_id
+            snapshot = bstop.operating_hours_snapshot if bstop else None
+        if not snapshot:
+            return (None, None)
+        import pytz
+        from datetime import datetime
+        operating = s.scheduled_time
+        if operating is None:
+            operation_date = getattr(s.job_id, "operation_date", None)
+            if operation_date:
+                operating = datetime.combine(
+                    operation_date, datetime.min.time())
+        if operating is None:
+            day = datetime.now(
+                pytz.timezone(s.tz_name or "America/Toronto")).weekday()
+        else:
+            if operating.tzinfo is None:
+                operating = pytz.timezone(
+                    s.tz_name or "America/Toronto").localize(operating)
+            day = operating.weekday()
+        hours = snapshot.get(str(day))
+        if not hours or len(hours) < 2:
+            return (None, None)
+        return (float(hours[0]), float(hours[1]))
+
+    @api.model
+    def _timing_display(self, window_type, exact_time, earliest, latest,
+                        deadline_time, tz_name=None, appointment_required=False,
+                        facility=(None, None)):
+        """§7 — one side's commitment as {kind, label, window, facility,…}.
+
+        `kind` is the machine-readable distinction the UI colours by;
+        `label` is the ready-to-render badge text. An exact appointment
+        with the appointment flag is HARD (the facility holds a slot for
+        the truck); without the flag it is a plain appointment.
+        """
+        exact_text = self._hm_utc(exact_time, tz_name)
+        if window_type == "exact" and exact_text:
+            after = self._hm_utc(latest, tz_name)
+            text = ("%s–%s" % (exact_text, after)
+                    if after and after != exact_text else exact_text)
+            kind = "hard_appointment" if appointment_required else "appointment"
+        elif window_type == "window" and (earliest or latest):
+            parts = [self._hm_utc(t, tz_name) for t in (earliest, latest) if t]
+            text, kind = "–".join(parts), "window"
+        elif window_type == "deadline" and deadline_time:
+            text = self._hm_utc(deadline_time, tz_name)
+            kind = "deadline"
+        else:
+            text, kind = "", "flexible"
+        opens, closes = facility if facility else (None, None)
+        facility_text = ""
+        if closes:
+            # Both endpoints of a declared range are meaningful, so a dock
+            # the snapshot describes as open 00:00–24:00 renders exactly
+            # that instead of the nonsense "–24:00".
+            facility_text = "%s–%s" % (
+                self._hm_float(opens, allow_close=True),
+                self._hm_float(closes, allow_close=True))
+        if not text and facility_text:
+            # The dock's hours ARE the only constraint that exists here —
+            # say so instead of rendering an uninformative "Flexible".
+            kind = "facility_hours"
+        label = ""
+        if kind == "deadline" and text:
+            label = "DEADLINE by %s" % text
+        elif kind not in ("flexible", "facility_hours") and text:
+            label = "%s %s" % (self.TIMING_KIND_LABELS[kind], text)
+        elif kind == "facility_hours":
+            label = "FACILITY HOURS %s" % facility_text
+        return {
+            "kind": kind,
+            "label": label,
+            "window": text,
+            "facility": facility_text,
+            "facility_open": opens if opens is not None else False,
+            "facility_close": closes or False,
+            "appointment_required": bool(appointment_required),
+            "css": self.TIMING_KIND_CLASSES.get(kind, "bg-light text-muted"),
+        }
+
+    @api.model
+    def _stop_timing_display(self, s):
+        """§7 — this dispatch stop's timing as display values."""
+        return self._timing_display(
+            s.time_window_type, s.exact_time, s.earliest_time, s.latest_time,
+            s.deadline_time, s.tz_name, s.appointment_required,
+            self._stop_facility_window(s))
+
+    @api.model
+    def _job_side_timing(self, job, side):
+        """§7 — one side of a Planner job card.
+
+        The job HEADER carries the propagated customer window (§6); the
+        side's stop carries the facility's own hours (§4). Both are read
+        here so the card can show them as the two separate facts they are.
+        """
+        # "dropoff" is the dispatch-stop spelling of a delivery leg — the
+        # dispatch stop model has no "delivery" stop_type.
+        want = "pickup" if side == "pickup" else "dropoff"
+        stop = job.stop_ids.filtered(lambda x: x.stop_type == want)[:1]
+        window_type = job["%s_window_type" % side] or "flexible"
+        if side == "pickup":
+            exact, earliest, latest = (job.pickup_exact_time, job.pickup_earliest,
+                                       job.pickup_latest)
+            deadline = False
+        else:
+            exact, earliest, latest = (job.delivery_exact_time, job.delivery_earliest,
+                                       job.delivery_latest)
+            deadline = job.delivery_deadline
+        return self._timing_display(
+            window_type, exact, earliest, latest, deadline,
+            stop.tz_name if stop else None,
+            job.appointment_required and window_type == "exact",
+            self._stop_facility_window(stop) if stop else (None, None))
+
+    # ── TIER 2 §8 — driver execution warnings ─────────────────────────
+    @api.model
+    def _stop_timing_warning(self, s):
+        """§8 — advisory warning text when this stop's PROJECTED timing
+        breaches one of its commitments. Never empty-handed about a real
+        breach, and never blocking.
+
+        Three independent commitments are checked, because they are three
+        different facts (§4):
+
+          hard appointment   arrival must land inside the booked slot
+          facility hours     arrival must land inside the dock's own hours
+          deadline           projected COMPLETION must beat the deadline
+
+        Advisory ONLY — this method never cancels a stop, never rewrites
+        a schedule and never auto-reschedules: a breach is reported to the
+        driver and the dispatcher decides (§8).
+        """
+        try:
+            tz_name = s.tz_name or "America/Toronto"
+            arrival = (s.actual_arrival_time or s.travel_arrival_at
+                       or s.facility_service_start_at or s.estimated_arrival
+                       or s.scheduled_time)
+            departure = (s.actual_departure_time or s.planned_departure_at
+                         or s.estimated_departure)
+            if arrival is None and departure is None:
+                return ""
+            tz = pytz.timezone(tz_name)
+
+            def _local(dt):
+                if not dt:
+                    return None
+                if dt.tzinfo is None:
+                    dt = pytz.utc.localize(dt)
+                return dt.astimezone(tz)
+
+            arr_local = _local(arrival)
+            dep_local = _local(departure)
+            arrived = bool(s.actual_arrival_time) or s.status in (
+                "arrived", "completed")
+            when = "arrived" if arrived else "projected arrival"
+            problems = []
+
+            # 1. Booked appointment slot.
+            if s.time_window_type == "exact" and s.exact_time and arr_local:
+                start = _local(s.exact_time)
+                end = _local(s.latest_time) if s.latest_time else start
+                hard = bool(s.appointment_required)
+                slot = ("%s–%s" % (start.strftime("%H:%M"),
+                                   end.strftime("%H:%M"))
+                        if end and end != start else start.strftime("%H:%M"))
+                if end and end != start:
+                    if not (start <= arr_local <= end):
+                        problems.append(
+                            "%s appointment %s: %s %s is outside the booked "
+                            "slot — call the dispatcher before servicing."
+                            % ("HARD" if hard else "Booked", slot, when,
+                               arr_local.strftime("%H:%M")))
+                elif arr_local > start:
+                    problems.append(
+                        "%s appointment %s: %s %s is after the booked time — "
+                        "call the dispatcher before servicing."
+                        % ("HARD" if hard else "Booked", slot, when,
+                           arr_local.strftime("%H:%M")))
+
+            # 2. Facility hours — the dock's own open/close, a separate
+            #    fact from any appointment (§4).
+            opens, closes = self._stop_facility_window(s)
+            if opens is not None and closes and arr_local:
+                if arr_local.hour + arr_local.minute / 60.0 < opens:
+                    problems.append(
+                        "facility opens %s — %s %s is before opening; do not "
+                        "block the dock." % (
+                            self._hm_float(opens), when,
+                            arr_local.strftime("%H:%M")))
+                elif arr_local.hour + arr_local.minute / 60.0 > closes:
+                    problems.append(
+                        "facility closes %s — %s %s is after closing." % (
+                            self._hm_float(closes), when,
+                            arr_local.strftime("%H:%M")))
+
+            # 3. Deadline — measured against COMPLETION, not arrival.
+            deadline = s.deadline_time
+            if not deadline and s.stop_type == "dropoff":
+                deadline = s.job_id.delivery_deadline
+            if deadline:
+                due = _local(deadline)
+                done = dep_local
+                if done is None and arr_local:
+                    done = arr_local + timedelta(
+                        minutes=s.service_time_minutes or 15)
+                if done and done > due:
+                    problems.append(
+                        "deadline %s — projected completion %s is late."
+                        % (due.strftime("%H:%M"), done.strftime("%H:%M")))
+
+            return " | ".join(problems)
+        except Exception:
+            # A driver feed must never fail because a timing warning could
+            # not be computed — the warning is advisory, the schedule is not.
+            _logger.warning("Timing warning failed for stop %s",
+                            getattr(s, "id", "?"), exc_info=True)
+            return ""
 
     @api.model
     def _driver_seven_day_window(self, user_tz):
@@ -6358,7 +6680,15 @@ class PremaDispatchJob(models.Model):
             else:
                 return {"success": False, "error": f"Unknown action: {action}"}
 
-            return {"success": True, "stop_id": stop_id, "status": stop.status}
+            # TIER 2 §8 — recomputed AFTER the action so an "arrived" tap is
+            # judged on the arrival that was just stamped. Advisory only:
+            # the action always succeeds; the driver is told, the dispatcher
+            # decides. Nothing here cancels, reorders or reschedules a stop.
+            return {
+                "success": True, "stop_id": stop_id, "status": stop.status,
+                "timing": self._stop_timing_display(stop),
+                "timing_warning": self._stop_timing_warning(stop),
+            }
         except Exception as exc:
             _logger.exception("driver_update_stop failed for stop %s action %s", stop_id, action)
             return {"success": False, "error": str(exc)}

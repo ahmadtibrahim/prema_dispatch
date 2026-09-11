@@ -1,25 +1,75 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <odoo>
-    <!-- E-A2 contract §5 — the two deliberate staff actions on the CRM
-         opportunity form (header).  Gated to booking/pricing managers;
-         customers and viewers never see them.  Both actions draft review
-         artifacts — they never send, confirm or book anything. -->
+    <!-- Workflow cleanup §2/§3 — the CRM quotation surface.
+
+         Two deliberate staff actions create the quotation, and they are the
+         ONLY ones on this form: everything else either feeds them or is
+         history.
+
+         The document links below are written here rather than inherited from
+         `sale_crm`, because `sale_crm.crm_case_form_view_oppor` (the view that
+         normally contributes them, together with a "New Quotation" button) is
+         ARCHIVED in this database. Its methods still exist and still work; its
+         view does not render. Reusing the methods and rendering the buttons
+         here is what makes "View Quotation(s)" reachable at all, and it keeps
+         a single authority for what the opportunity shows about its
+         quotations. -->
     <record id="view_crm_lead_estimate_bridge" model="ir.ui.view">
         <field name="name">crm.lead.form.estimate.bridge</field>
         <field name="model">crm.lead</field>
         <field name="inherit_id" ref="crm.crm_lead_view_form"/>
         <field name="arch" type="xml">
             <xpath expr="//header" position="inside">
+                <button name="action_ai_rate_quote" type="object"
+                        string="AI Rate Quote"
+                        class="btn-primary" icon="fa-calculator"
+                        groups="prema_logistics_booking.group_logistics_booking_manager,prema_logistics_booking.group_logistics_pricing_manager,sales_team.group_sale_salesman"
+                        title="Price this shipment through the dispatch pricing engine and build the Sales quotation around that figure — nothing is sent, confirmed or booked"/>
+                <button name="action_create_quotation" type="object"
+                        string="Create Quotation"
+                        class="btn-secondary" icon="fa-file-text-o"
+                        groups="prema_logistics_booking.group_logistics_booking_manager,prema_logistics_booking.group_logistics_pricing_manager,sales_team.group_sale_salesman"
+                        title="Create (or reopen) this opportunity's Sales quotation from the customer's own facts, unpriced, for you to quote by hand — never blocked by the pricing policy"/>
                 <button name="action_prepare_preliminary_estimate" type="object"
                         string="Prepare Preliminary Estimate Reply"
                         class="btn-secondary" icon="fa-calculator"
                         groups="prema_logistics_booking.group_logistics_booking_manager,prema_logistics_booking.group_logistics_pricing_manager"
                         title="Supersede the customer's shipment facts, price them through the dispatch engine and draft a non-binding estimate reply for human review — nothing is sent"/>
-                <button name="action_create_draft_rate_confirmation" type="object"
-                        string="Create Draft Rate Confirmation"
-                        class="btn-secondary" icon="fa-file-text-o"
-                        groups="prema_logistics_booking.group_logistics_booking_manager,prema_logistics_booking.group_logistics_pricing_manager"
-                        title="Create (or surface) the lead's draft Rate Confirmation populated from the latest customer facts — never priced, sent or booked here"/>
+            </xpath>
+
+            <xpath expr="//div[@name='button_box']" position="inside">
+                <!-- §3: the opportunity's own view of its quotations — count,
+                     amount and a direct link to the record itself. -->
+                <button class="oe_stat_button" type="object"
+                        name="action_view_sale_quotation" icon="fa-file-text-o"
+                        invisible="quotation_count == 0"
+                        groups="prema_logistics_booking.group_logistics_booking_manager,prema_logistics_booking.group_logistics_pricing_manager,sales_team.group_sale_salesman"
+                        title="Open this opportunity's quotations">
+                    <field name="quotation_count" widget="statinfo" string="Quotations"/>
+                </button>
+                <button class="oe_stat_button" type="object"
+                        name="action_view_sale_order" icon="fa-usd"
+                        invisible="sale_order_count == 0"
+                        groups="prema_logistics_booking.group_logistics_booking_manager,prema_logistics_booking.group_logistics_pricing_manager,sales_team.group_sale_salesman"
+                        title="Open this opportunity's confirmed orders">
+                    <div class="o_field_widget o_stat_info">
+                        <span class="o_stat_value"><field name="sale_amount_total" widget="monetary" options="{'currency_field': 'company_currency'}"/></span>
+                        <span class="o_stat_text"> Orders</span>
+                        <field name="sale_order_count" invisible="1"/>
+                    </div>
+                </button>
+                <!-- §1: history stays reachable, and stays read-only. The Rate
+                     Confirmation is retired as a workflow; the ones already
+                     issued are commercial records the customer may still cite,
+                     so the opportunity keeps a door to them. -->
+                <button class="oe_stat_button" type="object"
+                        name="action_open_dispatch_rate_confirmations"
+                        icon="fa-history"
+                        invisible="logistics_quote_count == 0"
+                        groups="prema_logistics_booking.group_logistics_booking_manager,prema_logistics_booking.group_logistics_pricing_manager,sales_team.group_sale_salesman"
+                        title="Rate Confirmations issued before the Sales quotation became the only quotation — kept for history, read-only">
+                    <field name="logistics_quote_count" widget="statinfo" string="Rate Conf. (History)"/>
+                </button>
             </xpath>
         </field>
     </record>

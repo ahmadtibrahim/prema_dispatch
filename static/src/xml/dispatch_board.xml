@@ -216,6 +216,35 @@
                                         <t t-esc="job.pickup_city"/>
                                         <t t-if="job.delivery_cities"> → <t t-esc="job.delivery_cities"/></t>
                                     </div>
+                                    <!-- TIER 2 §7 — timing per side. The customer's
+                                         commitment (HARD APPT / APPT / WINDOW / DEADLINE)
+                                         and the dock's own hours are separate facts and
+                                         are shown side by side; a real window is never
+                                         rendered as a generic "Flexible". -->
+                                    <div t-if="job.pickup_timing" class="o_dispatch_timing mt-1">
+                                        <span class="o_timing_side">PU</span>
+                                        <span t-if="job.pickup_timing.label"
+                                              t-attf-class="o_dispatch_badge #{job.pickup_timing.css}"
+                                              t-att-title="job.pickup_timing.appointment_required ? 'Appointment required — the facility holds this slot' : 'Customer timing commitment'">
+                                            <t t-esc="job.pickup_timing.label"/>
+                                        </span>
+                                        <span t-if="job.pickup_timing.facility" class="o_timing_facility"
+                                              t-att-title="'Dock hours (' + job.pickup_city + ') — separate from the appointment'">
+                                            Facility <t t-esc="job.pickup_timing.facility"/>
+                                        </span>
+                                    </div>
+                                    <div t-if="job.delivery_timing" class="o_dispatch_timing mt-1">
+                                        <span class="o_timing_side">DEL</span>
+                                        <span t-if="job.delivery_timing.label"
+                                              t-attf-class="o_dispatch_badge #{job.delivery_timing.css}"
+                                              t-att-title="job.delivery_timing.appointment_required ? 'Appointment required — the facility holds this slot' : 'Customer timing commitment'">
+                                            <t t-esc="job.delivery_timing.label"/>
+                                        </span>
+                                        <span t-if="job.delivery_timing.facility" class="o_timing_facility"
+                                              t-att-title="'Dock hours (' + job.delivery_cities + ') — separate from the appointment'">
+                                            Facility <t t-esc="job.delivery_timing.facility"/>
+                                        </span>
+                                    </div>
                                     <div t-if="job.corridor_tag and job.corridor_tag !== 'LOCAL'" class="mt-1" style="font-size:9px">
                                         <span t-attf-class="badge o_corridor_badge corridor-#{job.corridor_tag}">
                                             <t t-esc="job.corridor_tag"/>
@@ -655,6 +684,24 @@
                                     <button class="o_bsp_svc_btn" t-on-click="() => this.bumpServiceTime(stop, -5)">−</button>
                                     <span class="o_bsp_svc_val"><t t-esc="stop.service_time_min || 15"/>m</span>
                                     <button class="o_bsp_svc_btn" t-on-click="() => this.bumpServiceTime(stop, 5)">+</button>
+                                </div>
+                                <!-- TIER 2 §7/§8 — this stop's commitment kind, the
+                                     dock's own hours beside it, and any advisory
+                                     timing breach on the assigned route. -->
+                                <div t-if="stop.timing" class="o_dispatch_timing mt-1">
+                                    <span t-if="stop.timing.label"
+                                          t-attf-class="o_dispatch_badge #{stop.timing.css}"
+                                          t-att-title="stop.timing.appointment_required ? 'Appointment required — the facility holds this slot' : 'Customer timing commitment'">
+                                        <t t-esc="stop.timing.label"/>
+                                    </span>
+                                    <span t-if="stop.timing.facility" class="o_timing_facility"
+                                          t-att-title="'Dock hours — separate from the appointment'">
+                                        Facility <t t-esc="stop.timing.facility"/>
+                                    </span>
+                                </div>
+                                <div t-if="stop.timing_warning" class="o_bsp_timing_warn"
+                                     t-att-title="stop.timing_warning">
+                                    <i class="fa fa-exclamation-triangle"/> <t t-esc="stop.timing_warning"/>
                                 </div>
                                 <div t-if="mapTruckCapacity" class="o_bsp_capacity"
                                      t-att-title="stop.onboard_after + ' / ' + mapTruckCapacity + ' pallets onboard after this stop'">

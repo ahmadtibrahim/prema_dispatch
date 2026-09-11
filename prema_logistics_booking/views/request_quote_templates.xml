@@ -484,7 +484,7 @@
         <div class="container o_page_container py-5 text-center">
             <h2>Quote Request Received</h2>
             <div class="alert alert-success">
-                <strong>Reference:</strong> <t t-esc="quote.name"/>
+                <strong>Reference:</strong> <t t-esc="reference"/>
             </div>
             <p>Our team will review your request and respond, usually within a few hours during business days.</p>
             <a href="/request-a-quote" class="btn btn-primary">Request Another Quote</a>

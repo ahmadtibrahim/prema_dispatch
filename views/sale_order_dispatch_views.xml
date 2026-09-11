@@ -6,33 +6,61 @@
         <field name="inherit_id" ref="sale.view_order_form"/>
         <field name="arch" type="xml">
 
-            <!-- Book Load button in SO header -->
+            <!-- Book Load button in SO header.
+
+                 Confirmed orders only. A quotation is a document the
+                 customer has not accepted yet: offering "Book Load" on one
+                 invites somebody to plan a truck against a price nobody has
+                 agreed to. Confirming the order is the step that makes the
+                 load real, and this is where it becomes bookable. -->
             <xpath expr="//button[@name='action_confirm']" position="before">
                 <!-- D-C1 (§1/§14): canonical booking entry. Reuses the SO's
-                     existing logistics.booking or Rate Confirmation; only
-                     when neither exists does it open the Book Load wizard,
-                     which confirms ONE canonical booking through the
-                     booking orchestration service. -->
+                     existing logistics.booking; only when none exists does
+                     it open the Book Load wizard, which confirms ONE
+                     canonical booking through the booking orchestration
+                     service. -->
                 <button name="action_book_load"
                         string="Book Load"
                         type="object"
                         class="btn-primary"
                         icon="fa-truck"
-                        help="Create the Prema Dispatch booking for this Sales Order through the canonical booking engine: opens the existing booking or Rate Confirmation when one exists, never duplicates, and confirms exactly one logistics.booking (its dispatch-job bridge creates the Planner card(s))."/>
+                        invisible="state in ('draft', 'sent')"
+                        help="Create the Prema Dispatch booking for this Sales Order through the canonical booking engine: opens the existing booking when one exists, never duplicates, and confirms exactly one logistics.booking (its dispatch-job bridge creates the Planner card(s))."/>
             </xpath>
 
-            <!-- Smart button — dispatch booking count -->
+            <!-- §3/§8 smart links: the records this order is wired to.
+                 Invoice(s) and Invoice Status come from `sale` itself and sit
+                 beside these; the Prema booking and the dispatch jobs are two
+                 different records — one booking can produce more than one
+                 job, so naming the job button "Bookings" was simply wrong. -->
             <xpath expr="//div[@name='button_box']" position="inside">
-                <button name="action_open_dispatch_jobs_prema"
+                <button name="action_open_crm_opportunity"
+                        type="object"
+                        class="oe_stat_button"
+                        icon="fa-bullseye"
+                        invisible="not opportunity_id"
+                        help="Open the CRM opportunity this quotation was written for">
+                    <span class="o_stat_text">Opportunity</span>
+                </button>
+                <button name="action_open_booking"
                         type="object"
                         class="oe_stat_button"
                         icon="fa-truck"
-                        invisible="dispatch_job_count == 0">
+                        invisible="booking_count == 0"
+                        help="Open the Prema Dispatch booking created for this order">
+                    <span class="o_stat_text">Booking</span>
+                </button>
+                <button name="action_open_dispatch_jobs_prema"
+                        type="object"
+                        class="oe_stat_button"
+                        icon="fa-map-o"
+                        invisible="dispatch_job_count == 0"
+                        help="Open the dispatch jobs (Planner cards) created from this order's booking">
                     <div class="o_field_widget o_stat_info">
                         <span class="o_stat_value">
                             <field name="dispatch_job_count"/>
                         </span>
-                        <span class="o_stat_text">Bookings</span>
+                        <span class="o_stat_text">Dispatch Jobs</span>
                     </div>
                 </button>
             </xpath>
@@ -40,6 +68,7 @@
             <!-- Hidden computed fields -->
             <xpath expr="//field[@name='user_id']" position="after">
                 <field name="dispatch_job_count" invisible="1"/>
+                <field name="booking_count" invisible="1"/>
             </xpath>
 
             <!-- Generate from Text tab -->
@@ -49,21 +78,41 @@
                         <field name="x_so_text_input"
                                widget="text"
                                nolabel="1"
-                               placeholder="Paste a WhatsApp message, SMS, or email from the customer…&#10;&#10;Example:&#10;Hi Ahmad, need pickup from Ajax warehouse (689 Salem Rd N) to:&#10;- Oshawa (501 Ritson Rd S) 12 pallets&#10;- Whitby (728 Anderson St) 3 pallets&#10;- Peterborough (754 Lansdowne St W) 2 pallets&#10;Date: Monday July 7. PO: 8834-B."
+                               placeholder="Paste a WhatsApp message, SMS, or email from the customer, or the shipment details you agreed on the phone…&#10;&#10;Example:&#10;Origin: 23 Commander Blvd, Scarborough, ON M1S 3E7&#10;Destination: 7095 Manning Rd, Tecumseh, ON N0R 1K0&#10;Frequency: Every Friday&#10;Volume: 5 skids&#10;Weight: approx. 750 kg per skid&#10;Service: Reefer / chilled LTL&#10;Price: $800 including tax"
                                style="min-height:180px; font-size:13px;"/>
                     </group>
-                    <div class="mt-2 d-flex align-items-center gap-3">
+                    <!-- A quotation and a confirmed order need opposite things
+                         from the same box, so they get opposite buttons and
+                         never both at once. -->
+                    <div class="mt-2 d-flex align-items-center gap-3"
+                         invisible="state not in ('draft', 'sent')">
+                        <button name="action_ai_generate_quotation"
+                                type="object"
+                                string="AI Generate"
+                                class="btn btn-primary"
+                                icon="fa-magic"/>
+                        <small class="text-muted">
+                            AI reads the pasted text (and any attachment) and fills
+                            THIS QUOTATION — load details, the freight product, the
+                            rate and its tax treatment. It confirms nothing, books
+                            nothing and invoices nothing: the customer still has to
+                            accept it.
+                        </small>
+                    </div>
+                    <div class="mt-2 d-flex align-items-center gap-3"
+                         invisible="state in ('draft', 'sent')">
                         <button name="action_generate_dispatch_from_text"
                                 type="object"
                                 string="Generate Dispatch Booking"
                                 class="btn btn-primary"
                                 icon="fa-magic"/>
                         <small class="text-muted">
-                            AI extracts pickup/delivery addresses, pallet counts per stop,
-                            date, and reefer/liftgate requirements and confirms one
-                            canonical logistics.booking (channel "sale.order"). The
-                            booking's dispatch-job bridge creates the Planner card(s);
-                            pasting the same text again reopens the same booking.
+                            Confirmed order: AI extracts pickup/delivery addresses,
+                            pallet counts per stop, date, and reefer/liftgate
+                            requirements and confirms one canonical logistics.booking
+                            (channel "sale.order"). The booking's dispatch-job bridge
+                            creates the Planner card(s); pasting the same text again
+                            reopens the same booking.
                         </small>
                     </div>
                     <div class="mt-3 text-muted small" invisible="dispatch_job_count == 0">

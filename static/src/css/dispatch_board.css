@@ -390,6 +390,20 @@
 .job-badges  { display: flex; gap: 3px; flex-wrap: wrap; }
 .o_dispatch_badge { font-size: 9px; padding: 1px 4px; border-radius: 3px; font-weight: 600; }
 
+/* TIER 2 §7 — per-side timing. The customer's commitment badge and the
+   dock's own hours are two separate facts, rendered as two separate
+   elements so neither can be mistaken for the other. */
+.o_dispatch_timing { display: flex; align-items: center; gap: 3px; flex-wrap: wrap; }
+.o_timing_side {
+    font-size: 8px; font-weight: 700; letter-spacing: .04em; color: #6b7280;
+    min-width: 20px;
+}
+.o_timing_facility {
+    font-size: 9px; color: #4b5563; background: #f3f4f6;
+    border: 1px solid #e5e7eb; border-radius: 3px; padding: 0 4px;
+    white-space: nowrap;
+}
+
 .btn-xs { padding: 2px 6px; font-size: 11px; border-radius: 4px; line-height: 1.5; }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -665,6 +679,9 @@
 .o_bsp_name { font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #1a1a2e; }
 .o_bsp_addr { font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .o_bsp_addr_warn { font-size: 9px; color: #e67e22; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 700; }
+/* TIER 2 §8 — advisory timing breach on an assigned stop. Warning only:
+   nothing is cancelled or rescheduled by showing this. */
+.o_bsp_timing_warn { font-size: 9px; color: #c0392b; font-weight: 700; }
 .o_bsp_svc {
     display: flex; align-items: center; gap: 3px; margin-top: 2px;
     font-size: 9px; color: #888; cursor: default;

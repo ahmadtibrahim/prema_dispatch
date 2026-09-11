@@ -165,7 +165,11 @@ class LogisticsEstimatorBridge(models.AbstractModel):
         if not lead:
             return {"error": "no_lead",
                     "message": "No open opportunity for this customer."}
-        CQ = self.env["logistics.custom.quote"]
+        # sudo: the retired Rate Confirmation carries no create right any
+        # more (nobody may open a second quotation authority), but this
+        # estimator tool still pre-fills an intake draft on the
+        # salesperson's behalf, so it keeps writing as the system.
+        CQ = self.env["logistics.custom.quote"].sudo()
         draft = CQ.find_or_create_draft_for_lead(
             lead.id, idempotency_key="estimator-rc:%s" % request.id)
         resp = request.response_json or {}
@@ -297,16 +301,15 @@ class LogisticsEstimatorBridge(models.AbstractModel):
             if not draft.notes:
                 updates["notes"] = notes
             if sell is not False and not draft.quoted_price:
-                # The sell-price audit gate demands a Manual Price Reason
-                # whenever the quoted price differs from the system price —
-                # the estimator's suggested sell is a recommendation, so its
-                # provenance is recorded in the same write.
-                updates.update({
-                    "quoted_price": float(sell),
-                    "manual_price_reason":
-                        "Estimator suggested sell (scenario %s, request %s)"
-                        % (scenario.get("key") or "?",
-                           request.name or request.id)})
+                # The suggested sell rides onto the draft as the proposed
+                # figure. No Manual Price Reason is written with it: that
+                # field answers "why does this differ from the engine's
+                # price", and on this draft the engine has not priced
+                # anything yet, so there is no deviation to explain. The
+                # provenance lives in `notes` and on the chatter, where a
+                # reader can see it without a policy field being filled in
+                # to satisfy a gate.
+                updates["quoted_price"] = float(sell)
             if updates:
                 draft.write(updates)
                 # Audit trail only when this call actually changed the

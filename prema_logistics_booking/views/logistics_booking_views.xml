@@ -117,6 +117,8 @@
                                     invisible="state in ('cancelled', 'completed')"/>
                             <field name="corridor_id" readonly="1"/>
                             <field name="departure_id" readonly="1"/>
+                            <field name="requested_pickup_date" readonly="1"
+                                   invisible="not requested_pickup_date or requested_pickup_date == pickup_date"/>
                             <field name="pickup_date" readonly="1"/>
                             <field name="estimated_delivery_date" readonly="1"/>
                             <field name="calculated_price" readonly="1"/>

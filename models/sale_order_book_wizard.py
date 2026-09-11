@@ -18,6 +18,7 @@ class SaleOrderBookWizard(models.TransientModel):
     """
 
     _name = "prema.dispatch.so.book.wizard"
+    _inherit = ["prema.dispatch.book.load.timing.mixin"]
     _description = "Book Load from Sales Order"
 
     sale_order_id = fields.Many2one("sale.order", required=True, ondelete="cascade")
@@ -158,12 +159,17 @@ class SaleOrderBookWizard(models.TransientModel):
         except ImportError as exc:
             raise UserError(_("Prema Logistics Booking is required before a Sales Order load can be booked.")) from exc
 
+        # The order's ACCEPTED commercial amount is the customer price —
+        # for BOTH booking modes. A priced Sales Order is a closed deal: the
+        # booking carries it, and the corridor quote is calculated for
+        # routing and audit only (never substituted for it, and never a $0).
         agreed_rate = so.amount_untaxed or so.amount_total
-        if self.booking_mode == "custom" and not agreed_rate:
+        if not agreed_rate:
             raise UserError(_(
-                "Custom / Expedited booking from a Sales Order carries the "
-                "order's amount as its agreed rate — price the order first."
-            ))
+                "Sales Order %s carries no accepted amount — price the order "
+                "before booking the load; the accepted price is what the "
+                "customer will be billed."
+            ) % so.name)
 
         def location_values(location, pickup):
             return {
@@ -183,14 +189,24 @@ class SaleOrderBookWizard(models.TransientModel):
                 "instructions": self.general_notes or "",
             }
 
+        def timing_values(side):
+            """TIER 2 §2/§4: the dispatcher's (auto-filled, then edited)
+            timing for this side — the customer's window on one channel,
+            the dock's own hours on the other."""
+            values = self._timing_stop_values(side)
+            values["timezone"] = "America/Toronto"
+            return values
+
         service = BookingOrchestrationService(self.env)
         request = service.normalize_request({
             "partner_id": self.partner_id.id,
             "source_model": "sale.order",
             "source_res_id": so.id,
             "source_reference": so.name,
-            "pickup_stops": [location_values(self.pickup_saved_location_id, True)],
-            "delivery_stops": [location_values(self.delivery_saved_location_id, False)],
+            "pickup_stops": [dict(location_values(
+                self.pickup_saved_location_id, True), **timing_values("pickup"))],
+            "delivery_stops": [dict(location_values(
+                self.delivery_saved_location_id, False), **timing_values("delivery"))],
             "pallets": self.expected_skids,
             "weight_lbs": self.total_weight_lbs,
             "load_type": "ltl" if self.service_type == "ltl" else "ftl",
@@ -204,7 +220,15 @@ class SaleOrderBookWizard(models.TransientModel):
             "instructions": self.general_notes or "",
             "requested_pickup_date": self.scheduled_pickup.date(),
             "pricing_method": "corridor" if self.booking_mode == "scheduled_ltl" else "manual",
-            "agreed_rate": 0.0 if self.booking_mode == "scheduled_ltl" else agreed_rate,
+            # Tier 1 — a confirmed Sales Order's terms are authoritative:
+            # the accepted amount IS the customer price (the corridor quote
+            # stays an internal/audit figure), the requested pickup date is
+            # never silently rolled forward, and the pallet threshold never
+            # converts the sold LTL service into Dedicated FTL pricing.
+            "agreed_rate": agreed_rate,
+            "agreed_rate_authoritative": True,
+            "enforce_requested_pickup_date": True,
+            "allow_ftl_autoupgrade": False,
             "existing_sale_order_id": so.id,
             "idempotency_key": f"sale.order:{so.id}:{self.booking_mode}",
         }, source_channel="sale_order")

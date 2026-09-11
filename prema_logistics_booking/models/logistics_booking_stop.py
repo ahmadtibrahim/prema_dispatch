@@ -2,6 +2,8 @@
 import math
 from datetime import datetime, time, timedelta
 
+import pytz
+
 from odoo import api, fields, models
 
 
@@ -29,6 +31,8 @@ class LogisticsBookingStop(models.Model):
     appointment_required = fields.Boolean(string="Appointment Required")
     timing_type = fields.Selection([
         ("flexible", "Flexible"),
+        ("facility_hours", "Facility Hours"),
+        ("earliest_time", "Earliest Time"),
         ("time_window", "Time Window"),
         ("exact_appointment", "Exact Appointment"),
         ("deadline", "Hard Deadline"),
@@ -43,6 +47,23 @@ class LogisticsBookingStop(models.Model):
         string="Operating Hours Snapshot",
         help="Facility operating hours frozen at confirmation; planned "
              "against, never silently re-read from the master location.")
+    # TIER 2 (§4/§5): facility hours and the shipment's own timing are TWO
+    # separate facts and must coexist. These carry the facility's own
+    # open/close for the shipment's declared operating day, so an
+    # appointment window never has to be abused to express "the dock is
+    # open 06:00–16:00". Explicit fields (not a reuse of window_start/
+    # window_end, which belong to the CUSTOMER's window).
+    facility_open_time = fields.Float(
+        string="Facility Open (24h float)",
+        help="Facility's own opening time on the shipment's declared day "
+             "(e.g. 6.0 = 06:00). Set from the shipment's tender document "
+             "or the master location — never overwritten by the shipment's "
+             "appointment window.")
+    facility_close_time = fields.Float(
+        string="Facility Close (24h float)",
+        help="Facility's own closing time on the shipment's declared day "
+             "(e.g. 16.0 = 16:00). Kept separately from the appointment "
+             "window (Tier 2 §4).")
     timezone = fields.Char(default="America/Toronto")
 
     # Canonical facility (SAVED LOCATION CONSOLIDATION: one building =
@@ -153,6 +174,28 @@ class LogisticsBookingStop(models.Model):
              "coordinates (Booking 185: United Dairy's pickup was linked "
              "to 'Demo Logistics Customer'). Empty = consistent.")
 
+    def _local_hour_to_utc(self, day, hours_float):
+        """A declared LOCAL clock hour on `day` → Odoo's naive UTC.
+
+        The shipment's times are quoted in the FACILITY's own timezone
+        (`self.timezone`), never in UTC. Writing "11:00" straight into a
+        Datetime column makes the Planner and the driver read it back as
+        07:00 EDT — the appointment silently moves four hours earlier
+        (§6/§7/§11). The old inline combination did exactly that; it was
+        dormant only because nothing populated these fields until the
+        Book Load wizard began carrying real appointments.
+        """
+        hours = float(hours_float or 0.0) % 24.0
+        whole = int(hours)
+        minutes = int(round((hours - whole) * 60))
+        local_naive = datetime.combine(day, time(0)) + timedelta(
+            hours=whole, minutes=minutes)
+        try:
+            tzinfo = pytz.timezone(self.timezone or "America/Toronto")
+        except Exception:
+            tzinfo = pytz.timezone("America/Toronto")
+        return tzinfo.localize(local_naive).astimezone(pytz.UTC).replace(tzinfo=None)
+
     def _dispatch_timing_vals(self, day):
         """Map this booking stop's timing to prema.dispatch.stop timing
         fields — the single authority used by BOTH the movement_v1 bridge
@@ -160,32 +203,111 @@ class LogisticsBookingStop(models.Model):
 
         day: operation date (date) used to combine the 24h-float times.
         Returns only the fields that apply (time_window_type always).
+
+        TIER 2: facility hours travel on their OWN fields
+        (facility_open_time / facility_close_time) alongside whichever
+        customer window applies — an exact appointment never erases the
+        dock's opening hours and vice versa (§4).
         """
         vals = {"time_window_type": "flexible"}
         day = day or fields.Date.context_today(self)
 
         def _combine(hours_float):
-            hours = float(hours_float or 0.0) % 24.0
-            return datetime.combine(day, time(0)) + timedelta(hours=hours)
+            return self._local_hour_to_utc(day, hours_float)
 
-        if self.timing_type == "time_window" and self.window_start is not None:
+        # ── Facility hours: a separate channel, never a window type ────
+        if self.facility_open_time is not None and self.facility_close_time:
+            vals.update({
+                "facility_open_time": self.facility_open_time,
+                "facility_close_time": self.facility_close_time,
+            })
+
+        if self.timing_type == "facility_hours":
+            # The dock's own hours ARE the constraint — no customer window.
+            # The ETA engine evaluates them from the frozen
+            # operating_hours_snapshot; the explicit fields above are what
+            # the planner displays.
+            pass
+        elif self.timing_type == "earliest_time":
+            if self.window_start is not None:
+                vals.update({
+                    "time_window_type": "window",
+                    "earliest_time": _combine(self.window_start),
+                })
+        elif self.timing_type == "time_window" and self.window_start is not None:
             vals.update({
                 "time_window_type": "window",
                 "earliest_time": _combine(self.window_start),
                 "latest_time": _combine(self.window_end if self.window_end is not None
                                         else self.window_start),
             })
-        elif self.timing_type == "exact_appointment" and self.appointment_time is not None:
+        elif self.timing_type == "exact_appointment" and (
+                self.appointment_time is not None or self.window_start is not None):
+            start = (self.appointment_time if self.appointment_time is not None
+                     else self.window_start)
             vals.update({
                 "time_window_type": "exact",
-                "exact_time": _combine(self.appointment_time),
+                "exact_time": _combine(start),
             })
+            # An appointment is quoted as a RANGE ("11:00 AM to 12:00 PM").
+            # Keep the quoted end so the driver/planner never shows a
+            # narrower commitment than the facility actually gave.
+            # (0.0 means "no end quoted", not midnight.)
+            if self.window_end and self.window_end != start:
+                vals["latest_time"] = _combine(self.window_end)
         elif self.timing_type == "deadline" and self.hard_deadline:
             vals.update({
                 "time_window_type": "deadline",
                 "deadline_time": self.hard_deadline,
                 "hard_deadline": True,
             })
+        return vals
+
+    def _job_timing_vals(self, day, prefix):
+        """Dispatch JOB header window fields for this side (§6), derived
+        from THIS stop's timing — replaces the hardcoded
+        ``*_window_type = "flexible"``.
+
+        Facility hours deliberately do NOT become a job window type: the
+        job header states the CUSTOMER's commitment, and the facility's
+        own hours ride on the stop's explicit fields plus the frozen
+        snapshot (§4). A facility-hours-only stop is genuinely flexible
+        from the customer's side.
+        """
+        vals = {}
+        day = day or fields.Date.context_today(self)
+
+        def _combine(hours_float):
+            return self._local_hour_to_utc(day, hours_float)
+
+        if self.timing_type == "earliest_time" and self.window_start is not None:
+            vals.update({
+                "%s_window_type" % prefix: "window",
+                "%s_earliest" % prefix: _combine(self.window_start),
+            })
+        elif self.timing_type == "time_window" and self.window_start is not None:
+            vals.update({
+                "%s_window_type" % prefix: "window",
+                "%s_earliest" % prefix: _combine(self.window_start),
+                "%s_latest" % prefix: _combine(
+                    self.window_end if self.window_end is not None
+                    else self.window_start),
+            })
+        elif self.timing_type == "exact_appointment" and (
+                self.appointment_time is not None or self.window_start is not None):
+            start = (self.appointment_time if self.appointment_time is not None
+                     else self.window_start)
+            vals.update({
+                "%s_window_type" % prefix: "exact",
+                "%s_exact_time" % prefix: _combine(start),
+                "%s_earliest" % prefix: _combine(start),
+            })
+            if self.window_end and self.window_end != start:
+                vals["%s_latest" % prefix] = _combine(self.window_end)
+        elif self.timing_type == "deadline" and self.hard_deadline:
+            vals["%s_window_type" % prefix] = "deadline"
+            if prefix == "delivery":
+                vals["delivery_deadline"] = self.hard_deadline
         return vals
 
     @api.depends("saved_location_id.pin_lat", "saved_location_id.pin_lng",

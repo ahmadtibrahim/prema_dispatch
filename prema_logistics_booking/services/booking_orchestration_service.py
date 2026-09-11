@@ -152,6 +152,26 @@ class NormalizedBookingRequest:
         self.agreed_rate = data.get("agreed_rate", 0.0)
         self.currency_id = data.get("currency_id")
 
+        # ── Internal Book Load from a priced document (D-C1 §1) ──────────
+        # The document's own commercial terms are authoritative for this
+        # shipment. These three flags are opt-in (defaults keep every other
+        # channel's behavior identical) and are set together by the Sales
+        # Order / invoice Book Load wizards:
+        #   enforce_requested_pickup_date — the customer's date is BINDING;
+        #     the forward departure search may never quietly substitute a
+        #     later scheduled date for it.
+        #   agreed_rate_authoritative — agreed_rate is an ACCEPTED customer
+        #     price (the priced Sales Order), so the corridor quote is
+        #     computed for routing/audit but never replaces it.
+        #   allow_ftl_autoupgrade — the corridor's pallet-threshold "auto
+        #     price as FTL" rule may reclassify the sold service.
+        self.enforce_requested_pickup_date = bool(
+            data.get("enforce_requested_pickup_date", False))
+        self.agreed_rate_authoritative = bool(
+            data.get("agreed_rate_authoritative", False))
+        self.allow_ftl_autoupgrade = bool(
+            data.get("allow_ftl_autoupgrade", True))
+
         self.departure_id = data.get("departure_id")  # manual pricing methods only
 
         self.existing_invoice_id = data.get("existing_invoice_id")
@@ -248,6 +268,21 @@ class BookingOrchestrationService:
         if value is not None:
             rows.append({key: value})
         return rows
+
+    @staticmethod
+    def _as_date(value):
+        """Coerce a date / datetime / ISO string to a datetime.date (None
+        when nothing usable) — requests carry all three shapes."""
+        if not value:
+            return None
+        if isinstance(value, datetime.datetime):
+            return value.date()
+        if isinstance(value, datetime.date):
+            return value
+        try:
+            return datetime.date.fromisoformat(str(value)[:10])
+        except ValueError:
+            return None
 
     def _canonical_stop_company_name(self, stop):
         """Prefer the canonical facility name over an address-derived label."""
@@ -1222,6 +1257,10 @@ class BookingOrchestrationService:
         calculated_price = normalized_request.agreed_rate
         route_snapshot = False
         price_snapshot = False
+        # Internal route price (the corridor's own customer quote when the
+        # priced document's amount is the authority) — audit only, never
+        # the billed amount.
+        engine_price = None
 
         if frozen_session:
             self._validate_frozen_session(
@@ -1249,7 +1288,44 @@ class BookingOrchestrationService:
                 required_temperature_c=normalized_request.required_temperature_c,
                 resolve_departures=True,
                 reference_dt=normalized_request.requested_pickup_date,
+                enforce_requested_pickup_date=normalized_request.enforce_requested_pickup_date,
+                allow_ftl_autoupgrade=normalized_request.allow_ftl_autoupgrade,
             )
+            if (not result.available
+                    and result.reason == "requested_pickup_date_not_served"):
+                # Non-silent fallback (Tier 1): the freight is NOT moved to
+                # another date and no substitute price is quoted. The
+                # caller sees the customer's requested date, the reason, and
+                # the dates the network can actually serve.
+                requested = result.requested_pickup_date
+                alternatives = ", ".join(
+                    d.strftime("%a %b %d") for d in (result.available_pickup_dates or [])[:6])
+                _logger.warning(
+                    "BookingOrchestrationService: requested pickup date %s "
+                    "not served by the scheduled corridor (channel=%s "
+                    "reference=%s, detail=%s%s) — booking refused, no "
+                    "roll-forward applied.",
+                    requested, normalized_request.source_channel,
+                    normalized_request.source_reference or "-",
+                    result.detail_reason or "n/a",
+                    "; available: %s" % alternatives if alternatives else "",
+                )
+                message = _(
+                    "Requested pickup date %s cannot be served by the selected "
+                    "scheduled corridor."
+                ) % (requested.strftime("%a %b %d, %Y") if requested else "—")
+                if alternatives:
+                    message += " " + _(
+                        "Available pickup dates: %s. Pick one explicitly, or "
+                        "quote the shipment as Custom / Expedited."
+                    ) % alternatives
+                else:
+                    message += " " + _(
+                        "No scheduled pickup date is available for this route "
+                        "in the coming weeks. Quote the shipment as Custom / "
+                        "Expedited, or check the corridor configuration."
+                    )
+                raise UserError(message)
             if not result.available and normalized_request.pricing_method in ("corridor", "rate_plan"):
                 raise UserError(_("No service available: %s") % (result.reason or "unknown"))
             if result.available:
@@ -1259,6 +1335,10 @@ class BookingOrchestrationService:
                 price_snapshot = result.price_lines
                 if not calculated_price:
                     calculated_price = result.calculated_price
+                elif normalized_request.agreed_rate_authoritative:
+                    # The accepted document amount stays the customer price;
+                    # the corridor's own quote is retained for audit only.
+                    engine_price = result.calculated_price
 
         # Fallback: use agreed_rate for contract/manual/negotiated pricing
         # only — never a silent $0 and never a Rate Plan lookup.
@@ -1282,6 +1362,18 @@ class BookingOrchestrationService:
         sell_override_applied = False
         override_by = self.env.user
         system_price = system_calculated_price or calculated_price
+        # Accepted commercial price (internal Book Load from a priced Sales
+        # Order): the engine price is recorded as the system price — the
+        # audit "what the corridor would have charged" — while
+        # calculated_price / final_quoted_price / original_confirmed_price
+        # stay the accepted document amount. This is NOT a manual override:
+        # no human changed a price at confirm time, so the manual_price_*
+        # audit fields stay untouched.
+        accepted_price_applied = bool(
+            engine_price is not None
+            and round(engine_price, 2) != round(calculated_price or 0.0, 2))
+        if accepted_price_applied:
+            system_price = engine_price
         if sell_price_override is not None:
             final_sell = float(sell_price_override)
             if final_sell <= 0:
@@ -1381,6 +1473,15 @@ class BookingOrchestrationService:
             booking_vals["delivery_address"] = delivery_fsa.display_city or delivery_fsa.fsa
         if pickup_date:
             booking_vals["pickup_date"] = pickup_date
+        # Requested-date provenance (Tier 1): the CUSTOMER's requested date
+        # is stored verbatim next to the date the network actually resolved,
+        # so a later audit shows "Requested: Sep 11 / Resolved: Sep 16"
+        # instead of only the resolved date. Written even when the two
+        # match — the absence of the field then means "no date was agreed",
+        # never "we forgot".
+        requested_pickup = self._as_date(normalized_request.requested_pickup_date)
+        if requested_pickup:
+            booking_vals["requested_pickup_date"] = requested_pickup
         if delivery_date:
             booking_vals["estimated_delivery_date"] = delivery_date
         if route_snapshot:
@@ -1419,6 +1520,29 @@ class BookingOrchestrationService:
                 "manual_price_changed_by": override_by.id,
                 "manual_price_changed_at": fields.Datetime.now(),
             })
+        # Accepted document price: the snapshot keeps the engine breakdown
+        # and gains the reconciliation to the accepted amount, so it always
+        # sums to what the customer will be billed (same shape as the
+        # negotiated-adjustment precedent, different — honest — label).
+        if accepted_price_applied:
+            price_snapshot = list(price_snapshot or []) + [
+                {
+                    "label": "Accepted order price adjustment",
+                    "amount": round(calculated_price - system_price, 2),
+                    "accepted_order_price": calculated_price,
+                    "system_calculated_price": system_price,
+                    "source": "%s:%s" % (
+                        normalized_request.source_model or "",
+                        normalized_request.source_reference or
+                        normalized_request.source_res_id or ""),
+                },
+                {
+                    "label": "Final customer sell price",
+                    "amount": calculated_price,
+                },
+            ]
+            booking_vals["price_snapshot"] = price_snapshot
+
         if normalized_request.departure_id:
             booking_vals["departure_id"] = normalized_request.departure_id
 
@@ -1482,6 +1606,36 @@ class BookingOrchestrationService:
                             system_price, calculated_price,
                             sell_price_override_reason,
                             override_by.name or ""),
+                        "message_type": "comment",
+                        "subtype_id": self.env.ref("mail.mt_comment").id,
+                    })
+
+                # Accepted document price audit (queryable via mail.message —
+                # the booking form has no chatter widget).
+                if accepted_price_applied:
+                    _logger.info(
+                        "BookingOrchestrationService: booking %s priced from "
+                        "the accepted document %s:%s — accepted %.2f, corridor "
+                        "engine %.2f (engine figure kept as the system price).",
+                        booking.booking_number,
+                        normalized_request.source_model,
+                        normalized_request.source_reference or
+                        normalized_request.source_res_id or "-",
+                        calculated_price, system_price,
+                    )
+                    self.env["mail.message"].sudo().create({
+                        "model": booking._name,
+                        "res_id": booking.id,
+                        "body": _(
+                            "Customer price accepted from %(source)s %(ref)s: "
+                            "%(accepted).2f (corridor engine price "
+                            "%(engine).2f — retained for audit only)."
+                        ) % {
+                            "source": normalized_request.source_model or "document",
+                            "ref": normalized_request.source_reference or "-",
+                            "accepted": calculated_price,
+                            "engine": system_price,
+                        },
                         "message_type": "comment",
                         "subtype_id": self.env.ref("mail.mt_comment").id,
                     })
@@ -1700,6 +1854,54 @@ class BookingOrchestrationService:
         dispatch_id = stop_dict.get("saved_location_id") or False
         return dispatch_id, False
 
+    def _facility_hours_snapshot(self, dispatch_id, stop_type, stop_dict):
+        """Frozen per-weekday facility-hours snapshot for ONE booking stop.
+
+        The master facility (prema.dispatch.location.facility_hours_ids) is
+        the hours AUTHORITY and is snapshotted with the house helper; the
+        shipment's own declared dock hours (from the tender document, via
+        the wizard) only FILL a weekday the master does not cover — a
+        master row is never overwritten by a document, and a document is
+        never overwritten by a later master edit (the snapshot is frozen).
+
+        Returns {weekday(str 0=Mon..6): [open, close] or None} or False
+        when nothing at all is known.
+        """
+        snapshot = {}
+        location = (self.env["prema.dispatch.location"].sudo()
+                    .browse(int(dispatch_id)) if dispatch_id else False)
+        if location and location.exists():
+            try:
+                from odoo.addons.prema_logistics_booking.services.itinerary_planner import (  # noqa: E501
+                    snapshot_facility_hours)
+                snapshot = snapshot_facility_hours(
+                    self.env, location,
+                    "pickup" if stop_type == "pickup" else "delivery")
+            except Exception:  # pragma: no cover — never block a booking
+                _logger.warning(
+                    "facility-hours snapshot failed for location %s",
+                    dispatch_id, exc_info=True)
+                snapshot = {}
+        declared = self._declared_facility_window(stop_dict)
+        if declared:
+            for key in ("0", "1", "2", "3", "4", "5", "6"):
+                if not snapshot.get(key):
+                    snapshot[key] = list(declared)
+        return snapshot or False
+
+    @staticmethod
+    def _declared_facility_window(stop_dict):
+        """(open, close) the shipment's own document declared for this
+        stop's dock, or None. Sane window only: close after open."""
+        try:
+            opens = float(stop_dict.get("facility_open_time"))
+            closes = float(stop_dict.get("facility_close_time"))
+        except (TypeError, ValueError):
+            return None
+        if closes > opens:
+            return (opens, closes)
+        return None
+
     def _create_booking_stops(self, booking, pickup_stops, delivery_stops):
         """Create real booking stops from raw pickup/delivery stop dicts.
         THE single stop-creation path for every channel — no channel may
@@ -1739,7 +1941,16 @@ class BookingOrchestrationService:
                 "appointment_time": pu.get("appointment_time") or False,
                 "hard_deadline": pu.get("hard_deadline") or False,
                 "service_time_minutes": pu.get("service_time_minutes") or 15,
-                "operating_hours_snapshot": pu.get("operating_hours_snapshot") or False,
+                # TIER 2 §4: the dock's own hours and the shipment's
+                # appointment coexist — the declared hours are never
+                # overwritten by the window, and they fill the frozen
+                # snapshot on days the master facility does not cover.
+                "facility_open_time": pu.get("facility_open_time") or False,
+                "facility_close_time": pu.get("facility_close_time") or False,
+                "operating_hours_snapshot": (
+                    pu.get("operating_hours_snapshot")
+                    or self._facility_hours_snapshot(dispatch_id, "pickup", pu)
+                    or False),
                 "timezone": pu.get("timezone") or "",
             })
             seq += 10
@@ -1776,7 +1987,13 @@ class BookingOrchestrationService:
                 "appointment_time": dl.get("appointment_time") or False,
                 "hard_deadline": dl.get("hard_deadline") or False,
                 "service_time_minutes": dl.get("service_time_minutes") or 15,
-                "operating_hours_snapshot": dl.get("operating_hours_snapshot") or False,
+                # TIER 2 §4 — same two-channel rule as the pickup stop.
+                "facility_open_time": dl.get("facility_open_time") or False,
+                "facility_close_time": dl.get("facility_close_time") or False,
+                "operating_hours_snapshot": (
+                    dl.get("operating_hours_snapshot")
+                    or self._facility_hours_snapshot(dispatch_id, "delivery", dl)
+                    or False),
                 "timezone": dl.get("timezone") or "",
             })
             seq += 10

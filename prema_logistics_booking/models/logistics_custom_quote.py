@@ -573,6 +573,45 @@ class LogisticsCustomQuote(models.Model):
                 partner.name,
                 ", ".join(allowed.mapped("name")) or "—"))
 
+    def _require_manual_price_reason(self):
+        """The Manual Price Reason policy, enforced where the price COMMITS.
+
+        A reason is required only when the pricing engine actually priced
+        this quote AND the human's figure departs from that figure. With no
+        engine price there is nothing to deviate from: the first real
+        figure a human enters IS the quote, not an override of one, so
+        nothing is demanded. 0.0 means "never priced" — freight is never
+        free — the same reading `_check_quickpay_configuration` uses.
+
+        This is a Send / Convert gate and NEVER a draft gate. Opening,
+        editing, saving, and CRM-side draft creation are the work a draft
+        exists for and are never blocked by it.
+        """
+        for rec in self:
+            system = rec.system_calculated_price or 0.0
+            if not system or not rec.quoted_price:
+                continue
+            if round(rec.quoted_price, 2) == round(system, 2):
+                continue
+            if (rec.manual_price_reason or "").strip():
+                continue
+            if rec.currency_id:
+                quoted = rec.currency_id.format(rec.quoted_price)
+                system_text = rec.currency_id.format(system)
+            else:
+                quoted = "%.2f" % rec.quoted_price
+                system_text = "%.2f" % system
+            raise UserError(_(
+                "A Manual Price Reason is required when the quoted price "
+                "differs from the system calculated price: this Rate "
+                "Confirmation (%(name)s) quotes %(quoted)s against a system "
+                "price of %(system)s. Record the reason on the document, "
+                "then retry — nothing was sent, confirmed or booked.") % {
+                "name": rec.name,
+                "quoted": quoted,
+                "system": system_text,
+            })
+
     # ════════════════════════════════════════════════════════════════
     # create/write — single-draft rule + send-lock guard
     # ════════════════════════════════════════════════════════════════
@@ -668,19 +707,27 @@ class LogisticsCustomQuote(models.Model):
                     and round(float(vals.get("quoted_price")), 2) != round(rec.quoted_price or 0.0, 2):
                 new_price = float(vals.get("quoted_price"))
                 old_price = rec.quoted_price or 0.0
-                if not rec.system_calculated_price:
-                    vals["system_calculated_price"] = old_price
-                system = vals.get("system_calculated_price", rec.system_calculated_price) or old_price
+                # The engine's figure is read as-is and is NEVER backfilled
+                # from the record's own previous quoted price. That backfill
+                # made the "system" price the human's own last keystroke, so
+                # an unpriced draft (system 0.00) was permanently
+                # unpriceable: the first figure a human typed "differed
+                # from" a system price that had never existed. 0.0 here
+                # means "the engine never priced this quote", not "priced
+                # at zero" — freight is never free.
+                system = (vals.get("system_calculated_price")
+                          if "system_calculated_price" in vals
+                          else rec.system_calculated_price) or 0.0
                 if rec.state == "converted":
                     raise UserError(_(
                         "This quotation is already converted to a booking — "
                         "the final quoted price is frozen. Adjust the "
                         "booking's customer sell price instead."))
-                if round(new_price, 2) != round(system, 2) \
-                        and not (vals.get("manual_price_reason") or rec.manual_price_reason):
-                    raise UserError(_(
-                        "A Manual Price Reason is required when the quoted "
-                        "price differs from the system calculated price."))
+                # Entering or editing the price on a draft is the very work
+                # the draft exists for, so nothing is refused here. The
+                # Manual Price Reason is enforced where the figure becomes
+                # consequential — Send and Convert — by
+                # `_require_manual_price_reason`.
                 changed.append((rec, old_price, new_price, system))
         # §6/§7 (D-B2): identifiers + payment agreement are NEVER changed
         # silently on the customer document — every change is posted on
@@ -716,7 +763,12 @@ class LogisticsCustomQuote(models.Model):
         result = super().write(vals)
         for rec, old_price, new_price, system in changed:
             rec.write({
-                "manual_price_override": round(new_price, 2) != round(system, 2),
+                # "Override" means the engine priced it and a human departed
+                # from that figure: there is nothing to override when the
+                # engine never priced the quote. Keeps the flag exactly
+                # aligned with the Send/Convert gate below — flag set ⇔ the
+                # gate will demand a reason.
+                "manual_price_override": bool(system) and round(new_price, 2) != round(system, 2),
                 "manual_price_changed_by": self.env.user.id,
                 "manual_price_changed_at": fields.Datetime.now(),
             })
@@ -960,6 +1012,9 @@ class LogisticsCustomQuote(models.Model):
         if not self.quoted_price:
             raise UserError(_(
                 "Set the quoted price before sending the Rate Confirmation."))
+        # The manual-price policy gate: this is the moment the figure
+        # becomes customer-facing. A draft was never blocked for it.
+        self._require_manual_price_reason()
         self._require_current_revision()
         payload = self._build_send_payload()
 
@@ -1165,6 +1220,10 @@ class LogisticsCustomQuote(models.Model):
         # callers; the @api.returns downgrade hands remote RPC its id).
         if self.booking_id:
             return self.booking_id
+        # The manual-price policy gate: this is the moment the figure
+        # becomes a real, bookable commitment. A draft was never blocked,
+        # and a repeat call that creates nothing is not blocked either.
+        self._require_manual_price_reason()
         if self.state != "accepted":
             raise UserError(_(
                 "Record the customer's acceptance first — only an accepted "

@@ -35,6 +35,7 @@ class PremaDispatchStop(models.Model):
             "sequence", "status", "stop_type", "scheduled_time",
             "time_window_type", "earliest_time", "latest_time", "exact_time",
             "deadline_time", "hard_deadline", "appointment_confirmed",
+            "facility_open_time", "facility_close_time",
             "service_time_minutes", "pallets_in", "pallets_out",
             "weight_in_lbs", "weight_out_lbs", "route_locked",
             "planning_only",
