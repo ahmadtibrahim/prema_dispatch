@@ -12,9 +12,11 @@ class SaleOrderBookWizard(models.TransientModel):
     D-C1 (master §1/§14): mirrors the invoice Book Load wizard
     (prema.dispatch.book.load.wizard) — the same confirm path through
     BookingOrchestrationService with the "sale_order" source channel and
-    idempotency key f"sale.order:{so.id}:{booking_mode}". The booking's
-    dispatch-job bridge creates the Planner card(s) and back-links
-    job.sale_order_id / job.logistics_booking_id.
+    idempotency key f"sale.order:{so.id}:{booking_mode}", plus a generation
+    suffix when a cancelled predecessor still holds the key (see
+    `_idempotency_key`). The booking's dispatch-job bridge creates the
+    Planner card(s) and back-links job.sale_order_id /
+    job.logistics_booking_id.
     """
 
     _name = "prema.dispatch.so.book.wizard"
@@ -133,10 +135,14 @@ class SaleOrderBookWizard(models.TransientModel):
     def action_confirm(self):
         self.ensure_one()
         so = self.sale_order_id
-        # Idempotency net: a canonical booking already exists for this SO
-        # (either click of a double-click, or another entry flow) — open it.
+        # Idempotency net: an ACTIVE canonical booking already exists for this
+        # SO (either click of a double-click, or another entry flow) — open it.
+        # Cancelled bookings do not count: reopening one would leave the order
+        # with no truck while telling whoever clicked that it is already
+        # booked, and would make a valid replacement impossible to create.
         existing = self.env["logistics.booking"].sudo().search(
-            [("sale_order_id", "=", so.id)], order="id", limit=1)
+            [("sale_order_id", "=", so.id), ("state", "!=", "cancelled")],
+            order="id", limit=1)
         if existing:
             return self._open_booking(existing)
 
@@ -230,10 +236,37 @@ class SaleOrderBookWizard(models.TransientModel):
             "enforce_requested_pickup_date": True,
             "allow_ftl_autoupgrade": False,
             "existing_sale_order_id": so.id,
-            "idempotency_key": f"sale.order:{so.id}:{self.booking_mode}",
+            "idempotency_key": self._idempotency_key(so),
         }, source_channel="sale_order")
         booking = service.confirm_from_internal(request)
         return self._open_booking(booking)
+
+    def _idempotency_key(self, so):
+        """This wizard's booking key — never colliding with a cancelled one.
+
+        f"sale.order:{id}:{mode}" is protected by a UNIQUE constraint on
+        logistics.booking. That is what makes a repeat click safe, and also
+        what makes a cancelled booking a permanent roadblock: the key stays
+        taken by a record nobody can use, so the booking service keeps
+        handing the dead booking back instead of creating the replacement
+        (S00103's failure, one layer below the lookup this release fixed).
+
+        This point is only reached when the order has NO active booking —
+        the caller returns one if it exists — so any holder of the base key
+        is cancelled, and a fresh generation is the honest answer: a
+        replacement load is a NEW load, not a retry of the cancelled one.
+        Deterministic, so two clicks on the same wizard still resolve to one
+        booking.
+        """
+        base = f"sale.order:{so.id}:{self.booking_mode}"
+        Booking = self.env["logistics.booking"].sudo()
+        key, generation = base, 1
+        while Booking.search_count([
+                ("source_channel", "=", "sale_order"),
+                ("idempotency_key", "=", key)]):
+            generation += 1
+            key = f"{base}:r{generation}"
+        return key
 
     def _canonical_required_temperature(self):
         """Reefer requirement converted to canonical Celsius (0°C survives);

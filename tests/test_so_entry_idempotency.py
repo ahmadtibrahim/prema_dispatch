@@ -353,6 +353,111 @@ class TestSoEntryIdempotency(TransactionCase):
         self.assertTrue(job)
         self.assertFalse(job.logistics_booking_id)
 
+    # ── Cancelled bookings are history, not the active relation ──────────
+
+    def _cancelled_booking(self, so, pickup, delivery):
+        """Book, then cancel through the booking's own cancel flow — the
+        same one the Booking Board uses. Returns the cancelled booking."""
+        action = self._so_book_wizard(so, pickup, delivery).action_confirm()
+        booking = self.env["logistics.booking"].browse(action["res_id"])
+        self.assertTrue(booking)
+        booking.action_cancel(reason="Test: booked in error", source="company")
+        self.assertEqual(booking.state, "cancelled")
+        return booking
+
+    @staticmethod
+    def _reread(so, *fields):
+        """Drop the cache before reading a counter again.
+
+        The counters are non-stored computes with no dependency the ORM can
+        see (the booking lives in another module's flow, and archiving a
+        Planner card never touches the Sales Order), so within ONE
+        transaction a second read returns the first read's answer. A real
+        request is one transaction, so it always reads live — this is the
+        test's problem to solve, not the field's.
+        """
+        so.invalidate_recordset(list(fields) or None)
+
+    def test_cancelled_booking_stops_being_the_linked_booking(self):
+        """S00103, 2026-09-11: a booking cancelled while the order was still
+        a quotation went on standing in for the order's booking — Book Load
+        opened the dead record and the smart button counted it. It must not
+        any more, and cancelling must not erase it either."""
+        so = self._make_priced_so()
+        pickup = self._location("Cancel Pickup", "1406 Test Line 8", "N0B 1E0")
+        delivery = self._location("Cancel Delivery", "2277 Test Sideroad 15", "N0B 1E0")
+        action = self._so_book_wizard(so, pickup, delivery).action_confirm()
+        booking = self.env["logistics.booking"].browse(action["res_id"])
+        self.assertEqual(so._linked_booking(), booking)
+        self.assertEqual(so.booking_count, 1)
+        stops = len(booking.stop_ids)
+
+        booking.action_cancel(reason="Test: booked in error", source="company")
+        self._reread(so, "booking_count", "cancelled_booking_count")
+
+        self.assertFalse(so._linked_booking())
+        self.assertEqual(so.booking_count, 0)
+        self.assertFalse(so.action_open_booking())
+        # …and the history is intact: still there, still findable, never
+        # deleted, its stops untouched.
+        self.assertTrue(booking.exists())
+        self.assertEqual(booking.state, "cancelled")
+        self.assertEqual(len(booking.stop_ids), stops)
+        self.assertEqual(so._cancelled_bookings(), booking)
+        self.assertEqual(so.cancelled_booking_count, 1)
+        history = so.action_open_cancelled_bookings()
+        self.assertEqual(history["res_model"], "logistics.booking")
+        self.assertEqual(history["domain"],
+                         [("sale_order_id", "=", so.id),
+                          ("state", "=", "cancelled")])
+
+    def test_book_load_after_cancellation_creates_a_new_one_and_then_reuses_it(self):
+        """The whole point of the fix: after a cancellation the order can be
+        booked again — and the replacement, not the corpse, is what every
+        later click opens."""
+        so = self._make_priced_so()
+        pickup = self._location("Rebook Pickup", "1406 Test Line 8", "N0B 1E0")
+        delivery = self._location("Rebook Delivery", "2277 Test Sideroad 15", "N0B 1E0")
+        dead = self._cancelled_booking(so, pickup, delivery)
+
+        # Book Load finds no active booking and offers a fresh one — it must
+        # not reopen the cancelled booking.
+        action = so.action_book_load()
+        self.assertEqual(action["res_model"], "prema.dispatch.so.book.wizard")
+
+        # Nor may the wizard's own pre-check hand the cancelled booking back.
+        second = self._so_book_wizard(so, pickup, delivery).action_confirm()
+        live = self.env["logistics.booking"].browse(second["res_id"])
+        self.assertNotEqual(live.id, dead.id)
+        self.assertNotEqual(live.state, "cancelled")
+        self.assertEqual(len(self._bookings_for(so)), 2, "one dead, one live")
+        self._reread(so, "booking_count", "cancelled_booking_count")
+
+        # Idempotency: the live booking is now THE booking, so a further
+        # click reopens it instead of stacking a third.
+        self.assertEqual(so._linked_booking(), live)
+        self.assertEqual(so.booking_count, 1)
+        self.assertEqual(so.cancelled_booking_count, 1)
+        self.assertEqual(so.action_book_load()["res_id"], live.id)
+        self.assertEqual(len(self._bookings_for(so)), 2)
+
+    def test_dispatch_job_count_is_not_stale_after_a_job_is_archived(self):
+        """The counter behind the Dispatch Jobs button is read live. It was
+        stored, and archiving a Planner card never touches the Sales Order,
+        so a cancelled job left the button claiming 1 job and opening an
+        empty list."""
+        so = self._make_priced_so()
+        pickup = self._location("Count Pickup", "1406 Test Line 8", "N0B 1E0")
+        delivery = self._location("Count Delivery", "2277 Test Sideroad 15", "N0B 1E0")
+        action = self._so_book_wizard(so, pickup, delivery).action_confirm()
+        booking = self.env["logistics.booking"].browse(action["res_id"])
+        self.assertEqual(so.dispatch_job_count, 1)
+
+        booking.dispatch_job_ids.write({"active": False})
+        self._reread(so, "dispatch_job_count")
+
+        self.assertEqual(so.dispatch_job_count, 0)
+
     # ── misc ─────────────────────────────────────────────────────────────
 
     def test_text_fingerprint_is_stable_across_whitespace(self):

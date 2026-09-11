@@ -26,11 +26,15 @@ class SaleOrder(models.Model):
         string="Dispatch Bookings", copy=False,
     )
     dispatch_job_count = fields.Integer(
-        compute="_compute_dispatch_job_count", store=True
+        compute="_compute_dispatch_job_count"
     )
     booking_count = fields.Integer(
         compute="_compute_booking_count",
         string="Prema Bookings",
+    )
+    cancelled_booking_count = fields.Integer(
+        compute="_compute_cancelled_booking_count",
+        string="Cancelled Bookings",
     )
     x_so_text_input = fields.Text(
         string="Customer Text / WhatsApp",
@@ -58,15 +62,32 @@ class SaleOrder(models.Model):
 
     @api.depends("dispatch_job_ids")
     def _compute_dispatch_job_count(self):
+        """Not stored, deliberately. A stored counter like this is only as
+        fresh as its last recompute, and archiving a Planner card (what
+        cancelling a booking does to the job behind it) never touches the
+        Sales Order, so nothing ever triggered one: S00103 kept a "Dispatch
+        Jobs 1" button that opened an empty list. The one2many already
+        excludes archived jobs, so counting it live is both correct and
+        cheap."""
         for order in self:
             order.dispatch_job_count = len(order.dispatch_job_ids)
 
     def _compute_booking_count(self):
         """The same fact as `_linked_booking`, in the form a smart button
-        needs. Not stored: the booking is created by another module's flow,
-        so a stored value would need that flow to remember to invalidate it."""
+        needs — so it counts ACTIVE bookings only: a cancelled booking is
+        history, and the button this drives opens the booking the order is
+        operating on. Not stored, for the same reason as above: the booking
+        is created by another module's flow, so a stored value would need
+        that flow to remember to invalidate it."""
         for order in self:
             order.booking_count = 1 if order._linked_booking() else 0
+
+    def _compute_cancelled_booking_count(self):
+        """How much history this order carries. Only ever shown when it is
+        non-zero — an order that never cancelled a booking is not asked to
+        display a zero."""
+        for order in self:
+            order.cancelled_booking_count = len(order._cancelled_bookings())
 
     # ── Small helpers ────────────────────────────────────────────────────
 
@@ -77,14 +98,41 @@ class SaleOrder(models.Model):
         return "logistics.booking" in env.registry
 
     def _linked_booking(self):
-        """The canonical logistics.booking created for this Sale Order, if
-        any (oldest first — the Book Load button is one booking per SO,
-        mirroring the pre-canonical one-job-per-SO behavior)."""
+        """The canonical logistics.booking this Sale Order is OPERATING on,
+        if any (oldest first — the Book Load button is one booking per SO,
+        mirroring the pre-canonical one-job-per-SO behavior).
+
+        Cancelled bookings are deliberately not returned. What this answers
+        is an operational question — which booking does Book Load open, does
+        this order already have a truck — and a cancelled booking is a
+        historical fact, not work the order is waiting on. S00103 is the
+        case that made it concrete: its booking was cancelled while the
+        quotation was still a draft, and treating that dead record as "the"
+        booking both pointed Book Load at a cancelled truck and told the
+        wizard a booking already existed, so no valid one could be created.
+
+        Cancelled bookings are never deleted or hidden — see
+        `_cancelled_bookings` and the Cancelled Bookings smart button."""
         self.ensure_one()
         if not self._logistics_loaded(self.env):
             return self.env["logistics.booking"].sudo()
         return self.env["logistics.booking"].sudo().search(
-            [("sale_order_id", "=", self.id)], order="id", limit=1)
+            [("sale_order_id", "=", self.id), ("state", "!=", "cancelled")],
+            order="id", limit=1)
+
+    def _cancelled_bookings(self):
+        """This order's cancelled bookings — history, kept and reachable.
+
+        A cancelled load still says something true about the order: what was
+        quoted, what was booked, and that it was called off. None of that is
+        deleted and none of it is hidden; it is simply not confused with the
+        active relation."""
+        self.ensure_one()
+        if not self._logistics_loaded(self.env):
+            return self.env["logistics.booking"].sudo()
+        return self.env["logistics.booking"].sudo().search(
+            [("sale_order_id", "=", self.id), ("state", "=", "cancelled")],
+            order="id")
 
     @staticmethod
     def _open_record_action(model, res_id):
@@ -129,6 +177,24 @@ class SaleOrder(models.Model):
         if not booking:
             return False
         return self._open_record_action("logistics.booking", booking.id)
+
+    def action_open_cancelled_bookings(self):
+        """The order's cancelled bookings — history, opened as a list.
+
+        Kept on the form on purpose. Cancelling a load must not erase the
+        fact that it was booked, and the record has to stay reachable from
+        the order it belonged to; it just stops pretending to be current
+        work."""
+        self.ensure_one()
+        return {
+            "type": "ir.actions.act_window",
+            "name": "Cancelled Bookings",
+            "res_model": "logistics.booking",
+            "view_mode": "list,form",
+            "domain": [("sale_order_id", "=", self.id),
+                       ("state", "=", "cancelled")],
+            "context": {"create": False},
+        }
 
     def action_open_crm_opportunity(self):
         """The opportunity this quotation was written for."""

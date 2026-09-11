@@ -63,12 +63,30 @@
                         <span class="o_stat_text">Dispatch Jobs</span>
                     </div>
                 </button>
+                <!-- History, not work: a cancelled booking is kept and stays
+                     reachable from the order it belonged to — never deleted,
+                     never hidden. Shown only when one exists, so an order
+                     that never cancelled a load carries no clutter. -->
+                <button name="action_open_cancelled_bookings"
+                        type="object"
+                        class="oe_stat_button"
+                        icon="fa-ban"
+                        invisible="cancelled_booking_count == 0"
+                        help="Bookings on this order that were cancelled — kept for history, never deleted">
+                    <div class="o_field_widget o_stat_info">
+                        <span class="o_stat_value">
+                            <field name="cancelled_booking_count"/>
+                        </span>
+                        <span class="o_stat_text">Cancelled</span>
+                    </div>
+                </button>
             </xpath>
 
             <!-- Hidden computed fields -->
             <xpath expr="//field[@name='user_id']" position="after">
                 <field name="dispatch_job_count" invisible="1"/>
                 <field name="booking_count" invisible="1"/>
+                <field name="cancelled_booking_count" invisible="1"/>
             </xpath>
 
             <!-- Generate from Text tab -->
