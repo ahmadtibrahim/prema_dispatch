@@ -28,11 +28,16 @@ class SaleOrder(models.Model):
     dispatch_job_count = fields.Integer(
         compute="_compute_dispatch_job_count", store=True
     )
+    booking_count = fields.Integer(
+        compute="_compute_booking_count",
+        string="Prema Bookings",
+    )
     x_so_text_input = fields.Text(
         string="Customer Text / WhatsApp",
         help="Paste a WhatsApp message, SMS, or email from the customer. "
-             "AI will extract pickup/delivery stops, pallet counts per stop, route, date, "
-             "reefer/liftgate requirements and create a dispatch booking.",
+             "On a quotation, AI Generate fills the quotation from it. Once "
+             "the quotation is confirmed, the same text books the load "
+             "through the canonical booking engine.",
     )
 
     # ═════════════════════════════════════════════════════════════════════
@@ -55,6 +60,13 @@ class SaleOrder(models.Model):
     def _compute_dispatch_job_count(self):
         for order in self:
             order.dispatch_job_count = len(order.dispatch_job_ids)
+
+    def _compute_booking_count(self):
+        """The same fact as `_linked_booking`, in the form a smart button
+        needs. Not stored: the booking is created by another module's flow,
+        so a stored value would need that flow to remember to invalidate it."""
+        for order in self:
+            order.booking_count = 1 if order._linked_booking() else 0
 
     # ── Small helpers ────────────────────────────────────────────────────
 
@@ -108,6 +120,29 @@ class SaleOrder(models.Model):
             "view_mode": "list,form",
             "domain": [("sale_order_id", "=", self.id)],
             "context": {"default_sale_order_id": self.id},
+        }
+
+    def action_open_booking(self):
+        """The canonical Prema booking this Sales Order was booked as."""
+        self.ensure_one()
+        booking = self._linked_booking()
+        if not booking:
+            return False
+        return self._open_record_action("logistics.booking", booking.id)
+
+    def action_open_crm_opportunity(self):
+        """The opportunity this quotation was written for."""
+        self.ensure_one()
+        lead = getattr(self, "opportunity_id", False)
+        if not lead:
+            return False
+        return {
+            "type": "ir.actions.act_window",
+            "name": "Opportunity",
+            "res_model": "crm.lead",
+            "res_id": lead.id,
+            "view_mode": "form",
+            "target": "current",
         }
 
     def _open_existing_job_action(self):
@@ -227,12 +262,62 @@ class SaleOrder(models.Model):
             r"\b([A-Za-z]\d[A-Za-z])\s*(\d[A-Za-z]\d)\b", address or "")
         return (match.group(1) + " " + match.group(2)).upper() if match else ""
 
+    def action_ai_generate_quotation(self):
+        """AI Generate — the pasted customer text fills whatever this IS.
+
+        This single box has to serve two different jobs, and the difference
+        is entirely a matter of state. While the record is a QUOTATION it is
+        a commercial document: the text describes what we are offering, and
+        the click must fill the quotation — load details, freight product,
+        rate and its tax treatment, and the AI summary — and create nothing
+        operational. Confirming the order is how a human records the
+        customer's acceptance; a paste into a rate box must never be able to
+        dispatch a truck on its own.
+
+        Once the order IS confirmed the same text means what it always did:
+        this is a shipment to book, so the click creates the canonical
+        booking through the existing flow, unchanged.
+
+        So the split is not a new permission model — it is the same rule the
+        customer sees, enforced where the button is.
+        """
+        self.ensure_one()
+        if self.state not in ("draft", "sent"):
+            return self.action_generate_dispatch_from_text()
+
+        if "x_ai_summary_instruction" not in self._fields:
+            raise exceptions.UserError(
+                "PremaFirm AI Engine must be installed for AI Generate on a "
+                "quotation."
+            )
+        text = (self.x_so_text_input or "").strip()
+        attachments = self._get_order_attachments()
+        if not text and not attachments:
+            raise exceptions.UserError(
+                "Paste the customer's shipment details into the text box "
+                "above (or attach their rate confirmation) before clicking "
+                "AI Generate."
+            )
+        if text:
+            # `x_ai_summary_instruction` is the field the quotation AI flow
+            # reads; the paste box is the same text under its dispatch-side
+            # name. Copying it across keeps ONE record of what the AI was
+            # told — the AI Summary tab shows it back to whoever asks why
+            # the quotation says what it says.
+            self.x_ai_summary_instruction = text
+        return self.action_ai_generate_quote()
+
     def action_generate_dispatch_from_text(self):
         """AI: parse pasted customer text and create ONE canonical
         logistics.booking with stops (channel "sale_order", per-text
         idempotency key). The booking's dispatch-job bridge creates the
         Planner card. Same text on the same SO always reuses the same
-        booking; different text may legitimately create another."""
+        booking; different text may legitimately create another.
+
+        Reachable only from a CONFIRMED order — the button that calls it
+        renders on `state in ('sale',)` alone. A quotation's text box goes
+        to `action_ai_generate_quotation` instead, because a document the
+        customer has not accepted yet must not be able to book a truck."""
         self.ensure_one()
         if not self.x_so_text_input or not self.x_so_text_input.strip():
             raise exceptions.UserError(

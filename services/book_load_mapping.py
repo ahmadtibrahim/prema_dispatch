@@ -57,12 +57,20 @@ _DATE_RE = re.compile(r"Date:\s*([A-Za-z]{3,9}\s+\d{1,2},?\s+\d{4})")
 # Labelled shipment figures written by the AI flow into the service note
 # ("Load: 12 pallets / 12,000 lb", "Commodity: FROZEN BAKERY"). The label
 # is what makes the value deterministic — an unlabelled number is ignored.
+# The weight is OPTIONAL: a customer who says "22 pallets" and no weight has
+# still told us the count, and the CRM → quotation note writes exactly what
+# they said. Discarding the pallets because the weight is missing would throw
+# away the one figure the customer did give. The unit is captured with it
+# because customers quote in kg as often as in pounds, and a weight written
+# in kg used to make the whole line unreadable — losing the pallet count too.
 _LOAD_RE = re.compile(
-    r"Load:\s*(\d[\d,]*)\s*(?:pallets?|skids?)\s*/\s*"
-    r"(\d[\d,]*(?:\.\d+)?)\s*(?:lb|lbs|pounds)\b", re.IGNORECASE)
+    r"Load:\s*(\d[\d,]*)\s*(?:pallets?|skids?)"
+    r"(?:\s*/\s*(\d[\d,]*(?:\.\d+)?)\s*(lb|lbs|pounds|kg|kgs|kilograms)\b)?",
+    re.IGNORECASE)
 _LOAD_PROSE_RE = re.compile(
     r"(\d[\d,]*)\s*(?:pallets?|skids?)\s*\(\s*"
-    r"(\d[\d,]*(?:\.\d+)?)\s*(?:lb|lbs|pounds)\s*\)", re.IGNORECASE)
+    r"(\d[\d,]*(?:\.\d+)?)\s*(lb|lbs|pounds|kg|kgs|kilograms)\s*\)",
+    re.IGNORECASE)
 _COMMODITY_RE = re.compile(
     r"Commodity:\s*([^\n\r]{2,80}?)\s*(?=\n|\r|$)", re.IGNORECASE)
 _PICKUP_WINDOW_RE = re.compile(
@@ -339,7 +347,8 @@ class BookLoadMappingService:
         if load:
             pallets, weight = load
             out.setdefault("expected_skids", pallets)
-            out.setdefault("total_weight_lbs", weight)
+            if weight is not None:
+                out.setdefault("total_weight_lbs", weight)
         # An explicit "Commodity: …" label outranks a product display name
         # (ladder 2 above ladder 3).
         commodity = self._label_value(_COMMODITY_RE, note)
@@ -349,14 +358,26 @@ class BookLoadMappingService:
     @staticmethod
     def _load_figures(text):
         """``(pallets, weight_lbs)`` from the labelled Load line, else from
-        the summary prose's ``N pallets (W lbs)`` form — first hit wins."""
-        for pattern in (_LOAD_RE, _LOAD_PROSE_RE):
+        the summary prose's ``N pallets (W lbs)`` form — first hit wins.
+
+        The weight may come back ``None``: the labelled form allows it to be
+        absent, because "22 pallets" on its own is a real answer. The prose
+        form cannot — a prose number with no unit is not a weight.
+
+        Kilograms are converted, because the field this feeds is in pounds
+        and the customer's own words are in whichever unit they think in."""
+        for pattern, unit_group in ((_LOAD_RE, 3), (_LOAD_PROSE_RE, 3)):
             match = pattern.search(text)
-            if match:
-                pallets = BookLoadMappingService._number(match.group(1))
-                weight = BookLoadMappingService._number(match.group(2))
-                if pallets and pallets > 0 and weight is not None:
-                    return int(pallets), weight
+            if not match:
+                continue
+            pallets = BookLoadMappingService._number(match.group(1))
+            if not pallets or pallets <= 0:
+                continue
+            weight = BookLoadMappingService._number(match.group(2))
+            unit = (match.group(unit_group) or "lb").lower()
+            if weight is not None and unit in ("kg", "kgs", "kilograms"):
+                weight = round(weight * 2.20462, 1)
+            return int(pallets), weight
         return None
 
     @staticmethod

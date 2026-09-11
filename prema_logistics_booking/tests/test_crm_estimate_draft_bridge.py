@@ -268,7 +268,11 @@ class TestCrmEstimateDraftBridge(TransactionCase):
 
         # The customer's own facts are on the order in the grammar Book
         # Load parses — the same channel the AI Generate flow writes to.
-        self.assertIn("Load: 22 pallets /", note.name)
+        # No weight was stated, so the line carries the pallet count alone
+        # rather than a "0 lbs" the customer never said; Book Load must
+        # still read the skids off it.
+        self.assertIn("Load: 22 pallets", note.name)
+        self.assertNotIn("0 lbs", note.name)
         self.assertIn("Pickup: 08:00 AM", note.name)
 
         # Still nothing sent, confirmed, invoiced or booked.
