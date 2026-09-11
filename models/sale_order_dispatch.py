@@ -74,20 +74,6 @@ class SaleOrder(models.Model):
         return self.env["logistics.booking"].sudo().search(
             [("sale_order_id", "=", self.id)], order="id", limit=1)
 
-    def _linked_rc_quote(self):
-        """The Rate Confirmation (logistics.custom.quote) attached to this
-        order's CRM opportunity, if one exists (sale.order.opportunity_id is
-        provided by sale_crm and may be absent)."""
-        self.ensure_one()
-        if not self._logistics_loaded(self.env):
-            return self.env["logistics.custom.quote"].sudo()
-        lead = getattr(self, "opportunity_id", False)
-        if not lead:
-            return self.env["logistics.custom.quote"].sudo()
-        return self.env["logistics.custom.quote"].sudo().search(
-            [("crm_lead_id", "=", lead.id)], order="create_date desc, id desc",
-            limit=1)
-
     @staticmethod
     def _open_record_action(model, res_id):
         return {
@@ -159,14 +145,19 @@ class SaleOrder(models.Model):
         Priority order (never duplicates):
           1. An existing canonical logistics.booking for this SO (created by
              any D-C1 entry flow) → open it.
-          2. A Rate Confirmation on this order's CRM opportunity → open the
-             RC (or its converted booking) and finish the RC flow there.
-          3. Legacy pre-canonical dispatch jobs (no linked booking) → open
+          2. Legacy pre-canonical dispatch jobs (no linked booking) → open
              them; nothing new is created under them.
-          4. Otherwise → open the Book Load wizard, which mirrors the
+          3. Otherwise → open the Book Load wizard, which mirrors the
              invoice wizard and confirms ONE logistics.booking through
              BookingOrchestrationService (channel "sale_order",
              idempotency key f"sale.order:{id}:{booking_mode}").
+
+        A Rate Confirmation on this order's opportunity is deliberately NOT
+        consulted any more. It used to divert the click into the retired
+        Rate Confirmation workflow, which meant the customer's accepted
+        Sales quotation could not reach a booking at all while an old
+        pre-quotation draft sat on the opportunity — the quotation the
+        customer actually agreed to has to be the one that books.
         """
         self.ensure_one()
 
@@ -178,20 +169,7 @@ class SaleOrder(models.Model):
         if booking:
             return self._open_record_action("logistics.booking", booking.id)
 
-        # 2. Rate Confirmation flow already started on this opportunity —
-        #    the RC is the quote authority for the same shipment.
-        quote = self._linked_rc_quote()
-        if quote:
-            if quote.booking_id:
-                return self._open_record_action(
-                    "logistics.booking", quote.booking_id.id)
-            return self._notify_open(
-                "Rate Confirmation Found",
-                "This order's CRM opportunity already has a Rate "
-                "Confirmation — continue it instead of creating a duplicate.",
-                self._open_record_action("logistics.custom.quote", quote.id))
-
-        # 3. Legacy pre-canonical dispatch jobs (created before D-C1) —
+        # 2. Legacy pre-canonical dispatch jobs (created before D-C1) —
         #    preserved and still openable, but no new jobs are ever created
         #    under them.
         legacy_jobs = self.dispatch_job_ids.filtered(
@@ -204,7 +182,7 @@ class SaleOrder(models.Model):
                 "Open them below; new loads go through the booking flow.",
                 self._open_existing_job_action())
 
-        # 4. New canonical booking via the wizard.
+        # 3. New canonical booking via the wizard.
         if not self._logistics_loaded(self.env):
             raise exceptions.UserError(
                 "Prema Logistics Booking must be installed before a Sales "

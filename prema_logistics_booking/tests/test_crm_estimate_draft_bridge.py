@@ -104,8 +104,9 @@ def _patches(**overrides):
 
 
 class TestCrmEstimateDraftBridge(TransactionCase):
-    """E-A2 §5 dispatch-side actions — draft estimate / draft RC from the
-    CRM opportunity's superseded customer facts."""
+    """E-A2 §5 dispatch-side actions — the estimate reply and the Sales
+    quotation, both built from the CRM opportunity's superseded customer
+    facts. The Rate Confirmation these actions used to draft is retired."""
 
     @classmethod
     def setUpClass(cls):
@@ -229,46 +230,55 @@ class TestCrmEstimateDraftBridge(TransactionCase):
 
     # ── (b) exactly one draft RC per lead on repeat clicks ────────────
 
-    def test_b_repeat_clicks_return_the_same_draft_rate_confirmation(self):
-        from ..services.booking_orchestration_service import (
-            BookingOrchestrationService)
+    def test_b_repeat_clicks_return_the_same_quotation(self):
+        """§2: one quotation per opportunity, however often the button is
+        clicked, and it stays UNPRICED — this path never invents a rate."""
+        if "opportunity_id" not in self.env["sale.order"]._fields:
+            self.skipTest("sale_crm is not installed in this database.")
         lead = self._lead(self._base_description())
-        self._inbound_email(
-            lead,
-            "<p>Correction — pickup Tuesday September 8 2026, 10:30 a.m. "
-            "to 11:30 a.m., delivery before 4:00 p.m. Thanks.</p>", 1)
 
         with _patches():
-            first = lead.action_create_draft_rate_confirmation()
-            second = lead.action_create_draft_rate_confirmation()
+            first = lead.action_create_quotation()
+            second = lead.action_create_quotation()
 
-        self.assertEqual(first["res_model"], "logistics.custom.quote")
+        self.assertEqual(first["res_model"], "sale.order")
         self.assertEqual(first["res_id"], second["res_id"])
-        CQ = self.env["logistics.custom.quote"]
-        rows = CQ.search([("crm_lead_id", "=", lead.id)])
-        self.assertEqual(len(rows), 1,
-                         "Exactly one draft RC per lead, however many times "
-                         "the button is clicked.")
-        draft = rows[0]
-        self.assertEqual(draft.state, "new")
-        self.assertFalse(draft.is_locked)
-        self.assertEqual(draft.quoted_price, 0.0)
-        self.assertEqual(draft.pickup_address, PICKUP_ADDRESS)
-        self.assertEqual(draft.pickup_postal_code, PICKUP_POSTAL)
-        self.assertEqual(draft.delivery_address, DELIVERY_ADDRESS)
-        self.assertEqual(draft.pallets, 22)
-        # Corrected window facts are on the draft for the reviewer.
-        self.assertIn("10:30 – 11:30", draft.notes)
-        self.assertIn("before 16:00", draft.notes)
-        self.assertEqual(draft.requested_pickup_date, PICKUP_DATE_NEW)
-        self.assertNotIn("09:00", draft.notes)
-        # Discoverable from the lead, and nothing else moved.
-        self.assertEqual(lead.logistics_quote_count, 1)
-        self.assertFalse(lead.stage_id and False)
+        orders = self.env["sale.order"].search([
+            ("opportunity_id", "=", lead.id)])
+        self.assertEqual(
+            len(orders), 1,
+            "Exactly one quotation per opportunity, however many times the "
+            "button is clicked.")
+        order = orders[0]
+        self.assertEqual(order.state, "draft")
+        self.assertEqual(order.partner_id, self.customer)
+        self.assertEqual(order.origin, lead.name)
+
+        # One freight line (worth nothing yet) plus the summary note. A
+        # bare "Rate: 0.00" would be read as a real price of zero by the
+        # booking and the invoice, so the note must say so in words.
+        note = order.order_line.filtered(
+            lambda line: line.display_type == "line_note")
+        freight = order.order_line - note
+        self.assertEqual(len(note), 1)
+        self.assertEqual(len(freight), 1)
+        self.assertEqual(freight.price_unit, 0.0)
+        self.assertIn("Rate: to be quoted", note.name)
+        self.assertNotIn("Rate: 0.00", note.name)
+
+        # The customer's own facts are on the order in the grammar Book
+        # Load parses — the same channel the AI Generate flow writes to.
+        self.assertIn("Load: 22 pallets /", note.name)
+        self.assertIn("Pickup: 08:00 AM", note.name)
+
+        # Still nothing sent, confirmed, invoiced or booked.
+        self.assertEqual(order.invoice_count, 0)
 
     # ── (c) lead-1041 regression: corrected windows win ───────────────
 
-    def test_c_lead1041_corrected_windows_land_in_draft_and_estimate(self):
+    def test_c_lead1041_corrected_facts_land_on_quotation_and_estimate(self):
+        if "opportunity_id" not in self.env["sale.order"]._fields:
+            self.skipTest("sale_crm is not installed in this database.")
         from ..services.booking_orchestration_service import (
             BookingOrchestrationService)
         lead = self._lead(self._base_description())
@@ -286,17 +296,23 @@ class TestCrmEstimateDraftBridge(TransactionCase):
         with _patches(), patch.object(
                 BookingOrchestrationService, "prepare_quote",
                 return_value=dict(STUB_QUOTE)):
-            action = lead.action_create_draft_rate_confirmation()
+            action = lead.action_ai_rate_quote()
             estimate_action = lead.action_prepare_preliminary_estimate()
 
-        draft = self.env["logistics.custom.quote"].browse(action["res_id"])
-        # The DRAFT carries the NEWER windows — the regression this test
-        # guards (lead-1041: stale draft facts after a customer correction).
-        self.assertEqual(draft.requested_pickup_date, PICKUP_DATE_NEW)
-        self.assertIn("10:30 – 11:30", draft.notes)
-        self.assertIn("before 16:00", draft.notes)
-        self.assertNotIn("09:00", draft.notes)
-        self.assertNotIn("2026-09-07", draft.notes)
+        order = self.env["sale.order"].browse(action["res_id"])
+        note = order.order_line.filtered(
+            lambda line: line.display_type == "line_note")
+        self.assertEqual(len(note), 1)
+        # The QUOTATION carries the NEWER facts — the regression this test
+        # guards (lead-1041: stale facts after a customer correction). The
+        # superseded statement must not survive anywhere on it.
+        self.assertIn("Date: September 08, 2026", note.name)
+        self.assertNotIn("September 07, 2026", note.name)
+        # §4/§6 — the engine's own figure rides the freight line, and the
+        # provenance names the quote it came from.
+        self.assertIn("Rate: 1,234.50", note.name)
+        self.assertIn("TOK-A2B-TEST", note.name)
+        self.assertEqual((order.order_line - note).price_unit, 1234.5)
 
         estimate = self.env["premafirm.lead.estimate.reply"].browse(
             estimate_action["res_id"])
@@ -328,7 +344,7 @@ class TestCrmEstimateDraftBridge(TransactionCase):
 
         with _patches():
             with self.assertRaises(UserError) as guard:
-                lead.action_create_draft_rate_confirmation()
+                lead.action_ai_rate_quote()
         self.assertIn("only a city was stated",
                       str(guard.exception))
         self.assertIn("city-only", str(guard.exception))
@@ -341,7 +357,7 @@ class TestCrmEstimateDraftBridge(TransactionCase):
                 lead.action_prepare_preliminary_estimate()
         mocked_price.assert_not_called()
 
-        # Nothing persisted: no draft, no estimate, no pending location
+        # Nothing persisted: no quotation, no estimate, no pending location
         # (the delivery side alone was complete — resolution is all-or-
         # nothing before any write), no mail.
         self.assertEqual(self.env["premafirm.lead.estimate.reply"]
@@ -358,40 +374,39 @@ class TestCrmEstimateDraftBridge(TransactionCase):
     # ── (e) the two actions never confirm, convert or book ────────────
 
     def test_e_actions_never_confirm_convert_or_book(self):
+        """The estimate reply and the quotation are drafts and nothing more:
+        no confirmation, no invoice, no email — and §1, no Rate Confirmation
+        is created by any of them."""
         from ..services.booking_orchestration_service import (
             BookingOrchestrationService)
+        if "opportunity_id" not in self.env["sale.order"]._fields:
+            self.skipTest("sale_crm is not installed in this database.")
         lead = self._lead(self._base_description())
         self._inbound_email(
             lead,
             "<p>Correction — pickup Tuesday September 8 2026, 10:30 a.m. "
             "to 11:30 a.m., delivery before 4:00 p.m. Thanks.</p>", 1)
         before = self._counts()
-        attempts_before = self.env[
-            "logistics.custom.quote.send.attempt"].search_count([])
 
         with _patches(), patch.object(
                 BookingOrchestrationService, "prepare_quote",
                 return_value=dict(STUB_QUOTE)):
             lead.action_prepare_preliminary_estimate()
-            lead.action_create_draft_rate_confirmation()
-            # A repeat click keeps the SAME draft (still no send/convert).
-            lead.action_create_draft_rate_confirmation()
+            lead.action_create_quotation()
+            # A repeat click keeps the SAME quotation (still no confirm).
+            lead.action_create_quotation()
 
-        self.assertEqual(self._counts()["logistics.custom.quote"],
-                         before["logistics.custom.quote"] + 1)
-        draft = self.env["logistics.custom.quote"].search(
-            [("crm_lead_id", "=", lead.id)])
-        self.assertEqual(len(draft), 1)
-        self.assertEqual(draft.state, "new")
-        self.assertFalse(draft.is_locked)
-        self.assertEqual(draft.quoted_price, 0.0)
-        self.assertFalse(draft.booking_id)
-        self.assertEqual(
-            self.env["logistics.custom.quote.send.attempt"].search_count([]),
-            attempts_before)
+        self.assertEqual(self._counts()["sale.order"],
+                         before["sale.order"] + 1)
+        order = self.env["sale.order"].search(
+            [("opportunity_id", "=", lead.id)])
+        self.assertEqual(len(order), 1)
+        self.assertEqual(order.state, "draft")
+        # The retired Rate Confirmation is never a side effect of quoting.
         after = self._counts()
-        for model in ("logistics.booking", "sale.order", "account.move",
-                      "mail.mail", "logistics.pricing.session"):
+        for model in ("logistics.custom.quote", "logistics.booking",
+                      "account.move", "mail.mail",
+                      "logistics.pricing.session"):
             self.assertEqual(after[model], before[model], model)
         # The estimate draft exists and nothing was ever sent for it.
         self.assertEqual(self._counts()["premafirm.lead.estimate.reply"],

@@ -26,19 +26,6 @@ class TestCrmRateConfirmationBridge(TransactionCase):
             "partner_id": cls.partner.id,
         })
 
-    def test_rate_action_opens_canonical_dispatch_wizard(self):
-        self.lead.description = "Pickup: Toronto\nDelivery: Ottawa"
-        action = self.lead.action_open_dispatch_rate_quote()
-
-        self.assertEqual(action["res_model"], "logistics.phone.booking")
-        self.assertEqual(action["target"], "new")
-        self.assertEqual(
-            action["context"]["default_partner_id"], self.partner.id)
-        self.assertEqual(
-            action["context"]["default_crm_lead_id"], self.lead.id)
-        self.assertIn(
-            "Pickup: Toronto", action["context"]["default_source_text"])
-
     def test_linked_rate_confirmation_is_discoverable_from_lead(self):
         quote = self.env["logistics.custom.quote"].create({
             "partner_id": self.partner.id,
@@ -51,31 +38,22 @@ class TestCrmRateConfirmationBridge(TransactionCase):
         self.assertEqual(action["res_model"], "logistics.custom.quote")
         self.assertEqual(action["res_id"], quote.id)
 
-    def test_opening_rate_wizard_has_no_operational_side_effects(self):
-        counts_before = {
-            model: self.env[model].search_count([])
-            for model in (
-                "logistics.custom.quote",
-                "logistics.booking",
-                "sale.order",
-                "account.move",
-                "mail.mail",
-            )
-        }
-
-        self.lead.action_open_dispatch_rate_quote()
-
-        counts_after = {
-            model: self.env[model].search_count([])
-            for model in counts_before
-        }
-        self.assertEqual(counts_after, counts_before)
-
     def test_customer_is_required_before_rate_calculation(self):
+        """Both quotation entry points refuse a lead with nobody to quote.
+
+        `_require_customer` runs before anything else in both actions —
+        before the engine, before any draft — so an opportunity with no
+        customer is rejected outright rather than quoted to a blank.
+        """
         lead = self.env["crm.lead"].create({"name": "No Customer Yet"})
 
         with self.assertRaises(UserError):
-            lead.action_open_dispatch_rate_quote()
+            lead.action_ai_rate_quote()
+        with self.assertRaises(UserError):
+            lead.action_create_quotation()
+        self.assertFalse(
+            self.env["sale.order"].search([("opportunity_id", "=", lead.id)]),
+            "A refused click must not leave a quotation behind.")
 
     def test_extraction_populates_facts_but_never_an_ai_rate(self):
         wizard = self.env["logistics.phone.booking"].create({

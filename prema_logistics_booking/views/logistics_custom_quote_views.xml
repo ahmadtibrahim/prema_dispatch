@@ -4,7 +4,8 @@
         <field name="name">logistics.custom.quote.list</field>
         <field name="model">logistics.custom.quote</field>
         <field name="arch" type="xml">
-            <list>
+            <!-- §1: retired workflow — history is read, never extended. -->
+            <list create="false" edit="false" delete="false">
                 <field name="name"/>
                 <field name="revision_no" optional="show"/>
                 <field name="company_name"/>
@@ -53,64 +54,22 @@
         </field>
     </record>
 
-    <record id="view_logistics_custom_quote_revise_form" model="ir.ui.view">
-        <field name="name">logistics.custom.quote.revise.form</field>
-        <field name="model">logistics.custom.quote.revise</field>
-        <field name="arch" type="xml">
-            <form string="Revise and Resend Rate Confirmation">
-                <group>
-                    <field name="quote_reference"/>
-                    <field name="current_revision"/>
-                    <field name="reason"/>
-                </group>
-                <footer>
-                    <button name="action_revise" string="Create Revision &amp; Reopen Editing"
-                            type="object" class="btn-primary"/>
-                    <button string="Cancel" class="btn-secondary" special="cancel"/>
-                </footer>
-            </form>
-        </field>
-    </record>
-
-    <record id="action_logistics_custom_quote_revise_wizard" model="ir.actions.act_window">
-        <field name="name">Revise &amp; Resend</field>
-        <field name="res_model">logistics.custom.quote.revise</field>
-        <field name="view_mode">form</field>
-        <field name="target">new</field>
-    </record>
-
     <record id="view_logistics_custom_quote_form" model="ir.ui.view">
         <field name="name">logistics.custom.quote.form</field>
         <field name="model">logistics.custom.quote</field>
         <field name="arch" type="xml">
             <form>
                 <header>
-                    <button name="action_start_review" string="Start Review" type="object"
-                            invisible="state != 'new' or is_locked"/>
-                    <button name="action_quote" string="Quote" type="object"
-                            invisible="state not in ('reviewing',) or is_locked"/>
-                    <button name="action_record_customer_acceptance_form" string="Record Customer Acceptance" type="object"
-                            invisible="state not in ('quoted', 'accepted') or booking_id or is_superseded"/>
-                    <button name="action_decline" string="Decline" type="object"
-                            invisible="state not in ('quoted', 'accepted') or booking_id"/>
-                    <button name="action_confirm_internally" string="Confirm Internally" type="object"
-                            class="btn-primary"
-                            invisible="state != 'accepted' or internal_confirmed or booking_id or is_superseded"/>
-                    <button name="action_convert_to_booking" string="Convert to Booking" type="object"
-                            class="btn-success"
-                            invisible="state != 'accepted' or booking_id or is_superseded"/>
-                    <button name="%(action_logistics_custom_quote_revise_wizard)d"
-                            string="Revise &amp; Resend" type="action" class="btn-warning"
-                            groups="prema_logistics_booking.group_logistics_booking_manager"
-                            context="{'default_quote_id': id}"
-                            invisible="not is_locked or is_superseded or booking_id or state not in ('quoted', 'accepted', 'declined')"/>
-                    <button name="action_send_rc" string="Send Rate Confirmation" type="object"
-                            class="btn-primary"
-                            invisible="state not in ('quoted', 'accepted') or is_locked or is_superseded or booking_id"/>
+                    <!-- §1: the Rate Confirmation is retired as a
+                         workflow. This form is the historical record of
+                         what was issued — it cannot be reviewed,
+                         quoted, sent, accepted, revised or converted
+                         any more, because the Sales quotation is the
+                         only document that may do those things.
+                         Print / Preview stays: rendering the document
+                         the customer already holds is a read. -->
                     <button name="action_preview" string="Print / Preview" type="object"
                             invisible="not quoted_price"/>
-                    <button name="action_open_estimator" string="Prema AI Estimator" type="object"
-                            class="btn-secondary" invisible="is_locked"/>
                     <field name="state" widget="statusbar"/>
                 </header>
                 <sheet>
@@ -137,12 +96,8 @@
                                    invisible="not system_calculated_price"/>
                             <field name="manual_price_adjustment" readonly="1"
                                    invisible="not system_calculated_price"/>
-                            <field name="manual_price_reason" readonly="is_locked"
-                                   invisible="not system_calculated_price"
-                                   placeholder="Required when the quoted price differs from the system price"/>
-                            <button name="action_reset_price" string="Reset to System Price" type="object"
-                                    class="btn-secondary"
-                                    invisible="state == 'converted' or not system_calculated_price or is_locked"/>
+                            <field name="manual_price_reason" readonly="1"
+                                   invisible="not system_calculated_price"/>
                             <field name="manual_price_changed_by" readonly="1"
                                    invisible="not manual_price_changed_by"/>
                             <field name="manual_price_changed_at" readonly="1"
@@ -295,8 +250,9 @@
     </record>
 
     <record id="action_logistics_custom_quote" model="ir.actions.act_window">
-        <field name="name">Custom Quotes</field>
+        <field name="name">Rate Confirmations (History)</field>
         <field name="res_model">logistics.custom.quote</field>
         <field name="view_mode">list,form</field>
+        <field name="context">{'create': False}</field>
     </record>
 </odoo>

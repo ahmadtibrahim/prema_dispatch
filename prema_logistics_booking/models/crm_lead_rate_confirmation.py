@@ -1,14 +1,14 @@
 from odoo import _, api, fields, models
-from odoo.exceptions import UserError
-from odoo.tools import html2plaintext
 
 
 class CrmLead(models.Model):
-    """Bridge CRM opportunities to the canonical Dispatch quote workflow.
+    """The opportunity's history door to retired Rate Confirmations.
 
-    This method intentionally opens a draft pricing wizard only.  It never
-    prices with the AI knowledge base, sends email, confirms a sale order,
-    creates a booking, or creates an invoice.
+    `logistics.custom.quote` is no longer a workflow. The Sales quotation is
+    the only commercial quotation (see ``crm_lead_quotation_bridge``), and
+    nothing here creates, prices, sends or advances a Rate Confirmation.
+    What remains is the read-only view of the ones already issued, because
+    they are commercial records the customer may still cite.
     """
 
     _inherit = "crm.lead"
@@ -35,64 +35,19 @@ class CrmLead(models.Model):
         for lead in self:
             lead.logistics_quote_count = counts.get(lead.id, 0)
 
-    def action_open_dispatch_rate_quote(self):
-        """Open the staff quote wizard backed by Dispatch's pricing engine."""
-        self.ensure_one()
-        if not self.partner_id:
-            raise UserError(_(
-                "Select or create the Customer on this opportunity before "
-                "calculating a dispatch rate."
-            ))
-        return {
-            "type": "ir.actions.act_window",
-            "name": _("Calculate Dispatch Rate"),
-            "res_model": "logistics.phone.booking",
-            "view_mode": "form",
-            "target": "new",
-            "context": {
-                "default_partner_id": self.partner_id.id,
-                "default_crm_lead_id": self.id,
-                "default_source_text": self._dispatch_rate_source_text(),
-            },
-        }
-
-    def _dispatch_rate_source_text(self):
-        """Return customer-supplied freight text for editable extraction.
-
-        CRM descriptions are preferred.  The latest inbound customer email
-        is appended when available; staff-authored chatter is excluded so an
-        old internal assumption cannot silently become a shipment fact.
-        """
-        self.ensure_one()
-        snippets = []
-        description = html2plaintext(self.description or "").strip()
-        if description:
-            snippets.append(description)
-        inbound = self.message_ids.filtered(
-            lambda message: message.message_type == "email"
-            and message.body
-            and not message.author_id.user_ids
-        ).sorted("date", reverse=True)[:1]
-        if inbound:
-            body = html2plaintext(inbound.body or "").strip()
-            if body and body not in snippets:
-                snippets.append(body)
-        return "\n\n".join(snippets)[:8000]
-
     def action_open_dispatch_rate_confirmations(self):
-        """Open persistent draft/quoted rate records linked to this lead."""
+        """Open the retired Rate Confirmations linked to this lead.
+
+        History only: the records are read-only by ACL and carry no workflow
+        buttons, so opening them can never start a second quotation.
+        """
         self.ensure_one()
         action = {
             "type": "ir.actions.act_window",
-            "name": _("Rate Confirmations"),
+            "name": _("Rate Confirmations (History)"),
             "res_model": "logistics.custom.quote",
             "view_mode": "list,form",
             "domain": [("crm_lead_id", "=", self.id)],
-            "context": {
-                "default_crm_lead_id": self.id,
-                "default_partner_id": self.partner_id.id,
-                "default_source": "internal",
-            },
         }
         if self.logistics_quote_count == 1:
             action.update({

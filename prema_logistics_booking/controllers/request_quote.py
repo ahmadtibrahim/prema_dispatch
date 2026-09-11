@@ -341,6 +341,47 @@ class LogisticsRequestQuote(http.Controller):
     # ==================================================================
     # CUSTOM QUOTE SUBMISSION
     # ==================================================================
+
+    @staticmethod
+    def _website_request_description(vals):
+        """The shipment, as the customer stated it, in labelled lines.
+
+        The CRM fact extractor reads this description (and the customer's
+        inbound email) to build the shipment the quotation is priced from,
+        so the request has to arrive as the customer wrote it — one label
+        per fact, no rephrasing, nothing inferred. Anything the customer
+        left blank is simply absent: an omitted line is a question for the
+        salesperson to ask, not a default to invent.
+        """
+        lines = [
+            ("Pickup address", vals["pickup_address"]),
+            ("Pickup postal code", vals["pickup_postal_code"]),
+            ("Delivery address", vals["delivery_address"]),
+            ("Delivery postal code", vals["delivery_postal_code"]),
+            ("Pallets", vals["pallets"]),
+            ("Weight (lbs)", vals["weight_lbs"]),
+            ("Temperature", vals["temperature_mode"]),
+            ("Commodity", vals["commodity"]),
+            ("Notes", vals["notes"]),
+        ]
+        body = "\n".join("%s: %s" % (label, value)
+                         for label, value in lines
+                         if value not in (None, "", False))
+        return "%s\n\nSubmitted from the website quote request form." % body
+
+    @staticmethod
+    def _stage_website_request(lead):
+        """File the request under QUOTE REQUESTED when that stage exists.
+
+        The stage is where the shop's other website leads land, so a request
+        that skipped it would sit in New and read as unworked. A missing
+        stage is not an error: the lead is still created, just unstaged.
+        """
+        stage = request.env["crm.stage"].sudo().search(
+            [("name", "=", "QUOTE REQUESTED")], limit=1)
+        if stage:
+            lead.stage_id = stage.id
+
     @http.route("/request-a-quote/submit", type="http", auth="user", website=True, sitemap=False, methods=["POST"])
     def submit_custom_quote(self, **kwargs):
         _require_visible()
@@ -358,18 +399,28 @@ class LogisticsRequestQuote(http.Controller):
             "temperature_mode": kwargs.get("temperature_mode") or "dry",
             "commodity": kwargs.get("commodity"),
             "notes": kwargs.get("notes"),
-            "source": "website",
-            "state": "new",
         }
-        Fsa = request.env["logistics.fsa"].sudo()
-        pf = Fsa.resolve_from_postal(vals["pickup_postal_code"])
-        df = Fsa.resolve_from_postal(vals["delivery_postal_code"])
-        if pf:
-            vals["resolved_fsa_pickup"] = pf.fsa
-            vals["resolved_region_pickup"] = pf.region_id.id if pf.region_id else False
-        if df:
-            vals["resolved_fsa_delivery"] = df.fsa
-            vals["resolved_region_delivery"] = df.region_id.id if df.region_id else False
 
-        quote = request.env["logistics.custom.quote"].sudo().create(vals)
-        return request.render("prema_logistics_booking.portal_custom_quote_confirmed", {"quote": quote})
+        # §1: a website request no longer becomes a Rate Confirmation. That
+        # object is retired — the Sales quotation is the only commercial
+        # quotation — so the intake lands where the quotation is built: an
+        # OPPORTUNITY the salesperson answers with AI Rate Quote (engine
+        # price) or Create Quotation (quoted by hand). Creating the retired
+        # document here would put the request outside the flow that can
+        # actually quote it.
+        lead = request.env["crm.lead"].sudo().create({
+            "type": "opportunity",
+            "name": _("Website quote request — %(pickup)s → %(delivery)s") % {
+                "pickup": vals["pickup_postal_code"] or "?",
+                "delivery": vals["delivery_postal_code"] or "?",
+            },
+            "contact_name": vals["contact_name"],
+            "email_from": vals["contact_email"],
+            "phone": vals["contact_phone"],
+            "partner_name": vals["company_name"],
+            "description": self._website_request_description(vals),
+        })
+        self._stage_website_request(lead)
+        return request.render(
+            "prema_logistics_booking.portal_custom_quote_confirmed",
+            {"reference": lead.name})

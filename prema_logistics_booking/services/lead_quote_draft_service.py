@@ -358,6 +358,19 @@ class LeadQuoteDraftService:
         return str((fact or {}).get("value") or "").strip()
 
     @classmethod
+    def fact_stops(cls, facts):
+        """Both sides' customer-stated stop text, straight off the facts.
+
+        The public form of `_side_stop` for callers that want what the
+        customer said WITHOUT resolving it against Saved Locations: the
+        unpriced CRM → quotation path writes a draft from the customer's own
+        words and must not create facilities or call Google as a side effect
+        of opening a blank quotation form.
+        """
+        return {side: cls._side_stop(facts, side)
+                for side in ("pickup", "delivery")}
+
+    @classmethod
     def _side_stop(cls, facts, side):
         """Best-effort stop text from the effective facts for one side.
 
