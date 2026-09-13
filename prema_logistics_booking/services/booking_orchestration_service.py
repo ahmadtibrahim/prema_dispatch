@@ -2516,6 +2516,11 @@ class BookingOrchestrationService:
             created_legs += leg
 
         if created_legs:
+            # How each leg's freight waits at the hub before the next leg:
+            # on the same truck (keeps occupying truck positions across the
+            # gap days) or put away at the hub (truck free).
+            self._apply_hub_custody(booking, created_legs, leg_snaps,
+                                    vehicles_by_departure)
             # Deterministic own-fleet estimated cost from the frozen
             # authorities (cost_snapshot per-leg allocation, else the
             # booking's confirmation-time estimator result for a
@@ -2532,6 +2537,70 @@ class BookingOrchestrationService:
             booking.booking_number, list(vehicles_by_departure.keys()),
         )
         return created_legs
+
+    def _apply_hub_custody(self, booking, created_legs, leg_snaps,
+                           vehicles_by_departure):
+        """Record HOW each leg's freight waits between legs.
+
+        The connection is the real handoff: leg N arrives at the hub (its
+        frozen delivery datetime) and leg N+1 leaves it (its frozen
+        corridor departure datetime). That wait is:
+
+          • on_truck — the SAME vehicle carries both legs and the wait is
+            inside the on-truck threshold. The freight stays loaded, so it
+            keeps occupying truck positions across the days in between
+            (the Friday loop returning to the hub, continuing on Monday's
+            corridor on the very same truck).
+          • unloaded_at_hub — anything else. The safe default: the truck is
+            free, and the receiving truck must show a real loading stop.
+
+        Only a genuine hub handoff (a leg ending at the hub transfer stop)
+        is evaluated. logistics.booking carries no chatter (it is not a
+        mail.thread), so the durable record is the pair of leg fields plus
+        the log line: dispatch reads the custody on the leg it concerns.
+        """
+        from .hub_custody_service import HubCustodyService
+
+        legs = list(created_legs)
+        if len(legs) < 2:
+            return
+        custody = HubCustodyService(self.env)
+        plan_lines = []
+        for index in range(len(legs) - 1):
+            leg, next_leg = legs[index], legs[index + 1]
+            if not leg.destination_stop_id.hub_transfer_stop:
+                continue
+            arrival = leg_snaps[index].get("delivery_datetime") \
+                or leg_snaps[index].get("pickup_datetime")
+            departure = leg_snaps[index + 1].get("corridor_departure_datetime")
+            if not arrival or not departure:
+                continue
+            vehicle = vehicles_by_departure.get(leg_snaps[index].get("departure_id"))
+            next_vehicle = vehicles_by_departure.get(
+                leg_snaps[index + 1].get("departure_id"))
+            same_vehicle = bool(
+                vehicle and next_vehicle and vehicle.id == next_vehicle.id)
+            mode = custody.custody_mode(arrival, departure, same_vehicle)
+            hold = custody.hold_hours(arrival, departure)
+            leg.write({
+                "custody_mode": mode,
+                "custody_hold_hours": round(hold, 1) if hold is not None else 0.0,
+            })
+            plan_lines.append(
+                "leg %s → leg %s: %s (%s, %.1fh at the hub)" % (
+                    leg.sequence, next_leg.sequence,
+                    dict(leg._fields["custody_mode"].selection)[mode],
+                    "same truck" if same_vehicle else "different truck",
+                    hold or 0.0,
+                )
+            )
+        if plan_lines:
+            _logger.info(
+                "BookingOrchestrationService: hub custody plan for booking "
+                "%s — %s | %s",
+                booking.booking_number, "; ".join(plan_lines),
+                custody.describe_policy(),
+            )
 
     def _create_single_manual_leg(self, booking, departure):
         """Manual/contract/negotiated pricing path: staff picked one exact

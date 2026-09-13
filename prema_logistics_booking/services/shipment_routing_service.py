@@ -13,6 +13,8 @@ from decimal import Decimal, ROUND_HALF_UP
 
 from pytz import timezone as tz
 
+from .hub_custody_service import HubCustodyService
+
 _logger = logging.getLogger(__name__)
 
 
@@ -811,19 +813,18 @@ class ShipmentRoutingService:
                             pickup_stop=None, delivery_stop=delivery_stop,
                         )
                         if leg2:
-                            # Max custody hold from REAL configured times —
-                            # the gap between the feeder's ARRIVAL at the
-                            # hub (custody handoff) and the onward corridor
-                            # departure. Mirrors _probe_legs exactly, so
-                            # calendar and Get Price always agree.
+                            # Custody hold from REAL configured times — the
+                            # gap between the feeder's ARRIVAL at the hub
+                            # (custody handoff) and the onward corridor
+                            # departure, measured in the operational
+                            # timezone by the ONE custody authority.
+                            # Mirrors _probe_legs exactly, so calendar and
+                            # Get Price always agree.
                             leg1_arrival_dt = (self._parse_iso_dt(leg1.delivery_datetime)
                                                or self._parse_iso_dt(leg1.pickup_datetime))
                             leg2_dep_dt = self._parse_iso_dt(leg2.corridor_departure_datetime)
-                            hold_ok = True
-                            if leg1_arrival_dt and leg2_dep_dt:
-                                hold_hours = (leg2_dep_dt - leg1_arrival_dt).total_seconds() / 3600.0
-                                hold_ok = hold_hours <= 24
-                            if hold_ok:
+                            if self._hub_custody().custody_hold_ok(
+                                    leg1_arrival_dt, leg2_dep_dt):
                                 # A route is available ONLY if the final leg
                                 # reaches the requested destination — never a
                                 # feeder-only pickup → Hub route. Mirrors
@@ -2026,20 +2027,22 @@ class ShipmentRoutingService:
                 if not leg2 or not leg2.departure_id:
                     return {}
 
-                # Max custody hold from REAL configured times — never a
+                # Custody hold from REAL configured times — never a
                 # hardcoded 8 AM pickup assumption. The hold is the actual
                 # gap between the feeder's ARRIVAL at the hub (the custody
                 # handoff) and the onward leg's corridor departure
                 # datetime. Measuring from the origin pickup overstates
                 # the hold: a midnight feeder departure would turn a real
                 # Wed→Thu connection (~20h at the hub) into a fake 30h.
+                # The cap itself is the ONE configurable policy (24h by
+                # default, 72h for a hold that bridges the weekend into
+                # Monday) — never a hardcoded 24.
                 leg1_arrival_dt = (self._parse_iso_dt(leg1.delivery_datetime)
                                    or self._parse_iso_dt(leg1.pickup_datetime))
                 leg2_dep_dt = self._parse_iso_dt(leg2.corridor_departure_datetime)
-                if leg1_arrival_dt and leg2_dep_dt:
-                    hold_hours = (leg2_dep_dt - leg1_arrival_dt).total_seconds() / 3600.0
-                    if hold_hours > 24:
-                        return {}  # reject — max 24h custody hold
+                if not self._hub_custody().custody_hold_ok(
+                        leg1_arrival_dt, leg2_dep_dt):
+                    return {}  # reject — hub custody hold exceeds policy
 
                 result.update({
                     "feasible": True,
@@ -2067,19 +2070,42 @@ class ShipmentRoutingService:
     def _get_default_hub(self):
         return self.env["logistics.hub"].search([("is_default", "=", True)], limit=1)
 
+    def _hub_custody(self):
+        """The ONE hub-custody policy authority (configurable caps, real
+        timezone-aware holds). Same instance semantics for the calendar
+        (_probe_legs) and Get Price (_build_leg)."""
+        return HubCustodyService(self.env)
+
     def _directionally_compatible(self, corridor, origin_region, dest_region):
         """A direction-ordered corridor may only serve a shipment whose
         origin appears BEFORE its destination in the corridor's ordered
         stop sequence. Same-region movements and corridors that serve both
-        directions (bidirectional / round-trip / local) keep the existing
-        permissive behavior."""
+        directions (bidirectional / round-trip / local, or any
+        same-day-return corridor — its return visits are a real reverse
+        lane) keep the permissive behavior.
+
+        A LOOP corridor is the exception: its ordered regions are ONE pass
+        that never doubles back (dest hub == origin hub), so it is always
+        held to strict stop order, in this check and in find_direct_service
+        alike."""
         if origin_region == dest_region:
             return True
-        if corridor.direction in ("bidirectional", "round_trip", "local", "local_loop"):
+        loop_hub_region = corridor._loop_hub_region()
+        if loop_hub_region and (origin_region == loop_hub_region
+                                or dest_region == loop_hub_region):
+            # The loop's hub is both its start (pickups board at 0 km) and
+            # its finish (deliveries land at the loop's end, after every
+            # stop). Delivering INTO the hub region is therefore served
+            # even though the hub stop sits first in the ordered list.
             return True
         ordered = corridor.stop_ids.filtered(
             lambda stop: stop.active and stop.region_id
         ).sorted("sequence")
+        if not corridor._is_loop_corridor():
+            if corridor.direction in ("bidirectional", "round_trip", "local", "local_loop"):
+                return True
+            if corridor.same_day_return:
+                return True
         origin_index = next(
             (index for index, stop in enumerate(ordered) if stop.region_id == origin_region),
             None,

@@ -107,6 +107,21 @@ class LogisticsBookingLegExecution(models.Model):
     ], string="Custody Event",
        help="Pallet identity is preserved across legs — a subcontracted "
             "transfer never creates another customer pallet.")
+    custody_mode = fields.Selection([
+        ("on_truck", "On Truck"),
+        ("unloaded_at_hub", "Unloaded at Hub"),
+    ], string="Custody Mode", default="unloaded_at_hub", tracking=True,
+       help="How this leg's freight waits before the NEXT leg departs. "
+            "On Truck: it stays loaded on the same vehicle (the cab never "
+            "leaves it behind), so it keeps occupying truck positions "
+            "across the days in between. Unloaded at Hub: it is put away "
+            "at the hub and the truck is free — the safe default. Set "
+            "automatically at confirmation from the two legs' real "
+            "vehicles and times; a dispatcher may override it.")
+    custody_hold_hours = fields.Float(
+        string="Custody Hold (hours)", digits=(8, 1), readonly=True,
+        help="Real elapsed hours between arrival at the hub and the next "
+             "leg's departure, measured in the operational timezone.")
     connection_exception = fields.Boolean(
         string="Connection Exception", tracking=True,
         help="Freight at the hub missed its onward departure — dispatcher "

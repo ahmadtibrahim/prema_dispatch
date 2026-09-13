@@ -349,7 +349,7 @@ class LogisticsCorridor(models.Model):
     @api.depends(
         "rate_per_km", "planned_pallets", "same_day_return",
         "stop_ids.distance_from_origin_km", "stop_ids.active",
-        "destination_hub_distance_km",
+        "destination_hub_distance_km", "origin_hub_id", "destination_hub_id",
     )
     def _compute_corridor_pricing(self):
         for rec in self:
@@ -357,7 +357,15 @@ class LogisticsCorridor(models.Model):
                 (rec.stop_ids.filtered("active").mapped("distance_from_origin_km") or [0.0])
                 + [rec.destination_hub_distance_km or 0.0]
             )
-            rec.full_distance_km = farthest * (2.0 if rec.same_day_return else 1.0)
+            if rec.same_day_return and not rec._is_loop_corridor():
+                # Out-and-back corridor (hub → regions → hub the same way):
+                # the truck drives every kilometre twice.
+                rec.full_distance_km = farthest * 2.0
+            else:
+                # One-way, or a LOOP corridor whose ordered regions already
+                # describe the way home (Haliburton / Kawarthas are the
+                # return path): the farthest point IS the whole loop.
+                rec.full_distance_km = farthest
             rec.pallet_rate_per_km = (
                 rec.rate_per_km / rec.planned_pallets if rec.planned_pallets > 0 else 0.0
             )
@@ -374,6 +382,33 @@ class LogisticsCorridor(models.Model):
                 raise ValidationError(_("Included weight per pallet must be greater than zero."))
             if not 1 <= (rec.departure_horizon_weeks or 0) <= 8:
                 raise ValidationError(_("Customer booking horizon must be between 1 and 8 weeks."))
+
+    # ── Loop corridors (destination hub == origin hub) ───────────────
+    # An out-and-back corridor (12, 15) comes home the way it went out,
+    # so every stop gets a MIRROR visit and the return lanes are
+    # generated from same_day_return. A LOOP (corridor 13: GTA →
+    # Northumberland → Southeastern → Ottawa → Haliburton → Kawarthas →
+    # GTA) comes home a DIFFERENT way — the return-path regions are
+    # ordered stops of their own, and the hub is both the start and the
+    # finish of one single pass. Mirroring it would invent lanes the
+    # truck never drives (Ottawa → Southeastern on the way back), so
+    # loops are keyed on the two hub references being the same hub.
+
+    def _is_loop_corridor(self):
+        """True when this corridor leaves from and returns to ONE hub."""
+        self.ensure_one()
+        return bool(
+            self.origin_hub_id and self.destination_hub_id
+            and self.origin_hub_id.id == self.destination_hub_id.id
+        )
+
+    def _loop_hub_region(self):
+        """Canonical region of the loop's single hub (empty when this is
+        not a loop corridor)."""
+        self.ensure_one()
+        if not self._is_loop_corridor():
+            return self.env["logistics.region"].browse()
+        return self.origin_hub_id.canonical_region_id
 
     def get_ftl_regional_rule(self, origin_region, destination_region):
         """Return the active FTL Regional Pricing rule for an exact
@@ -490,6 +525,13 @@ class LogisticsCorridor(models.Model):
         to an earlier stop on the way back without forcing a hub transfer.
         The returned distance is the distance the truck actually travels
         after pickup, not a straight-line estimate.
+
+        A LOOP corridor (both hub references point at the same hub) is
+        neither: its ordered regions are one single pass — the outbound
+        regions first, then the return-path regions — and the hub sits at
+        both the start (0 km) and the finish (destination_hub_distance_km).
+        No mirror visits are generated, so only lanes the truck really
+        drives are offered.
         """
         self.ensure_one()
 
@@ -534,6 +576,11 @@ class LogisticsCorridor(models.Model):
             + [self.destination_hub_distance_km or 0.0]
         )
         last_day = max(stops.mapped("day_offset") or [0])
+        # A loop's ordered regions already ARE the way home: no mirror
+        # visits (they would invent reverse lanes the truck never drives),
+        # and the hub return is the destination-hub visit below.
+        mirror_returns = self.same_day_return and bool(route_end) \
+            and not self._is_loop_corridor()
 
         def visits_for(region, pickup):
             visits = []
@@ -548,7 +595,7 @@ class LogisticsCorridor(models.Model):
                     "arrival_time": stop.planned_arrival_time,
                     "departure_time": stop.planned_departure_time,
                 })
-                if self.same_day_return and route_end:
+                if mirror_returns:
                     visits.append({
                         "position": 2.0 * route_end - stop.distance_from_origin_km,
                         "day": last_day,
@@ -570,7 +617,7 @@ class LogisticsCorridor(models.Model):
                     "arrival_time": self.start_time,
                     "departure_time": self.start_time,
                 })
-                if self.same_day_return and route_end:
+                if mirror_returns:
                     visits.append({
                         "position": 2.0 * route_end,
                         "day": last_day,
@@ -643,8 +690,11 @@ class LogisticsCorridor(models.Model):
         (corridor stops are keyed by official-LTL regions). Direction
         semantics match ShipmentRoutingService._directionally_compatible
         exactly (bidirectional / round-trip / local corridors stay
-        permissive), so the calendar and Get Price can never disagree on
-        what is direct.
+        permissive, and so does a same-day-return corridor, whose return
+        visits serve the reverse lane), so the calendar and Get Price can
+        never disagree on what is direct. A LOOP corridor is the one
+        exception: it is never permissive in either check, because its
+        ordered regions are a single pass with no reverse lane.
 
         Day availability and actual scheduled departures are NOT evaluated
         here — leg building enforces those. Same-region pairs are already
@@ -671,8 +721,25 @@ class LogisticsCorridor(models.Model):
                 continue
             if origin == dest:
                 return corridor
-            if corridor.direction not in (
+            loop_hub_region = corridor._loop_hub_region()
+            if loop_hub_region and (origin == loop_hub_region
+                                    or dest == loop_hub_region):
+                # A loop's hub is both its start and its finish: a pickup in
+                # the hub region boards at 0 km, a delivery into the hub
+                # region lands at the loop's end (the hub-end visit). Either
+                # way this is direct — the stop order would wrongly reject
+                # the return direction (Ottawa → GTA).
+                pass
+            elif loop_hub_region:
+                # Around a loop the truck never doubles back: only stop
+                # order is served (Ottawa → Southeastern is NOT a lane,
+                # which is exactly why loops do not get the reverse-lane
+                # permissiveness that out-and-back corridors 12/15 get).
+                if origin_index >= dest_index:
+                    continue
+            elif corridor.direction not in (
                     "bidirectional", "round_trip", "local", "local_loop") \
+                    and not corridor.same_day_return \
                     and origin_index >= dest_index:
                 continue
             if not ordered[origin_index].pickup_allowed \
@@ -799,7 +866,9 @@ class LogisticsCorridor(models.Model):
         always refreshed so routing date math stays consistent. For
         same-day-return corridors the suggested Hub Arrival is the operational
         return to the origin hub (2x outbound drive plus dwells), not the raw
-        outbound distance.
+        outbound distance. A LOOP corridor's ordered regions already walk
+        home, so its Hub Arrival is simply the arrival at the closing hub
+        target — one pass, never doubled.
         """
         self.ensure_one()
         start_min = int(round((self.start_time or 0.0) * 60.0))
@@ -846,7 +915,7 @@ class LogisticsCorridor(models.Model):
         if self.hub_arrival_time_source == "manual" or not self.same_day_return \
                 and not self.destination_hub_id:
             return
-        if self.same_day_return:
+        if self.same_day_return and not self._is_loop_corridor():
             # Operational return to the origin hub: outbound drive twice, plus
             # a dwell at every stop and at the hub itself.
             n_stops = len([t for t, _ in targets if t == "stop"])

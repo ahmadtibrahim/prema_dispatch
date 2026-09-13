@@ -174,6 +174,52 @@
                             </div>
                         </div>
                     </div>
+
+                    <h3 class="mt16">Hub Custody Policy</h3>
+                    <div class="text-muted mb-2">
+                        One policy for every hub wait — the calendar, Get Price and
+                        the departure resolver all measure the hold from the real
+                        arrival at the hub to the real onward departure, in the
+                        operational timezone.
+                    </div>
+                    <div class="row mt8 o_settings_container">
+                        <div class="col-12 col-lg-6 o_setting_box">
+                            <div class="o_setting_left_pane">
+                                <field name="logistics_hub_custody_max_hours"/>
+                            </div>
+                            <div class="o_setting_right_pane">
+                                <label for="logistics_hub_custody_max_hours"/>
+                                <div class="text-muted">
+                                    Ordinary maximum hold at a hub. 24 hours keeps
+                                    the historical rule.
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-12 col-lg-6 o_setting_box">
+                            <div class="o_setting_left_pane">
+                                <field name="logistics_hub_custody_weekend_max_hours"/>
+                            </div>
+                            <div class="o_setting_right_pane">
+                                <label for="logistics_hub_custody_weekend_max_hours"/>
+                                <div class="text-muted">
+                                    Applied only when the hold arrives Fri/Sat/Sun and
+                                    departs Monday — the Friday-to-Monday connection.
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-12 col-lg-6 o_setting_box">
+                            <div class="o_setting_left_pane">
+                                <field name="logistics_hub_custody_on_truck_max_hours"/>
+                            </div>
+                            <div class="o_setting_right_pane">
+                                <label for="logistics_hub_custody_on_truck_max_hours"/>
+                                <div class="text-muted">
+                                    Above this the freight is assumed unloaded at the
+                                    hub and the truck is freed.
+                                </div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </xpath>
         </field>
