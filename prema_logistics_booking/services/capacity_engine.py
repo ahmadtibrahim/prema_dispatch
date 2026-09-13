@@ -465,6 +465,19 @@ class CapacityEngine:
         pickup_idx, delivery_idx = self._leg_stop_indices(corridor_stops, leg)
         if pickup_idx is None or delivery_idx is None:
             return []
+        if delivery_idx <= pickup_idx and delivery_idx == 0 and corridor_stops:
+            # LOOP corridor (destination hub == origin hub): the hub region
+            # is the first ordered stop AND the place the loop finishes. A
+            # delivery into the hub region therefore lands at the END of
+            # the loop, not at index 0 — counting it as index 0 made every
+            # return-direction leg look like it never advances, silently
+            # dropping its capacity reservation from the departure peak.
+            corridor = corridor_stops[0].corridor_id
+            if corridor._is_loop_corridor():
+                hub_region = corridor._loop_hub_region()
+                if hub_region and self._canonical_region(
+                        corridor_stops[0].region_id) == hub_region:
+                    delivery_idx = len(corridor_stops)
         if delivery_idx <= pickup_idx:
             # A leg that does not advance along this corridor visits no
             # segment: the span is meaningless rather than zero-length.

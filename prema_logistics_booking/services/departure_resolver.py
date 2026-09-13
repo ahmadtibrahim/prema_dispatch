@@ -28,6 +28,7 @@ Rules enforced here (see PREMA_DISPATCH_MASTER.md / unification brief §5, §10)
 import datetime
 import logging
 
+from .hub_custody_service import HubCustodyService
 from .temperature_compat import to_canonical_temperature_mode, REEFER
 
 _logger = logging.getLogger(__name__)
@@ -167,22 +168,24 @@ class DepartureResolver:
                 if not dep2:
                     last_reason = reason2 or last_reason
                     continue
-                # Max custody hold at the hub (24h — the same rule the
-                # calendar's _probe_legs enforces): freight must ride the
-                # next onward departure within a day of arriving, or the
-                # connection is not offered. Without this cap the resolver
-                # would schedule a Thursday pickup for a Tuesday-only
-                # onward corridor (a 5-day hub hold) the calendar never
-                # shows. A later dep2 can only be later, so rejecting the
-                # first valid one rejects this entire connection.
+                # Hub custody hold — the SAME configurable policy the
+                # calendar's _probe_legs enforces (24h by default, 72h for
+                # a hold that bridges the weekend into Monday): freight
+                # must ride its onward departure within policy of arriving
+                # at the hub, or the connection is not offered. Without a
+                # cap the resolver would schedule a Thursday pickup for a
+                # Tuesday-only onward corridor (a 5-day hub hold) the
+                # calendar never shows. A later dep2 can only be later, so
+                # rejecting the first valid one rejects this connection.
                 arrival_dt = self._hub_arrival_datetime(
                     dep1, hub, origin_region=origin_region, dest_region=hub_region)
                 dep2_dt = (
                     datetime.datetime.combine(dep2.departure_date, datetime.time())
                     + datetime.timedelta(hours=dep2.departure_time or 0.0)
                 )
-                if (dep2_dt - arrival_dt).total_seconds() > 24 * 3600:
-                    last_reason = "connection_hold_exceeds_24h"
+                if not HubCustodyService(self.env).custody_hold_ok(
+                        arrival_dt, dep2_dt):
+                    last_reason = "connection_hold_exceeds_policy"
                     continue
                 candidates.append((
                     dep2.departure_date,

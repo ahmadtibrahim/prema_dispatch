@@ -105,6 +105,8 @@
                 <field name="executing_carrier_id" optional="show"/>
                 <field name="accepted_buy_rate" optional="show"/>
                 <field name="execution_status" optional="show"/>
+                <field name="custody_mode" optional="show"/>
+                <field name="custody_hold_hours" optional="hide"/>
                 <field name="pod_received" optional="hide"/>
                 <field name="carrier_invoice_variance" optional="hide"/>
                 <field name="purchase_order_id" optional="show"/>

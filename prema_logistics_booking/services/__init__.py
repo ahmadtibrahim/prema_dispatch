@@ -1,3 +1,4 @@
+from . import hub_custody_service
 from . import pricing_service
 from . import schedule_service
 from . import availability_bridge

@@ -352,6 +352,30 @@ class WeeklyCapacityService:
                 lambda j2: j2.booking_leg_id.id == job.booking_leg_id.id)
         return siblings
 
+    def _on_truck_continuation_date(self, job, check_date):
+        """The date this job's freight rides the SAME truck onward, when it
+        waits ON the truck — else False.
+
+        A leg whose custody_mode is 'on_truck' was confirmed as freight
+        that never left the vehicle (the Friday loop parking at the hub
+        over the weekend, continuing on Monday's corridor). Its onward
+        leg's departure date is the day the freight demonstrably continues
+        on this truck; only the GAP days before it need the leftover
+        carried, because on the onward day that leg's own stops account
+        for the freight through the normal running onboard."""
+        leg = job.booking_leg_id
+        if not leg or leg.custody_mode != "on_truck":
+            return False
+        later = self.env["logistics.booking.leg"].sudo().search([
+            ("booking_id", "=", leg.booking_id.id),
+            ("sequence", ">", leg.sequence),
+        ]).sorted("sequence")
+        next_leg = later[:1]
+        departure_date = next_leg.departure_id.departure_date if next_leg else False
+        if departure_date and departure_date > check_date:
+            return departure_date
+        return False
+
     def _carryover_pallets(self, truck, check_date, tz_name):
         """Pallets physically onboard at 00:00 of `check_date` for `truck`,
         from REAL stops of the previous days (never invented links).
@@ -366,7 +390,12 @@ class WeeklyCapacityService:
           • the booking-split continuation card(s) on this truck
             (logistics_booking_id / booking_leg_id match, same vehicle)
             still have deliveries on/after the day — the leftover minus
-            what those siblings already delivered on earlier days.
+            what those siblings already delivered on earlier days, or
+          • the booking leg's custody plan says the freight stays ON THIS
+            TRUCK until an onward leg of the same booking departs (the
+            Friday loop parking at the hub over the weekend, continuing on
+            Monday's corridor). Only the GAP days carry it: on the onward
+            departure day that leg's own stops account for the load.
         A leftover whose continuation runs on ANOTHER truck is NOT
         carried — the receiving truck must show a real loading/transfer
         stop; its absence surfaces as an underflow/exceed on that truck's
@@ -397,6 +426,13 @@ class WeeklyCapacityService:
             if not last_before:
                 continue
             leftover = running.get(last_before.id, {}).get("after", 0)
+            onward_date = self._on_truck_continuation_date(job, check_date)
+            if onward_date and last_before.stop_type == "cross_dock_drop":
+                # Freight that stays ON the truck is never physically
+                # unloaded: the hub cross-dock stop records the handoff
+                # paperwork, not an empty truck. Keep what was aboard
+                # BEFORE it, or the weekend gap would look empty.
+                leftover = running.get(last_before.id, {}).get("before", 0)
             if leftover <= 0:
                 continue
             later_own_stop = any(
@@ -404,6 +440,11 @@ class WeeklyCapacityService:
                 and (s.scheduled_time or job.scheduled_pickup) >= day_start
                 for s in stops)
             siblings = self._split_continuations(job, truck, jobs)
+            if onward_date and not later_own_stop and not siblings:
+                # Nothing is unloaded in between — the load simply stays on
+                # this truck until the onward leg departs.
+                carry += leftover
+                continue
             if not later_own_stop and not siblings:
                 notes.append(
                     "%s ends %s with %s on board and no same-truck "

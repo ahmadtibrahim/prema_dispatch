@@ -128,6 +128,35 @@ class ResConfigSettings(models.TransientModel):
              "configured hour.",
     )
 
+    # ── Hub custody policy (ONE policy for every hub wait) ────────────
+
+    logistics_hub_custody_max_hours = fields.Float(
+        string="Maximum Hub Custody Hold (hours)",
+        config_parameter="logistics.hub_custody_max_hours",
+        default=24.0,
+        help="How long freight may wait at a hub for its onward departure "
+             "on an ordinary day. 24 hours keeps the historical rule.",
+    )
+    logistics_hub_custody_weekend_max_hours = fields.Float(
+        string="Weekend Bridge Hold (hours)",
+        config_parameter="logistics.hub_custody_weekend_max_hours",
+        default=72.0,
+        help="The cap when the hold arrives Friday/Saturday/Sunday and "
+             "departs on MONDAY — the Friday return-to-hub freight riding "
+             "the same truck onward on Monday's corridor. A Thursday "
+             "arrival waiting for Monday is NOT the weekend bridge and "
+             "keeps the ordinary cap.",
+    )
+    logistics_hub_custody_on_truck_max_hours = fields.Float(
+        string="On-Truck Hold Threshold (hours)",
+        config_parameter="logistics.hub_custody_on_truck_max_hours",
+        default=24.0,
+        help="Above this, freight waiting at a hub is assumed to be "
+             "unloaded there and the truck is freed. At or below it (and "
+             "on the same vehicle) the freight stays ON the truck and "
+             "keeps occupying truck positions across the gap.",
+    )
+
     # ── Validation ──────────────────────────────────────────────────────
 
     @api.model
