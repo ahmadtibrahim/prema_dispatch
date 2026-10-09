@@ -117,6 +117,45 @@ class TestPflWarehouseHttp(HttpCase):
                         "The action must record the real receipt, not just "
                         "answer the phone.")
 
+    def test_a_warehouse_role_can_attach_a_receipt_photo(self):
+        """The photo the operator takes must actually be stored.
+
+        The custody log is append-only and no role holds write on it, so the
+        photograph is attached by the action itself. This drives that path as
+        a *warehouse user* rather than as the superuser the model tests run
+        as, because a real operator is where the write was being refused.
+        """
+        import base64
+        package = self.job.action_pfl_add_pallets(1)
+        photo = "data:image/jpeg;base64," + base64.b64encode(
+            b"\xff\xd8\xff\xdb\xff\xd9").decode()
+        self.authenticate("pfl_warehouse_tester", "pfl-warehouse-tester")
+        response = self.url_open(
+            "/pfl/api/action",
+            data=json.dumps({
+                "jsonrpc": "2.0", "method": "call",
+                "params": {
+                    "package_ids": [package.id],
+                    "action": "receive",
+                    "photo": photo,
+                    "photo_name": "receipt.jpg",
+                },
+            }),
+            headers={"Content-Type": "application/json"},
+        )
+        payload = response.json()
+        self.assertIn("result", payload, msg=response.text[:400])
+        self.assertTrue(
+            payload["result"]["photo_saved"],
+            "The receipt photo must be saved, not silently dropped.")
+        event = self.env["prema.pfl.custody.event"].search([
+            ("package_id", "=", package.id),
+            ("event_type", "=", "received")], limit=1)
+        self.assertTrue(
+            event.attachment_ids,
+            "The photo must be linked to the receipt event — an unlinked "
+            "attachment is a lost photograph.")
+
     def test_the_warehouse_page_requires_a_role(self):
         self.authenticate("pfl_plain_tester", "pfl-plain-tester")
         response = self.url_open("/pfl/warehouse", allow_redirects=False)

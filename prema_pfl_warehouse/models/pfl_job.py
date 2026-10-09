@@ -33,6 +33,27 @@ STATE_SELECTION = [
     ("cancelled", "Cancelled"),
 ]
 
+#: The roles that may run a warehouse operation. This mirrors the phone
+#: controller's gate on purpose: a model method reachable over RPC must refuse
+#: exactly what the HTTP route refuses, or the route's gate is decoration.
+#: `sudo` (a module running as root) is always allowed — it is not a person.
+OPERATOR_GROUPS = (
+    "prema_dispatch.group_dispatch_warehouse",
+    "prema_dispatch.group_dispatch_manager",
+    "prema_dispatch.group_dispatcher",
+    "base.group_system",
+)
+
+#: The operation types a warehouse job is allowed to drive. Anything else —
+#: the main `WH` receipts, a manufacturing type, a MoonVella shipping type —
+#: is outside this job's authority and is refused rather than silently used.
+AUTHORIZED_SEQUENCE_CODES = ("PFL-IN", "PFL-INT", "PFL-OUT")
+
+#: The prefix every authorized warehouse location barcode carries, plus the
+#: native customer location used as the source of a receipt and the
+#: destination of a release.
+AUTHORIZED_LOCATION_PREFIX = "PFL-WH"
+
 
 class PremaPflWarehouseJob(models.Model):
     _name = "prema.pfl.warehouse.job"
@@ -197,6 +218,98 @@ class PremaPflWarehouseJob(models.Model):
     def _pfl_customer_location(self):
         return self.env.ref("stock.stock_location_customers")
 
+    # ── authorisation ──────────────────────────────────────────────────
+    def _pfl_require_operator(self):
+        """The operator must hold a warehouse role.
+
+        Deciding this *before* the stock documents are built is the whole
+        point. `_pfl_transfer_one` runs under `sudo` to avoid granting the
+        role the Inventory application; that elevation is only defensible if
+        the right to perform the movement was already established here. A
+        method reachable over RPC must refuse what the HTTP route refuses.
+        """
+        if self.env.su:
+            return
+        user = self.env.user
+        if user._is_public() or not any(
+                user.has_group(group) for group in OPERATOR_GROUPS):
+            raise UserError(_(
+                "This warehouse operation requires a warehouse role. Sign in "
+                "with a warehouse, dispatcher or manager account."))
+
+    def _pfl_authorized_location_ids(self):
+        """The locations a warehouse job may move freight between.
+
+        The PFL zones and cross-dock positions, plus the native customer
+        location that is the source of a receipt and the destination of a
+        release. The main warehouse's own locations are deliberately absent:
+        customer freight does not belong in `WH/Stock`.
+        """
+        Location = self.env["stock.location"].with_context(active_test=False)
+        zones = Location.search(
+            [("barcode", "like", AUTHORIZED_LOCATION_PREFIX + "%")])
+        customer = self.env.ref(
+            "stock.stock_location_customers", raise_if_not_found=False)
+        return set((zones | customer).ids)
+
+    def _pfl_check_scope(self, packages, dest, sequence_code, src=None):
+        """Everything that must be true before a stock document is created.
+
+        Runs ahead of any `sudo`: the restricted environment is used only to
+        *execute* a movement the operator was already entitled to make, never
+        to widen what they may touch. Without this, one job could move or
+        release another job's pallet, because the ACL that governs the job
+        model is a model-wide grant — it says nothing about *which* job.
+        """
+        self.ensure_one()
+        self._pfl_require_operator()
+
+        if sequence_code not in AUTHORIZED_SEQUENCE_CODES:
+            raise UserError(_(
+                "Operation type %(code)s is not a warehouse operation this job "
+                "may drive.", code=sequence_code))
+        picking_type = self._pfl_picking_type(sequence_code)
+        if picking_type.company_id and picking_type.company_id != self.company_id:
+            raise UserError(_(
+                "Warehouse operation type %(code)s belongs to another company.",
+                code=sequence_code))
+
+        for package in packages:
+            if package.pfl_job_id != self:
+                raise UserError(_(
+                    "Pallet %(pallet)s belongs to warehouse job %(other)s, not "
+                    "%(job)s. A job can only move its own freight.",
+                    pallet=package.name,
+                    other=package.pfl_job_id.name or _("(none)"),
+                    job=self.name))
+            if package.company_id and package.company_id != self.company_id:
+                raise UserError(_(
+                    "Pallet %(pallet)s belongs to another company (%(company)s).",
+                    pallet=package.name, company=package.company_id.name))
+            if package.pfl_owner_id and package.pfl_owner_id != self.freight_owner_id:
+                raise UserError(_(
+                    "Pallet %(pallet)s is owned by %(owner)s, but job %(job)s "
+                    "is for freight owner %(job_owner)s.",
+                    pallet=package.name,
+                    owner=package.pfl_owner_id.name,
+                    job=self.name,
+                    job_owner=self.freight_owner_id.name or _("(none)")))
+
+        authorized = self._pfl_authorized_location_ids()
+        checked = [(dest, _("destination"))]
+        if src:
+            checked.append((src, _("source")))
+        for package in packages:
+            if package.pfl_location_id:
+                checked.append((package.pfl_location_id, _("current location")))
+        for location, role in checked:
+            if location.id not in authorized:
+                raise UserError(_(
+                    "The %(role)s %(location)s is outside the PF Logistics "
+                    "warehouse. Customer freight moves only between the "
+                    "warehouse zones and the customer.",
+                    role=role, location=location.display_name))
+
     # ── state machine ──────────────────────────────────────────────────
     def action_pfl_confirm(self):
         """Freeze the accepted rates. Nothing may be received before this.
@@ -297,12 +410,25 @@ class PremaPflWarehouseJob(models.Model):
         return True
 
     def _pfl_packages(self, packages=None):
+        """The job's own pallets — refusing anything that is not.
+
+        Silently dropping a pallet that belongs to another job would turn
+        "release these" into a no-op that looks like success: no error, and no
+        pallet released. The refusal names the pallet so the operator knows the
+        action did not happen.
+        """
         self.ensure_one()
         if packages is None:
             return self.package_ids
         if isinstance(packages, int):
             packages = self.package_ids.browse(packages)
-        return packages.filtered(lambda p: p.pfl_job_id == self)
+        foreign = packages.filtered(lambda p: p.pfl_job_id != self)
+        if foreign:
+            raise UserError(_(
+                "Pallet(s) %(pallets)s belong to another warehouse job, so "
+                "%(job)s cannot act on them.",
+                pallets=", ".join(foreign.mapped("name")), job=self.name))
+        return packages
 
     # ── stock integration ──────────────────────────────────────────────
     def _pfl_picking_type(self, sequence_code):
@@ -332,6 +458,7 @@ class PremaPflWarehouseJob(models.Model):
         self.ensure_one()
         if not packages:
             return self.env["stock.picking"]
+        self._pfl_check_scope(packages, dest, sequence_code, src=src)
         pickings = self.env["stock.picking"]
         if src is not None:
             groups = [(src, packages)]
@@ -459,7 +586,12 @@ class PremaPflWarehouseJob(models.Model):
             # general: "this is what it looked like when we took it in" and
             # "this is what it looked like when it left" are different claims.
             if attachment_ids:
-                event.attachment_ids = [(6, 0, list(attachment_ids))]
+                # No role may write a custody event — the log is append-only
+                # by construction — so the operator's own photograph rides the
+                # authority the movement was already checked for, exactly as
+                # the stock documents do. `write()` still refuses every field
+                # but `attachment_ids`.
+                event.sudo().attachment_ids = [(6, 0, list(attachment_ids))]
             if event_type in ("received", "staged", "released"):
                 self.env["prema.pfl.custody.event"]._pfl_recompute_package(package)
         self._pfl_sync_state()
@@ -506,6 +638,7 @@ class PremaPflWarehouseJob(models.Model):
 
     def action_pfl_hold(self, packages=None, reason=None):
         self.ensure_one()
+        self._pfl_require_operator()
         packages = self._pfl_packages(packages).filtered(
             lambda p: not p.pfl_on_hold)
         if not packages:
@@ -529,6 +662,7 @@ class PremaPflWarehouseJob(models.Model):
 
     def action_pfl_release_hold(self, packages=None, reason=None):
         self.ensure_one()
+        self._pfl_require_operator()
         packages = self._pfl_packages(packages).filtered("pfl_on_hold")
         if not packages:
             return False
@@ -604,6 +738,7 @@ class PremaPflWarehouseJob(models.Model):
     def action_pfl_record_damage(self, packages=None, notes=None, attachment_ids=None):
         """Record condition. Photos attach to the event, not to the job."""
         self.ensure_one()
+        self._pfl_require_operator()
         packages = self._pfl_packages(packages)
         now = fields.Datetime.now()
         for package in packages:
@@ -615,7 +750,12 @@ class PremaPflWarehouseJob(models.Model):
                 "notes": notes,
             })
             if attachment_ids:
-                event.attachment_ids = [(6, 0, list(attachment_ids))]
+                # No role may write a custody event — the log is append-only
+                # by construction — so the operator's own photograph rides the
+                # authority the movement was already checked for, exactly as
+                # the stock documents do. `write()` still refuses every field
+                # but `attachment_ids`.
+                event.sudo().attachment_ids = [(6, 0, list(attachment_ids))]
         return True
 
     def action_pfl_correct_moment(self, package, event_type, occurred_at,

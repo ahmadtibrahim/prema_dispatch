@@ -14,7 +14,7 @@
             <t t-foreach="docs" t-as="o">
                 <div class="page" style="page-break-after: always;">
                     <div style="text-align: center; padding-top: 4mm;">
-                        <img t-att-src="'/report/barcode/QR/%s?width=340&amp;height=340&amp;quiet=1' % o.pfl_qr_token"
+                        <img t-att-src="o._pfl_qr_data_uri()"
                              style="width: 78mm; height: 78mm;"
                              alt="Pallet QR"/>
                         <div style="font-size: 22pt; font-weight: 700; letter-spacing: 1pt; margin-top: 3mm;">

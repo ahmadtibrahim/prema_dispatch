@@ -158,6 +158,28 @@ class StockQuantPackage(models.Model):
                 names=", ".join(held.mapped("name"))))
 
     # ── scanning ───────────────────────────────────────────────────────
+    def _pfl_qr_data_uri(self):
+        """This pallet's QR code as an inline `data:` URI.
+
+        Rendered here rather than through `/report/barcode/...` on purpose.
+        That route draws with reportlab's `renderPM` backend, which this
+        environment does not ship — so it answers 500, wkhtmltopdf drops the
+        image, and the label prints *without a QR while still looking
+        finished*. A label nobody can scan is worse than no label. Generating
+        the PNG directly needs no server round-trip and no renderer, which is
+        also what makes the printed code verifiable offline.
+        """
+        self.ensure_one()
+        import base64
+        from io import BytesIO
+
+        import qrcode
+        image = qrcode.make(self.pfl_qr_token, box_size=10, border=2)
+        buffer = BytesIO()
+        image.save(buffer, format="PNG")
+        return "data:image/png;base64,%s" % base64.b64encode(
+            buffer.getvalue()).decode()
+
     def action_pfl_print_label(self):
         """Print the QR label. A normal PDF — no IoT box, no label service."""
         self.ensure_one()

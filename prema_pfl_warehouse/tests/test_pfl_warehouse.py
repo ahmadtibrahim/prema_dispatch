@@ -9,6 +9,8 @@ fixtures built inside the test would hide exactly that.
 Time is always passed in explicitly. A storage charge that depends on "now"
 cannot be tested, and a test that sleeps for thirty hours is not a test.
 """
+import base64
+import re
 from datetime import timedelta
 
 from odoo import fields
@@ -217,6 +219,54 @@ class TestPflWarehouse(TransactionCase):
             "The job must keep the two parties apart rather than defaulting "
             "the owner to whoever pays.")
 
+    # ── 6b. one job cannot touch another job's freight ─────────────────
+    def test_a_job_cannot_move_or_release_another_jobs_pallet(self):
+        """The ACL grants the dispatch roles every job; this is what stops one
+        job acting on another's pallet."""
+        t0 = fields.Datetime.now() - timedelta(hours=3)
+        job_a = self._job(1)
+        job_b = self._job(1, owner=self.customer)
+        job_a.action_pfl_receive(when=t0)
+        job_b.action_pfl_receive(when=t0)
+        with self.assertRaises(UserError):
+            job_a._pfl_transfer(
+                job_b.package_ids, dest=job_a._pfl_location("PFL-WH-DRY"),
+                sequence_code="PFL-INT", event_type="moved")
+        with self.assertRaises(UserError):
+            job_a.action_pfl_release(packages=job_b.package_ids)
+        job_b.package_ids.invalidate_recordset(["pfl_released_at"])
+        self.assertFalse(job_b.package_ids.pfl_released_at,
+                         "The refused release must not have happened anyway.")
+
+    def test_a_job_cannot_use_a_foreign_operation_type_or_location(self):
+        t0 = fields.Datetime.now() - timedelta(hours=3)
+        job = self._job(1)
+        job.action_pfl_receive(when=t0)
+        package = job.package_ids
+        with self.assertRaises(UserError):
+            job._pfl_transfer(
+                package, dest=job._pfl_location("PFL-WH-DRY"),
+                sequence_code="WH/IN", event_type="moved")
+        with self.assertRaises(UserError):
+            job._pfl_transfer(
+                package, dest=self.env.ref("stock.stock_location_stock"),
+                sequence_code="PFL-INT", event_type="moved")
+
+    def test_a_photo_attaches_to_a_receipt_without_event_write_rights(self):
+        """The event ACL grants no write to any role; the action must attach
+        the operator's photo without depending on one."""
+        t0 = fields.Datetime.now() - timedelta(hours=2)
+        job = self._job(1)
+        package = job.package_ids
+        attachment = self.env["ir.attachment"].create({
+            "name": "receipt.jpg", "datas": "aGVsbG8=",
+            "res_model": "stock.quant.package", "res_id": package.id})
+        job.action_pfl_receive(when=t0, attachment_ids=[attachment.id])
+        event = self.CustodyEvent.search([
+            ("package_id", "=", package.id),
+            ("event_type", "=", "received")], limit=1)
+        self.assertEqual(event.attachment_ids, attachment)
+
     # ── 7. repeated actions ────────────────────────────────────────────
     def test_receiving_twice_creates_one_movement_and_one_charge(self):
         t0 = fields.Datetime.now() - timedelta(hours=5)
@@ -363,12 +413,32 @@ class TestPflWarehouse(TransactionCase):
                          "The photograph belongs to the moment it documents.")
 
     def test_label_report_carries_the_token_and_no_customer_detail(self):
-        job = self._job(1)
-        package = job.package_ids
-        html = self.env["ir.actions.report"]._render_qweb_html(
+        job = self._job(2)
+        first, second = job.package_ids[0], job.package_ids[1]
+        report = self.env["ir.actions.report"]
+        html = report._render_qweb_html(
             "prema_pfl_warehouse.report_pfl_pallet_label_document",
-            package.ids)[0].decode()
-        self.assertIn(package.pfl_qr_token, html)
+            first.ids)[0].decode()
+        # The QR is embedded inline. Rendering it through `/report/barcode`
+        # would depend on a renderPM backend this environment does not ship,
+        # and a label whose image 500s still prints — looking finished and
+        # carrying no scannable code.
+        match = re.search(r"data:image/png;base64,([A-Za-z0-9+/=]+)", html)
+        self.assertTrue(
+            match, "The label must embed the QR inline, not reference it.")
+        self.assertTrue(
+            base64.b64decode(match.group(1)).startswith(b"\x89PNG\r\n\x1a\n"),
+            "The embedded QR must be a real PNG.")
+        other = report._render_qweb_html(
+            "prema_pfl_warehouse.report_pfl_pallet_label_document",
+            second.ids)[0].decode()
+        self.assertNotEqual(
+            re.search(r"base64,([A-Za-z0-9+/=]+)", other).group(1),
+            match.group(1),
+            "Each pallet's label must encode that pallet's own token.")
+        # The token lives inside the code, and the sheet says nothing about
+        # who the freight belongs to.
+        self.assertNotIn(first.pfl_qr_token, html)
         self.assertNotIn(self.customer.name, html)
         self.assertNotIn(self.owner.name, html)
 

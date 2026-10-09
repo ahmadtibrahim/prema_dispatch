@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 {
     "name": "PF Logistics Warehouse",
-    "version": "18.0.1.0.0",
+    "version": "18.0.1.1.0",
     "category": "Inventory/Inventory",
     "summary": "Dry cross-dock and short-term storage job: receive, store, hold, "
                "release, charge and draft-invoice customer-owned freight.",
