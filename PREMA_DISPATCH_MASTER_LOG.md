@@ -2901,3 +2901,51 @@ A live Step 2: read-only "✓ ASSIGNED DESTINATION | Costco Wholesale | Niagara 
   - Portal: SWON London delivery → manual_quote=False, Mondays only (08-31, 09-07, 09-14); Niagara St. Catharines → manual_quote=False, Thursdays only — PASS. (Observation: SWON pickup→GTA delivery also returns Mondays — c15's SWON stop is pickup_allowed=True, i.e. eastbound return loads are schedulable per the existing engine contract; pre-existing behavior, aligns with Roadmap Phase 3 "eastbound return".)
 - Observed (pre-existing, NOT from this phase): corridor id 14 is ARCHIVED (active=False, no weekdays, 0 departures; write_date 2026-08-26 05:00 matches the daily cron/upgrade window). No code path archives corridors — migration wrote nothing, generation script skips no-weekday corridors. Consistent with the §36 "one-click archiving follow-up" having been done; immaterial to ordering (inactive corridors don't render in the active list).
 - Deploy: crons paused (snapshot 68) → `-u prema_logistics_booking` 18.0.13.35.1→18.0.13.36.0 (EXIT 0) → crons restored 68/68 → `systemctl restart odoo18.service` (Python changed). Log tracebacks during upgrade = pre-existing noise (geoip/fetchmail/vehicle-layout), none from the migration.
+
+---
+
+## 38. PF Logistics Warehouse — the dry cross-dock / short-term storage job (new module `prema_pfl_warehouse` 18.0.1.0.0) — 2026-10-09 — DEPLOYED TO PROD
+
+**Work order.** Build the first PF Logistics warehouse batch: an accepted sales order → a warehouse job → receive individual pallets → move/store/hold → prepare release → actual release → calculate actual charges → a detailed **draft** invoice. Reuse the PFL products, locations and operation types; keep PREMAFIRM INC. as the legal company; preserve MoonVella and every transportation workflow. Carrier onboarding, TMS expansion and food/imports are later batches.
+
+**New module, not a change to `prema_dispatch`.** `prema_pfl_warehouse` sits inside this repository (so it is versioned by the release process) and is exposed to Odoo by a symlink, exactly like `prema_dispatch_inbox`:
+
+    /opt/odoo/custom-addons/prema_pfl_warehouse -> /opt/odoo/releases/prema_dispatch/prema_pfl_warehouse
+
+Odoo 18's `get_modules()` uses `os.listdir` and is **not recursive**, so a module nested in the release worktree is invisible without that link. `preflight_prod_deploy.sh` already asserts "nested-module symlink present".
+
+**Adoption, not duplication.** `hooks.py` adopts what a human configured by hand on 2026-10-05 and gives it stable XML IDs. On prod the hook logged:
+
+    locations — 10 adopted, 0 created
+    operation types — 3 adopted, 0 created
+    service products — 8 adopted, 0 created
+    created the `Pallet` package type.
+
+Natural keys: location **barcode**, picking-type **sequence_code**, product **default_code**. Verified after the install on Prod-db: still 8 PFL products, 10 PFL locations, 3 PFL operation types, and the adopted XML IDs resolve to the original ids (locations 26–35, products 176–183). Nothing was deleted, archived or renamed; the receiving/shipping steps of `WH` were not touched.
+
+**What the module adds.**
+* `prema.pfl.warehouse.job` — one job per accepted sale order. A transportation booking is **optional** and never created by a warehouse job. Billing customer and freight owner are separate required fields; the owner is never defaulted from the payer.
+* Pallet identity on the native `stock.quant.package`: an opaque UUID QR token (unique-constrained), the freight owner, and per-pallet received/staged/released times with the operator. Planned dates are deliberately absent — a pallet has the time it actually arrived.
+* `prema.pfl.custody.event` — append-only. `write()` refuses everything except adding a photograph, `unlink()` always refuses, a correction is a new event carrying `corrects_id` and a `reason`, and the package's cached times are recomputed from the newest entry. A correction therefore reads "was X, corrected to Y because Z".
+* `prema.pfl.rate` — rates frozen at `action_pfl_confirm()`, sourced from the accepted sale-order line when there is one, else the catalogue. A later catalogue price change cannot reach a confirmed job.
+* `prema.pfl.charge` — deterministic keys (`ltl:<job>:<token>`, `ftl:<job>`, `storage:<job>:<token>:<period>`, `labour:<job>:<id>`, `extra:<job>:<id>`). LTL per handled pallet; **FTL one fee, never with LTL** for the same scope; storage per pallet per **started** 24 h after a free first day, measured from that pallet's own receipt; labour at `persons × max(1 h, minutes/60)`; wrapping/supply/labelling as deltas against what has already been charged; extras only once approved. A zero rate that was never agreed free is **refused**, which is what stops `PFL-LABEL` (a $0 placeholder) from being given away.
+* `prema.pfl.barcode.alias` — a customer's own label, unique per (customer, barcode), so a repeated code is refused rather than merging two pallets. `_pfl_resolve_scan()` resolves QR token → package name → customer alias, and returns `ambiguous` rather than guessing.
+* `prema.pfl.card` — off-pallet card with an **exclusive** position for pallets that may not carry a label.
+* Report `report_pfl_pallet_label_document` on a 4×6 paperformat: QR of the token plus the internal reference. It prints **no** customer name, source or price. Plain PDF — no IoT box, and scanning is an ordinary input field so a keyboard-wedge scanner works.
+* `/pfl/warehouse` + `/pfl/api/*` — the phone flow (receive / move / prepare release / release / hold / damage / photo). **Every route requires a signed-in user in a warehouse group.** A token is a locator, never a credential; the public `prema_dispatch` pallet page returns a whitelisted, non-sensitive summary and nothing else.
+
+**Safety decisions worth recording.**
+* Movement of pallets that share a picking is grouped **by their actual location**, one picking per group. Releasing two pallets sitting in different zones through one picking would tell Odoo the freight is somewhere it is not, and it refuses — the refusal is right.
+* Stock documents are created and validated under `sudo()` inside `_pfl_transfer_one`. The **permission was already decided** (warehouse role + the job's own ACLs); `sudo` avoids granting the warehouse role deep Inventory access. `action_confirm` reaches into orderpoints and the scheduler, so satisfying it by ACL would have handed the role the whole stock application.
+* `freight_product()` returns the **`product.product`**, not the template. Handing a template to `stock.move` does not raise — it stores a null product, the picking validates, and no quant is ever created. A guard now refuses a non-storable tracking product rather than failing silently.
+* Invoicing never posts, never pays, never emails. Only a **draft carrying `prema_pfl_job_id`** is matched (never by booking), a posted invoice is never written, and a later release gets its own draft while already-invoiced charges stay closed. A free service is closed without a zero line.
+
+**Tests — 46, 0 failures** (`--test-tags /prema_pfl_warehouse`): the six-hour, thirty-hour, partial-release, FTL-once, hold, ownership, repeat-action, rate-freeze, scan/label/photo, delivered-quantity and draft-invoice scenarios, the append-only log and its corrections, alias scoping and ambiguity, exclusive positions, the labelling refusal, the labour minimum, and the HTTP authorisation gate (anonymous and role-less users refused; warehouse role accepted).
+
+**Regression — zero.** `prema_dispatch` 42 tests: 0 failures. `prema_logistics_booking` 350 tests: **identical 15 failures before and after** (measured by running the same suite on a clone without this module — pre-existing clone-data and sandbox-network failures, not regressions).
+
+**End-to-end validation** on a clone of Prod-db: **35 checks, 0 problems** — including $48 for four pallets held six hours, $56 for thirty hours, $58 for the partial release, one $225 FTL fee, the hold refusal, the owner on the quants, no duplicate picking or charge on a repeat, the accepted rate surviving a catalogue change, the label PDF (9,715 bytes) and a $56 + 13% HST = $63.28 draft with delivered quantity 4 on the order.
+
+**Deploy (2026-10-09).** Rollback point **`a54460b`** (previous PIN saved at `/root/PIN.txt.rollback-a54460b`). 73 active crons snapshotted to `/root/cron_active_snapshot_20261009_1633.txt`, paused, and restored **identical (73)** afterwards. The release worktree was fast-forwarded `a54460b → 271aefa`, `PIN.txt` updated, `preflight_prod_deploy.sh --release auto --db Prod-db` **PASS**, `-i prema_pfl_warehouse` on Prod-db **EXIT=0** with no ERROR lines, `systemctl restart odoo18`, `smoke_prod.sh` **PASS** (0 bad queries, 0 UndefinedColumn/Table, 0 HTTP tracebacks). Prod verification after: module `installed` at 18.0.1.0.0, no duplicated PFL configuration.
+
+**Rollback** = fast-forward the release worktree back to `a54460b`, restore `PIN.txt`, restart, and uninstall the module (it owns all its own tables and adds only nullable columns to `stock_quant_package`, `sale_order` and `account_move`; nothing of MoonVella's or transportation's is altered).

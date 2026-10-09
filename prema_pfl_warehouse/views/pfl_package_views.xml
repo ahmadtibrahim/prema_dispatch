@@ -1,0 +1,113 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<odoo>
+    <!-- The pallet *is* a stock.quant.package. This only adds the warehouse
+         facts to the form that already exists; nothing about quantity, location
+         or content is redefined. -->
+    <record id="view_quant_package_form_pfl" model="ir.ui.view">
+        <field name="name">stock.quant.package.form.pfl</field>
+        <field name="model">stock.quant.package</field>
+        <field name="inherit_id" ref="stock.view_quant_package_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//sheet" position="inside">
+                <group string="PF Logistics Custody" invisible="not pfl_job_id">
+                    <field name="pfl_job_id"/>
+                    <field name="pfl_owner_id"/>
+                    <field name="pfl_state" widget="badge"/>
+                    <field name="pfl_qr_token"/>
+                    <field name="pfl_label_mode"/>
+                    <field name="pfl_card_id"/>
+                    <field name="pfl_custody_hours"/>
+                </group>
+                <group string="Custody Moments (recorded, never planned)"
+                       invisible="not pfl_job_id">
+                    <field name="pfl_received_at"/>
+                    <field name="pfl_received_by"/>
+                    <field name="pfl_staged_at"/>
+                    <field name="pfl_staged_by"/>
+                    <field name="pfl_released_at"/>
+                    <field name="pfl_released_by"/>
+                </group>
+                <group string="Hold" invisible="not pfl_on_hold">
+                    <field name="pfl_on_hold"/>
+                    <field name="pfl_hold_reason"/>
+                    <field name="pfl_hold_by"/>
+                    <field name="pfl_hold_at"/>
+                </group>
+                <notebook invisible="not pfl_job_id">
+                    <page string="Custody Log" name="pfl_events">
+                        <field name="pfl_event_ids" readonly="1">
+                            <list decoration-muted="is_corrected">
+                                <field name="occurred_at"/>
+                                <field name="event_type"/>
+                                <field name="user_id"/>
+                                <field name="from_location_id" optional="hide"/>
+                                <field name="to_location_id" optional="hide"/>
+                                <field name="reason" optional="show"/>
+                                <field name="notes"/>
+                            </list>
+                        </field>
+                    </page>
+                    <page string="Customer Barcodes" name="pfl_aliases">
+                        <field name="pfl_alias_ids">
+                            <list editable="bottom">
+                                <field name="barcode"/>
+                                <field name="customer_id"/>
+                                <field name="active"/>
+                                <field name="note"/>
+                            </list>
+                        </field>
+                    </page>
+                </notebook>
+            </xpath>
+        </field>
+    </record>
+
+    <record id="view_prema_pfl_package_tree" model="ir.ui.view">
+        <field name="name">prema.pfl.package.tree</field>
+        <field name="model">stock.quant.package</field>
+        <field name="arch" type="xml">
+            <list decoration-danger="pfl_on_hold"
+                  decoration-muted="pfl_state == 'released'"
+                  create="false" delete="false">
+                <field name="name"/>
+                <field name="pfl_job_id"/>
+                <field name="pfl_owner_id"/>
+                <field name="pfl_state" widget="badge"/>
+                <field name="pfl_on_hold"/>
+                <field name="pfl_received_at"/>
+                <field name="pfl_released_at"/>
+                <field name="pfl_custody_hours"/>
+                <field name="pfl_location_id"/>
+                <field name="pfl_label_mode" optional="hide"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="view_prema_pfl_package_search" model="ir.ui.view">
+        <field name="name">prema.pfl.package.search</field>
+        <field name="model">stock.quant.package</field>
+        <field name="arch" type="xml">
+            <search>
+                <field name="name"/>
+                <field name="pfl_qr_token"/>
+                <field name="pfl_job_id"/>
+                <field name="pfl_owner_id"/>
+                <filter name="filter_pfl_active" string="In Custody"
+                        domain="[('pfl_job_id', '!=', False), ('pfl_state', '!=', 'released')]"/>
+                <filter name="filter_pfl_hold" string="On Hold"
+                        domain="[('pfl_on_hold', '=', True)]"/>
+                <separator/>
+                <filter name="filter_staged" string="Staged"
+                        domain="[('pfl_state', '=', 'staged')]"/>
+            </search>
+        </field>
+    </record>
+
+    <record id="action_prema_pfl_package" model="ir.actions.act_window">
+        <field name="name">Pallets in Custody</field>
+        <field name="res_model">stock.quant.package</field>
+        <field name="view_mode">list,form</field>
+        <field name="domain">[('pfl_job_id', '!=', False)]</field>
+        <field name="context">{'search_default_filter_pfl_active': 1}</field>
+    </record>
+</odoo>

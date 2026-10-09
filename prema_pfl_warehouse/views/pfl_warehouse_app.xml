@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<odoo>
+    <!-- A deliberately plain page: one scan box, one pallet card, the buttons
+         that apply. It renders on a phone browser and is driven by an ordinary
+         scanner or by typing, so the process can run before any hardware
+         decision is made. The behaviour lives in
+         static/src/js/pfl_warehouse.js so it can be read, cached and tested as
+         JavaScript rather than as markup. -->
+    <template id="pfl_warehouse_app_page" name="PF Logistics Warehouse">
+        <t t-call="web.layout">
+            <t t-set="title">PF Logistics Warehouse</t>
+            <div class="container" style="max-width:640px;padding-bottom:4rem;">
+                <h4 class="mt-3 mb-1">PF Logistics Warehouse</h4>
+                <div class="text-muted mb-3" style="font-size:0.85rem;">
+                    Signed in as <t t-esc="user_name"/>
+                </div>
+
+                <div class="input-group mb-3">
+                    <input id="pfl_scan" type="text" class="form-control form-control-lg"
+                           placeholder="Scan or type a pallet code, then Enter"
+                           autocomplete="off" autofocus="autofocus"/>
+                    <button class="btn btn-primary" id="pfl_resolve" type="button">Find</button>
+                </div>
+
+                <div id="pfl_message" class="alert d-none" role="alert"></div>
+
+                <div id="pfl_card" class="card mb-3 d-none">
+                    <div class="card-header d-flex justify-content-between">
+                        <strong id="pfl_pallet_name"></strong>
+                        <span id="pfl_pallet_state" class="badge bg-secondary"></span>
+                    </div>
+                    <div class="card-body">
+                        <table class="table table-sm mb-2">
+                            <tbody>
+                                <tr><th style="width:40%">Job</th><td id="pfl_job"></td></tr>
+                                <tr><th>Customer</th><td id="pfl_customer"></td></tr>
+                                <tr><th>Freight owner</th><td id="pfl_owner"></td></tr>
+                                <tr><th>Location</th><td id="pfl_location"></td></tr>
+                                <tr><th>Received</th><td id="pfl_received"></td></tr>
+                                <tr><th>Released</th><td id="pfl_released"></td></tr>
+                                <tr><th>In custody</th><td id="pfl_hours"></td></tr>
+                                <tr><th>Identification</th><td id="pfl_label_mode"></td></tr>
+                            </tbody>
+                        </table>
+                        <div id="pfl_hold_box" class="alert alert-warning d-none py-2">
+                            <strong>On hold</strong> — <span id="pfl_hold_reason"></span>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="pfl_actions" class="d-none">
+                    <div class="mb-2">
+                        <label class="form-label small mb-1">Destination (move only)</label>
+                        <select id="pfl_dest" class="form-select">
+                            <option value="PFL-WH-CD">Cross Dock</option>
+                            <option value="PFL-WH-DRY">Dry Storage</option>
+                            <option value="PFL-WH-HOLD">Hold area</option>
+                            <option value="PFL-WH-OUT">Outbound Staging</option>
+                            <option value="PFL-WH-RECV">Receiving</option>
+                        </select>
+                    </div>
+                    <div class="mb-2">
+                        <label class="form-label small mb-1">Note / reason</label>
+                        <input id="pfl_notes" type="text" class="form-control"
+                               placeholder="Optional, or required for a hold"/>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label small mb-1">Photo (camera or file)</label>
+                        <input id="pfl_photo" type="file" accept="image/*"
+                               capture="environment" class="form-control"/>
+                        <div id="pfl_photo_state" class="form-text"></div>
+                    </div>
+                    <div class="row g-2">
+                        <div class="col-6"><button type="button" class="btn btn-success w-100" data-act="receive">Receive</button></div>
+                        <div class="col-6"><button type="button" class="btn btn-outline-primary w-100" data-act="move">Move</button></div>
+                        <div class="col-6"><button type="button" class="btn btn-outline-secondary w-100" data-act="prepare_release">Prepare Release</button></div>
+                        <div class="col-6"><button type="button" class="btn btn-primary w-100" data-act="release">Release</button></div>
+                        <div class="col-6"><button type="button" class="btn btn-warning w-100" data-act="hold">Put on Hold</button></div>
+                        <div class="col-6"><button type="button" class="btn btn-outline-warning w-100" data-act="release_hold">Release Hold</button></div>
+                        <div class="col-12"><button type="button" class="btn btn-outline-danger w-100" data-act="damage">Record Damage / Condition</button></div>
+                        <div class="col-12"><button type="button" class="btn btn-outline-dark w-100" id="pfl_print">Print Label</button></div>
+                    </div>
+                </div>
+
+                <div class="mt-4">
+                    <h6 class="text-muted">Jobs in progress</h6>
+                    <ul class="list-group">
+                        <li t-foreach="jobs" t-as="job" class="list-group-item d-flex justify-content-between">
+                            <span><t t-esc="job.name"/> — <t t-esc="job.partner_id.display_name"/></span>
+                            <span class="badge bg-secondary"><t t-esc="job.state"/></span>
+                        </li>
+                    </ul>
+                </div>
+            </div>
+            <script t-att-src="'/prema_pfl_warehouse/static/src/js/pfl_warehouse.js'"></script>
+        </t>
+    </template>
+</odoo>

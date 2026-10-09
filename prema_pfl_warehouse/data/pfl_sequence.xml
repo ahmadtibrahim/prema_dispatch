@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<odoo>
+    <data noupdate="1">
+        <record id="seq_prema_pfl_warehouse_job" model="ir.sequence">
+            <field name="name">PF Logistics Warehouse Job</field>
+            <field name="code">prema.pfl.warehouse.job</field>
+            <field name="prefix">PFL-WH/</field>
+            <field name="padding">5</field>
+            <field name="company_id" eval="False"/>
+        </record>
+
+        <!-- Cards number separately from jobs: a card identifies a position,
+             and the two series are read by different people. -->
+        <record id="seq_prema_pfl_card" model="ir.sequence">
+            <field name="name">PF Logistics Pallet Card</field>
+            <field name="code">prema.pfl.card</field>
+            <field name="prefix">CARD/</field>
+            <field name="padding">5</field>
+            <field name="company_id" eval="False"/>
+        </record>
+    </data>
+</odoo>

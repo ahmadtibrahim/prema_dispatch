@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<odoo>
+    <record id="view_prema_pfl_alias_tree" model="ir.ui.view">
+        <field name="name">prema.pfl.barcode.alias.tree</field>
+        <field name="model">prema.pfl.barcode.alias</field>
+        <field name="arch" type="xml">
+            <list decoration-muted="not active">
+                <field name="barcode"/>
+                <field name="customer_id"/>
+                <field name="package_id"/>
+                <field name="job_id"/>
+                <field name="active"/>
+                <field name="note"/>
+                <button name="action_retire" type="object" string="Retire"
+                        invisible="not active"
+                        confirm="Retire this barcode? Use this when the customer has reused their own label on a different pallet."/>
+            </list>
+        </field>
+    </record>
+
+    <record id="view_prema_pfl_alias_search" model="ir.ui.view">
+        <field name="name">prema.pfl.barcode.alias.search</field>
+        <field name="model">prema.pfl.barcode.alias</field>
+        <field name="arch" type="xml">
+            <search>
+                <field name="barcode"/>
+                <field name="customer_id"/>
+                <field name="package_id"/>
+                <filter name="filter_active" string="Current"
+                        domain="[('active', '=', True)]"/>
+                <filter name="filter_retired" string="Retired"
+                        domain="[('active', '=', False)]"/>
+                <group expand="0" string="Group By">
+                    <filter name="group_customer" string="Customer"
+                            context="{'group_by': 'customer_id'}"/>
+                </group>
+            </search>
+        </field>
+    </record>
+
+    <record id="action_prema_pfl_alias" model="ir.actions.act_window">
+        <field name="name">Customer Pallet Barcodes</field>
+        <field name="res_model">prema.pfl.barcode.alias</field>
+        <field name="view_mode">list,form</field>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">No customer barcodes yet</p>
+            <p>A customer's own pallet label is recorded here as an alias so it
+               can be scanned. It never becomes the pallet's identity — two
+               pallets are never merged because they share a code.</p>
+        </field>
+    </record>
+</odoo>
