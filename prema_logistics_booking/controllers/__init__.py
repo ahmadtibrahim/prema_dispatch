@@ -5,3 +5,4 @@ from . import network_map
 from . import schedule_board
 from . import saved_locations_portal
 from . import service_booking_portal
+from . import private_contacts_portal

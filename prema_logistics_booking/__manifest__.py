@@ -90,6 +90,8 @@ root for architecture notes, decisions, and phase status.
         "views/portal_booking_templates.xml",
         # Phase 1 Service Bookings — warehouse service request/listing.
         "views/portal_service_booking_templates.xml",
+        # Private contacts — per-portal-user address book.
+        "views/portal_private_contacts_templates.xml",
         "views/portal_cleanup_v6.xml",
         "views/request_quote_templates.xml",
         "reports/logistics_quotation_report.xml",
