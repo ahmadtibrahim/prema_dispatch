@@ -2999,3 +2999,31 @@ Natural keys: location **barcode**, picking-type **sequence_code**, product **de
 **Rollback** = fast-forward the release worktree back to `0a8d709`, restore `PIN.txt`, restart, re-install the module. `post_init_hook` re-adopts every record by natural key (barcode / default_code / sequence_code), so a re-install restores the previous state.
 
 **Remaining active components: none** — no dormant installed code, no hidden menus, no permission restriction, no relocation.
+
+## 41. PFL receipts default "Assign Owner" from "Receive From" — Studio automation (no module) — 2026-10-10 — LIVE ON PROD
+
+**Work order.** On native Inventory receipts, and only for the **PFL Customer Freight Receipts** operation type, default the native **Assign Owner** field to the selected **Receive From** contact. Keep Owner editable, never overwrite a manually chosen owner, and leave ordinary purchase receipts, deliveries and internal transfers alone. Configure it in **Odoo Studio**; do not create a module and do not modify Prema Dispatch.
+
+**What was built.** One `base.automation` rule (id **68**) + its child `ir.actions.server` (id **1653**, "Execute Code", `usage = base_automation`):
+
+* model `stock.picking`, trigger **On save** (`on_create_or_write`)
+* Apply on: `[('picking_type_id.sequence_code','=','PFL-IN'), ('owner_id','=',False), ('partner_id','!=',False)]`
+* action code: `if record.picking_type_id.sequence_code == 'PFL-IN' and not record.owner_id and record.partner_id:` → `record.write({'owner_id': record.partner_id.id})`
+
+Studio automations *are* `base.automation` records — Studio is only the UI over them — so the rule appears in **Studio ▸ Automations** and stays editable there. No module, no `prema_dispatch` change, nothing pushed. Uses only the native `stock.picking.owner_id`, which `_action_done` already propagates to `move.restrict_partner_id` and `move.line.owner_id`, so the owner reaches the quants with no extra code.
+
+**Why the guard is in the code as well as the domain.** The "Apply on" domain narrows the rule to PFL-IN receipts with an empty Owner; the code repeats the test so the behaviour stays correct even if someone clears the domain in Studio later.
+
+**Two things that would have broken a naive attempt.**
+* Server-action code is **opcode-checked** (`safe_eval._SAFE_OPCODES`) and `STORE_ATTR` is forbidden — `record.owner_id = x` raises `ValidationError: forbidden opcode(s) ... STORE_ATTR`. The idiom is `record.write({...})`.
+* `filter_domain` is a stored computed field that **resets to False whenever the trigger changes**, so it must be written *after* the trigger, in a separate step.
+
+**No restart was needed, but not for the reason first assumed.** `base_automation` patches `create`/`write` only on models that **already have a rule at registry load**, and Prod-db had **no** automation on `stock.picking` — so a new rule would have sat inert until a restart. Creating the rule called `base.automation._update_registry()`, which set `registry_invalidated`; the install script then called `registry.signal_changes()` (the same thing the Studio UI triggers at the end of its request), bumping `base_registry_signaling`. All four live HTTP workers logged `Reloading the model registry after database signaling.` and re-patched. Verified in the log — **no service restart**.
+
+**Verification — 9 checks, all pass, on both `pfl_wh_uat` and Prod-db** (`pfl_owner_test.py`, every run inside one transaction that is **rolled back**): PFL-IN receipt + Receive From → Owner defaults to it; a manual Owner given at create is preserved; a manual Owner survives later writes; ordinary Receipts (IN), Delivery Orders (OUT), Internal Transfers (INT), PFL Customer Freight Releases (PFL-OUT) and PFL Customer Freight Transfers (PFL-INT) are all left with no Owner; a PFL-IN with no Receive From invents nothing. The demo pickings were created with an explicit reference so the operation-type sequence is not consumed — `PFL-IN` next number is **2** before and after.
+
+**Existing prod receipt already matches.** `PFL-IN00001` (id 5, `done`, Receive From 817 → Owner 817) exists from 2026-10-10 02:58 and already carries the owner, so the rule changes nothing on it (the domain requires an empty Owner).
+
+**Prod deploy (2026-10-10).** Data only — no code commit, no module, no `-u`, no restart. `preflight`/`smoke_prod.sh` **PASS** (0 bad queries, 0 UndefinedColumn/Table, 0 HTTP tracebacks; the only tracebacks in the window are the documented `geoip_city_db` noise).
+
+**Rollback** = delete the rule: `base.automation` id 68 (its action cascades), or `pfl_owner_default.py <db> --remove`. Nothing else on the receipt is touched.
