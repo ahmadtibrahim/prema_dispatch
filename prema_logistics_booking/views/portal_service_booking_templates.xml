@@ -13,9 +13,6 @@
     <t t-call="portal.portal_layout">
         <t t-set="o_portal_fullwidth_alert" groups="!base.group_user"/>
         <div class="container">
-            <t t-call="portal.portal_breadcrumbs">
-                <t t-set="breadcrumbs_searchbar" t-value="True"/>
-            </t>
             <t t-if="msg == 'created'">
                 <div class="alert alert-success mt-3" role="alert">
                     Your service booking request has been received. Our team will confirm the quotation.
@@ -66,9 +63,6 @@
 <template id="portal_my_service_booking_new" name="Portal: Request a Service Booking">
     <t t-call="portal.portal_layout">
         <div class="container">
-            <t t-call="portal.portal_breadcrumbs">
-                <t t-set="breadcrumbs_searchbar" t-value="True"/>
-            </t>
             <h3 class="my-4">Request a Service Booking</h3>
             <t t-if="error == 'no_service'">
                 <div class="alert alert-danger" role="alert">Select at least one service.</div>
