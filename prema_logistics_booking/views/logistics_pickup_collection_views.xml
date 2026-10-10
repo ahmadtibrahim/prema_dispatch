@@ -1,0 +1,170 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <!-- ================================================================
+         Pickup authorization / collection — staff side.
+
+         Shown on the linked native outbound transfer; staff record what
+         actually happened at the dock. The customer's authorization is
+         displayed here, and a completed collection keeps the values it was
+         made with.
+         ================================================================ -->
+
+    <record id="view_logistics_pickup_collection_tree" model="ir.ui.view">
+        <field name="name">logistics.pickup.collection.tree</field>
+        <field name="model">logistics.pickup.collection</field>
+        <field name="arch" type="xml">
+            <list string="Pickup Authorizations" create="false">
+                <field name="name"/>
+                <field name="sale_order_id"/>
+                <field name="picking_id"/>
+                <field name="authorized_contact_name"/>
+                <field name="driver_name"/>
+                <field name="truck_details"/>
+                <field name="released_pallet_count" string="Pallets"/>
+                <field name="verification_result"/>
+                <field name="state"/>
+                <field name="collection_time"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="view_logistics_pickup_collection_form" model="ir.ui.view">
+        <field name="name">logistics.pickup.collection.form</field>
+        <field name="model">logistics.pickup.collection</field>
+        <field name="arch" type="xml">
+            <form string="Pickup Authorization">
+                <header>
+                    <button name="action_record_collection" type="object"
+                            string="Record Collection" class="btn-primary"
+                            invisible="state != 'authorized'"/>
+                    <field name="state" widget="statusbar"/>
+                </header>
+                <sheet>
+                    <group>
+                        <group string="Booking">
+                            <field name="name"/>
+                            <field name="sale_order_id"/>
+                            <field name="picking_id"/>
+                            <field name="commercial_partner_id"/>
+                        </group>
+                        <group string="Authorization (as given by the customer)">
+                            <field name="authorized_contact_id"/>
+                            <field name="authorized_contact_name"/>
+                            <field name="authorized_contact_phone"/>
+                            <field name="outbound_recipient_id"/>
+                        </group>
+                    </group>
+                    <group string="Driver details">
+                        <field name="driver_name"/>
+                        <field name="driver_phone"/>
+                        <field name="truck_details"/>
+                        <field name="pickup_reference"/>
+                        <field name="customer_instructions"/>
+                    </group>
+                    <group string="Collection (recorded at the dock)">
+                        <field name="verification_result"/>
+                        <field name="collected_by_name"/>
+                        <field name="released_packages"/>
+                        <field name="released_pallet_count"/>
+                        <field name="collection_time"/>
+                        <field name="collected_by_user_id"/>
+                        <field name="signature" widget="image" class="o_avatar_image"/>
+                        <button name="action_pull_released_packages" type="object"
+                                string="Pull released pallets" class="btn-link"
+                                invisible="not picking_id"/>
+                    </group>
+                    <group string="Manager override">
+                        <field name="override_reason"/>
+                        <field name="override_user_id"/>
+                        <field name="override_at"/>
+                    </group>
+                </sheet>
+                <chatter/>
+            </form>
+        </field>
+    </record>
+
+    <record id="action_logistics_pickup_collection" model="ir.actions.act_window">
+        <field name="name">Pickup Authorizations</field>
+        <field name="res_model">logistics.pickup.collection</field>
+        <field name="view_mode">list,form</field>
+    </record>
+
+    <!-- Smart button on the native outbound transfer. -->
+    <record id="view_stock_picking_pickup_collections" model="ir.ui.view">
+        <field name="name">stock.picking.form.pickup.collections</field>
+        <field name="model">stock.picking</field>
+        <field name="inherit_id" ref="stock.view_picking_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//div[@name='button_box']" position="inside">
+                <button name="action_view_pickup_collections" type="object"
+                        class="oe_stat_button" icon="fa-id-card-o"
+                        invisible="pickup_collection_count == 0">
+                    <field name="pickup_collection_count" widget="statinfo"
+                           string="Pickup Authorization"/>
+                </button>
+            </xpath>
+        </field>
+    </record>
+
+    <!-- Staff action: open a native PFL release for the booking. -->
+    <record id="action_server_create_pfl_release" model="ir.actions.server">
+        <field name="name">Create PFL Release</field>
+        <field name="model_id" ref="sale.model_sale_order"/>
+        <field name="binding_model_id" ref="sale.model_sale_order"/>
+        <field name="binding_type">action</field>
+        <field name="groups_id" eval="[(4, ref('prema_dispatch.group_dispatch_manager'))]"/>
+        <field name="state">code</field>
+        <field name="code">
+order = record
+ptype = env['stock.picking.type'].sudo().search([('sequence_code', '=', 'PFL-OUT')], limit=1)
+product = env['product.product'].sudo().search([('default_code', '=', 'PFL-CUST-PAL')], limit=1)
+Picking = env['stock.picking'].sudo()
+Collection = env['logistics.pickup.collection'].sudo()
+auth = Collection.search([('sale_order_id', '=', order.id), ('state', '=', 'authorized')], order='id desc', limit=1)
+recipient = auth.outbound_recipient_id if auth else False
+owner = order.x_freight_owner_id or order.partner_id
+qty = order.x_expected_pallets or 1
+picking = Picking.create({
+    'picking_type_id': ptype.id,
+    'partner_id': (recipient or order.partner_id).id,
+    'owner_id': owner.id,
+    'x_service_booking_id': order.id,
+    'origin': order.name,
+    'location_id': ptype.default_location_src_id.id,
+    'location_dest_id': ptype.default_location_dest_id.id,
+    'move_ids': [(0, 0, {
+        'product_id': product.id,
+        'product_uom_qty': qty,
+        'name': product.display_name,
+        'location_id': ptype.default_location_src_id.id,
+        'location_dest_id': ptype.default_location_dest_id.id,
+    })],
+})
+picking.action_confirm()
+# One collection record per release: an unlinked authorization is claimed by
+# this release; a second (partial) release gets its OWN record so the earlier
+# authorization and its history are never overwritten.
+if auth and not auth.picking_id:
+    auth.write({'picking_id': picking.id})
+    collection = auth
+else:
+    collection = Collection.create({
+        'sale_order_id': order.id,
+        'picking_id': picking.id,
+        'outbound_recipient_id': recipient.id if recipient else False,
+        'authorized_contact_id': auth.authorized_contact_id.id if auth else False,
+        'authorized_contact_name': auth.authorized_contact_name if auth else False,
+        'authorized_contact_phone': auth.authorized_contact_phone if auth else False,
+        'authorized_contact_email': auth.authorized_contact_email if auth else False,
+        'authorized_contact_street': auth.authorized_contact_street if auth else False,
+        'authorized_contact_city': auth.authorized_contact_city if auth else False,
+        'customer_instructions': auth.customer_instructions if auth else False,
+    })
+action = {'type': 'ir.actions.act_window', 'res_model': 'stock.picking',
+          'res_id': picking.id, 'view_mode': 'form', 'target': 'current'}
+        </field>
+    </record>
+
+</odoo>

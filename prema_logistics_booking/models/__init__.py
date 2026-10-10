@@ -9,6 +9,7 @@ from . import logistics_location_customer_access
 # and collection records.
 from . import logistics_private_contact
 from . import logistics_pickup_collection
+from . import stock_picking_pickup
 from . import prema_dispatch_location_hours
 from . import prema_dispatch_location_hours_wizard
 from . import logistics_direct_delivery_rule

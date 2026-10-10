@@ -1,29 +1,37 @@
 # -*- coding: utf-8 -*-
 """Pickup authorization and collection — trip-specific, per release.
 
-A saved contact is a reusable address-book entry; it never authorizes a
-pickup on its own. Authorization belongs to ONE booking (and, once released,
-to ONE native outbound transfer), so this record carries:
+A saved contact is a reusable address-book entry; it never authorizes a pickup
+on its own. Authorization belongs to ONE service booking and, once released, to
+ONE native outbound transfer. This record therefore carries:
 
 * a **snapshot** of the authorized party and the driver details, frozen at the
-  moment they are used — editing or archiving the saved contact afterwards
+  moment they were given — editing or archiving the saved contact afterwards
   cannot rewrite a completed collection;
 * the **collection** facts staff record at the dock: who actually collected,
   the verification result, which pallets left, when, and the acknowledgement
   signature (the native `stock.picking.signature` Image pattern).
 
-Every authorization/driver field is `tracking=True`, so who changed what, when
-and from which value to which is recorded natively in the chatter — no
-parallel audit model, and the history survives edits and archives.
+One service booking can have SEVERAL collection records — one per outbound
+release — so a partial pickup keeps its own authorized party, its own pallets
+and its own history, and a later driver assignment never overwrites an earlier
+collection.
+
+Every authorization/driver field is `tracking=True`, so who changed what, when,
+and from which value to which is recorded natively in the chatter — no parallel
+audit model, and the history survives edits and archives.
 """
 from odoo import _, api, fields, models
 from odoo.exceptions import AccessError, UserError
 
-#: The only fields a portal customer may change: their authorization for a
-#: pickup that has not happened yet. Everything a staff member records at the
-#: dock is out of their reach.
+#: The only fields a portal customer may change directly: the driver details
+#: and instructions for a pickup that has not happened yet. Everything staff
+#: record at the dock is out of their reach, and the authorized party / the
+#: recipient are partner links — those are set by the controller under sudo
+#: only AFTER it has validated that the chosen contact belongs to the caller,
+#: so a raw partner id can never be injected from a form.
 PORTAL_EDITABLE_FIELDS = frozenset({
-    "authorized_contact_id", "driver_name", "driver_phone", "truck_details",
+    "driver_name", "driver_phone", "truck_details",
     "pickup_reference", "customer_instructions",
 })
 
@@ -35,10 +43,12 @@ class LogisticsPickupCollection(models.Model):
     _order = "create_date desc, id desc"
 
     name = fields.Char(default="New", copy=False, readonly=True)
-    booking_id = fields.Many2one(
-        "logistics.booking", required=True, ondelete="cascade", index=True)
+    sale_order_id = fields.Many2one(
+        "sale.order", string="Service Booking", required=True,
+        ondelete="cascade", index=True)
     commercial_partner_id = fields.Many2one(
-        related="booking_id.commercial_partner_id", store=True, index=True)
+        related="sale_order_id.partner_id.commercial_partner_id",
+        store=True, index=True)
     picking_id = fields.Many2one(
         "stock.picking", string="Outbound Transfer", ondelete="set null", index=True)
 
@@ -55,6 +65,10 @@ class LogisticsPickupCollection(models.Model):
     authorized_contact_email = fields.Char(tracking=True)
     authorized_contact_street = fields.Char(tracking=True)
     authorized_contact_city = fields.Char(tracking=True)
+    outbound_recipient_id = fields.Many2one(
+        "res.partner", string="Delivery Recipient", ondelete="set null",
+        help="Who the goods are going to, when that differs from the booking "
+             "customer. Copied to the release's transfer partner.")
     driver_name = fields.Char(tracking=True)
     driver_phone = fields.Char(tracking=True)
     truck_details = fields.Char(string="Truck / Plate", tracking=True)
@@ -98,8 +112,11 @@ class LogisticsPickupCollection(models.Model):
 
     # ── who may change what ────────────────────────────────────────────
     def _is_portal_user(self):
-        return self.env.user.has_group("base.group_portal") and \
-            not self.env.user.has_group("base.group_user")
+        # `env.su` is the framework's own elevation: trusted server-side code
+        # that has already checked ownership is not "a portal user editing".
+        return (not self.env.su
+                and self.env.user.has_group("base.group_portal")
+                and not self.env.user.has_group("base.group_user"))
 
     def write(self, vals):
         """A portal customer may edit only their own booking's authorization,
@@ -116,17 +133,24 @@ class LogisticsPickupCollection(models.Model):
                     "can no longer be changed."))
         return super().write(vals)
 
+    # ── snapshot ───────────────────────────────────────────────────────
+    def action_apply_snapshot(self, contact):
+        """Freeze the chosen saved contact onto this collection."""
+        self.ensure_one()
+        contact.ensure_one()
+        return self.write(dict(contact._snapshot_vals(), authorized_contact_id=contact.id))
+
+    # ── staff: record the release ──────────────────────────────────────
     def action_record_collection(self):
-        """Staff confirm the release: only an internal user, and only when the
-        arriving party matches (or a manager overrode with a reason)."""
         self.ensure_one()
         if self._is_portal_user():
             raise AccessError(_("Only warehouse staff can record a collection."))
-        if self.verification_result in (False, "mismatch", "no_authorization") \
-                and not (self.override_reason and self.override_user_id):
-            raise UserError(_(
-                "Resolve the pickup authorization first: record a matching "
-                "verification, or an override with a reason."))
+        if not self.verification_result \
+                or self.verification_result in ("mismatch", "no_authorization"):
+            if not (self.override_reason and self.override_user_id):
+                raise UserError(_(
+                    "Resolve the pickup authorization first: record a matching "
+                    "verification, or a manager override with a reason."))
         self.write({
             "state": "collected",
             "collection_time": fields.Datetime.now(),
@@ -134,9 +158,28 @@ class LogisticsPickupCollection(models.Model):
         })
         return True
 
-    def action_apply_snapshot(self, contact):
-        """Freeze the chosen saved contact onto this collection."""
+    def action_apply_override(self, reason):
         self.ensure_one()
-        contact.ensure_one()
-        return self.write(dict(contact._snapshot_vals(),
-                               authorized_contact_id=contact.id))
+        if self._is_portal_user():
+            raise AccessError(_("Only warehouse staff can override."))
+        if not (reason or "").strip():
+            raise UserError(_("An override reason is required."))
+        self.write({"override_reason": reason.strip(),
+                    "override_user_id": self.env.user.id,
+                    "override_at": fields.Datetime.now()})
+        return True
+
+    def action_pull_released_packages(self):
+        """Snapshot the packages that actually left on the linked transfer."""
+        self.ensure_one()
+        if not self.picking_id:
+            return False
+        packages = self.picking_id.move_line_ids.filtered(
+            lambda line: line.state == "done").mapped("result_package_id")
+        if not packages and self.picking_id.state != "done":
+            packages = self.picking_id.move_line_ids.mapped("result_package_id")
+        names = sorted({p.name for p in packages if p.name})
+        return self.write({
+            "released_packages": ", ".join(names) if names else "—",
+            "released_pallet_count": len(names),
+        })

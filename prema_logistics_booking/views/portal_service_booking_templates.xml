@@ -2,12 +2,34 @@
 <odoo>
 
 <!-- ====================================================================
-     Portal — Service Bookings (Phase 1)
+     Portal — Service Bookings (Phase 1 + pickup authorization)
 
-     List the customer's warehouse service bookings and let them request a
-     new one. The request becomes a draft sale.order designated
-     `x_warehouse_service`; nothing here touches stock.
+     Counterparties are chosen from the customer's OWN saved contacts via a
+     searchable picker (never a global directory, never free text). The request
+     becomes a draft sale.order designated `x_warehouse_service`.
      ==================================================================== -->
+
+<!-- A searchable contact picker + inline "add new contact".
+     Data is read from /my/contacts/search and written to /my/contacts/quick-create,
+     both of which are scoped to the logged-in user on the server. -->
+<template id="portal_contact_picker" name="Portal: Contact Picker">
+    <div class="mb-3 contact-picker position-relative" t-att-data-field="field">
+        <label class="form-label" t-att-for="field"><t t-out="label"/></label>
+        <input type="text" class="form-control contact-picker-input" t-att-id="field"
+               autocomplete="off" t-att-placeholder="placeholder or ''"
+               t-att-value="value or ''"/>
+        <input type="hidden" t-att-name="field" t-att-value="value_id or ''"/>
+        <div class="list-group contact-picker-results d-none position-absolute w-100 shadow"
+             style="z-index: 1050;"/>
+        <button type="button" class="btn btn-sm btn-link px-0 contact-picker-add">+ Add new contact</button>
+        <div class="border rounded p-2 mt-1 d-none contact-picker-new bg-100">
+            <input type="text" class="form-control form-control-sm mb-1 cp-new-name" placeholder="Company or individual name"/>
+            <input type="text" class="form-control form-control-sm mb-1 cp-new-phone" placeholder="Phone (optional)"/>
+            <button type="button" class="btn btn-sm btn-primary contact-picker-create">Save and select</button>
+        </div>
+        <div class="form-text" t-if="help"><t t-out="help"/></div>
+    </div>
+</template>
 
 <template id="portal_my_service_bookings" name="Portal: My Service Bookings">
     <t t-call="portal.portal_layout">
@@ -31,12 +53,8 @@
                 <table class="table table-hover o_portal_my_doc_table">
                     <thead>
                         <tr>
-                            <th>Booking</th>
-                            <th>Your Reference</th>
-                            <th>Expected Pallets</th>
-                            <th>Requested Arrival</th>
-                            <th>Status</th>
-                            <th>Estimated Total</th>
+                            <th>Booking</th><th>Your Reference</th><th>Expected Pallets</th>
+                            <th>Requested Arrival</th><th>Status</th><th>Estimated Total</th><th/>
                         </tr>
                     </thead>
                     <tbody>
@@ -48,6 +66,7 @@
                                 <td><span t-field="o.x_requested_arrival"/></td>
                                 <td><span t-field="o.state"/></td>
                                 <td><span t-field="o.amount_total" t-options='{"widget": "monetary", "display_currency": o.currency_id}'/></td>
+                                <td><a t-att-href="'/my/service-bookings/%s/pickup' % o.id" class="btn btn-sm btn-link">Pickup authorization</a></td>
                             </tr>
                         </t>
                     </tbody>
@@ -70,7 +89,8 @@
             <t t-if="error == 'ltl_ftl'">
                 <div class="alert alert-danger" role="alert">Choose either LTL or FTL — not both.</div>
             </t>
-            <form action="/my/service-bookings/submit" method="post" enctype="multipart/form-data" class="col-lg-8">
+            <form action="/my/service-bookings/submit" method="post" enctype="multipart/form-data"
+                  class="col-lg-8" id="service_booking_form">
                 <input type="hidden" name="csrf_token" t-att-value="request.csrf_token()"/>
                 <div class="mb-3">
                     <label class="form-label fw-bold">Services</label>
@@ -87,8 +107,7 @@
                 </div>
                 <div class="mb-3">
                     <label class="form-label" for="expected_pallets">Expected Pallets</label>
-                    <input type="number" min="0" class="form-control" id="expected_pallets"
-                           name="expected_pallets"/>
+                    <input type="number" min="0" class="form-control" id="expected_pallets" name="expected_pallets"/>
                 </div>
                 <div class="mb-3">
                     <label class="form-label" for="client_order_ref">Your PO / Reference</label>
@@ -97,25 +116,58 @@
                 <div class="row">
                     <div class="col-md-6 mb-3">
                         <label class="form-label" for="requested_arrival">Requested Arrival</label>
-                        <input type="datetime-local" class="form-control" id="requested_arrival"
-                               name="requested_arrival"/>
+                        <input type="datetime-local" class="form-control" id="requested_arrival" name="requested_arrival"/>
                     </div>
                     <div class="col-md-6 mb-3">
                         <label class="form-label" for="requested_departure">Requested Departure</label>
-                        <input type="datetime-local" class="form-control" id="requested_departure"
-                               name="requested_departure"/>
+                        <input type="datetime-local" class="form-control" id="requested_departure" name="requested_departure"/>
                     </div>
                 </div>
+
                 <div class="row">
-                    <div class="col-md-6 mb-3">
-                        <label class="form-label" for="freight_owner">Freight Owner (if not you)</label>
-                        <input type="text" class="form-control" id="freight_owner" name="freight_owner"/>
+                    <div class="col-md-4">
+                        <t t-call="prema_logistics_booking.portal_contact_picker">
+                            <t t-set="field" t-value="'freight_owner_contact_id'"/>
+                            <t t-set="label" t-value="'Freight Owner'"/>
+                            <t t-set="help" t-value="'Who owns the goods. Leave empty if that is you.'"/>
+                        </t>
                     </div>
-                    <div class="col-md-6 mb-3">
-                        <label class="form-label" for="outbound_recipient">Outbound Recipient (if not you)</label>
-                        <input type="text" class="form-control" id="outbound_recipient" name="outbound_recipient"/>
+                    <div class="col-md-4">
+                        <t t-call="prema_logistics_booking.portal_contact_picker">
+                            <t t-set="field" t-value="'recipient_contact_id'"/>
+                            <t t-set="label" t-value="'Delivery Recipient'"/>
+                            <t t-set="help" t-value="'Who the goods are going to. Leave empty if that is you.'"/>
+                        </t>
+                    </div>
+                    <div class="col-md-4">
+                        <t t-call="prema_logistics_booking.portal_contact_picker">
+                            <t t-set="field" t-value="'pickup_party_contact_id'"/>
+                            <t t-set="label" t-value="'Authorized Pickup Party'"/>
+                            <t t-set="help" t-value="'The company or individual permitted to collect the goods.'"/>
+                        </t>
                     </div>
                 </div>
+                <p class="text-muted small">
+                    “If not you” means <span t-esc="request.env.user.partner_id.commercial_partner_id.name"/>,
+                    the company you are booking for — not PF Logistics.
+                </p>
+
+                <h6 class="mt-3">Driver details (optional — you can add these later, before collection)</h6>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <label class="form-label" for="driver_name">Driver Name</label>
+                        <input type="text" class="form-control" id="driver_name" name="driver_name"/>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <label class="form-label" for="driver_phone">Driver Phone</label>
+                        <input type="text" class="form-control" id="driver_phone" name="driver_phone"/>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <label class="form-label" for="truck_details">Truck / Plate</label>
+                        <input type="text" class="form-control" id="truck_details" name="truck_details"/>
+                    </div>
+                </div>
+
                 <div class="mb-3">
                     <label class="form-label" for="notes">Freight Description / Notes</label>
                     <textarea class="form-control" id="notes" name="notes" rows="4"></textarea>
@@ -130,10 +182,102 @@
                 </div>
             </form>
         </div>
+        <script type="text/javascript" src="/prema_logistics_booking/static/src/js/portal_contact_picker.js"></script>
     </t>
 </template>
 
-<!-- Portal: My Home tile -->
+<template id="portal_service_booking_pickup" name="Portal: Pickup Authorization">
+    <t t-call="portal.portal_layout">
+        <div class="container">
+            <h3 class="my-4">Pickup Authorization — <span t-field="order.name"/></h3>
+            <t t-if="msg == 'saved'">
+                <div class="alert alert-success" role="alert">Pickup authorization saved.</div>
+            </t>
+            <t t-if="msg == 'collected'">
+                <div class="alert alert-warning" role="alert">
+                    This pickup has already been collected — its authorization can no longer be changed.
+                </div>
+            </t>
+
+            <form t-if="collection.state != 'collected'"
+                  t-att-action="'/my/service-bookings/%s/pickup/save' % order.id" method="post" class="col-lg-8">
+                <input type="hidden" name="csrf_token" t-att-value="request.csrf_token()"/>
+                <div class="row">
+                    <div class="col-md-6">
+                        <t t-call="prema_logistics_booking.portal_contact_picker">
+                            <t t-set="field" t-value="'pickup_party_contact_id'"/>
+                            <t t-set="label" t-value="'Authorized Pickup Party'"/>
+                            <t t-set="value" t-value="collection.authorized_contact_name"/>
+                        </t>
+                    </div>
+                    <div class="col-md-6">
+                        <t t-call="prema_logistics_booking.portal_contact_picker">
+                            <t t-set="field" t-value="'recipient_contact_id'"/>
+                            <t t-set="label" t-value="'Delivery Recipient'"/>
+                        </t>
+                    </div>
+                </div>
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <label class="form-label" for="driver_name">Driver Name</label>
+                        <input type="text" class="form-control" id="driver_name" name="driver_name"
+                               t-att-value="collection.driver_name or ''"/>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <label class="form-label" for="driver_phone">Driver Phone</label>
+                        <input type="text" class="form-control" id="driver_phone" name="driver_phone"
+                               t-att-value="collection.driver_phone or ''"/>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <label class="form-label" for="truck_details">Truck / Plate</label>
+                        <input type="text" class="form-control" id="truck_details" name="truck_details"
+                               t-att-value="collection.truck_details or ''"/>
+                    </div>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label" for="pickup_reference">Pickup Reference</label>
+                    <input type="text" class="form-control" id="pickup_reference" name="pickup_reference"
+                           t-att-value="collection.pickup_reference or ''"/>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label" for="customer_instructions">Instructions for the Dock</label>
+                    <textarea class="form-control" id="customer_instructions" name="customer_instructions"
+                              rows="3"><t t-out="collection.customer_instructions or ''"/></textarea>
+                </div>
+                <button type="submit" class="btn btn-primary">Save Authorization</button>
+                <a href="/my/service-bookings" class="btn btn-link">Back</a>
+            </form>
+
+            <h5 class="mt-5">Collection history</h5>
+            <p class="text-muted small">
+                Each collection is recorded separately, so a partial pickup keeps its own
+                authorized party, its own pallets and its own details.
+            </p>
+            <div t-if="collections" class="table-responsive">
+                <table class="table table-sm">
+                    <thead>
+                        <tr><th>Reference</th><th>Authorized Party</th><th>Driver</th>
+                            <th>Pallets</th><th>Status</th><th>Collection Time</th></tr>
+                    </thead>
+                    <tbody>
+                        <t t-foreach="collections" t-as="c">
+                            <tr>
+                                <td><span t-field="c.name"/></td>
+                                <td><span t-field="c.authorized_contact_name"/></td>
+                                <td><span t-field="c.driver_name"/></td>
+                                <td><t t-out="c.released_packages or c.released_pallet_count or ''"/></td>
+                                <td><span t-field="c.state"/></td>
+                                <td><span t-field="c.collection_time"/></td>
+                            </tr>
+                        </t>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        <script type="text/javascript" src="/prema_logistics_booking/static/src/js/portal_contact_picker.js"></script>
+    </t>
+</template>
+
 <template id="portal_my_home_service_bookings" name="Portal My Home: Service Bookings tile"
           inherit_id="portal.portal_my_home" priority="31">
     <xpath expr="//div[@id='portal_common_category']" position="before">

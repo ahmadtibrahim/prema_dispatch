@@ -64,19 +64,52 @@ class ServiceBookingPortal(http.Controller):
         return request.env["product.template"].sudo().search(
             [("default_code", "in", SERVICE_CODES)], order="default_code")
 
-    def _partner_named(self, name, fallback):
-        """Resolve a typed counterparty name to an existing contact.
+    def _own_contacts(self):
+        """The caller's OWN private contacts — never the global directory."""
+        return request.env["logistics.private.contact"].search(
+            [("user_id", "=", request.env.user.id)], order="name")
 
-        Never creates a partner from portal input; an unknown name falls back
-        to the customer, and the typed text is kept on the order note so staff
-        can correct it. No silent data invention.
+    def _own_contact(self, contact_id):
+        """Resolve a submitted contact id to a row this user owns.
+
+        A foreign or malformed id resolves to an empty recordset — the same
+        ownership rule the contact routes use, so a directly submitted id can
+        never reach another user's contact.
         """
-        name = (name or "").strip()
-        if not name:
-            return fallback
-        found = request.env["res.partner"].sudo().search(
-            [("name", "=ilike", name)], limit=1)
-        return found or fallback
+        try:
+            contact_id = int(contact_id or 0)
+        except (TypeError, ValueError):
+            contact_id = 0
+        if not contact_id:
+            return request.env["logistics.private.contact"].browse()
+        return request.env["logistics.private.contact"].search(
+            [("id", "=", contact_id), ("user_id", "=", request.env.user.id)], limit=1)
+
+    def _own_order(self, order_id):
+        """A warehouse service booking belonging to the caller's company."""
+        partner = self._commercial_partner()
+        order = request.env["sale.order"].sudo().search(
+            [("id", "=", int(order_id or 0)),
+             ("message_partner_ids", "child_of", [partner.id]),
+             ("x_warehouse_service", "=", True)], limit=1)
+        if not order:
+            raise NotFound()
+        return order
+
+    def _own_collection(self, order):
+        """The order's current (uncollected) authorization record.
+
+        Returned WITHOUT sudo on purpose: look-ups run elevated, but the write
+        itself must pass through the model's portal guard.
+        """
+        Collection = request.env["logistics.pickup.collection"]
+        ids = Collection.sudo().search(
+            [("sale_order_id", "=", order.id), ("state", "=", "authorized")],
+            order="id desc", limit=1).ids
+        if not ids:
+            ids = Collection.sudo().create(
+                {"sale_order_id": order.id}).ids
+        return Collection.browse(ids)
 
     # ── routes ─────────────────────────────────────────────────────────
     @http.route("/my/service-bookings", type="http", auth="user",
@@ -139,8 +172,13 @@ class ServiceBookingPortal(http.Controller):
         team = request.env["crm.team"].sudo().search(
             [("name", "=", TEAM_NAME)], limit=1)
 
-        freight_owner = self._partner_named(form.get("freight_owner"), partner)
-        recipient = self._partner_named(form.get("outbound_recipient"), partner)
+        # Counterparties are the caller's OWN saved contacts, resolved by id and
+        # re-checked here — a foreign id simply falls back to the customer.
+        owner_contact = self._own_contact(form.get("freight_owner_contact_id"))
+        recipient_contact = self._own_contact(form.get("recipient_contact_id"))
+        pickup_contact = self._own_contact(form.get("pickup_party_contact_id"))
+        freight_owner = owner_contact.partner_id or partner
+        recipient = recipient_contact.partner_id or partner
 
         # Only the requested services become lines. Quantities: FTL is one flat
         # fee; the per-pallet LTL line carries the expected pallet count; the
@@ -207,4 +245,70 @@ class ServiceBookingPortal(http.Controller):
             body += "<br/><br/>%s" % notes
         order.message_post(body=body, attachment_ids=attachment_ids)
 
+        # Trip-specific pickup authorization — held on the booking, never on
+        # the reusable contact. Created here so the customer can add or change
+        # the driver later, before collection.
+        collection = request.env["logistics.pickup.collection"].sudo().create({
+            "sale_order_id": order.id,
+            "outbound_recipient_id": recipient.id if recipient != partner else False,
+            "driver_name": (form.get("driver_name") or "").strip() or False,
+            "driver_phone": (form.get("driver_phone") or "").strip() or False,
+            "truck_details": (form.get("truck_details") or "").strip() or False,
+            "pickup_reference": (form.get("pickup_reference") or "").strip() or False,
+            "customer_instructions": (form.get("customer_instructions") or "").strip() or False,
+        })
+        if pickup_contact:
+            # sudo: the contact was validated as the caller's own above.
+            collection.action_apply_snapshot(pickup_contact)
+
         return request.redirect("/my/service-bookings?msg=created")
+
+    # ── customer pickup authorization ──────────────────────────────────
+    @http.route("/my/service-bookings/<int:order_id>/pickup", type="http",
+                auth="user", website=True, sitemap=False)
+    def service_booking_pickup(self, order_id, **kwargs):
+        order = self._own_order(order_id)
+        collections = request.env["logistics.pickup.collection"].sudo().search(
+            [("sale_order_id", "=", order.id)], order="id desc")
+        return request.render("prema_logistics_booking.portal_service_booking_pickup", {
+            "order": order,
+            "collection": self._own_collection(order),
+            "collections": collections,
+            "contacts": self._own_contacts(),
+            "page_name": "service_bookings",
+            "msg": kwargs.get("msg"),
+        })
+
+    @http.route("/my/service-bookings/<int:order_id>/pickup/save", type="http",
+                auth="user", website=True, methods=["POST"], csrf=True, sitemap=False)
+    def service_booking_pickup_save(self, order_id, **post):
+        order = self._own_order(order_id)          # 404 for a foreign booking
+        collection = self._own_collection(order)
+        if collection.state == "collected":
+            return request.redirect(
+                "/my/service-bookings/%s/pickup?msg=collected" % order.id)
+
+        # Driver details — the customer's own fields, guarded by the model.
+        collection.write({
+            "driver_name": (post.get("driver_name") or "").strip(),
+            "driver_phone": (post.get("driver_phone") or "").strip(),
+            "truck_details": (post.get("truck_details") or "").strip(),
+            "pickup_reference": (post.get("pickup_reference") or "").strip(),
+            "customer_instructions": (post.get("customer_instructions") or "").strip(),
+        })
+
+        # Authorized party / recipient are partner links: set under sudo, but
+        # only after the chosen contact was proven to be the caller's own.
+        elevated = {}
+        contact = self._own_contact(post.get("pickup_party_contact_id"))
+        if contact:
+            elevated.update(contact._snapshot_vals())
+            elevated["authorized_contact_id"] = contact.id
+        recipient_contact = self._own_contact(post.get("recipient_contact_id"))
+        elevated["outbound_recipient_id"] = (
+            recipient_contact.partner_id.id if recipient_contact else False)
+        if elevated:
+            collection.sudo().write(elevated)
+
+        return request.redirect(
+            "/my/service-bookings/%s/pickup?msg=saved" % order.id)
