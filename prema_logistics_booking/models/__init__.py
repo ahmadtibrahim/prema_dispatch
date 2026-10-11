@@ -89,3 +89,4 @@ from . import stock_location_position
 from . import stock_quant_package_pfl
 from . import sale_order_pfl_warehouse
 from . import stock_picking_pfl_receipt
+from . import logistics_warehouse_billing

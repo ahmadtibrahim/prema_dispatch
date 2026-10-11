@@ -16,7 +16,7 @@
          ================================================================ -->
 
     <template id="pfl_pallet_label_body">
-        <div class="page" style="font-size:11px;">
+        <div class="page" style="font-size:11px; page-break-after: always;">
             <div class="row">
                 <div class="col-7">
                     <div style="font-size:22px; font-weight:700;" t-field="o.name"/>

@@ -25,6 +25,14 @@
                 <button name="action_pfl_open_receipt" type="object"
                         string="Open Receipt" class="btn-secondary"
                         invisible="not x_warehouse_service or not pfl_receipt_id"/>
+                <button name="action_pfl_calculate_actuals" type="object"
+                        string="Calculate Actual Charges" class="btn-secondary"
+                        invisible="not x_warehouse_service or state == 'cancel'"
+                        help="Recompute the actual warehouse charges from the pallet events at the rates already accepted on this quotation. Idempotent."/>
+                <button name="action_pfl_create_actual_invoice" type="object"
+                        string="Create Actual Draft Invoice" class="btn-secondary"
+                        invisible="not x_warehouse_service or state == 'cancel'"
+                        help="One DRAFT invoice carrying the actuals. Nothing is posted and nothing is emailed. Recalculating updates this same draft."/>
             </xpath>
             <xpath expr="//div[@name='button_box']" position="inside">
                 <button name="%(action_pfl_position_reservation)d" type="action"
@@ -34,6 +42,28 @@
                     <field name="pfl_reservation_count" widget="statinfo"
                            string="Positions"/>
                 </button>
+            </xpath>
+            <xpath expr="//field[@name='order_line']/list/field[@name='product_uom_qty']" position="after">
+                <field name="x_pfl_actual_qty" string="Actual (dock)"
+                       optional="hide"/>
+            </xpath>
+            <xpath expr="//notebook" position="inside">
+                <page string="Warehouse Charges" name="pfl_warehouse_charges"
+                      invisible="not x_warehouse_service">
+                    <field name="pfl_billing_state" readonly="1"/>
+                    <field name="pfl_actual_total" readonly="1"/>
+                    <field name="pfl_actual_invoice_id" readonly="1"/>
+                    <field name="pfl_actual_charge_ids" readonly="1">
+                        <list create="false" delete="false">
+                            <field name="product_id"/>
+                            <field name="charge_kind"/>
+                            <field name="quantity"/>
+                            <field name="price_unit"/>
+                            <field name="amount"/>
+                            <field name="detail"/>
+                        </list>
+                    </field>
+                </page>
             </xpath>
             <xpath expr="//field[@name='client_order_ref']" position="after">
                 <field name="pfl_capacity_state" widget="badge"
