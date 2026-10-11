@@ -3162,3 +3162,20 @@ Verified **on prod itself** with a read-only portal session for the demo user (s
 **Deploy.** Commit **`bcd4c74`** (= PIN), module **18.0.13.70.0**, rollback `991de09`. Crons 72 → paused → restored identical; `-u` EXIT=0; `preflight_prod_deploy.sh` PASS; restart; `smoke_prod.sh` PASS. Nothing pushed.
 
 **State unchanged:** `S00108` / `PFL-IN00002` still prepared but **unvalidated** — four pallets `PACK0000006…9` on `A/A1-1, A1-2, A1-3, A2-1` reserved 10:45–17:15 America/Toronto, nothing confirmed, no stock, no charges.
+
+## 47. PRODUCTION FIX — the new warehouse models had no access rules (owners could not open a warehouse quotation) — 2026-10-11
+
+**Reported.** Opening the **S00108 quotation** raised *"You are not allowed to access 'PF Logistics Actual Warehouse Charge' (logistics.warehouse.charge) records. No group currently allows this operation."*
+
+**Cause — mine, from §45.** `logistics.warehouse.charge`, `logistics.position.reservation` and `pfl.pallet.scan` were added with **no `ir.model.access` row at all**. With no row, `ir.model.access` finds nothing and **every non-superuser is refused**, administrators included (uid 2 is subject to ACLs; only uid 1 bypasses them). The sale order form's new **Warehouse Charges** page reads `pfl_actual_charge_ids`, so the failure hit every warehouse quotation — and it happened on the very first page the owner opened. The module upgrade had **warned in the log** ("The models [...] have no access rules in module prema_logistics_booking") and it was missed, because **every verification in §45 ran as the superuser** — the exact trap already recorded in `reference_odoo_tests_run_as_superuser`. The portal checks passed because the portal reads those models under `sudo()`.
+
+**Fix (`b247857`, module 18.0.13.70.1).**
+* `logistics.warehouse.charge` — **Internal User read-only** (the rows are derived from the order and are `readonly` in the UI); **Dispatch Manager** full. `action_pfl_calculate_actuals` therefore rewrites them under `sudo()`, so whoever may open the order may recalculate it while nobody edits the rows by hand.
+* `logistics.position.reservation` — **Internal User** read/write/create (staff release space and reserve an excess pallet as themselves, and nothing unlinks a reservation); **Dispatch Manager** full.
+* `pfl.pallet.scan` — **warehouse staff** full, on the transient wizard they open from the Warehouse menu.
+
+**Verified as an ORDINARY internal user, not as the superuser.** New `/root/service_bookings_phase2/verify_acl.py` runs as **uid 73 `dispatcher@logistics.premafirm.com`** (no Settings, no Administration, no Dispatch Manager): **10/10** — the quotation reads, its charges, its reservations, its reserved pallets, the prepared receipt, the position board, releasing space, the scan wizard — and the charge rows stay non-writable for that user. Then the **exact request the browser makes** was replayed on the wire (`sale.order.web_read` on 111 with the Warehouse Charges specification, session for uid 73): **HTTP 200, no error**, returning `S00108`, `capacity: reserved`, `charges: []`, `receipt: 16`. `preflight` PASS, `smoke_prod.sh` PASS, crons 72 → paused → restored identical. Nothing pushed.
+
+**Same class of gap, PRE-EXISTING, left alone pending a decision.** Two wizards from earlier waves still have no access rules and will raise the identical error for any non-superuser who opens them: **`logistics.booking.price.adjust`** (the "Adjust Customer Price" button on the booking form) and **`prema.dispatch.location.hours.wizard`** (opened from the location form). I did not set their access because the audience is a business decision — "Adjust Customer Price" should probably be `group_logistics_pricing_manager` (and the button restricted to match, or a salesperson clicking it gets the error again), while the hours wizard is plausibly plain `base.group_user`. **Owner decision.**
+
+**Left ready, unchanged:** `S00108` / `PFL-IN00002` prepared but **unvalidated** — four pallets `PACK0000006…9` on `A/A1-1, A1-2, A1-3, A2-1`, reserved 10:45–17:15 America/Toronto, nothing confirmed, no stock, no charges.
