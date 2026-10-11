@@ -91,7 +91,7 @@ class SaleOrder(models.Model):
                 order.pfl_capacity_state = "unreserved"
 
     # ── capacity gate (called by the portal and by staff) ──────────────
-    def pfl_check_capacity(self, arrival, departure, count=None):
+    def pfl_check_capacity(self, arrival, departure, count=None, exclude_own=True):
         """Raise a clear UserError when the request cannot be promised space."""
         self.ensure_one()
         Reservation = self.env["logistics.position.reservation"]
@@ -105,7 +105,7 @@ class SaleOrder(models.Model):
                 "reserve space for %s pallets.", count))
         available, blocked = Reservation.pfl_availability(
             *Reservation.pfl_buffered_window(arrival, departure),
-            exclude_order=self)
+            exclude_order=self if exclude_own else None)
         if len(available) < count:
             detail = "; ".join("%s: %s" % (p.display_name, r)
                                for p, r in list(blocked.items())[:8])
@@ -128,10 +128,12 @@ class SaleOrder(models.Model):
         missing = need - len(live)
         if missing <= 0:
             return True
+        receipt = self.pfl_receipt_id
         reservations = Reservation.pfl_reserve_positions(
             self, missing, self.x_requested_arrival, self.x_requested_departure,
-            picking=self.pfl_receipt_id or None)
-        self.pfl_receipt_id.pfl_link_reservations(reservations)
+            picking=receipt or None)
+        if receipt:
+            receipt.pfl_link_reservations(reservations)
         return True
 
     def action_pfl_reschedule(self, arrival, departure):
@@ -147,18 +149,22 @@ class SaleOrder(models.Model):
         previous = self.pfl_reservation_ids.filtered(lambda r: r.state == "reserved")
         if need:
             # Reserve against the new window while the old ones still hold.
+            # Reschedule: the old reservations still hold, so the replacement
+            # may legitimately reuse the same positions at the new time.
             fresh = Reservation.pfl_reserve_positions(
                 self, need, arrival, departure,
-                picking=self.pfl_receipt_id or None)
-            self.pfl_receipt_id.pfl_link_reservations(fresh)
+                picking=self.pfl_receipt_id or None, exclude_order=True)
+            if self.pfl_receipt_id:
+                self.pfl_receipt_id.pfl_link_reservations(fresh)
         self.write({"x_requested_arrival": arrival,
                     "x_requested_departure": departure})
         previous.pfl_release(_("Rescheduled to a new appointment window"))
         for reservation in previous:
             if reservation.package_id:
                 reservation.package_id.x_pfl_position_id = False
-        self.pfl_receipt_id.pfl_link_reservations(
-            self.pfl_reservation_ids.filtered(lambda r: r.state == "reserved"))
+        if self.pfl_receipt_id:
+            self.pfl_receipt_id.pfl_link_reservations(
+                self.pfl_reservation_ids.filtered(lambda r: r.state == "reserved"))
         return True
 
     def _action_cancel(self):

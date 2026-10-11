@@ -34,7 +34,7 @@ import logging
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
-from odoo import http
+from odoo import _, fields, http
 from odoo.http import request
 from werkzeug.exceptions import NotFound
 
@@ -252,6 +252,59 @@ class ServiceBookingPortal(http.Controller):
             "truck_details": _clean(post.get("truck_details")),
             "customer_instructions": _clean(post.get("customer_instructions")),
             "notes": _clean(post.get("notes")),
+            "accept_name": _clean(post.get("accept_name")),
+            "accept_terms": _clean(post.get("accept_terms")),
+            "accept_signature": post.get("accept_signature") or "",
+        }
+
+    def _quote_summary(self, codes, expected):
+        """What the customer is about to accept: services, quantities, rates,
+        taxes and the terms. Computed here so the page and the acceptance
+        snapshot are the same thing."""
+        rows, untaxed, taxed = [], 0.0, 0.0
+        needs_rate = []
+        products = request.env["product.template"].sudo().search(
+            [("default_code", "in", list(codes))], order="default_code")
+        for product in products:
+            code = product.default_code
+            if code == FTL_CODE:
+                qty = 1.0
+            elif code == LTL_CODE:
+                qty = float(expected or 1)
+            elif code == "PFL-STOR-DAY":
+                qty = 0.0            # billed on actual pallet-days after the free window
+            else:
+                qty = 1.0
+            rate = product.list_price
+            taxes = product.taxes_id
+            rate_pct = sum(taxes.mapped("amount"))
+            line_untaxed = qty * rate
+            line_tax = line_untaxed * rate_pct / 100.0
+            untaxed += line_untaxed
+            taxed += line_tax
+            if rate == 0:
+                needs_rate.append(product.display_name)
+            rows.append({
+                "code": code,
+                "name": product.display_name,
+                "description": product.description_sale or "",
+                "quantity": qty,
+                "rate": rate,
+                "tax_label": ", ".join("%s %s%%" % (t.name, t.amount) for t in taxes)
+                             or _("no tax"),
+                "subtotal": line_untaxed,
+                "tax": line_tax,
+            })
+        template = request.env["sale.order.template"].sudo().search(
+            [("name", "=", TEMPLATE_NAME)], limit=1)
+        return {
+            "rows": rows,
+            "untaxed": untaxed,
+            "tax": taxed,
+            "total": untaxed + taxed,
+            "currency": request.env.company.currency_id,
+            "terms": template.note or "",
+            "needs_rate": needs_rate,
         }
 
     def _check_pickers(self, post, require_party=True):
@@ -307,6 +360,8 @@ class ServiceBookingPortal(http.Controller):
     @http.route("/my/service-bookings/new", type="http", auth="user",
                 website=True, sitemap=False)
     def service_booking_new(self, **kwargs):
+        form = self._booking_form()
+        form["summary"] = self._quote_summary(SERVICE_CODES, 1)
         return request.render("prema_logistics_booking.portal_my_service_booking_new", {
             "services": self._services(),
             "ltl_code": LTL_CODE,
@@ -314,7 +369,8 @@ class ServiceBookingPortal(http.Controller):
             "warehouse_tz": WAREHOUSE_TZ,
             "page_name": "service_bookings",
             "error": kwargs.get("error"),
-            "form": self._booking_form(),
+            "form": form,
+            "rate_card": True,
         })
 
     @http.route("/my/service-bookings/submit", type="http", auth="user",
@@ -323,6 +379,14 @@ class ServiceBookingPortal(http.Controller):
         partner = self._commercial_partner()
 
         def reject(code):
+            form = self._booking_form(post)
+            codes = [c for c in request.httprequest.form.getlist("service_code")
+                     if c in SERVICE_CODES] or SERVICE_CODES
+            try:
+                expected = int(_clean(post.get("expected_pallets")) or 0)
+            except (TypeError, ValueError):
+                expected = 0
+            form["summary"] = self._quote_summary(codes, expected)
             return request.render(
                 "prema_logistics_booking.portal_my_service_booking_new", {
                     "services": self._services(),
@@ -331,7 +395,7 @@ class ServiceBookingPortal(http.Controller):
                     "warehouse_tz": WAREHOUSE_TZ,
                     "page_name": "service_bookings",
                     "error": code,
-                    "form": self._booking_form(post),
+                    "form": form,
                 })
 
         codes = [c for c in request.httprequest.form.getlist("service_code")
@@ -351,6 +415,30 @@ class ServiceBookingPortal(http.Controller):
         notes = _clean(post.get("notes"))
         arrival = _local_input_to_utc(post.get("requested_arrival"))
         departure = _local_input_to_utc(post.get("requested_departure"))
+        summary = self._quote_summary(codes, expected)
+
+        # Acceptance is captured here, not in a second journey: the customer
+        # sees the services, quantities, rates, taxes and terms, and signs once.
+        accepted_name = _clean(post.get("accept_name"))
+        signature = post.get("accept_signature") or ""
+        accepted = (_clean(post.get("accept_terms")) == "1"
+                    and bool(accepted_name) and signature.startswith("data:image"))
+        if not accepted:
+            form = self._booking_form(post)
+            form["summary"] = summary
+            return request.render(
+                "prema_logistics_booking.portal_my_service_booking_new", {
+                    "services": self._services(),
+                    "ltl_code": LTL_CODE,
+                    "ftl_code": FTL_CODE,
+                    "warehouse_tz": WAREHOUSE_TZ,
+                    "page_name": "service_bookings",
+                    "error": "acceptance_required",
+                    "form": form,
+                })
+
+        # A service with no agreed rate cannot be silently accepted at zero.
+        needs_quotation = bool(summary["needs_rate"])
 
         # Space is promised BEFORE the order exists. The capacity report takes
         # the position locks, so what it reports free stays free for the
@@ -358,11 +446,15 @@ class ServiceBookingPortal(http.Controller):
         # here leaves no order and no stranded reservation behind.
         if expected > 0 and not (arrival and departure):
             return reject("appointment_required")
-        capacity = request.env["logistics.position.reservation"].sudo().pfl_capacity_report(
-            arrival, departure, expected) if expected > 0 else None
+        capacity = None
+        if expected > 0 and not needs_quotation:
+            capacity = request.env[
+                "logistics.position.reservation"].sudo().pfl_capacity_report(
+                    arrival, departure, expected)
         if capacity and not capacity["ok"]:
             form = self._booking_form(post)
             form["capacity_message"] = capacity["message"]
+            form["summary"] = summary
             return request.render(
                 "prema_logistics_booking.portal_my_service_booking_new", {
                     "services": self._services(),
@@ -484,10 +576,41 @@ class ServiceBookingPortal(http.Controller):
         # Now that the booking exists, take the space. The locks this
         # transaction already holds make this a formality; if anything did go
         # wrong the whole request rolls back, order included.
-        if expected > 0:
+        if expected > 0 and not needs_quotation:
             order.action_pfl_reserve_space()
 
-        return request.redirect("/my/service-bookings?msg=created")
+        # Record the acceptance on the commercial record — the evidence, and
+        # the rates and terms exactly as they were when the customer agreed.
+        snapshot = "\n".join(
+            "%s — %s x %s %s" % (row["name"], row["quantity"], row["rate"],
+                                 row["tax_label"])
+            for row in summary["rows"])
+        snapshot += "\n\n" + _("Estimated total: %(untaxed)s + %(tax)s tax = %(total)s") % {
+            "untaxed": summary["untaxed"], "tax": summary["tax"],
+            "total": summary["total"]}
+        try:
+            signature_b64 = signature.split(",", 1)[1]
+        except IndexError:
+            signature_b64 = False
+        order.write({
+            "x_pfl_accepted_at": fields.Datetime.now(),
+            "x_pfl_accepted_by_name": accepted_name,
+            "x_pfl_acceptance_signature": signature_b64,
+            "x_pfl_accepted_terms": snapshot + "\n\n" + (summary["terms"] or ""),
+            "x_pfl_acceptance_state": (
+                "subject_to_quotation" if needs_quotation else "accepted"),
+        })
+        order.message_post(body=_(
+            "Quotation%(suffix)s accepted by %(name)s in the portal and signed."
+            "<br/>%(terms)s",
+            suffix=(
+                _(" (subject to quotation for: %s)")
+                % ", ".join(summary["needs_rate"])) if needs_quotation else "",
+            name=accepted_name,
+            terms=snapshot.replace("\n", "<br/>")))
+
+        return request.redirect("/my/service-bookings?msg=%s" % (
+            "quotation" if needs_quotation else "created"))
 
     # ── customer pickup authorization ──────────────────────────────────
     @http.route("/my/service-bookings/<int:order_id>/pickup", type="http",

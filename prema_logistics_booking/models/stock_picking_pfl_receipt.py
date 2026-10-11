@@ -215,10 +215,16 @@ class StockPicking(models.Model):
             raise UserError(_("This transfer is not linked to a service booking."))
         Reservation = self.env["logistics.position.reservation"]
         if order.x_requested_arrival and order.x_requested_departure:
+            # One MORE position alongside the ones the booking already holds.
             order.pfl_check_capacity(
                 order.x_requested_arrival, order.x_requested_departure,
-                count=(order.x_expected_pallets or 0)
-                + self.pfl_prepared_pallet_count - (order.x_expected_pallets or 0) + 1)
+                count=1, exclude_own=False)
+        if self.state == "done":
+            raise UserError(_(
+                "%s is already validated. Freight that turns up after the "
+                "receipt is closed needs its own receipt — prepare a new one "
+                "from the booking so its space is checked and reserved too.",
+                self.name))
         move = self.move_ids.filtered(lambda m: m.state not in ("done", "cancel"))[:1]
         if not move:
             raise UserError(_("This receipt has no open line."))

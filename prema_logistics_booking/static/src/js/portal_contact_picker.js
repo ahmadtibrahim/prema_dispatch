@@ -252,10 +252,106 @@
         });
     }
 
+    // ── 4. signature pad (booking acceptance) ─────────────────────────
+    function wireSignaturePad() {
+        var canvas = document.getElementById("accept_signature_pad");
+        var hidden = document.getElementById("accept_signature");
+        if (!canvas || !hidden) { return; }
+        var ctx = canvas.getContext("2d");
+        var drawing = false;
+        var dirty = false;
+
+        function point(ev) {
+            var box = canvas.getBoundingClientRect();
+            return {
+                x: (ev.clientX - box.left) * (canvas.width / box.width),
+                y: (ev.clientY - box.top) * (canvas.height / box.height)
+            };
+        }
+
+        function start(ev) {
+            drawing = true;
+            dirty = true;
+            var p = point(ev);
+            ctx.beginPath();
+            ctx.moveTo(p.x, p.y);
+            ev.preventDefault();
+        }
+
+        function move(ev) {
+            if (!drawing) { return; }
+            var p = point(ev);
+            ctx.lineTo(p.x, p.y);
+            ctx.lineWidth = 2.2;
+            ctx.lineCap = "round";
+            ctx.strokeStyle = "#111";
+            ctx.stroke();
+            ev.preventDefault();
+        }
+
+        function stop() {
+            if (!drawing) { return; }
+            drawing = false;
+            hidden.value = dirty ? canvas.toDataURL("image/png") : "";
+        }
+
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.lineWidth = 2.2;
+        ctx.lineCap = "round";
+        ctx.strokeStyle = "#111";
+
+        canvas.addEventListener("pointerdown", start);
+        canvas.addEventListener("pointermove", move);
+        canvas.addEventListener("pointerup", stop);
+        canvas.addEventListener("pointerleave", stop);
+        canvas.addEventListener("pointercancel", stop);
+
+        var clear = document.createElement("button");
+        clear.type = "button";
+        clear.className = "btn btn-sm btn-link px-0 mt-1";
+        clear.textContent = "Clear signature";
+        clear.addEventListener("click", function () {
+            ctx.fillStyle = "#ffffff";
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            dirty = false;
+            hidden.value = "";
+        });
+        canvas.parentElement.appendChild(clear);
+
+        // Repaint a signature restored after a rejected submission.
+        if (hidden.value && hidden.value.indexOf("data:image") === 0) {
+            var img = new Image();
+            img.onload = function () { ctx.drawImage(img, 0, 0, canvas.width, canvas.height); };
+            img.src = hidden.value;
+            dirty = true;
+        }
+    }
+
+    // ── 5. an appointment is needed once pallets are involved ─────────
+    function wireAppointmentRequirement() {
+        var pallets = document.getElementById("expected_pallets");
+        var arrival = document.getElementById("requested_arrival");
+        var departure = document.getElementById("requested_departure");
+        if (!pallets || !arrival || !departure) { return; }
+        function sync() {
+            var needed = parseInt(pallets.value || "0", 10) > 0;
+            [arrival, departure].forEach(function (input) {
+                if (needed) { input.setAttribute("required", "required"); }
+                else { input.removeAttribute("required"); }
+            });
+        }
+        pallets.addEventListener("input", sync);
+        pallets.addEventListener("change", sync);
+        sync();
+    }
+
     function boot() {
         each(document.querySelectorAll(".contact-picker"), wirePicker);
         each(document.querySelectorAll(".field-help-toggle"), wireHelp);
         wireSubmitGuard();
+        wireSignaturePad();
+        wireAppointmentRequirement();
     }
 
     if (document.readyState === "loading") {

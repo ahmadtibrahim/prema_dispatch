@@ -278,7 +278,7 @@ class LogisticsPositionReservation(models.Model):
     # ── the allocation itself ──────────────────────────────────────────
     @api.model
     def pfl_reserve_positions(self, order, count, arrival, departure,
-                              package_ids=None, picking=None):
+                              package_ids=None, picking=None, exclude_order=False):
         """Reserve ``count`` positions for ``order``'s buffered window.
 
         All-or-nothing: if the window cannot take the whole booking, nothing is
@@ -298,7 +298,12 @@ class LogisticsPositionReservation(models.Model):
                 "Locations first."))
         self._pfl_lock_positions(candidates.ids)
 
-        available, blocked = self.pfl_availability(start, end, exclude_order=order)
+        # The booking's OWN reservations are real blockers: a top-up must take a
+        # DIFFERENT position, never re-claim one it already holds. Only a
+        # reschedule, which moves a booking onto a new window, passes
+        # exclude_order=True so it can keep the positions it already has.
+        available, blocked = self.pfl_availability(
+            start, end, exclude_order=order if exclude_order else None)
         if len(available) < count:
             detail = "; ".join(
                 "%s: %s" % (pos.display_name, reason)

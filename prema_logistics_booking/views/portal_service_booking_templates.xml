@@ -102,6 +102,13 @@
                     Your service booking request has been received. Our team will confirm the quotation.
                 </div>
             </t>
+            <t t-if="msg == 'quotation'">
+                <div class="alert alert-info mt-3" role="alert">
+                    Your request has been received and signed. It includes a service that needs
+                    an agreed rate, so it stays <strong>subject to quotation</strong> — our team
+                    will confirm the price, and warehouse space is reserved once it is agreed.
+                </div>
+            </t>
             <t t-if="msg == 'duplicate'">
                 <div class="alert alert-warning mt-3" role="alert">
                     You already have an open request with that reference — it is listed below.
@@ -182,6 +189,12 @@
             </t>
             <t t-if="error == 'ltl_ftl'">
                 <div class="alert alert-danger" role="alert">Choose either LTL or FTL — not both.</div>
+            </t>
+            <t t-if="error == 'acceptance_required'">
+                <div class="alert alert-danger" role="alert">
+                    Please review the rates and terms below, type your name, tick the box and
+                    sign before submitting.
+                </div>
             </t>
             <t t-if="error == 'capacity'">
                 <div class="alert alert-warning" role="alert">
@@ -433,6 +446,89 @@
                     </t>
                 </div>
 
+                <div class="card mb-3">
+                    <div class="card-header">
+                        <strong>Rates, taxes and terms</strong>
+                        <span t-if="rate_card" class="text-muted small ms-1">
+                            (indicative — the exact amount is confirmed on your quotation)
+                        </span>
+                    </div>
+                    <div class="card-body">
+                        <div class="table-responsive">
+                            <table class="table table-sm mb-2">
+                                <thead>
+                                    <tr><th>Service</th><th>What it covers</th>
+                                        <th class="text-end">Qty</th>
+                                        <th class="text-end">Rate</th>
+                                        <th>Tax</th>
+                                        <th class="text-end">Amount</th></tr>
+                                </thead>
+                                <tbody>
+                                    <t t-foreach="form.get('summary', {}).get('rows', [])" t-as="row">
+                                        <tr>
+                                            <td><t t-out="row['name']"/></td>
+                                            <td class="text-muted small"><t t-out="row['description']"/></td>
+                                            <td class="text-end"><t t-out="row['quantity']"/></td>
+                                            <td class="text-end"><t t-out="row['rate']"/></td>
+                                            <td class="small"><t t-out="row['tax_label']"/></td>
+                                            <td class="text-end"><t t-out="'%.2f' % row['subtotal']"/></td>
+                                        </tr>
+                                    </t>
+                                </tbody>
+                                <tfoot>
+                                    <tr><td colspan="5" class="text-end">Subtotal</td>
+                                        <td class="text-end"><t t-out="'%.2f' % form.get('summary', {}).get('untaxed', 0)"/></td></tr>
+                                    <tr><td colspan="5" class="text-end">Tax</td>
+                                        <td class="text-end"><t t-out="'%.2f' % form.get('summary', {}).get('tax', 0)"/></td></tr>
+                                    <tr class="fw-bold"><td colspan="5" class="text-end">Estimated total</td>
+                                        <td class="text-end"><t t-out="'%.2f' % form.get('summary', {}).get('total', 0)"/></td></tr>
+                                </tfoot>
+                            </table>
+                        </div>
+                        <t t-if="form.get('summary', {}).get('needs_rate')">
+                            <div class="alert alert-warning py-2" role="alert">
+                                These services need an agreed rate and stay subject to quotation
+                                until our team prices them:
+                                <t t-out="', '.join(form.get('summary', {}).get('needs_rate', []))"/>.
+                                Nothing is confirmed at zero.
+                            </div>
+                        </t>
+                        <div class="border rounded p-2 bg-100 small"
+                             t-if="form.get('summary', {}).get('terms')">
+                            <strong>PF Logistics Warehouse — Terms &amp; Conditions</strong>
+                            <div t-out="form.get('summary', {}).get('terms')"/>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card mb-3">
+                    <div class="card-header"><strong>Acceptance</strong></div>
+                    <div class="card-body">
+                        <div class="mb-2">
+                            <label class="form-label" for="accept_name">Your name</label>
+                            <input type="text" class="form-control" id="accept_name" name="accept_name"
+                                   t-att-value="form.get('accept_name') or ''"/>
+                        </div>
+                        <div class="form-check mb-2">
+                            <input class="form-check-input" type="checkbox" value="1"
+                                   id="accept_terms" name="accept_terms"
+                                   t-att-checked="form.get('accept_terms') == '1'"/>
+                            <label class="form-check-label" for="accept_terms">
+                                I accept the services, quantities, rates, taxes and terms above.
+                            </label>
+                        </div>
+                        <label class="form-label" for="accept_signature_pad">Signature</label>
+                        <div class="border rounded bg-white">
+                            <canvas id="accept_signature_pad" width="600" height="150"
+                                    style="width:100%; height:150px; touch-action:none;"></canvas>
+                        </div>
+                        <input type="hidden" id="accept_signature" name="accept_signature"
+                               t-att-value="form.get('accept_signature') or ''"/>
+                        <div class="form-text">Draw your signature above. On a phone, sign with
+                            your finger.</div>
+                    </div>
+                </div>
+
                 <div class="mb-3">
                     <label class="form-label" for="attachments">Attachments</label>
                     <input type="file" class="form-control" id="attachments" name="attachments" multiple="multiple"/>
@@ -460,6 +556,12 @@
 
             <t t-if="msg == 'saved'">
                 <div class="alert alert-success" role="alert">Pickup authorization saved.</div>
+            </t>
+            <t t-if="error == 'acceptance_required'">
+                <div class="alert alert-danger" role="alert">
+                    Please review the rates and terms below, type your name, tick the box and
+                    sign before submitting.
+                </div>
             </t>
             <t t-if="error == 'capacity'">
                 <div class="alert alert-warning" role="alert">
