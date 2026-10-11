@@ -24,8 +24,16 @@ class SaleOrder(models.Model):
         string="Position Reservations")
     pfl_reservation_count = fields.Integer(
         compute="_compute_pfl_reservation_count")
+    #: Only the RECEIPT carries the booking link among PFL-IN transfers; the
+    #: placement transfer shares the same link, so the domain keeps the two
+    #: apart. Without it the receipt pointer — and the pallet counts read from
+    #: it — resolved to whichever transfer came last.
     pfl_receipt_ids = fields.One2many(
-        "stock.picking", "x_service_booking_id", string="Warehouse Receipts")
+        "stock.picking", "x_service_booking_id", string="Warehouse Receipts",
+        domain=[("picking_type_id.sequence_code", "=", RECEIPT_TYPE_SEQUENCE)])
+    pfl_placement_ids = fields.One2many(
+        "stock.picking", "x_service_booking_id", string="Placement Transfers",
+        domain=[("picking_type_id.sequence_code", "=", PLACEMENT_TYPE_SEQUENCE)])
     pfl_receipt_id = fields.Many2one(
         "stock.picking", string="Current Receipt", compute="_compute_pfl_receipt")
     pfl_prepared_pallets = fields.Integer(
