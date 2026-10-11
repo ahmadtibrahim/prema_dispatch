@@ -18,6 +18,10 @@ class PflPalletScan(models.TransientModel):
 
     code = fields.Char(string="Pallet ID", required=True,
                        help="Scan or type the pallet barcode.")
+    picking_id = fields.Many2one(
+        "stock.picking", string="Transfer", readonly=True,
+        help="Set when the scanner was opened from a placement transfer, so a "
+             "pallet that is not on that transfer is refused.")
     result = fields.Selection(RESULT_SELECTION, default="pending")
     message = fields.Text(readonly=True)
 
@@ -59,6 +63,16 @@ class PflPalletScan(models.TransientModel):
         if not package:
             self.write({"result": "unknown",
                         "message": _("No pallet is registered under “%s”.", code)})
+            return self._reopen()
+        if self.picking_id and package not in self.picking_id.move_line_ids.mapped(
+                "package_id") | self.picking_id.move_line_ids.mapped("result_package_id"):
+            self.write({
+                "result": "unknown",
+                "message": _(
+                    "%(pkg)s is not on transfer %(transfer)s. Scan a pallet that "
+                    "belongs to this transfer.",
+                    pkg=package.name, transfer=self.picking_id.name),
+            })
             return self._reopen()
         payload = package.pfl_scan_payload()
         self.write({
@@ -109,9 +123,9 @@ class PflPalletScan(models.TransientModel):
                     want=self.reserved_position_id.complete_name,
                     got=self.scanned_position_id.complete_name),
             })
-            self.package_id.message_post(body=self.message)
+            self.package_id.pfl_log_placement(self.message)
             return self._reopen()
-        self.package_id.message_post(body=_(
+        self.package_id.pfl_log_placement(_(
             "Placement confirmed at %s by %s.",
             self.scanned_position_id.complete_name, self.env.user.name))
         self.write({

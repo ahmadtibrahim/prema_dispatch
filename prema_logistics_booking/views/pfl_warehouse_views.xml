@@ -86,28 +86,32 @@
             <xpath expr="//header" position="inside">
                 <button name="pfl_prepare_pallet_entries" type="object"
                         string="Prepare Pallets" class="btn-primary"
-                        invisible="not x_service_booking_id or state in ('done','cancel')"
+                        invisible="not x_service_booking_id or picking_type_id.sequence_code != 'PFL-IN' or state in ('done','cancel')"
                         help="One pallet entry and one pallet ID per expected pallet. Idempotent — running it again does not duplicate anything. Nothing is received by this."/>
                 <button name="action_pfl_confirm_received" type="object"
                         string="Confirm Received Count" class="btn-primary"
-                        invisible="not x_service_booking_id or state in ('done','cancel') or pfl_confirmed"
+                        invisible="not x_service_booking_id or picking_type_id.sequence_code != 'PFL-IN' or state in ('done','cancel') or pfl_confirmed"
                         help="Marks every pallet entry with a quantity as actually received. Edit a line first for a shortage or damage."/>
                 <button name="action_pfl_reset_confirmation" type="object"
                         string="Reopen Count" class="btn-secondary"
-                        invisible="not x_service_booking_id or not pfl_confirmed"/>
+                        invisible="not x_service_booking_id or picking_type_id.sequence_code != 'PFL-IN' or not pfl_confirmed"/>
                 <button name="action_pfl_add_pallet_entry" type="object"
                         string="Add Excess Pallet" class="btn-secondary"
-                        invisible="not x_service_booking_id or state in ('done','cancel')"
+                        invisible="not x_service_booking_id or picking_type_id.sequence_code != 'PFL-IN' or state in ('done','cancel')"
                         help="Freight that arrived beyond the booking. Reserves one more position before it is added."/>
                 <button name="action_pfl_create_placement_transfer" type="object"
                         string="Create Placement Transfer" class="btn-secondary"
-                        invisible="not x_service_booking_id or state != 'done'"/>
+                        invisible="not x_service_booking_id or picking_type_id.sequence_code != 'PFL-IN' or state != 'done'"/>
+                <button name="action_pfl_scan_placement" type="object"
+                        string="Scan Placement" class="btn-primary"
+                        invisible="not x_service_booking_id or picking_type_id.sequence_code != 'PFL-INT' or state in ('done','cancel')"
+                        help="Scan a pallet, then scan the position at the rack, to confirm it went where it is reserved. A wrong position is refused."/>
                 <button name="action_pfl_print_labels" type="object"
                         string="Print Pallet Labels" class="btn-secondary"
-                        invisible="not x_service_booking_id or not pfl_prepared_pallet_count"/>
+                        invisible="not x_service_booking_id or picking_type_id.sequence_code != 'PFL-IN' or not pfl_prepared_pallet_count"/>
                 <button name="action_pfl_print_cards" type="object"
                         string="Print Pallet Cards" class="btn-secondary"
-                        invisible="not x_service_booking_id or not pfl_prepared_pallet_count"
+                        invisible="not x_service_booking_id or picking_type_id.sequence_code != 'PFL-IN' or not pfl_prepared_pallet_count"
                         help="Same pallet ID and same position, printed as an off-pallet card for customers who do not allow labels on their pallets."/>
             </xpath>
             <xpath expr="//div[@name='button_box']" position="inside">
@@ -121,14 +125,20 @@
             </xpath>
             <xpath expr="//field[@name='origin']" position="after">
                 <field name="pfl_expected_pallet_count" string="Expected Pallets"
-                       readonly="1" invisible="not x_service_booking_id"/>
+                       readonly="1"
+                       invisible="picking_type_id.sequence_code != 'PFL-IN'"/>
                 <field name="pfl_prepared_pallet_count" string="Prepared Pallets"
-                       readonly="1" invisible="not x_service_booking_id"/>
+                       readonly="1"
+                       invisible="picking_type_id.sequence_code != 'PFL-IN'"/>
                 <field name="pfl_received_pallet_count" string="Confirmed Received"
-                       readonly="1" invisible="not x_service_booking_id"/>
-                <field name="pfl_confirmed" readonly="1" invisible="not x_service_booking_id"/>
+                       readonly="1"
+                       invisible="picking_type_id.sequence_code != 'PFL-IN'"/>
+                <field name="pfl_confirmed" readonly="1"
+                       invisible="picking_type_id.sequence_code != 'PFL-IN'"/>
                 <field name="pfl_confirmed_by_id" readonly="1"
-                       invisible="not x_service_booking_id or not pfl_confirmed"/>
+                       invisible="picking_type_id.sequence_code != 'PFL-IN' or not pfl_confirmed"/>
+                <field name="pfl_placement_summary" readonly="1"
+                       invisible="picking_type_id.sequence_code != 'PFL-INT'"/>
                 <field name="pfl_shortage_note" invisible="not x_service_booking_id"/>
             </xpath>
         </field>
@@ -141,7 +151,8 @@
         <field name="arch" type="xml">
             <form string="Pallet Scan">
                 <group>
-                    <field name="code" autofocus="autofocus" placeholder="Scan or type the pallet label"/>
+                    <field name="picking_id" invisible="not picking_id"/>
+                    <field name="code" autofocus="autofocus" placeholder="Scan or type the pallet ID"/>
                     <field name="result" widget="badge"
                            decoration-success="result in ('found','placed_ok')"
                            decoration-danger="result in ('unknown','placed_wrong')"

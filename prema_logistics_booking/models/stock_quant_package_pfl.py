@@ -54,6 +54,24 @@ class StockQuantPackage(models.Model):
                                 if reservation else ""),
         }
 
+    def pfl_log_placement(self, message):
+        """Record a placement note where it can actually live.
+
+        A package carries no chatter of its own, so the note goes on the
+        pallet's reservation — the record that owns the reserved position — and
+        falls back to the transfer it sits on.
+        """
+        self.ensure_one()
+        target = self.env["logistics.position.reservation"].sudo().search(
+            [("package_id", "=", self.id)], order="id desc", limit=1)
+        if not target:
+            target = self.env["stock.picking"].sudo().search(
+                ["|", ("move_line_ids.package_id", "=", self.id),
+                 ("move_line_ids.result_package_id", "=", self.id)], limit=1)
+        if target:
+            target.message_post(body=message)
+        return bool(target)
+
     def action_pfl_open_pallet(self):
         """Open the pallet form from anywhere it is shown."""
         self.ensure_one()

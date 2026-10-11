@@ -34,9 +34,29 @@ class StockPicking(models.Model):
     pfl_confirmed = fields.Boolean(string="Count Confirmed")
     pfl_confirmed_by_id = fields.Many2one("res.users", readonly=True, copy=False)
     pfl_confirmed_at = fields.Datetime(readonly=True, copy=False)
+    pfl_placement_summary = fields.Text(
+        string="Pallet → Position", compute="_compute_pfl_placement_summary")
     pfl_shortage_note = fields.Text(
         string="Receiving Notes",
         help="Shortages, damage or pallets held back at the dock.")
+
+    @api.depends("move_line_ids.package_id", "move_line_ids.location_dest_id",
+                 "move_ids.location_dest_id")
+    def _compute_pfl_placement_summary(self):
+        """The authoritative mapping this transfer will perform.
+
+        Read straight off the lines, so what the screen shows is what the
+        warehouse will do — and a mismatch is visible instead of implied.
+        """
+        for picking in self:
+            rows = []
+            for line in picking.move_line_ids.filtered(
+                    lambda l: l.state != "cancel"):
+                package = line.package_id or line.result_package_id
+                if package:
+                    rows.append("%s → %s" % (package.name,
+                                             line.location_dest_id.complete_name))
+            picking.pfl_placement_summary = "\n".join(sorted(rows)) or ""
 
     @api.depends("move_ids.product_uom_qty", "move_line_ids.quantity",
                  "move_line_ids.picked", "move_line_ids.result_package_id")
@@ -300,18 +320,128 @@ class StockPicking(models.Model):
         })
         placement.action_confirm()
         placement.action_assign()
-        # one move line per move, carrying the pallet that goes there
-        for move, package in zip(placement.move_ids, packages):
-            line = move.move_line_ids[:1]
-            if line:
-                line.write({"package_id": package.id,
-                            "quantity": 1.0,
-                            "location_dest_id": package.x_pfl_position_id.id})
+        # Never trust the engine's assignment order: bind every move to the
+        # pallet its OWN destination is reserved for, then rebuild the package
+        # levels from the result so lines, levels and reservations cannot
+        # disagree.
+        placement.pfl_bind_pallets_to_destinations()
         placement.message_post(body=_(
             "Placement transfer created for %s reserved position(s). Scan each "
             "position at the rack to confirm it went to the right place.",
             len(packages)))
         return self._pfl_open_picking(placement)
+
+    def pfl_bind_pallets_to_destinations(self):
+        """Point every move at the pallet its own destination is reserved for.
+
+        The pallet for a move is resolved **through that move's destination and
+        the destination's reservation** — never by matching list order, which
+        is what silently reversed a transfer when Odoo's own assignment came
+        back in a different order. Anything that cannot be resolved raises,
+        rather than guessing.
+        """
+        self.ensure_one()
+        order = self.x_service_booking_id
+        if not order:
+            raise UserError(_(
+                "This transfer is not linked to a service booking, so its "
+                "pallets cannot be matched to reserved positions."))
+        Reservation = self.env["logistics.position.reservation"].sudo()
+        reservations = order.pfl_reservation_ids.filtered(
+            lambda r: r.state == "reserved" and r.package_id)
+        # destination position -> the pallet reserved for it
+        by_position = {}
+        for reservation in reservations:
+            by_position.setdefault(reservation.location_id.id, reservation.package_id)
+
+        MoveLine = self.env["stock.move.line"].sudo()
+        PackageLevel = self.env["stock.package_level"].sudo()
+        PackageLevel.search([("picking_id", "=", self.id)]).unlink()
+
+        for move in self.move_ids.filtered(lambda m: m.state not in ("done", "cancel")):
+            package = by_position.get(move.location_dest_id.id)
+            if not package:
+                raise UserError(_(
+                    "Move %(move)s goes to %(dest)s, but no pallet is reserved "
+                    "for that position. Fix the reservation before creating the "
+                    "placement transfer.",
+                    move=move.name, dest=move.location_dest_id.complete_name))
+            lines = move.move_line_ids
+            line = lines[:1]
+            if not line:
+                line = MoveLine.create({
+                    "move_id": move.id,
+                    "picking_id": self.id,
+                    "product_id": move.product_id.id,
+                    "product_uom_id": move.product_id.uom_id.id,
+                    "quantity": 1.0,
+                    "picked": False,
+                    "location_id": move.location_id.id,
+                    "location_dest_id": move.location_dest_id.id,
+                })
+                lines = move.move_line_ids
+            (lines - line).unlink()
+            line.write({
+                "package_id": package.id,
+                "result_package_id": package.id,
+                "quantity": 1.0,
+                "location_id": move.location_id.id,
+                "location_dest_id": move.location_dest_id.id,
+            })
+            PackageLevel.with_context(from_put_in_pack=True).create({
+                "picking_id": self.id,
+                "package_id": package.id,
+                "location_id": package.location_id.id,
+                "location_dest_id": move.location_dest_id.id,
+                "move_line_ids": [(6, 0, line.ids)],
+                "company_id": self.company_id.id,
+            })
+
+        self._pfl_assert_placement_agrees()
+        return True
+
+    def _pfl_assert_placement_agrees(self):
+        """Fail loudly if pallet, destination, line and level ever disagree."""
+        self.ensure_one()
+        order = self.x_service_booking_id
+        by_position = {
+            reservation.location_id.id: reservation.package_id
+            for reservation in order.pfl_reservation_ids.filtered(
+                lambda r: r.state == "reserved" and r.package_id)
+        }
+        for move in self.move_ids.filtered(lambda m: m.state not in ("done", "cancel")):
+            expected = by_position.get(move.location_dest_id.id)
+            line_packages = move.move_line_ids.mapped("package_id")
+            level = self.package_level_ids.filtered(
+                lambda l: l.move_ids == move) or self.package_level_ids.filtered(
+                lambda l: l.package_id in line_packages)
+            if not expected or line_packages != expected:
+                raise UserError(_(
+                    "Placement mismatch: move %(move)s carries %(got)s but "
+                    "%(dest)s is reserved for %(want)s.",
+                    move=move.name,
+                    got=", ".join(line_packages.mapped("name")) or _("nothing"),
+                    dest=move.location_dest_id.complete_name,
+                    want=expected.name))
+            if level and level.location_dest_id != move.location_dest_id:
+                raise UserError(_(
+                    "Placement mismatch: pallet %(pkg)s is listed for %(got)s "
+                    "but its move goes to %(want)s.",
+                    pkg=level.package_id.name,
+                    got=level.location_dest_id.complete_name,
+                    want=move.location_dest_id.complete_name))
+        return True
+
+    def action_pfl_scan_placement(self):
+        """The action an internal placement transfer should offer."""
+        self.ensure_one()
+        return {
+            "type": "ir.actions.act_window",
+            "res_model": "pfl.pallet.scan",
+            "view_mode": "form",
+            "target": "new",
+            "context": {"default_picking_id": self.id},
+        }
 
     def action_pfl_print_labels(self):
         """Print one label per prepared pallet (or the off-pallet cards)."""

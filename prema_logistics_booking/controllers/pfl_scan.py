@@ -83,7 +83,7 @@ class PflScanController(http.Controller):
         elif not matches:
             result["error"] = "wrong position"
         else:
-            package.message_post(body=(
+            package.pfl_log_placement(
                 "Placement confirmed at %s by %s."
-                % (position.complete_name, request.env.user.name)))
+                % (position.complete_name, request.env.user.name))
         return self._json(result, 200 if matches else 409)
