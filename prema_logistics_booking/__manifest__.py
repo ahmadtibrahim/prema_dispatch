@@ -1,7 +1,7 @@
 {
     "name": "Prema Logistics Booking",
 
-    "version": "18.0.13.67.0",
+    "version": "18.0.13.68.0",
     "summary": "Private customer LTL/FTL pricing, scheduling, and booking engine "
                "for PremaFirm Logistics — integrates with Prema Dispatch.",
     "category": "Logistics",
@@ -98,8 +98,20 @@ root for architecture notes, decisions, and phase status.
         "views/request_quote_templates.xml",
         "reports/logistics_quotation_report.xml",
         "reports/carrier_rate_confirmation.xml",
+        # Proof of Pickup — the customer-facing record of one collection.
+        "reports/pickup_proof_report.xml",
     ],
     "assets": {
+        # Portal assets are served from the BUNDLE, never from a raw
+        # /<module>/static/... URL: Odoo resolves a module's static directory to
+        # the LAST addons path containing that module, and this module also
+        # exists (stale) under custom-addons — a direct URL silently 404s there,
+        # which is why the picker script never loaded. Bundled assets resolve
+        # through `odoo.addons.__path__` (first match), so the live tree wins.
+        "web.assets_frontend": [
+            "prema_logistics_booking/static/src/css/portal_service_booking.css",
+            "prema_logistics_booking/static/src/js/portal_contact_picker.js",
+        ],
         "web.assets_backend": [
             "prema_logistics_booking/static/src/css/where_we_go.css",
             "prema_logistics_booking/static/src/xml/where_we_go_action.xml",

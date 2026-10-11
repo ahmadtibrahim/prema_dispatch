@@ -2,32 +2,94 @@
 <odoo>
 
 <!-- ====================================================================
-     Portal — Service Bookings (Phase 1 + pickup authorization)
+     Portal — Service Bookings (warehouse services + pickup authorization)
 
      Counterparties are chosen from the customer's OWN saved contacts via a
      searchable picker (never a global directory, never free text). The request
      becomes a draft sale.order designated `x_warehouse_service`.
+
+     Warehouse appointment times are entered and shown in America/Toronto —
+     see the controller for the storage conversion.
      ==================================================================== -->
 
-<!-- A searchable contact picker + inline "add new contact".
-     Data is read from /my/contacts/search and written to /my/contacts/quick-create,
-     both of which are scoped to the logged-in user on the server. -->
+<!-- Breadcrumb: the customer's way back to the service-booking list.
+     Note this does NOT name a context variable `order`: `purchase`'s portal
+     breadcrumb renders "Purchase Orders" whenever a bare `order` is in the
+     rendering context, which is exactly how this page used to be mislabelled. -->
+<template id="portal_breadcrumbs_service_booking" name="Portal layout: Service Booking crumb"
+          inherit_id="portal.portal_breadcrumbs" priority="45">
+    <xpath expr="//ol[hasclass('o_portal_submenu')]" position="inside">
+        <li t-if="page_name == 'service_booking'" class="breadcrumb-item">
+            <a href="/my/service-bookings">Service Bookings</a>
+        </li>
+    </xpath>
+</template>
+
+<!-- "?" help beside a field: a real button, so it opens on click, tap and
+     keyboard (Enter/Space) — never hover-only. -->
+<template id="portal_field_help_toggle" name="Portal: Field help toggle">
+    <button type="button" class="btn btn-sm btn-link p-0 lh-1 field-help-toggle"
+            t-att-aria-controls="help_id" aria-expanded="false"
+            t-att-aria-label="'Help: %s' % help_label"
+            t-att-title="'Help: %s' % help_label">?</button>
+</template>
+
+<template id="portal_field_help_body" name="Portal: Field help text">
+    <div class="field-help-text d-none small text-muted border-start border-2 ps-2 mt-1"
+         t-att-id="help_id" role="note">
+        <t t-out="help_body"/>
+    </div>
+</template>
+
+<!-- A searchable contact picker + inline "create this contact".
+     Reads /my/contacts/search and writes /my/contacts/quick-create, both
+     scoped to the logged-in user on the server. The hidden input is what the
+     form submits; the visible text is submitted alongside it so the server can
+     tell "typed a name but never picked one" from "left it blank". -->
 <template id="portal_contact_picker" name="Portal: Contact Picker">
-    <div class="mb-3 contact-picker position-relative" t-att-data-field="field">
-        <label class="form-label" t-att-for="field"><t t-out="label"/></label>
-        <input type="text" class="form-control contact-picker-input" t-att-id="field"
-               autocomplete="off" t-att-placeholder="placeholder or ''"
-               t-att-value="value or ''"/>
-        <input type="hidden" t-att-name="field" t-att-value="value_id or ''"/>
+    <div class="mb-3 contact-picker position-relative"
+         t-att-data-field="field" t-att-data-label="label"
+         t-att-data-required="required and '1' or '0'">
+        <label class="form-label" t-att-for="field">
+            <t t-out="label"/>
+            <t t-call="prema_logistics_booking.portal_field_help_toggle">
+                <t t-set="help_id" t-value="'help_%s' % field"/>
+                <t t-set="help_label" t-value="label"/>
+            </t>
+            <span t-if="required" class="badge text-bg-primary ms-1">Required</span>
+            <span t-else="" class="text-muted small ms-1">(optional)</span>
+        </label>
+        <input type="text" class="form-control contact-picker-input"
+               t-att-id="field" autocomplete="off"
+               t-att-name="'%s_text' % field"
+               t-att-placeholder="placeholder or ''"
+               t-att-value="value or ''"
+               t-att-required="'required' if required else None"
+               t-att-aria-describedby="'help_%s' % field"/>
+        <input type="hidden" class="contact-picker-value"
+               t-att-name="field" t-att-value="value_id or ''"/>
         <div class="list-group contact-picker-results d-none position-absolute w-100 shadow"
-             style="z-index: 1050;"/>
+             role="listbox" style="z-index: 1050;"/>
+        <div class="alert alert-danger py-2 px-3 mt-1 mb-0 d-none contact-picker-error" role="alert"/>
         <button type="button" class="btn btn-sm btn-link px-0 contact-picker-add">+ Add new contact</button>
         <div class="border rounded p-2 mt-1 d-none contact-picker-new bg-100">
-            <input type="text" class="form-control form-control-sm mb-1 cp-new-name" placeholder="Company or individual name"/>
-            <input type="text" class="form-control form-control-sm mb-1 cp-new-phone" placeholder="Phone (optional)"/>
+            <label class="form-label small mb-1">New contact name</label>
+            <input type="text" class="form-control form-control-sm mb-1 cp-new-name"
+                   placeholder="Company or individual name"/>
+            <label class="form-label small mb-1">Type</label>
+            <select class="form-select form-select-sm mb-1 cp-new-type">
+                <option value="company">Company / Carrier</option>
+                <option value="individual">Individual</option>
+            </select>
+            <input type="text" class="form-control form-control-sm mb-1 cp-new-phone"
+                   placeholder="Phone (optional)"/>
             <button type="button" class="btn btn-sm btn-primary contact-picker-create">Save and select</button>
+            <div class="form-text">Only the name is required.</div>
         </div>
-        <div class="form-text" t-if="help"><t t-out="help"/></div>
+        <t t-call="prema_logistics_booking.portal_field_help_body">
+            <t t-set="help_id" t-value="'help_%s' % field"/>
+            <t t-set="help_body" t-value="help"/>
+        </t>
     </div>
 </template>
 
@@ -58,15 +120,18 @@
                         </tr>
                     </thead>
                     <tbody>
-                        <t t-foreach="orders" t-as="o">
+                        <t t-foreach="rows" t-as="row">
                             <tr>
-                                <td><a t-att-href="'/my/orders/%s' % o.id" t-field="o.name"/></td>
-                                <td><span t-field="o.client_order_ref"/></td>
-                                <td><span t-field="o.x_expected_pallets"/></td>
-                                <td><span t-field="o.x_requested_arrival"/></td>
-                                <td><span t-field="o.state"/></td>
-                                <td><span t-field="o.amount_total" t-options='{"widget": "monetary", "display_currency": o.currency_id}'/></td>
-                                <td><a t-att-href="'/my/service-bookings/%s/pickup' % o.id" class="btn btn-sm btn-link">Pickup authorization</a></td>
+                                <td><a t-att-href="'/my/orders/%s' % row['order'].id" t-field="row['order'].name"/></td>
+                                <td><span t-field="row['order'].client_order_ref"/></td>
+                                <td><span t-field="row['order'].x_expected_pallets"/></td>
+                                <td>
+                                    <t t-if="row['arrival_local']"><t t-out="row['arrival_local']"/></t>
+                                    <t t-else="">—</t>
+                                </td>
+                                <td><span t-field="row['order'].state"/></td>
+                                <td><span t-field="row['order'].amount_total" t-options='{"widget": "monetary", "display_currency": row["order"].currency_id}'/></td>
+                                <td><a t-att-href="'/my/service-bookings/%s/pickup' % row['order'].id" class="btn btn-sm btn-link">Pickup authorization</a></td>
                             </tr>
                         </t>
                     </tbody>
@@ -89,38 +154,117 @@
             <t t-if="error == 'ltl_ftl'">
                 <div class="alert alert-danger" role="alert">Choose either LTL or FTL — not both.</div>
             </t>
+            <t t-if="error == 'party_required'">
+                <div class="alert alert-danger" role="alert">
+                    Name the company or person authorized to collect your goods. You do not need
+                    to know the driver's name yet.
+                </div>
+            </t>
+            <t t-if="error in ('pickup_party_contact_id_unresolved', 'freight_owner_contact_id_unresolved', 'recipient_contact_id_unresolved')">
+                <div class="alert alert-danger" role="alert">
+                    One of the contacts you typed was never selected. Pick an existing contact from
+                    the list, or use “+ Add new contact”, so we know which company you mean.
+                </div>
+            </t>
             <form action="/my/service-bookings/submit" method="post" enctype="multipart/form-data"
-                  class="col-lg-8" id="service_booking_form">
+                  class="col-lg-8 contact-picker-form" id="service_booking_form">
                 <input type="hidden" name="csrf_token" t-att-value="request.csrf_token()"/>
+
                 <div class="mb-3">
-                    <label class="form-label fw-bold">Services</label>
-                    <t t-foreach="services" t-as="s">
-                        <div class="form-check">
-                            <input class="form-check-input" type="checkbox" name="service_code"
-                                   t-att-value="s.default_code" t-att-id="'svc_%s' % s.id"/>
-                            <label class="form-check-label" t-att-for="'svc_%s' % s.id">
-                                <span t-field="s.display_name"/>
-                            </label>
-                        </div>
+                    <label class="form-label fw-bold" for="svc_group">
+                        Services
+                        <t t-call="prema_logistics_booking.portal_field_help_toggle">
+                            <t t-set="help_id" t-value="'help_services'"/>
+                            <t t-set="help_label" t-value="'Services'"/>
+                        </t>
+                        <span class="badge text-bg-primary ms-1">Required</span>
+                    </label>
+                    <div id="svc_group">
+                        <t t-foreach="services" t-as="s">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" name="service_code"
+                                       t-att-value="s.default_code" t-att-id="'svc_%s' % s.id"
+                                       t-att-checked="s.default_code in (form.get('service_codes') or [])"/>
+                                <label class="form-check-label" t-att-for="'svc_%s' % s.id">
+                                    <span t-field="s.display_name"/>
+                                </label>
+                            </div>
+                        </t>
+                    </div>
+                    <t t-call="prema_logistics_booking.portal_field_help_body">
+                        <t t-set="help_id" t-value="'help_services'"/>
+                        <t t-set="help_body" t-value="'Choose what you need done at our warehouse. LTL and FTL cannot be combined — LTL is priced per pallet, FTL is one flat fee.'"/>
                     </t>
-                    <div class="form-text">LTL and FTL cannot be requested together.</div>
                 </div>
+
                 <div class="mb-3">
-                    <label class="form-label" for="expected_pallets">Expected Pallets</label>
-                    <input type="number" min="0" class="form-control" id="expected_pallets" name="expected_pallets"/>
+                    <label class="form-label" for="expected_pallets">
+                        Expected Pallets
+                        <t t-call="prema_logistics_booking.portal_field_help_toggle">
+                            <t t-set="help_id" t-value="'help_pallets'"/>
+                            <t t-set="help_label" t-value="'Expected Pallets'"/>
+                        </t>
+                        <span class="text-muted small ms-1">(optional)</span>
+                    </label>
+                    <input type="number" min="0" class="form-control" id="expected_pallets" name="expected_pallets"
+                           t-att-value="form.get('expected_pallets') or ''"/>
+                    <t t-call="prema_logistics_booking.portal_field_help_body">
+                        <t t-set="help_id" t-value="'help_pallets'"/>
+                        <t t-set="help_body" t-value="'How many pallets you expect to send. Used to price LTL and to reserve dock space. Required when you request LTL.'"/>
+                    </t>
                 </div>
+
                 <div class="mb-3">
-                    <label class="form-label" for="client_order_ref">Your PO / Reference</label>
-                    <input type="text" class="form-control" id="client_order_ref" name="client_order_ref"/>
+                    <label class="form-label" for="client_order_ref">
+                        Your PO / Reference
+                        <t t-call="prema_logistics_booking.portal_field_help_toggle">
+                            <t t-set="help_id" t-value="'help_po'"/>
+                            <t t-set="help_label" t-value="'Your PO / Reference'"/>
+                        </t>
+                        <span class="text-muted small ms-1">(optional)</span>
+                    </label>
+                    <input type="text" class="form-control" id="client_order_ref" name="client_order_ref"
+                           t-att-value="form.get('client_order_ref') or ''"/>
+                    <t t-call="prema_logistics_booking.portal_field_help_body">
+                        <t t-set="help_id" t-value="'help_po'"/>
+                        <t t-set="help_body" t-value="'Your own reference for this booking. It appears on the paperwork and on your Proof of Pickup. Submitting the same reference again reuses the open request instead of creating a second one.'"/>
+                    </t>
                 </div>
+
                 <div class="row">
                     <div class="col-md-6 mb-3">
-                        <label class="form-label" for="requested_arrival">Requested Arrival</label>
-                        <input type="datetime-local" class="form-control" id="requested_arrival" name="requested_arrival"/>
+                        <label class="form-label" for="requested_arrival">
+                            Requested Arrival
+                            <t t-call="prema_logistics_booking.portal_field_help_toggle">
+                                <t t-set="help_id" t-value="'help_arrival'"/>
+                                <t t-set="help_label" t-value="'Requested Arrival'"/>
+                            </t>
+                            <span class="text-muted small ms-1">(optional)</span>
+                        </label>
+                        <input type="datetime-local" class="form-control" id="requested_arrival"
+                               name="requested_arrival" t-att-value="form.get('requested_arrival') or ''"/>
+                        <div class="form-text">Warehouse time — <t t-out="warehouse_tz"/>.</div>
+                        <t t-call="prema_logistics_booking.portal_field_help_body">
+                            <t t-set="help_id" t-value="'help_arrival'"/>
+                            <t t-set="help_body" t-value="'When you would like the goods to reach our dock, in Toronto time. Our team confirms the actual appointment.'"/>
+                        </t>
                     </div>
                     <div class="col-md-6 mb-3">
-                        <label class="form-label" for="requested_departure">Requested Departure</label>
-                        <input type="datetime-local" class="form-control" id="requested_departure" name="requested_departure"/>
+                        <label class="form-label" for="requested_departure">
+                            Requested Departure
+                            <t t-call="prema_logistics_booking.portal_field_help_toggle">
+                                <t t-set="help_id" t-value="'help_departure'"/>
+                                <t t-set="help_label" t-value="'Requested Departure'"/>
+                            </t>
+                            <span class="text-muted small ms-1">(optional)</span>
+                        </label>
+                        <input type="datetime-local" class="form-control" id="requested_departure"
+                               name="requested_departure" t-att-value="form.get('requested_departure') or ''"/>
+                        <div class="form-text">Warehouse time — <t t-out="warehouse_tz"/>.</div>
+                        <t t-call="prema_logistics_booking.portal_field_help_body">
+                            <t t-set="help_id" t-value="'help_departure'"/>
+                            <t t-set="help_body" t-value="'When you expect the goods to leave our dock, in Toronto time. Used to plan dock space and storage.'"/>
+                        </t>
                     </div>
                 </div>
 
@@ -129,52 +273,127 @@
                         <t t-call="prema_logistics_booking.portal_contact_picker">
                             <t t-set="field" t-value="'freight_owner_contact_id'"/>
                             <t t-set="label" t-value="'Freight Owner'"/>
-                            <t t-set="help" t-value="'Who owns the goods. Leave empty if that is you.'"/>
+                            <t t-set="required" t-value="False"/>
+                            <t t-set="value" t-value="form.get('freight_owner_text') or ''"/>
+                            <t t-set="value_id" t-value="form.get('freight_owner_id') or ''"/>
+                            <t t-set="help" t-value="'Who owns the goods. Leave blank if your company owns them.'"/>
                         </t>
                     </div>
                     <div class="col-md-4">
                         <t t-call="prema_logistics_booking.portal_contact_picker">
                             <t t-set="field" t-value="'recipient_contact_id'"/>
                             <t t-set="label" t-value="'Delivery Recipient'"/>
-                            <t t-set="help" t-value="'Who the goods are going to. Leave empty if that is you.'"/>
+                            <t t-set="required" t-value="False"/>
+                            <t t-set="value" t-value="form.get('recipient_text') or ''"/>
+                            <t t-set="value_id" t-value="form.get('recipient_id') or ''"/>
+                            <t t-set="help" t-value="'The final company or person receiving the goods after pickup. This may be different from the carrier collecting them. Optional.'"/>
                         </t>
                     </div>
                     <div class="col-md-4">
                         <t t-call="prema_logistics_booking.portal_contact_picker">
                             <t t-set="field" t-value="'pickup_party_contact_id'"/>
                             <t t-set="label" t-value="'Authorized Pickup Party'"/>
-                            <t t-set="help" t-value="'The company or individual permitted to collect the goods.'"/>
+                            <t t-set="required" t-value="True"/>
+                            <t t-set="value" t-value="form.get('pickup_party_text') or ''"/>
+                            <t t-set="value_id" t-value="form.get('pickup_party_id') or ''"/>
+                            <t t-set="help" t-value="'The company or individual you permit to collect your goods. Required. You do not need to know the driver’s name yet.'"/>
                         </t>
                     </div>
                 </div>
                 <p class="text-muted small">
-                    “If not you” means <span t-esc="request.env.user.partner_id.commercial_partner_id.name"/>,
+                    “Your company” means <span t-esc="request.env.user.partner_id.commercial_partner_id.name"/>,
                     the company you are booking for — not PF Logistics.
                 </p>
 
-                <h6 class="mt-3">Driver details (optional — you can add these later, before collection)</h6>
+                <h6 class="mt-3">Driver details (all optional — our warehouse records the actual driver at pickup)</h6>
                 <div class="row">
                     <div class="col-md-4 mb-3">
-                        <label class="form-label" for="driver_name">Driver Name</label>
-                        <input type="text" class="form-control" id="driver_name" name="driver_name"/>
+                        <label class="form-label" for="driver_name">
+                            Driver Name
+                            <t t-call="prema_logistics_booking.portal_field_help_toggle">
+                                <t t-set="help_id" t-value="'help_driver_name'"/>
+                                <t t-set="help_label" t-value="'Driver Name'"/>
+                            </t>
+                            <span class="text-muted small ms-1">(optional)</span>
+                        </label>
+                        <input type="text" class="form-control" id="driver_name" name="driver_name"
+                               t-att-value="form.get('driver_name') or ''"/>
+                        <t t-call="prema_logistics_booking.portal_field_help_body">
+                            <t t-set="help_id" t-value="'help_driver_name'"/>
+                            <t t-set="help_body" t-value="'Optional. Enter it if known. Our warehouse records the actual collecting driver at pickup.'"/>
+                        </t>
                     </div>
                     <div class="col-md-4 mb-3">
-                        <label class="form-label" for="driver_phone">Driver Phone</label>
-                        <input type="text" class="form-control" id="driver_phone" name="driver_phone"/>
+                        <label class="form-label" for="driver_phone">
+                            Driver Phone
+                            <t t-call="prema_logistics_booking.portal_field_help_toggle">
+                                <t t-set="help_id" t-value="'help_driver_phone'"/>
+                                <t t-set="help_label" t-value="'Driver Phone'"/>
+                            </t>
+                            <span class="text-muted small ms-1">(optional)</span>
+                        </label>
+                        <input type="text" class="form-control" id="driver_phone" name="driver_phone"
+                               t-att-value="form.get('driver_phone') or ''"/>
+                        <t t-call="prema_logistics_booking.portal_field_help_body">
+                            <t t-set="help_id" t-value="'help_driver_phone'"/>
+                            <t t-set="help_body" t-value="'Optional contact number for the collecting driver.'"/>
+                        </t>
                     </div>
                     <div class="col-md-4 mb-3">
-                        <label class="form-label" for="truck_details">Truck / Plate</label>
-                        <input type="text" class="form-control" id="truck_details" name="truck_details"/>
+                        <label class="form-label" for="truck_details">
+                            Truck / Plate
+                            <t t-call="prema_logistics_booking.portal_field_help_toggle">
+                                <t t-set="help_id" t-value="'help_truck'"/>
+                                <t t-set="help_label" t-value="'Truck / Plate'"/>
+                            </t>
+                            <span class="text-muted small ms-1">(optional)</span>
+                        </label>
+                        <input type="text" class="form-control" id="truck_details" name="truck_details"
+                               t-att-value="form.get('truck_details') or ''"/>
+                        <t t-call="prema_logistics_booking.portal_field_help_body">
+                            <t t-set="help_id" t-value="'help_truck'"/>
+                            <t t-set="help_body" t-value="'Optional truck or licence plate details, if known.'"/>
+                        </t>
                     </div>
                 </div>
 
                 <div class="mb-3">
-                    <label class="form-label" for="notes">Freight Description / Notes</label>
-                    <textarea class="form-control" id="notes" name="notes" rows="4"></textarea>
+                    <label class="form-label" for="customer_instructions">
+                        Instructions for the Dock
+                        <t t-call="prema_logistics_booking.portal_field_help_toggle">
+                            <t t-set="help_id" t-value="'help_dock'"/>
+                            <t t-set="help_label" t-value="'Instructions for the Dock'"/>
+                        </t>
+                        <span class="text-muted small ms-1">(optional)</span>
+                    </label>
+                    <textarea class="form-control" id="customer_instructions" name="customer_instructions"
+                              rows="2"><t t-out="form.get('customer_instructions') or ''"/></textarea>
+                    <t t-call="prema_logistics_booking.portal_field_help_body">
+                        <t t-set="help_id" t-value="'help_dock'"/>
+                        <t t-set="help_body" t-value="'Special loading instructions or restrictions for this pickup.'"/>
+                    </t>
                 </div>
+
+                <div class="mb-3">
+                    <label class="form-label" for="notes">
+                        Freight Description / Notes
+                        <t t-call="prema_logistics_booking.portal_field_help_toggle">
+                            <t t-set="help_id" t-value="'help_notes'"/>
+                            <t t-set="help_label" t-value="'Freight Description / Notes'"/>
+                        </t>
+                        <span class="text-muted small ms-1">(optional)</span>
+                    </label>
+                    <textarea class="form-control" id="notes" name="notes" rows="4"><t t-out="form.get('notes') or ''"/></textarea>
+                    <t t-call="prema_logistics_booking.portal_field_help_body">
+                        <t t-set="help_id" t-value="'help_notes'"/>
+                        <t t-set="help_body" t-value="'Anything else we should know — what the freight is, how it is packed, or special handling.'"/>
+                    </t>
+                </div>
+
                 <div class="mb-3">
                     <label class="form-label" for="attachments">Attachments</label>
                     <input type="file" class="form-control" id="attachments" name="attachments" multiple="multiple"/>
+                    <div class="form-text">Optional — packing lists, photos or paperwork.</div>
                 </div>
                 <div class="mb-4">
                     <button type="submit" class="btn btn-primary">Submit Request</button>
@@ -182,67 +401,164 @@
                 </div>
             </form>
         </div>
-        <script type="text/javascript" src="/prema_logistics_booking/static/src/js/portal_contact_picker.js"></script>
     </t>
 </template>
 
 <template id="portal_service_booking_pickup" name="Portal: Pickup Authorization">
     <t t-call="portal.portal_layout">
         <div class="container">
-            <h3 class="my-4">Pickup Authorization — <span t-field="order.name"/></h3>
+            <h3 class="my-4">Pickup Authorization — <span t-field="booking.name"/></h3>
+            <p class="text-muted">
+                Requested appointment:
+                <t t-if="arrival_local"><t t-out="arrival_local"/></t><t t-else="">—</t>
+                to
+                <t t-if="departure_local"><t t-out="departure_local"/></t><t t-else="">—</t>
+            </p>
+
             <t t-if="msg == 'saved'">
                 <div class="alert alert-success" role="alert">Pickup authorization saved.</div>
             </t>
-            <t t-if="msg == 'collected'">
-                <div class="alert alert-warning" role="alert">
-                    This pickup has already been collected — its authorization can no longer be changed.
+            <t t-if="error == 'party_required'">
+                <div class="alert alert-danger" role="alert">
+                    Name the company or person authorized to collect your goods — this is the only
+                    required field here. You do not need to know the driver's name.
+                </div>
+            </t>
+            <t t-if="error == 'party_unresolved'">
+                <div class="alert alert-danger" role="alert">
+                    You typed a company but never selected it. Pick it from the suggestions, or use
+                    “+ Add new contact”, so we know exactly which company may collect.
+                </div>
+            </t>
+            <t t-if="error == 'recipient_contact_id_unresolved'">
+                <div class="alert alert-danger" role="alert">
+                    You typed a delivery recipient but never selected it. Pick it from the
+                    suggestions, or use “+ Add new contact”.
                 </div>
             </t>
 
-            <form t-if="collection.state != 'collected'"
-                  t-att-action="'/my/service-bookings/%s/pickup/save' % order.id" method="post" class="col-lg-8">
+            <div t-if="pending" class="alert alert-info py-2" role="status">
+                Saving updates authorization <span t-field="pending.name"/>
+                (<span t-field="pending.display_status"/>).
+            </div>
+            <div t-if="not pending and latest" class="alert alert-secondary py-2" role="status">
+                Your previous pickup (<span t-field="latest.name"/>) is
+                <span t-field="latest.display_status"/>. Saving here authorizes a
+                <strong>new</strong> pickup — it never changes the completed one.
+            </div>
+
+            <form t-att-action="'/my/service-bookings/%s/pickup/save' % booking.id" method="post"
+                  class="col-lg-8 contact-picker-form">
                 <input type="hidden" name="csrf_token" t-att-value="request.csrf_token()"/>
                 <div class="row">
                     <div class="col-md-6">
                         <t t-call="prema_logistics_booking.portal_contact_picker">
                             <t t-set="field" t-value="'pickup_party_contact_id'"/>
                             <t t-set="label" t-value="'Authorized Pickup Party'"/>
-                            <t t-set="value" t-value="collection.authorized_contact_name"/>
+                            <t t-set="required" t-value="True"/>
+                            <t t-set="value" t-value="form.get('party_text') or ''"/>
+                            <t t-set="value_id" t-value="form.get('party_id') or ''"/>
+                            <t t-set="help" t-value="'The company or individual you permit to collect your goods. Required. You do not need to know the driver’s name yet.'"/>
                         </t>
                     </div>
                     <div class="col-md-6">
                         <t t-call="prema_logistics_booking.portal_contact_picker">
                             <t t-set="field" t-value="'recipient_contact_id'"/>
                             <t t-set="label" t-value="'Delivery Recipient'"/>
+                            <t t-set="required" t-value="False"/>
+                            <t t-set="value" t-value="form.get('recipient_text') or ''"/>
+                            <t t-set="value_id" t-value="form.get('recipient_id') or ''"/>
+                            <t t-set="help" t-value="'The final company or person receiving the goods after pickup. This may be different from the carrier collecting them. Optional.'"/>
                         </t>
                     </div>
                 </div>
+                <div t-if="form.get('previous_party')" class="alert alert-light border py-2" role="status">
+                    Your earlier authorization named <strong t-out="form.get('previous_party')"/>. Its saved
+                    contact is no longer in your address book, so please choose the party again.
+                </div>
+
+                <h6 class="mt-2">Driver details (all optional)</h6>
                 <div class="row">
                     <div class="col-md-4 mb-3">
-                        <label class="form-label" for="driver_name">Driver Name</label>
-                        <input type="text" class="form-control" id="driver_name" name="driver_name"
-                               t-att-value="collection.driver_name or ''"/>
+                        <label class="form-label" for="p_driver_name">
+                            Driver Name
+                            <t t-call="prema_logistics_booking.portal_field_help_toggle">
+                                <t t-set="help_id" t-value="'help_driver_name'"/>
+                                <t t-set="help_label" t-value="'Driver Name'"/>
+                            </t>
+                            <span class="text-muted small ms-1">(optional)</span>
+                        </label>
+                        <input type="text" class="form-control" id="p_driver_name" name="driver_name"
+                               t-att-value="form.get('driver_name') or ''"/>
+                        <t t-call="prema_logistics_booking.portal_field_help_body">
+                            <t t-set="help_id" t-value="'help_driver_name'"/>
+                            <t t-set="help_body" t-value="'Optional. Enter it if known. Our warehouse records the actual collecting driver at pickup.'"/>
+                        </t>
                     </div>
                     <div class="col-md-4 mb-3">
-                        <label class="form-label" for="driver_phone">Driver Phone</label>
-                        <input type="text" class="form-control" id="driver_phone" name="driver_phone"
-                               t-att-value="collection.driver_phone or ''"/>
+                        <label class="form-label" for="p_driver_phone">
+                            Driver Phone
+                            <t t-call="prema_logistics_booking.portal_field_help_toggle">
+                                <t t-set="help_id" t-value="'help_driver_phone'"/>
+                                <t t-set="help_label" t-value="'Driver Phone'"/>
+                            </t>
+                            <span class="text-muted small ms-1">(optional)</span>
+                        </label>
+                        <input type="text" class="form-control" id="p_driver_phone" name="driver_phone"
+                               t-att-value="form.get('driver_phone') or ''"/>
+                        <t t-call="prema_logistics_booking.portal_field_help_body">
+                            <t t-set="help_id" t-value="'help_driver_phone'"/>
+                            <t t-set="help_body" t-value="'Optional contact number for the collecting driver.'"/>
+                        </t>
                     </div>
                     <div class="col-md-4 mb-3">
-                        <label class="form-label" for="truck_details">Truck / Plate</label>
-                        <input type="text" class="form-control" id="truck_details" name="truck_details"
-                               t-att-value="collection.truck_details or ''"/>
+                        <label class="form-label" for="p_truck_details">
+                            Truck / Plate
+                            <t t-call="prema_logistics_booking.portal_field_help_toggle">
+                                <t t-set="help_id" t-value="'help_truck'"/>
+                                <t t-set="help_label" t-value="'Truck / Plate'"/>
+                            </t>
+                            <span class="text-muted small ms-1">(optional)</span>
+                        </label>
+                        <input type="text" class="form-control" id="p_truck_details" name="truck_details"
+                               t-att-value="form.get('truck_details') or ''"/>
+                        <t t-call="prema_logistics_booking.portal_field_help_body">
+                            <t t-set="help_id" t-value="'help_truck'"/>
+                            <t t-set="help_body" t-value="'Optional truck or licence plate details, if known.'"/>
+                        </t>
                     </div>
                 </div>
                 <div class="mb-3">
-                    <label class="form-label" for="pickup_reference">Pickup Reference</label>
-                    <input type="text" class="form-control" id="pickup_reference" name="pickup_reference"
-                           t-att-value="collection.pickup_reference or ''"/>
+                    <label class="form-label" for="p_pickup_reference">
+                        Pickup Reference
+                        <t t-call="prema_logistics_booking.portal_field_help_toggle">
+                            <t t-set="help_id" t-value="'help_pickup_ref'"/>
+                            <t t-set="help_label" t-value="'Pickup Reference'"/>
+                        </t>
+                        <span class="text-muted small ms-1">(optional)</span>
+                    </label>
+                    <input type="text" class="form-control" id="p_pickup_reference" name="pickup_reference"
+                           t-att-value="form.get('pickup_reference') or ''"/>
+                    <t t-call="prema_logistics_booking.portal_field_help_body">
+                        <t t-set="help_id" t-value="'help_pickup_ref'"/>
+                        <t t-set="help_body" t-value="'An optional reference the collecting carrier can provide at the dock.'"/>
+                    </t>
                 </div>
                 <div class="mb-3">
-                    <label class="form-label" for="customer_instructions">Instructions for the Dock</label>
-                    <textarea class="form-control" id="customer_instructions" name="customer_instructions"
-                              rows="3"><t t-out="collection.customer_instructions or ''"/></textarea>
+                    <label class="form-label" for="p_customer_instructions">
+                        Instructions for the Dock
+                        <t t-call="prema_logistics_booking.portal_field_help_toggle">
+                            <t t-set="help_id" t-value="'help_dock'"/>
+                            <t t-set="help_label" t-value="'Instructions for the Dock'"/>
+                        </t>
+                        <span class="text-muted small ms-1">(optional)</span>
+                    </label>
+                    <textarea class="form-control" id="p_customer_instructions" name="customer_instructions"
+                              rows="3"><t t-out="form.get('customer_instructions') or ''"/></textarea>
+                    <t t-call="prema_logistics_booking.portal_field_help_body">
+                        <t t-set="help_id" t-value="'help_dock'"/>
+                        <t t-set="help_body" t-value="'Special loading instructions or restrictions for this pickup.'"/>
+                    </t>
                 </div>
                 <button type="submit" class="btn btn-primary">Save Authorization</button>
                 <a href="/my/service-bookings" class="btn btn-link">Back</a>
@@ -251,30 +567,80 @@
             <h5 class="mt-5">Collection history</h5>
             <p class="text-muted small">
                 Each collection is recorded separately, so a partial pickup keeps its own
-                authorized party, its own pallets and its own details.
+                authorized party, its own pallets and its own proof. Earlier entries are never
+                rewritten by a later pickup.
             </p>
             <div t-if="collections" class="table-responsive">
                 <table class="table table-sm">
                     <thead>
-                        <tr><th>Reference</th><th>Authorized Party</th><th>Driver</th>
-                            <th>Pallets</th><th>Status</th><th>Collection Time</th></tr>
+                        <tr><th>Reference</th><th>Authorized Party</th><th>Actual Driver</th>
+                            <th>Pallets</th><th>Status</th><th>Collection Time</th><th/></tr>
                     </thead>
                     <tbody>
                         <t t-foreach="collections" t-as="c">
                             <tr>
                                 <td><span t-field="c.name"/></td>
-                                <td><span t-field="c.authorized_contact_name"/></td>
-                                <td><span t-field="c.driver_name"/></td>
+                                <td><span t-field="c.authorization_label"/></td>
+                                <td>
+                                    <span t-field="c.collected_by_name"/>
+                                    <t t-if="c.collected_company"><br/><span class="text-muted small" t-field="c.collected_company"/></t>
+                                </td>
                                 <td><t t-out="c.released_packages or c.released_pallet_count or ''"/></td>
-                                <td><span t-field="c.state"/></td>
+                                <td><span t-field="c.display_status"/></td>
                                 <td><span t-field="c.collection_time"/></td>
+                                <td>
+                                    <a t-if="c.state == 'collected'" t-att-href="'/my/pickup-proof/%s' % c.id"
+                                       class="btn btn-sm btn-link">Proof of Pickup</a>
+                                </td>
                             </tr>
                         </t>
                     </tbody>
                 </table>
             </div>
         </div>
-        <script type="text/javascript" src="/prema_logistics_booking/static/src/js/portal_contact_picker.js"></script>
+    </t>
+</template>
+
+<!-- Customer-facing Proof of Pickup. Deliberately excludes internal
+     freight-source details (freight owner, internal notes). -->
+<template id="portal_pickup_proof" name="Portal: Proof of Pickup">
+    <t t-call="portal.portal_layout">
+        <div class="container">
+            <div class="d-flex justify-content-between align-items-center my-4">
+                <h3 class="mb-0">Proof of Pickup — <span t-field="collection.name"/></h3>
+                <a t-att-href="'/my/pickup-proof/%s/pdf' % collection.id" class="btn btn-primary">Download PDF</a>
+            </div>
+            <div class="row">
+                <div class="col-md-6">
+                    <h6>Booking</h6>
+                    <p class="mb-1">Booking <span t-field="collection.sale_order_id.name"/></p>
+                    <p class="mb-1">Your reference <span t-field="collection.sale_order_id.client_order_ref"/></p>
+                </div>
+                <div class="col-md-6">
+                    <h6>Collection</h6>
+                    <p class="mb-1">Date / time <t t-out="collected_local"/></p>
+                    <p class="mb-1">Released by <span t-field="collection.collected_by_user_id.name"/></p>
+                </div>
+            </div>
+            <h6 class="mt-3">Authorized pickup party</h6>
+            <p><span t-field="collection.authorization_label"/></p>
+            <h6>Collecting driver</h6>
+            <p class="mb-1"><span t-field="collection.collected_by_name"/></p>
+            <p class="mb-1">Company: <span t-field="collection.collected_company"/></p>
+            <p class="mb-1">Truck / plate: <span t-field="collection.truck_details"/></p>
+            <h6 class="mt-3">Pallets / packages collected</h6>
+            <p><span t-field="collection.released_packages"/>
+               (<span t-field="collection.released_pallet_count"/> pallets)</p>
+            <h6>Driver acknowledgement</h6>
+            <img t-if="collection.signature"
+                 t-att-src="image_data_uri(collection.signature)" alt="Driver signature"
+                 style="max-width: 320px; border: 1px solid #dee2e6;"/>
+            <p t-else="" class="text-muted">No signature captured.</p>
+            <p class="text-muted small mt-4">
+                PF Logistics · PremaFirm Logistics. This document records the pallets released at
+                our dock for the booking above.
+            </p>
+        </div>
     </t>
 </template>
 

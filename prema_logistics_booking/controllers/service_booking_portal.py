@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Portal — Service Bookings (Phase 1).
+"""Portal — Service Bookings.
 
 A customer requests a warehouse service booking from the portal. The request
 becomes a DRAFT `sale.order` designated `x_warehouse_service`, carrying **only
@@ -7,12 +7,32 @@ the services the customer asked for** — the PF Logistics Warehouse template is
 applied for its brand and designation and carries no lines of its own, so
 nothing is added or replaced.
 
+Counterparties (freight owner, delivery recipient, authorized pickup party) are
+chosen from the customer's OWN private contacts through a searchable picker.
+The picker's browser behaviour lives in
+`static/src/js/portal_contact_picker.js`; every rule it enforces here in the
+browser is re-checked below, because the browser is convenience and this is the
+control.
+
+**Authorizing a company without knowing the driver.** The authorized pickup
+party is the only mandatory party field: a customer who hires "Ryder Trucking"
+authorizes the company and leaves the driver blank. The driver columns are
+optional everywhere, and nothing on either form ever requires a driver name.
+
+**Warehouse appointment times are America/Toronto.** The `<input
+type="datetime-local">` gives a wall-clock reading in the warehouse's own zone,
+which is converted to UTC for storage and back again for display, with DST
+handled by `zoneinfo`. Storing the raw reading would silently shift every
+appointment by the UTC offset.
+
 Nothing here writes stock. The linked native PFL receipt is created by the
 order's Studio action ("Create PFL Receipt"); WMS operations stay in native
 Inventory, outside Prema Dispatch.
 """
 import base64
 import logging
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 from odoo import http
 from odoo.http import request
@@ -34,15 +54,57 @@ TEMPLATE_NAME = "PF Logistics Warehouse"
 BRAND = "premafirm_logistics"
 TEAM_NAME = "Premafirm Logistics Leads"
 
+#: Every warehouse appointment is entered and shown in the warehouse's own
+#: zone. Storage is always UTC.
+WAREHOUSE_TZ = "America/Toronto"
+_TZ = ZoneInfo(WAREHOUSE_TZ)
 
-def _norm_dt(value):
-    """`<input type="datetime-local">` -> an Odoo datetime string."""
+#: The three pickers on the forms, in the order they appear.
+PICKER_FIELDS = ("freight_owner_contact_id", "recipient_contact_id",
+                 "pickup_party_contact_id")
+
+#: Free-text columns the customer may edit on a pending authorization.
+DRIVER_FIELDS = ("driver_name", "driver_phone", "truck_details",
+                 "pickup_reference", "customer_instructions")
+
+
+# ── timezone helpers ───────────────────────────────────────────────────
+def _local_input_to_utc(value):
+    """`<input type="datetime-local">` (warehouse local) -> naive UTC."""
     value = (value or "").strip().replace("T", " ")
     if not value:
         return False
     if len(value) == 16:
         value += ":00"
-    return value
+    try:
+        naive = datetime.strptime(value, "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return False
+    return (naive.replace(tzinfo=_TZ)
+            .astimezone(timezone.utc)
+            .replace(tzinfo=None))
+
+
+def _utc_to_local_input(value):
+    """Stored naive UTC -> the `datetime-local` value for America/Toronto."""
+    if not value:
+        return ""
+    return (value.replace(tzinfo=timezone.utc)
+            .astimezone(_TZ)
+            .strftime("%Y-%m-%dT%H:%M"))
+
+
+def _utc_to_local_display(value):
+    """Stored naive UTC -> a human reading, labelled with the zone."""
+    if not value:
+        return ""
+    return "%s (%s)" % (
+        value.replace(tzinfo=timezone.utc).astimezone(_TZ).strftime("%Y-%m-%d %I:%M %p"),
+        WAREHOUSE_TZ)
+
+
+def _clean(value):
+    return (value or "").strip()
 
 
 class ServiceBookingPortal(http.Controller):
@@ -88,28 +150,128 @@ class ServiceBookingPortal(http.Controller):
     def _own_order(self, order_id):
         """A warehouse service booking belonging to the caller's company."""
         partner = self._commercial_partner()
+        try:
+            order_id = int(order_id or 0)
+        except (TypeError, ValueError):
+            order_id = 0
         order = request.env["sale.order"].sudo().search(
-            [("id", "=", int(order_id or 0)),
+            [("id", "=", order_id),
              ("message_partner_ids", "child_of", [partner.id]),
              ("x_warehouse_service", "=", True)], limit=1)
         if not order:
             raise NotFound()
         return order
 
-    def _own_collection(self, order):
-        """The order's current (uncollected) authorization record.
+    def _own_collections(self, order):
+        return request.env["logistics.pickup.collection"].sudo().search(
+            [("sale_order_id", "=", order.id)], order="id desc")
 
-        Returned WITHOUT sudo on purpose: look-ups run elevated, but the write
-        itself must pass through the model's portal guard.
+    def _pending_collection(self, order):
+        """The order's open (not yet collected) authorization, if any.
+
+        Never creates anything: viewing a page must not mint a record.
         """
-        Collection = request.env["logistics.pickup.collection"]
-        ids = Collection.sudo().search(
+        return request.env["logistics.pickup.collection"].sudo().search(
             [("sale_order_id", "=", order.id), ("state", "=", "authorized")],
-            order="id desc", limit=1).ids
-        if not ids:
-            ids = Collection.sudo().create(
-                {"sale_order_id": order.id}).ids
-        return Collection.browse(ids)
+            order="id desc", limit=1)
+
+    def _pickup_form(self, order, post=None):
+        """The values to render into the pickup form.
+
+        On a fresh GET they come from the order's open authorization, carrying
+        the customer's own earlier authorization forward when a previous
+        pickup has already been collected. On a rejected POST they come from
+        what the customer actually submitted, so nothing typed is ever lost.
+        """
+        collections = self._own_collections(order)
+        pending = self._pending_collection(order)
+        source = pending or collections[:1]
+
+        if post is not None:
+            return {
+                "driver_name": _clean(post.get("driver_name")),
+                "driver_phone": _clean(post.get("driver_phone")),
+                "truck_details": _clean(post.get("truck_details")),
+                "pickup_reference": _clean(post.get("pickup_reference")),
+                "customer_instructions": _clean(post.get("customer_instructions")),
+                "party_text": _clean(post.get("pickup_party_contact_id_text")),
+                "party_id": post.get("pickup_party_contact_id") or "",
+                "recipient_text": _clean(post.get("recipient_contact_id_text")),
+                "recipient_id": post.get("recipient_contact_id") or "",
+                "previous_party": False,
+            }
+
+        party = source.authorized_contact_id if source else source
+        if party and not self._own_contact(party.id):
+            party = False
+        recipient = source.outbound_recipient_id if source else source
+        recipient_contact = request.env["logistics.private.contact"].search(
+            [("user_id", "=", request.env.user.id),
+             ("partner_id", "=", recipient.id)], limit=1) if recipient else False
+
+        return {
+            "driver_name": source.driver_name or "" if source else "",
+            "driver_phone": source.driver_phone or "" if source else "",
+            "truck_details": source.truck_details or "" if source else "",
+            "pickup_reference": source.pickup_reference or "" if source else "",
+            "customer_instructions": source.customer_instructions or "" if source else "",
+            "party_text": party.name if party else "",
+            "party_id": party.id if party else "",
+            "recipient_text": recipient_contact.name if recipient_contact else "",
+            "recipient_id": recipient_contact.id if recipient_contact else "",
+            # Shown as a note only, never as a silent pre-selection: a party
+            # whose saved contact is gone must be re-chosen deliberately.
+            "previous_party": (
+                source.authorized_contact_name
+                if source and not party and source.authorized_contact_name else False),
+        }
+
+    def _booking_form(self, post=None):
+        """Values for the "Request a Service Booking" form.
+
+        Returned on every render so a rejected submission comes back with what
+        the customer typed still in place.
+        """
+        if post is None:
+            return {"service_codes": [], "previous": False}
+        return {
+            "service_codes": [c for c in request.httprequest.form.getlist("service_code")
+                              if c in SERVICE_CODES],
+            "expected_pallets": _clean(post.get("expected_pallets")),
+            "client_order_ref": _clean(post.get("client_order_ref")),
+            "requested_arrival": _clean(post.get("requested_arrival")),
+            "requested_departure": _clean(post.get("requested_departure")),
+            "freight_owner_text": _clean(post.get("freight_owner_contact_id_text")),
+            "freight_owner_id": post.get("freight_owner_contact_id") or "",
+            "recipient_text": _clean(post.get("recipient_contact_id_text")),
+            "recipient_id": post.get("recipient_contact_id") or "",
+            "pickup_party_text": _clean(post.get("pickup_party_contact_id_text")),
+            "pickup_party_id": post.get("pickup_party_contact_id") or "",
+            "driver_name": _clean(post.get("driver_name")),
+            "driver_phone": _clean(post.get("driver_phone")),
+            "truck_details": _clean(post.get("truck_details")),
+            "customer_instructions": _clean(post.get("customer_instructions")),
+            "notes": _clean(post.get("notes")),
+        }
+
+    def _check_pickers(self, post, require_party=True):
+        """Apply the picker rules server-side.
+
+        Returns ``(resolved, error)`` where ``resolved`` maps each picker field
+        to a private-contact recordset. Any typed-but-unselected text is an
+        error — never silently dropped.
+        """
+        resolved = {}
+        for field in PICKER_FIELDS:
+            resolved[field] = self._own_contact(post.get(field))
+        if require_party and not resolved["pickup_party_contact_id"]:
+            typed = _clean(post.get("pickup_party_contact_id_text"))
+            return resolved, ("party_unresolved" if typed else "party_required")
+        for field in PICKER_FIELDS:
+            typed = _clean(post.get("%s_text" % field))
+            if typed and not resolved[field]:
+                return resolved, "%s_unresolved" % field
+        return resolved, None
 
     # ── routes ─────────────────────────────────────────────────────────
     @http.route("/my/service-bookings", type="http", auth="user",
@@ -118,8 +280,14 @@ class ServiceBookingPortal(http.Controller):
         partner = self._commercial_partner()
         orders = request.env["sale.order"].sudo().search(
             self._booking_domain(partner), order="create_date desc, id desc")
+        rows = [{
+            "order": order,
+            "arrival_local": _utc_to_local_display(order.x_requested_arrival),
+        } for order in orders]
         return request.render("prema_logistics_booking.portal_my_service_bookings", {
             "orders": orders,
+            "rows": rows,
+            "warehouse_tz": WAREHOUSE_TZ,
             "page_name": "service_bookings",
             "msg": kwargs.get("msg"),
         })
@@ -131,26 +299,44 @@ class ServiceBookingPortal(http.Controller):
             "services": self._services(),
             "ltl_code": LTL_CODE,
             "ftl_code": FTL_CODE,
-            "page_name": "service_booking_new",
+            "warehouse_tz": WAREHOUSE_TZ,
+            "page_name": "service_bookings",
             "error": kwargs.get("error"),
+            "form": self._booking_form(),
         })
 
     @http.route("/my/service-bookings/submit", type="http", auth="user",
                 website=True, methods=["POST"], csrf=True, sitemap=False)
     def service_booking_submit(self, **post):
         partner = self._commercial_partner()
-        form = request.httprequest.form
-        codes = [c for c in form.getlist("service_code") if c in SERVICE_CODES]
 
+        def reject(code):
+            return request.render(
+                "prema_logistics_booking.portal_my_service_booking_new", {
+                    "services": self._services(),
+                    "ltl_code": LTL_CODE,
+                    "ftl_code": FTL_CODE,
+                    "warehouse_tz": WAREHOUSE_TZ,
+                    "page_name": "service_bookings",
+                    "error": code,
+                    "form": self._booking_form(post),
+                })
+
+        codes = [c for c in request.httprequest.form.getlist("service_code")
+                 if c in SERVICE_CODES]
         if not codes:
-            return request.redirect("/my/service-bookings/new?error=no_service")
+            return reject("no_service")
         # LTL and FTL are mutually exclusive — one flat fee or per-pallet, never both.
         if LTL_CODE in codes and FTL_CODE in codes:
-            return request.redirect("/my/service-bookings/new?error=ltl_ftl")
+            return reject("ltl_ftl")
 
-        expected = int(form.get("expected_pallets") or 0)
-        client_ref = (form.get("client_order_ref") or "").strip()
-        notes = (form.get("notes") or "").strip()
+        resolved, error = self._check_pickers(post, require_party=True)
+        if error:
+            return reject(error)
+
+        expected = int(_clean(post.get("expected_pallets")) or 0)
+        client_ref = _clean(post.get("client_order_ref"))
+        notes = _clean(post.get("notes"))
 
         Order = request.env["sale.order"].sudo()
 
@@ -172,11 +358,9 @@ class ServiceBookingPortal(http.Controller):
         team = request.env["crm.team"].sudo().search(
             [("name", "=", TEAM_NAME)], limit=1)
 
-        # Counterparties are the caller's OWN saved contacts, resolved by id and
-        # re-checked here — a foreign id simply falls back to the customer.
-        owner_contact = self._own_contact(form.get("freight_owner_contact_id"))
-        recipient_contact = self._own_contact(form.get("recipient_contact_id"))
-        pickup_contact = self._own_contact(form.get("pickup_party_contact_id"))
+        owner_contact = resolved["freight_owner_contact_id"]
+        recipient_contact = resolved["recipient_contact_id"]
+        pickup_contact = resolved["pickup_party_contact_id"]
         freight_owner = owner_contact.partner_id or partner
         recipient = recipient_contact.partner_id or partner
 
@@ -184,7 +368,6 @@ class ServiceBookingPortal(http.Controller):
         # fee; the per-pallet LTL line carries the expected pallet count; the
         # other services start at 1 for staff to confirm against actuals.
         lines = []
-        Product = request.env["product.product"].sudo()
         for code in codes:
             template_product = request.env["product.template"].sudo().search(
                 [("default_code", "=", code)], limit=1)
@@ -210,8 +393,8 @@ class ServiceBookingPortal(http.Controller):
             "x_expected_pallets": expected,
             "x_freight_owner_id": freight_owner.id,
             "x_outbound_recipient_id": recipient.id,
-            "x_requested_arrival": _norm_dt(form.get("requested_arrival")),
-            "x_requested_departure": _norm_dt(form.get("requested_departure")),
+            "x_requested_arrival": _local_input_to_utc(post.get("requested_arrival")),
+            "x_requested_departure": _local_input_to_utc(post.get("requested_departure")),
             "client_order_ref": client_ref or False,
             "note": notes or False,
             "order_line": lines,
@@ -246,16 +429,17 @@ class ServiceBookingPortal(http.Controller):
         order.message_post(body=body, attachment_ids=attachment_ids)
 
         # Trip-specific pickup authorization — held on the booking, never on
-        # the reusable contact. Created here so the customer can add or change
-        # the driver later, before collection.
+        # the reusable contact. Created here so the customer can change the
+        # driver later, before collection. Only the authorized party is
+        # required; the driver columns stay empty unless the customer knows
+        # them, which is the normal case for a hired carrier.
         collection = request.env["logistics.pickup.collection"].sudo().create({
             "sale_order_id": order.id,
             "outbound_recipient_id": recipient.id if recipient != partner else False,
-            "driver_name": (form.get("driver_name") or "").strip() or False,
-            "driver_phone": (form.get("driver_phone") or "").strip() or False,
-            "truck_details": (form.get("truck_details") or "").strip() or False,
-            "pickup_reference": (form.get("pickup_reference") or "").strip() or False,
-            "customer_instructions": (form.get("customer_instructions") or "").strip() or False,
+            "driver_name": _clean(post.get("driver_name")) or False,
+            "driver_phone": _clean(post.get("driver_phone")) or False,
+            "truck_details": _clean(post.get("truck_details")) or False,
+            "customer_instructions": _clean(post.get("customer_instructions")) or False,
         })
         if pickup_contact:
             # sudo: the contact was validated as the caller's own above.
@@ -268,47 +452,96 @@ class ServiceBookingPortal(http.Controller):
                 auth="user", website=True, sitemap=False)
     def service_booking_pickup(self, order_id, **kwargs):
         order = self._own_order(order_id)
-        collections = request.env["logistics.pickup.collection"].sudo().search(
-            [("sale_order_id", "=", order.id)], order="id desc")
+        return self._render_pickup(order, msg=kwargs.get("msg"))
+
+    def _render_pickup(self, order, msg=None, error=None, post=None):
+        collections = self._own_collections(order)
         return request.render("prema_logistics_booking.portal_service_booking_pickup", {
-            "order": order,
-            "collection": self._own_collection(order),
+            "booking": order,
             "collections": collections,
-            "contacts": self._own_contacts(),
-            "page_name": "service_bookings",
-            "msg": kwargs.get("msg"),
+            "latest": collections[:1],
+            "pending": self._pending_collection(order),
+            "form": self._pickup_form(order, post=post),
+            "error": error,
+            "msg": msg,
+            "warehouse_tz": WAREHOUSE_TZ,
+            "arrival_local": _utc_to_local_display(order.x_requested_arrival),
+            "departure_local": _utc_to_local_display(order.x_requested_departure),
+            "page_name": "service_booking",
         })
 
     @http.route("/my/service-bookings/<int:order_id>/pickup/save", type="http",
                 auth="user", website=True, methods=["POST"], csrf=True, sitemap=False)
     def service_booking_pickup_save(self, order_id, **post):
         order = self._own_order(order_id)          # 404 for a foreign booking
-        collection = self._own_collection(order)
-        if collection.state == "collected":
-            return request.redirect(
-                "/my/service-bookings/%s/pickup?msg=collected" % order.id)
 
-        # Driver details — the customer's own fields, guarded by the model.
-        collection.write({
-            "driver_name": (post.get("driver_name") or "").strip(),
-            "driver_phone": (post.get("driver_phone") or "").strip(),
-            "truck_details": (post.get("truck_details") or "").strip(),
-            "pickup_reference": (post.get("pickup_reference") or "").strip(),
-            "customer_instructions": (post.get("customer_instructions") or "").strip(),
-        })
+        # Validate BEFORE writing, so a rejected save loses nothing the
+        # customer typed.
+        resolved, error = self._check_pickers(post, require_party=True)
+        if error:
+            return self._render_pickup(order, error=error, post=post)
 
-        # Authorized party / recipient are partner links: set under sudo, but
-        # only after the chosen contact was proven to be the caller's own.
-        elevated = {}
-        contact = self._own_contact(post.get("pickup_party_contact_id"))
-        if contact:
-            elevated.update(contact._snapshot_vals())
-            elevated["authorized_contact_id"] = contact.id
-        recipient_contact = self._own_contact(post.get("recipient_contact_id"))
-        elevated["outbound_recipient_id"] = (
-            recipient_contact.partner_id.id if recipient_contact else False)
-        if elevated:
-            collection.sudo().write(elevated)
+        party = resolved["pickup_party_contact_id"]
+        recipient = resolved["recipient_contact_id"]
+
+        # Driver details go through the model's portal guard; the party and
+        # recipient are partner links and are written elevated, only after the
+        # chosen contact was proven to belong to the caller.
+        driver_vals = {field: _clean(post.get(field)) for field in DRIVER_FIELDS}
+        elevated = dict(party._snapshot_vals())
+        elevated["authorized_contact_id"] = party.id
+        elevated["outbound_recipient_id"] = recipient.partner_id.id if recipient else False
+
+        pending = self._pending_collection(order)
+        if pending:
+            pending.write(driver_vals)
+            pending.sudo().write(elevated)
+            collection = pending
+        else:
+            collection = request.env["logistics.pickup.collection"].sudo().create(
+                dict(driver_vals, sale_order_id=order.id, **elevated))
 
         return request.redirect(
             "/my/service-bookings/%s/pickup?msg=saved" % order.id)
+
+    # ── proof of pickup ────────────────────────────────────────────────
+    def _own_collection(self, collection_id):
+        """A COMPLETED collection of the caller's own bookings, or 404."""
+        try:
+            collection_id = int(collection_id or 0)
+        except (TypeError, ValueError):
+            collection_id = 0
+        collection = request.env["logistics.pickup.collection"].sudo().search([
+            ("id", "=", collection_id),
+            ("commercial_partner_id", "=", self._commercial_partner().id),
+            ("state", "=", "collected"),
+        ], limit=1)
+        if not collection:
+            raise NotFound()
+        return collection
+
+    @http.route("/my/pickup-proof/<int:collection_id>", type="http", auth="user",
+                website=True, sitemap=False)
+    def pickup_proof(self, collection_id, **kwargs):
+        collection = self._own_collection(collection_id)
+        return request.render("prema_logistics_booking.portal_pickup_proof", {
+            "collection": collection,
+            "warehouse_tz": WAREHOUSE_TZ,
+            "collected_local": _utc_to_local_display(collection.collection_time),
+            "page_name": "service_booking",
+        })
+
+    @http.route("/my/pickup-proof/<int:collection_id>/pdf", type="http", auth="user",
+                website=True, sitemap=False)
+    def pickup_proof_pdf(self, collection_id, **kwargs):
+        collection = self._own_collection(collection_id)
+        report = request.env["ir.actions.report"].sudo()
+        pdf, _ = report._render_qweb_pdf(
+            "prema_logistics_booking.action_report_pickup_proof",
+            res_ids=collection.ids)
+        filename = "Proof-of-Pickup-%s.pdf" % collection.name.replace("/", "-")
+        return request.make_response(pdf, headers=[
+            ("Content-Type", "application/pdf"),
+            ("Content-Length", str(len(pdf))),
+            ("Content-Disposition", 'attachment; filename="%s"' % filename),
+        ])

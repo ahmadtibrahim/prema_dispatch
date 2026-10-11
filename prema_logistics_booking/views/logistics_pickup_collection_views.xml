@@ -8,6 +8,9 @@
          actually happened at the dock. The customer's authorization is
          displayed here, and a completed collection keeps the values it was
          made with.
+
+         A record with no authorized party reads "Authorization pending" —
+         never "Authorized" — and refuses to be recorded as collected.
          ================================================================ -->
 
     <record id="view_logistics_pickup_collection_tree" model="ir.ui.view">
@@ -18,12 +21,13 @@
                 <field name="name"/>
                 <field name="sale_order_id"/>
                 <field name="picking_id"/>
-                <field name="authorized_contact_name"/>
-                <field name="driver_name"/>
+                <field name="authorization_label"/>
+                <field name="collected_by_name"/>
+                <field name="collected_company"/>
                 <field name="truck_details"/>
                 <field name="released_pallet_count" string="Pallets"/>
-                <field name="verification_result"/>
-                <field name="state"/>
+                <field name="verification_method"/>
+                <field name="display_status"/>
                 <field name="collection_time"/>
             </list>
         </field>
@@ -37,10 +41,29 @@
                 <header>
                     <button name="action_record_collection" type="object"
                             string="Record Collection" class="btn-primary"
-                            invisible="state != 'authorized'"/>
+                            invisible="state != 'authorized'"
+                            help="Completes this collection. The linked stock release must already be validated, the authorized party must be on file, and the dock verification must be recorded."/>
                     <field name="state" widget="statusbar"/>
                 </header>
                 <sheet>
+                    <div class="alert alert-danger" role="alert"
+                         invisible="has_authorized_party or state == 'cancelled'">
+                        No authorized pickup party is on file, so this record is
+                        <strong>not</strong> an authorization. It cannot be recorded as collected and
+                        the linked release cannot be validated. Ask the customer to name the company
+                        allowed to collect, or record a manager override with a reason.
+                    </div>
+                    <div class="alert alert-warning" role="alert"
+                         invisible="not has_authorized_party or display_status != 'Authorized'">
+                        Authorized by the customer but <strong>not yet verified at the dock</strong>.
+                        Record how the collecting driver's authority was verified before the pallets
+                        leave.
+                    </div>
+                    <div class="oe_button_box" name="button_box">
+                        <field name="display_status" nolabel="1" readonly="1"/>
+                        <field name="picking_state" nolabel="1" readonly="1"
+                               invisible="not picking_id"/>
+                    </div>
                     <group>
                         <group string="Booking">
                             <field name="name"/>
@@ -55,7 +78,7 @@
                             <field name="outbound_recipient_id"/>
                         </group>
                     </group>
-                    <group string="Driver details">
+                    <group string="Driver details (optional — the customer need not know the driver)">
                         <field name="driver_name"/>
                         <field name="driver_phone"/>
                         <field name="truck_details"/>
@@ -63,8 +86,10 @@
                         <field name="customer_instructions"/>
                     </group>
                     <group string="Collection (recorded at the dock)">
-                        <field name="verification_result"/>
                         <field name="collected_by_name"/>
+                        <field name="collected_company"/>
+                        <field name="verification_method"/>
+                        <field name="verification_result"/>
                         <field name="released_packages"/>
                         <field name="released_pallet_count"/>
                         <field name="collection_time"/>
@@ -104,6 +129,8 @@
                     <field name="pickup_collection_count" widget="statinfo"
                            string="Pickup Authorization"/>
                 </button>
+                <field name="pickup_authorization_state" nolabel="1" readonly="1"
+                       invisible="pickup_collection_count == 0"/>
             </xpath>
         </field>
     </record>

@@ -1,0 +1,25 @@
+/* Service Booking portal forms — picker results and the "?" field help. */
+
+/* The help panel is toggled by removing `d-none`; `d-none` is !important so it
+   always wins while collapsed, and this rule gives it a block box when shown. */
+.field-help-text {
+    display: block;
+}
+
+.field-help-toggle {
+    font-weight: 700;
+    text-decoration: none;
+}
+
+.contact-picker .contact-picker-results {
+    max-height: 18rem;
+    overflow-y: auto;
+}
+
+.contact-picker .contact-picker-new {
+    background-color: var(--bs-tertiary-bg, #f8f9fa);
+}
+
+.contact-picker .contact-picker-results .list-group-item {
+    cursor: pointer;
+}

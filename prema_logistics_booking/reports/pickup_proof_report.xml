@@ -1,0 +1,91 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <!-- ================================================================
+         Proof of Pickup.
+
+         The customer-facing record of one collection: what was authorized,
+         who actually collected it, which pallets left, when, and the driver's
+         acknowledgement. It deliberately carries NO internal freight-source
+         information (no freight owner, no internal notes) — a customer or a
+         carrier can hold it without exposing how the load was sourced.
+
+         Portal download goes through the module's own controller, which
+         verifies the collection belongs to the caller before rendering; the
+         report is never reachable by raw id from the portal.
+         ================================================================ -->
+
+    <record id="action_report_pickup_proof" model="ir.actions.report">
+        <field name="name">Proof of Pickup</field>
+        <field name="model">logistics.pickup.collection</field>
+        <field name="report_type">qweb-pdf</field>
+        <field name="report_name">prema_logistics_booking.report_pickup_proof_document</field>
+        <field name="report_file">prema_logistics_booking.report_pickup_proof_document</field>
+        <field name="print_report_name">'Proof of Pickup - %s' % object.name</field>
+        <field name="binding_model_id" ref="model_logistics_pickup_collection"/>
+        <field name="binding_type">report</field>
+    </record>
+
+    <template id="report_pickup_proof_document">
+        <t t-call="web.html_container">
+            <t t-foreach="docs" t-as="o">
+                <t t-call="web.external_layout">
+                    <div class="page">
+                        <h2 class="mb-1">Proof of Pickup</h2>
+                        <p class="text-muted">
+                            PF Logistics · PremaFirm Logistics — warehouse collection record
+                        </p>
+
+                        <div class="row mt-4">
+                            <div class="col-6">
+                                <h5>Booking</h5>
+                                <div>Booking: <span t-field="o.sale_order_id.name"/></div>
+                                <div>PO / reference: <span t-field="o.sale_order_id.client_order_ref"/></div>
+                                <div>Customer: <span t-field="o.commercial_partner_id.name"/></div>
+                            </div>
+                            <div class="col-6">
+                                <h5>Collection</h5>
+                                <div>Reference: <span t-field="o.name"/></div>
+                                <div>Date / time: <span t-esc="o.pickup_time_label()"/></div>
+                                <div>Released by: <span t-field="o.collected_by_user_id.name"/></div>
+                            </div>
+                        </div>
+
+                        <h5 class="mt-4">Authorized pickup party</h5>
+                        <div><span t-field="o.authorization_label"/></div>
+                        <div t-if="o.authorized_contact_phone" class="text-muted">
+                            <span t-field="o.authorized_contact_phone"/>
+                        </div>
+
+                        <h5 class="mt-4">Collecting driver</h5>
+                        <table class="table table-sm table-borderless">
+                            <tr><td style="width: 40%">Driver name</td>
+                                <td><span t-field="o.collected_by_name"/></td></tr>
+                            <tr><td>Collecting company</td>
+                                <td><span t-field="o.collected_company"/></td></tr>
+                            <tr><td>Truck / plate</td>
+                                <td><span t-field="o.truck_details"/></td></tr>
+                            <tr><td>Authority verified by</td>
+                                <td><span t-field="o.verification_method"/></td></tr>
+                            <tr t-if="o.override_reason"><td>Manager override</td>
+                                <td><span t-field="o.override_reason"/></td></tr>
+                        </table>
+
+                        <h5 class="mt-4">Pallets / packages collected</h5>
+                        <div>Packages: <span t-field="o.released_packages"/></div>
+                        <div>Pallets / packages released: <span t-field="o.released_pallet_count"/></div>
+
+                        <h5 class="mt-4">Driver acknowledgement</h5>
+                        <p class="text-muted small mb-2">
+                            Signed at the dock acknowledging the pallets actually loaded.
+                        </p>
+                        <img t-if="o.signature" t-att-src="image_data_uri(o.signature)"
+                             alt="Driver signature" style="max-height: 120px;"/>
+                        <div t-else="" class="text-muted">No signature captured.</div>
+                    </div>
+                </t>
+            </t>
+        </t>
+    </template>
+
+</odoo>
