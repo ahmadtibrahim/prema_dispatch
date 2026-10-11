@@ -129,8 +129,8 @@ class LogisticsPickupCollection(models.Model):
          ("no_authorization", "No authorization on file")],
         string="Verification Result", tracking=True, copy=False)
     released_packages = fields.Text(
-        string="Pallets / Packages Released", copy=False,
-        help="Snapshot of the package names that left on this collection.")
+        string="Pallets Released", copy=False,
+        help="Snapshot of the pallet IDs that left on this collection.")
     released_pallet_count = fields.Integer(copy=False)
     collection_time = fields.Datetime(copy=False)
     collected_by_user_id = fields.Many2one("res.users", string="Released By", copy=False)

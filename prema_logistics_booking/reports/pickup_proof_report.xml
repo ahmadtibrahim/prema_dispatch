@@ -71,9 +71,9 @@
                                 <td><span t-field="o.override_reason"/></td></tr>
                         </table>
 
-                        <h5 class="mt-4">Pallets / packages collected</h5>
-                        <div>Packages: <span t-field="o.released_packages"/></div>
-                        <div>Pallets / packages released: <span t-field="o.released_pallet_count"/></div>
+                        <h5 class="mt-4">Pallets collected</h5>
+                        <div>Pallet IDs: <span t-field="o.released_packages"/></div>
+                        <div>Pallets released: <span t-field="o.released_pallet_count"/></div>
 
                         <h5 class="mt-4">Driver acknowledgement</h5>
                         <p class="text-muted small mb-2">

@@ -5,13 +5,13 @@
          PF Logistics pallet label.
 
          Carries what a person at the rack actually needs: the barcode and the
-         readable package id, whose goods they are, which booking and customer
+         readable pallet ID, whose goods they are, which booking and customer
          reference they belong to, and the position they are reserved for.
 
          Two shapes of the same label:
            * "Pallet Label" — the adhesive label for the pallet itself;
            * "Pallet Card"  — the off-pallet card, for customers who do not
-             allow anything stuck to their pallets. It carries the same package
+             allow anything stuck to their pallets. It carries the same pallet ID
              id and therefore the same exclusive position.
          ================================================================ -->
 
@@ -38,7 +38,7 @@
                                  'width': 600, 'height': 90,
                                  'img_style': 'width:100%;max-width:420px;height:auto;'}">
                     <div class="bg-light border rounded p-3 text-muted text-center">
-                        (package barcode)
+                        (pallet barcode)
                     </div>
                 </div>
                 <div style="font-family:monospace; font-size:16px; letter-spacing:1px;"
@@ -71,7 +71,7 @@
 
             <div class="text-muted" style="font-size:9px;">
                 PF Logistics · PremaFirm Logistics. This pallet is reserved for one
-                position only. Scan the package to confirm its booking, and scan the
+                position only. Scan the pallet ID to confirm its booking, and scan the
                 position at the rack to confirm placement.
             </div>
         </div>

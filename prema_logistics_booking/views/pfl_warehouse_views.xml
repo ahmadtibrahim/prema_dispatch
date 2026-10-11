@@ -18,7 +18,7 @@
                 <button name="action_pfl_prepare_pallets" type="object"
                         string="Prepare Pallets &amp; Labels" class="btn-primary"
                         invisible="not x_warehouse_service or state == 'cancel'"
-                        help="Creates or reuses the linked receipt, prepares one entry and one native package per expected pallet, links them to the booking and to their reserved position, and stops. Nothing is received or validated by this."/>
+                        help="Creates or reuses the linked receipt, prepares one pallet entry and one pallet ID per expected pallet, links them to the booking and to their reserved position, and stops. Nothing is received or validated by this."/>
                 <button name="action_pfl_reserve_space" type="object"
                         string="Reserve Space" class="btn-secondary"
                         invisible="not x_warehouse_service or state == 'cancel' or pfl_capacity_state == 'reserved'"/>
@@ -85,9 +85,9 @@
         <field name="arch" type="xml">
             <xpath expr="//header" position="inside">
                 <button name="pfl_prepare_pallet_entries" type="object"
-                        string="Prepare Pallet Entries" class="btn-primary"
+                        string="Prepare Pallets" class="btn-primary"
                         invisible="not x_service_booking_id or state in ('done','cancel')"
-                        help="One entry and one native package per expected pallet. Idempotent — running it again does not duplicate anything. Nothing is received by this."/>
+                        help="One pallet entry and one pallet ID per expected pallet. Idempotent — running it again does not duplicate anything. Nothing is received by this."/>
                 <button name="action_pfl_confirm_received" type="object"
                         string="Confirm Received Count" class="btn-primary"
                         invisible="not x_service_booking_id or state in ('done','cancel') or pfl_confirmed"
@@ -108,7 +108,7 @@
                 <button name="action_pfl_print_cards" type="object"
                         string="Print Pallet Cards" class="btn-secondary"
                         invisible="not x_service_booking_id or not pfl_prepared_pallet_count"
-                        help="Same package and same position, printed as an off-pallet card for customers who do not allow labels on their pallets."/>
+                        help="Same pallet ID and same position, printed as an off-pallet card for customers who do not allow labels on their pallets."/>
             </xpath>
             <xpath expr="//div[@name='button_box']" position="inside">
                 <button name="%(action_pfl_position_reservation)d" type="action"
@@ -122,7 +122,7 @@
             <xpath expr="//field[@name='origin']" position="after">
                 <field name="pfl_expected_pallet_count" string="Expected Pallets"
                        readonly="1" invisible="not x_service_booking_id"/>
-                <field name="pfl_prepared_pallet_count" string="Prepared Entries"
+                <field name="pfl_prepared_pallet_count" string="Prepared Pallets"
                        readonly="1" invisible="not x_service_booking_id"/>
                 <field name="pfl_received_pallet_count" string="Confirmed Received"
                        readonly="1" invisible="not x_service_booking_id"/>
@@ -153,7 +153,7 @@
                 </div>
                 <group invisible="result != 'found'">
                     <group string="Pallet">
-                        <field name="package_id"/>
+                        <field name="package_id" string="Pallet ID"/>
                         <field name="current_location_id"/>
                         <field name="reserved_position_id"/>
                         <field name="reservation_end"/>

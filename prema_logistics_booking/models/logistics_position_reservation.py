@@ -60,7 +60,7 @@ class LogisticsPositionReservation(models.Model):
     picking_id = fields.Many2one(
         "stock.picking", string="Receipt", index=True, ondelete="set null")
     package_id = fields.Many2one(
-        "stock.quant.package", string="Pallet Package", index=True,
+        "stock.quant.package", string="Pallet ID", index=True,
         ondelete="set null")
     slot_index = fields.Integer(string="Pallet #")
 

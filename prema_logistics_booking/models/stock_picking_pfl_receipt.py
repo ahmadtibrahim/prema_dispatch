@@ -58,10 +58,10 @@ class StockPicking(models.Model):
         return lines.sorted(lambda l: l.id).mapped("result_package_id")
 
     def pfl_prepare_pallet_entries(self):
-        """One entry and one native package per expected pallet.
+        """One pallet entry and one pallet ID per expected pallet.
 
         Idempotent: if the receipt already holds exactly the right number of
-        one-pallet entries with their own packages, it does nothing. If it is
+        one-pallet entries with their own pallet IDs, it does nothing. If it is
         in the half-finished state the old manual routine left behind (some
         lines packed, some not), it is rebuilt from the demand — the empty
         packages it made go away with it, so a retry cannot duplicate them.
@@ -118,7 +118,7 @@ class StockPicking(models.Model):
             if line.exists() and not line.result_package_id:
                 line.action_put_in_pack()
 
-        # Packages the rebuild replaced are empty placeholders — drop them so a
+        # Pallet IDs the rebuild replaced are empty placeholders — drop them so a
         # retry can never leave a trail of orphaned pack numbers.
         MoveLine = self.env["stock.move.line"].sudo()
         for package in stale:
@@ -131,13 +131,13 @@ class StockPicking(models.Model):
         self.invalidate_recordset()
         self._pfl_apply_package_links()
         self.message_post(body=_(
-            "Prepared %s pallet entries with their own packages. Nothing has "
+            "Prepared %s pallet entries with their own pallet IDs. Nothing has "
             "been received yet — confirm the count at the dock.", expected))
         return self._pfl_prepared_packages()
 
     def _pfl_apply_package_links(self):
         """Put the booking, the freight owner and the customer reference on
-        every prepared package, so a label or a scan resolves without a hunt."""
+        every prepared pallet, so a label or a scan resolves without a hunt."""
         self.ensure_one()
         order = self.x_service_booking_id
         packages = self._pfl_prepared_packages()
@@ -319,8 +319,7 @@ class StockPicking(models.Model):
         packages = self._pfl_prepared_packages()
         if not packages:
             raise UserError(_(
-                "No pallet packages to label yet — run “Prepare Pallet Entries” "
-                "first."))
+                "No pallet IDs to label yet — run “Prepare Pallets” first."))
         report = self.env.ref(
             "prema_logistics_booking.action_report_pfl_pallet_label")
         return report.report_action(packages)
@@ -334,7 +333,7 @@ class StockPicking(models.Model):
         self.ensure_one()
         packages = self._pfl_prepared_packages()
         if not packages:
-            raise UserError(_("No pallet packages to label yet."))
+            raise UserError(_("No pallet IDs to label yet."))
         report = self.env.ref(
             "prema_logistics_booking.action_report_pfl_pallet_card")
         return report.report_action(packages)

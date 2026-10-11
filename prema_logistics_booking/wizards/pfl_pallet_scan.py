@@ -16,12 +16,13 @@ class PflPalletScan(models.TransientModel):
     _name = "pfl.pallet.scan"
     _description = "PF Logistics Pallet Scan"
 
-    code = fields.Char(string="Pallet Label", required=True,
-                       help="Scan or type the package barcode.")
+    code = fields.Char(string="Pallet ID", required=True,
+                       help="Scan or type the pallet barcode.")
     result = fields.Selection(RESULT_SELECTION, default="pending")
     message = fields.Text(readonly=True)
 
-    package_id = fields.Many2one("stock.quant.package", readonly=True)
+    package_id = fields.Many2one("stock.quant.package", string="Pallet ID",
+                                 readonly=True)
     partner_id = fields.Many2one("res.partner", string="Customer", readonly=True)
     order_id = fields.Many2one("sale.order", string="Service Booking", readonly=True)
     customer_ref = fields.Char(string="Customer Reference", readonly=True)

@@ -82,7 +82,7 @@ class StockQuantPackage(models.Model):
     def pfl_label_lines(self):
         payload = self.pfl_scan_payload()
         return [
-            (_("Package"), payload["package"]),
+            (_("Pallet ID"), payload["package"]),
             (_("Customer / Freight Owner"), payload["customer_name"]),
             (_("Booking"), payload["booking"]),
             (_("Customer Reference"), payload["customer_reference"]),

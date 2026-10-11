@@ -788,8 +788,8 @@
             <p class="mb-1"><span t-field="collection.collected_by_name"/></p>
             <p class="mb-1">Company: <span t-field="collection.collected_company"/></p>
             <p class="mb-1">Truck / plate: <span t-field="collection.truck_details"/></p>
-            <h6 class="mt-3">Pallets / packages collected</h6>
-            <p><span t-field="collection.released_packages"/>
+            <h6 class="mt-3">Pallets collected</h6>
+            <p>Pallet IDs: <span t-field="collection.released_packages"/>
                (<span t-field="collection.released_pallet_count"/> pallets)</p>
             <h6>Driver acknowledgement</h6>
             <img t-if="collection.signature"
