@@ -116,7 +116,8 @@
                     <thead>
                         <tr>
                             <th>Booking</th><th>Your Reference</th><th>Expected Pallets</th>
-                            <th>Requested Arrival</th><th>Status</th><th>Estimated Total</th><th/>
+                            <th>Requested Arrival</th><th>Status</th><th>Pickup Carrier</th>
+                            <th>Warehouse Positions</th><th>Estimated Total</th><th/>
                         </tr>
                     </thead>
                     <tbody>
@@ -130,8 +131,36 @@
                                     <t t-else="">—</t>
                                 </td>
                                 <td><span t-field="row['order'].state"/></td>
+                                <td>
+                                    <t t-if="row['carrier_name']">
+                                        <div><t t-out="row['carrier_name']"/></div>
+                                        <t t-if="row['driver_name']">
+                                            <div class="text-muted small">Driver: <t t-out="row['driver_name']"/></div>
+                                        </t>
+                                        <a t-att-href="'/my/service-bookings/%s/pickup' % row['order'].id"
+                                           class="btn btn-sm btn-link px-0">Edit</a>
+                                    </t>
+                                    <t t-else="">
+                                        <span class="text-muted">Not named yet</span>
+                                        <div>
+                                            <a t-att-href="'/my/service-bookings/%s/pickup' % row['order'].id"
+                                               class="btn btn-sm btn-link px-0">Add pickup carrier</a>
+                                        </div>
+                                    </t>
+                                </td>
+                                <td>
+                                    <t t-if="row['positions']">
+                                        <t t-foreach="row['positions']" t-as="res">
+                                            <div><t t-out="res.location_id.complete_name"/></div>
+                                        </t>
+                                        <div class="text-muted small"><t t-out="row['capacity_state']"/></div>
+                                    </t>
+                                    <t t-else="">
+                                        <span class="text-muted">—</span>
+                                    </t>
+                                </td>
                                 <td><span t-field="row['order'].amount_total" t-options='{"widget": "monetary", "display_currency": row["order"].currency_id}'/></td>
-                                <td><a t-att-href="'/my/service-bookings/%s/pickup' % row['order'].id" class="btn btn-sm btn-link">Pickup authorization</a></td>
+                                <td><a t-att-href="'/my/service-bookings/%s/pickup' % row['order'].id" class="btn btn-sm btn-link">Pickup Carrier</a></td>
                             </tr>
                         </t>
                     </tbody>
@@ -153,6 +182,20 @@
             </t>
             <t t-if="error == 'ltl_ftl'">
                 <div class="alert alert-danger" role="alert">Choose either LTL or FTL — not both.</div>
+            </t>
+            <t t-if="error == 'capacity'">
+                <div class="alert alert-warning" role="alert">
+                    <strong>That appointment cannot be confirmed.</strong>
+                    <div t-out="form.get('capacity_message') or ''"/>
+                    <div class="mt-1">Please pick a different arrival or departure
+                        time and submit again — nothing has been booked.</div>
+                </div>
+            </t>
+            <t t-if="error == 'appointment_required'">
+                <div class="alert alert-danger" role="alert">
+                    An arrival and a departure time are required so we can reserve
+                    warehouse space for your pallets.
+                </div>
             </t>
             <t t-if="error == 'party_required'">
                 <div class="alert alert-danger" role="alert">
@@ -276,7 +319,7 @@
                             <t t-set="required" t-value="False"/>
                             <t t-set="value" t-value="form.get('freight_owner_text') or ''"/>
                             <t t-set="value_id" t-value="form.get('freight_owner_id') or ''"/>
-                            <t t-set="help" t-value="'Who owns the goods. Leave blank if your company owns them.'"/>
+                            <t t-set="help" t-value="'The party that owns the goods. Leave blank if your company owns them.'"/>
                         </t>
                     </div>
                     <div class="col-md-4">
@@ -286,7 +329,7 @@
                             <t t-set="required" t-value="False"/>
                             <t t-set="value" t-value="form.get('recipient_text') or ''"/>
                             <t t-set="value_id" t-value="form.get('recipient_id') or ''"/>
-                            <t t-set="help" t-value="'The final company or person receiving the goods after pickup. This may be different from the carrier collecting them. Optional.'"/>
+                            <t t-set="help" t-value="'The final receiving party or destination, if relevant. This may be different from the carrier collecting them. Optional.'"/>
                         </t>
                     </div>
                     <div class="col-md-4">
@@ -296,7 +339,7 @@
                             <t t-set="required" t-value="True"/>
                             <t t-set="value" t-value="form.get('pickup_party_text') or ''"/>
                             <t t-set="value_id" t-value="form.get('pickup_party_id') or ''"/>
-                            <t t-set="help" t-value="'The company or individual you permit to collect your goods. Required. You do not need to know the driver’s name yet.'"/>
+                            <t t-set="help" t-value="'The company or person authorized to collect your goods from our warehouse. Required — you do not need to know the driver’s name yet.'"/>
                         </t>
                     </div>
                 </div>
@@ -407,7 +450,7 @@
 <template id="portal_service_booking_pickup" name="Portal: Pickup Authorization">
     <t t-call="portal.portal_layout">
         <div class="container">
-            <h3 class="my-4">Pickup Authorization — <span t-field="booking.name"/></h3>
+            <h3 class="my-4">Pickup Carrier — <span t-field="booking.name"/></h3>
             <p class="text-muted">
                 Requested appointment:
                 <t t-if="arrival_local"><t t-out="arrival_local"/></t><t t-else="">—</t>
@@ -418,10 +461,25 @@
             <t t-if="msg == 'saved'">
                 <div class="alert alert-success" role="alert">Pickup authorization saved.</div>
             </t>
+            <t t-if="error == 'capacity'">
+                <div class="alert alert-warning" role="alert">
+                    <strong>That appointment cannot be confirmed.</strong>
+                    <div t-out="form.get('capacity_message') or ''"/>
+                    <div class="mt-1">Please pick a different arrival or departure
+                        time and submit again — nothing has been booked.</div>
+                </div>
+            </t>
+            <t t-if="error == 'appointment_required'">
+                <div class="alert alert-danger" role="alert">
+                    An arrival and a departure time are required so we can reserve
+                    warehouse space for your pallets.
+                </div>
+            </t>
             <t t-if="error == 'party_required'">
                 <div class="alert alert-danger" role="alert">
-                    Name the company or person authorized to collect your goods — this is the only
-                    required field here. You do not need to know the driver's name.
+                    Name the pickup carrier — the company or person authorized to collect your
+                    goods. This is the only required field here; you do not need to know the
+                    driver's name.
                 </div>
             </t>
             <t t-if="error == 'party_unresolved'">
@@ -454,11 +512,11 @@
                     <div class="col-md-6">
                         <t t-call="prema_logistics_booking.portal_contact_picker">
                             <t t-set="field" t-value="'pickup_party_contact_id'"/>
-                            <t t-set="label" t-value="'Authorized Pickup Party'"/>
+                            <t t-set="label" t-value="'Pickup Carrier'"/>
                             <t t-set="required" t-value="True"/>
                             <t t-set="value" t-value="form.get('party_text') or ''"/>
                             <t t-set="value_id" t-value="form.get('party_id') or ''"/>
-                            <t t-set="help" t-value="'The company or individual you permit to collect your goods. Required. You do not need to know the driver’s name yet.'"/>
+                            <t t-set="help" t-value="'The company or person authorized to collect your goods from our warehouse. Required — you do not need to know the driver’s name yet.'"/>
                         </t>
                     </div>
                     <div class="col-md-6">
@@ -468,7 +526,7 @@
                             <t t-set="required" t-value="False"/>
                             <t t-set="value" t-value="form.get('recipient_text') or ''"/>
                             <t t-set="value_id" t-value="form.get('recipient_id') or ''"/>
-                            <t t-set="help" t-value="'The final company or person receiving the goods after pickup. This may be different from the carrier collecting them. Optional.'"/>
+                            <t t-set="help" t-value="'The final receiving party or destination, if relevant. This may be different from the carrier collecting them. Optional.'"/>
                         </t>
                     </div>
                 </div>

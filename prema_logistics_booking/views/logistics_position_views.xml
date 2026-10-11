@@ -1,0 +1,199 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <!-- ================================================================
+         Warehouse pallet positions.
+
+         A position is an individual pallet space with a configured capacity.
+         The board shows what is physically in it right now and what is already
+         promised, with a link to the customer and the booking, so a late
+         pickup is visible before the next pallet is put down.
+         ================================================================ -->
+
+    <record id="action_pfl_position_board" model="ir.actions.act_window">
+        <field name="name">Pallet Positions</field>
+        <field name="res_model">stock.location</field>
+        <field name="view_mode">list,form</field>
+        <field name="domain">[('x_pfl_is_position', '=', True)]</field>
+        <field name="context">{'search_default_filter_positions': 1}</field>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">No pallet positions configured</p>
+            <p>Flag the individual pallet spaces in your warehouse on the location
+               form: each space gets a capacity, an allocation priority and an
+               out-of-service flag. Parent zones stay unflagged.</p>
+        </field>
+    </record>
+
+    <record id="action_pfl_position_reservation" model="ir.actions.act_window">
+        <field name="name">Position Reservations</field>
+        <field name="res_model">logistics.position.reservation</field>
+        <field name="view_mode">list,form</field>
+        <field name="context">{'search_default_filter_reserved': 1}</field>
+    </record>
+
+    <record id="view_pfl_location_position_tree" model="ir.ui.view">
+        <field name="name">pfl.location.position.tree</field>
+        <field name="model">stock.location</field>
+        <field name="arch" type="xml">
+            <list string="Pallet Positions" create="false" delete="false">
+                <field name="complete_name" string="Position"/>
+                <field name="x_pfl_position_code" string="Label Code"/>
+                <field name="x_pfl_capacity"/>
+                <field name="x_pfl_allocation_order" string="Priority"/>
+                <field name="x_pfl_blocked" string="Out of Service"/>
+                <field name="pfl_is_occupied" string="Occupied"/>
+                <field name="pfl_occupant_package_id" string="Pallet In Place"/>
+                <field name="pfl_occupant_order_id" string="Occupant Booking"/>
+                <field name="pfl_occupant_customer_id" string="Occupant Customer"/>
+                <field name="pfl_current_reservation_id" string="Reserved Now"/>
+                <field name="pfl_next_reservation_id" string="Next Reservation"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="view_pfl_location_position_form" model="ir.ui.view">
+        <field name="name">pfl.location.position.form</field>
+        <field name="model">stock.location</field>
+        <field name="arch" type="xml">
+            <form string="Pallet Position">
+                <sheet>
+                    <div class="oe_button_box" name="button_box">
+                        <button name="%(action_pfl_position_reservation)d" type="action"
+                                class="oe_stat_button" icon="fa-calendar"
+                                context="{'search_default_location_id': id}"
+                                string="Reservations"/>
+                    </div>
+                    <group>
+                        <group string="Position">
+                            <field name="complete_name"/>
+                            <field name="usage"/>
+                            <field name="x_pfl_is_position"/>
+                            <field name="x_pfl_position_code"/>
+                        </group>
+                        <group string="Allocation">
+                            <field name="x_pfl_capacity"/>
+                            <field name="x_pfl_allocation_order"/>
+                            <field name="x_pfl_blocked"/>
+                            <field name="x_pfl_max_weight"/>
+                        </group>
+                    </group>
+                    <group string="Right Now">
+                        <field name="pfl_is_occupied"/>
+                        <field name="pfl_occupant_package_id"/>
+                        <field name="pfl_occupant_customer_id"/>
+                        <field name="pfl_occupant_order_id"/>
+                    </group>
+                    <group string="Reservations">
+                        <field name="pfl_current_reservation_id"/>
+                        <field name="pfl_next_reservation_id"/>
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <record id="view_pfl_position_reservation_tree" model="ir.ui.view">
+        <field name="name">pfl.position.reservation.tree</field>
+        <field name="model">logistics.position.reservation</field>
+        <field name="arch" type="xml">
+            <list string="Position Reservations" create="false">
+                <field name="name"/>
+                <field name="location_id"/>
+                <field name="sale_order_id"/>
+                <field name="partner_id"/>
+                <field name="package_id"/>
+                <field name="date_start"/>
+                <field name="date_end"/>
+                <field name="state"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="view_pfl_position_reservation_form" model="ir.ui.view">
+        <field name="name">pfl.position.reservation.form</field>
+        <field name="model">logistics.position.reservation</field>
+        <field name="arch" type="xml">
+            <form string="Position Reservation" create="false">
+                <header>
+                    <button name="pfl_release" type="object" string="Release Space"
+                            class="btn-secondary" invisible="state != 'reserved'"
+                            confirm="Release this reserved position?"/>
+                    <field name="state" widget="statusbar"/>
+                </header>
+                <sheet>
+                    <group>
+                        <group string="Space">
+                            <field name="name"/>
+                            <field name="location_id"/>
+                            <field name="package_id"/>
+                            <field name="slot_index"/>
+                        </group>
+                        <group string="Booking">
+                            <field name="sale_order_id"/>
+                            <field name="partner_id"/>
+                            <field name="picking_id"/>
+                        </group>
+                    </group>
+                    <group string="Window (America/Toronto display)">
+                        <field name="appointment_start"/>
+                        <field name="appointment_end"/>
+                        <field name="buffer_before"/>
+                        <field name="buffer_after"/>
+                        <field name="date_start"/>
+                        <field name="date_end"/>
+                    </group>
+                    <group>
+                        <field name="physically_cleared"/>
+                        <field name="release_reason"/>
+                    </group>
+                </sheet>
+                <chatter/>
+            </form>
+        </field>
+    </record>
+
+
+
+    <record id="view_pfl_position_reservation_search" model="ir.ui.view">
+        <field name="name">pfl.position.reservation.search</field>
+        <field name="model">logistics.position.reservation</field>
+        <field name="arch" type="xml">
+            <search>
+                <field name="location_id"/>
+                <field name="sale_order_id"/>
+                <field name="partner_id"/>
+                <field name="package_id"/>
+                <filter name="filter_reserved" string="Reserved" domain="[('state', '=', 'reserved')]"/>
+                <filter name="filter_future" string="Upcoming" domain="[('state','=','reserved'),('date_end','&gt;', 'now')]"/>
+                <group expand="0" string="Group By">
+                    <filter name="group_location" string="Position" context="{'group_by': 'location_id'}"/>
+                    <filter name="group_state" string="Status" context="{'group_by': 'state'}"/>
+                </group>
+            </search>
+        </field>
+    </record>
+
+    <record id="view_pfl_location_position_search" model="ir.ui.view">
+        <field name="name">pfl.location.position.search</field>
+        <field name="model">stock.location</field>
+        <field name="arch" type="xml">
+            <search>
+                <field name="complete_name"/>
+                <filter name="filter_positions" string="Pallet Positions" domain="[('x_pfl_is_position', '=', True)]"/>
+                <filter name="filter_occupied" string="Occupied" domain="[('pfl_is_occupied', '=', True)]"/>
+                <filter name="filter_free" string="Free" domain="[('x_pfl_is_position','=',True),('pfl_is_occupied','=',False)]"/>
+                <filter name="filter_blocked" string="Out of Service" domain="[('x_pfl_blocked', '=', True)]"/>
+            </search>
+        </field>
+    </record>
+
+    <menuitem id="menu_pfl_warehouse_root" name="Warehouse" sequence="5"
+              parent="menu_v4_network" groups="stock.group_stock_manager"/>
+    <menuitem id="menu_pfl_warehouse_board" name="Pallet Positions" sequence="10"
+              parent="menu_pfl_warehouse_root" action="action_pfl_position_board"
+              groups="stock.group_stock_user"/>
+    <menuitem id="menu_pfl_warehouse_reservations" name="Position Reservations" sequence="20"
+              parent="menu_pfl_warehouse_root" action="action_pfl_position_reservation"
+              groups="stock.group_stock_user"/>
+
+</odoo>

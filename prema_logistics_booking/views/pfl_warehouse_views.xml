@@ -1,0 +1,163 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <!-- ================================================================
+         PF Logistics warehouse actions.
+
+         One preparation button replaces the manual one-pallet-at-a-time
+         routine; the dock buttons confirm what actually arrived. Only orders
+         and transfers belonging to a warehouse service booking show them.
+         ================================================================ -->
+
+    <record id="view_pfl_sale_order_warehouse" model="ir.ui.view">
+        <field name="name">sale.order.form.pfl.warehouse</field>
+        <field name="model">sale.order</field>
+        <field name="inherit_id" ref="sale.view_order_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//header" position="inside">
+                <button name="action_pfl_prepare_pallets" type="object"
+                        string="Prepare Pallets &amp; Labels" class="btn-primary"
+                        invisible="not x_warehouse_service or state == 'cancel'"
+                        help="Creates or reuses the linked receipt, prepares one entry and one native package per expected pallet, links them to the booking and to their reserved position, and stops. Nothing is received or validated by this."/>
+                <button name="action_pfl_reserve_space" type="object"
+                        string="Reserve Space" class="btn-secondary"
+                        invisible="not x_warehouse_service or state == 'cancel' or pfl_capacity_state == 'reserved'"/>
+                <button name="action_pfl_open_receipt" type="object"
+                        string="Open Receipt" class="btn-secondary"
+                        invisible="not x_warehouse_service or not pfl_receipt_id"/>
+            </xpath>
+            <xpath expr="//div[@name='button_box']" position="inside">
+                <button name="%(action_pfl_position_reservation)d" type="action"
+                        class="oe_stat_button" icon="fa-th"
+                        invisible="not x_warehouse_service"
+                        context="{'search_default_sale_order_id': id, 'search_default_filter_reserved': 1}">
+                    <field name="pfl_reservation_count" widget="statinfo"
+                           string="Positions"/>
+                </button>
+            </xpath>
+            <xpath expr="//field[@name='client_order_ref']" position="after">
+                <field name="pfl_capacity_state" widget="badge"
+                       invisible="not x_warehouse_service"
+                       decoration-success="pfl_capacity_state == 'reserved'"
+                       decoration-warning="pfl_capacity_state in ('partial','unreserved')"
+                       decoration-danger="pfl_capacity_state == 'released'"
+                       decoration-muted="pfl_capacity_state == 'none'"/>
+                <field name="pfl_prepared_pallets" invisible="not x_warehouse_service"/>
+                <field name="pfl_actual_pallets" invisible="not x_warehouse_service"/>
+            </xpath>
+        </field>
+    </record>
+
+    <record id="view_pfl_stock_picking_receipt" model="ir.ui.view">
+        <field name="name">stock.picking.form.pfl.receipt</field>
+        <field name="model">stock.picking</field>
+        <field name="inherit_id" ref="stock.view_picking_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//header" position="inside">
+                <button name="pfl_prepare_pallet_entries" type="object"
+                        string="Prepare Pallet Entries" class="btn-primary"
+                        invisible="not x_service_booking_id or state in ('done','cancel')"
+                        help="One entry and one native package per expected pallet. Idempotent — running it again does not duplicate anything. Nothing is received by this."/>
+                <button name="action_pfl_confirm_received" type="object"
+                        string="Confirm Received Count" class="btn-primary"
+                        invisible="not x_service_booking_id or state in ('done','cancel') or pfl_confirmed"
+                        help="Marks every pallet entry with a quantity as actually received. Edit a line first for a shortage or damage."/>
+                <button name="action_pfl_reset_confirmation" type="object"
+                        string="Reopen Count" class="btn-secondary"
+                        invisible="not x_service_booking_id or not pfl_confirmed"/>
+                <button name="action_pfl_add_pallet_entry" type="object"
+                        string="Add Excess Pallet" class="btn-secondary"
+                        invisible="not x_service_booking_id or state in ('done','cancel')"
+                        help="Freight that arrived beyond the booking. Reserves one more position before it is added."/>
+                <button name="action_pfl_create_placement_transfer" type="object"
+                        string="Create Placement Transfer" class="btn-secondary"
+                        invisible="not x_service_booking_id or state != 'done'"/>
+                <button name="action_pfl_print_labels" type="object"
+                        string="Print Pallet Labels" class="btn-secondary"
+                        invisible="not x_service_booking_id or not pfl_prepared_pallet_count"/>
+                <button name="action_pfl_print_cards" type="object"
+                        string="Print Pallet Cards" class="btn-secondary"
+                        invisible="not x_service_booking_id or not pfl_prepared_pallet_count"
+                        help="Same package and same position, printed as an off-pallet card for customers who do not allow labels on their pallets."/>
+            </xpath>
+            <xpath expr="//div[@name='button_box']" position="inside">
+                <button name="%(action_pfl_position_reservation)d" type="action"
+                        class="oe_stat_button" icon="fa-th"
+                        invisible="not x_service_booking_id"
+                        context="{'search_default_picking_id': id}">
+                    <field name="pickup_collection_count" widget="statinfo"
+                           string="Pickups"/>
+                </button>
+            </xpath>
+            <xpath expr="//field[@name='origin']" position="after">
+                <field name="pfl_expected_pallet_count" string="Expected Pallets"
+                       readonly="1" invisible="not x_service_booking_id"/>
+                <field name="pfl_prepared_pallet_count" string="Prepared Entries"
+                       readonly="1" invisible="not x_service_booking_id"/>
+                <field name="pfl_received_pallet_count" string="Confirmed Received"
+                       readonly="1" invisible="not x_service_booking_id"/>
+                <field name="pfl_confirmed" readonly="1" invisible="not x_service_booking_id"/>
+                <field name="pfl_confirmed_by_id" readonly="1"
+                       invisible="not x_service_booking_id or not pfl_confirmed"/>
+                <field name="pfl_shortage_note" invisible="not x_service_booking_id"/>
+            </xpath>
+        </field>
+    </record>
+
+    <!-- Scan a pallet label, or scan the rack position to confirm placement. -->
+    <record id="view_pfl_pallet_scan_form" model="ir.ui.view">
+        <field name="name">pfl.pallet.scan.form</field>
+        <field name="model">pfl.pallet.scan</field>
+        <field name="arch" type="xml">
+            <form string="Pallet Scan">
+                <group>
+                    <field name="code" autofocus="autofocus" placeholder="Scan or type the pallet label"/>
+                    <field name="result" widget="badge"
+                           decoration-success="result in ('found','placed_ok')"
+                           decoration-danger="result in ('unknown','placed_wrong')"
+                           decoration-muted="result == 'pending'"/>
+                </group>
+                <div class="alert alert-danger" role="alert"
+                     invisible="result not in ('unknown', 'placed_wrong')">
+                    <field name="message" nolabel="1" readonly="1"/>
+                </div>
+                <group invisible="result != 'found'">
+                    <group string="Pallet">
+                        <field name="package_id"/>
+                        <field name="current_location_id"/>
+                        <field name="reserved_position_id"/>
+                        <field name="reservation_end"/>
+                    </group>
+                    <group string="Booking">
+                        <field name="partner_id"/>
+                        <field name="order_id"/>
+                        <field name="customer_ref"/>
+                    </group>
+                </group>
+                <group invisible="not package_id">
+                    <field name="scanned_position_id" placeholder="Scan the position at the rack"/>
+                </group>
+                <footer>
+                    <button name="action_lookup" type="object" string="Find Pallet"
+                            class="btn-primary"/>
+                    <button name="action_confirm_placement" type="object"
+                            string="Confirm Placement" class="btn-primary"
+                            invisible="not package_id or not scanned_position_id"/>
+                    <button string="Close" class="btn-secondary" special="cancel"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+
+    <record id="action_pfl_pallet_scan" model="ir.actions.act_window">
+        <field name="name">Scan Pallet</field>
+        <field name="res_model">pfl.pallet.scan</field>
+        <field name="view_mode">form</field>
+        <field name="target">new</field>
+    </record>
+
+    <menuitem id="menu_pfl_pallet_scan" name="Scan Pallet" sequence="30"
+              parent="menu_pfl_warehouse_root" action="action_pfl_pallet_scan"
+              groups="stock.group_stock_user"/>
+
+</odoo>

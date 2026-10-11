@@ -280,10 +280,22 @@ class ServiceBookingPortal(http.Controller):
         partner = self._commercial_partner()
         orders = request.env["sale.order"].sudo().search(
             self._booking_domain(partner), order="create_date desc, id desc")
-        rows = [{
-            "order": order,
-            "arrival_local": _utc_to_local_display(order.x_requested_arrival),
-        } for order in orders]
+        Collection = request.env["logistics.pickup.collection"].sudo()
+        rows = []
+        for order in orders:
+            pending = Collection.search(
+                [("sale_order_id", "=", order.id), ("state", "=", "authorized")],
+                order="id desc", limit=1)
+            rows.append({
+                "order": order,
+                "arrival_local": _utc_to_local_display(order.x_requested_arrival),
+                "collection": pending,
+                "carrier_name": pending.authorized_contact_name or "",
+                "driver_name": pending.driver_name or "",
+                "positions": order.pfl_reservation_ids.filtered(
+                    lambda r: r.state == "reserved"),
+                "capacity_state": order.pfl_capacity_state,
+            })
         return request.render("prema_logistics_booking.portal_my_service_bookings", {
             "orders": orders,
             "rows": rows,
@@ -337,6 +349,30 @@ class ServiceBookingPortal(http.Controller):
         expected = int(_clean(post.get("expected_pallets")) or 0)
         client_ref = _clean(post.get("client_order_ref"))
         notes = _clean(post.get("notes"))
+        arrival = _local_input_to_utc(post.get("requested_arrival"))
+        departure = _local_input_to_utc(post.get("requested_departure"))
+
+        # Space is promised BEFORE the order exists. The capacity report takes
+        # the position locks, so what it reports free stays free for the
+        # reservation this same transaction writes a moment later. A refusal
+        # here leaves no order and no stranded reservation behind.
+        if expected > 0 and not (arrival and departure):
+            return reject("appointment_required")
+        capacity = request.env["logistics.position.reservation"].sudo().pfl_capacity_report(
+            arrival, departure, expected) if expected > 0 else None
+        if capacity and not capacity["ok"]:
+            form = self._booking_form(post)
+            form["capacity_message"] = capacity["message"]
+            return request.render(
+                "prema_logistics_booking.portal_my_service_booking_new", {
+                    "services": self._services(),
+                    "ltl_code": LTL_CODE,
+                    "ftl_code": FTL_CODE,
+                    "warehouse_tz": WAREHOUSE_TZ,
+                    "page_name": "service_bookings",
+                    "error": "capacity",
+                    "form": form,
+                })
 
         Order = request.env["sale.order"].sudo()
 
@@ -393,8 +429,8 @@ class ServiceBookingPortal(http.Controller):
             "x_expected_pallets": expected,
             "x_freight_owner_id": freight_owner.id,
             "x_outbound_recipient_id": recipient.id,
-            "x_requested_arrival": _local_input_to_utc(post.get("requested_arrival")),
-            "x_requested_departure": _local_input_to_utc(post.get("requested_departure")),
+            "x_requested_arrival": arrival,
+            "x_requested_departure": departure,
             "client_order_ref": client_ref or False,
             "note": notes or False,
             "order_line": lines,
@@ -444,6 +480,12 @@ class ServiceBookingPortal(http.Controller):
         if pickup_contact:
             # sudo: the contact was validated as the caller's own above.
             collection.action_apply_snapshot(pickup_contact)
+
+        # Now that the booking exists, take the space. The locks this
+        # transaction already holds make this a formality; if anything did go
+        # wrong the whole request rolls back, order included.
+        if expected > 0:
+            order.action_pfl_reserve_space()
 
         return request.redirect("/my/service-bookings?msg=created")
 

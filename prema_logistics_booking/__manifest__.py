@@ -1,7 +1,7 @@
 {
     "name": "Prema Logistics Booking",
 
-    "version": "18.0.13.68.0",
+    "version": "18.0.13.69.0",
     "summary": "Private customer LTL/FTL pricing, scheduling, and booking engine "
                "for PremaFirm Logistics — integrates with Prema Dispatch.",
     "category": "Logistics",
@@ -94,12 +94,17 @@ root for architecture notes, decisions, and phase status.
         "views/portal_private_contacts_templates.xml",
         # Pickup authorization / collection — staff side + release action.
         "views/logistics_pickup_collection_views.xml",
+        # Warehouse pallet positions, reservations and the preparation/dock actions.
+        "views/logistics_position_views.xml",
+        "views/pfl_warehouse_views.xml",
         "views/portal_cleanup_v6.xml",
         "views/request_quote_templates.xml",
         "reports/logistics_quotation_report.xml",
         "reports/carrier_rate_confirmation.xml",
         # Proof of Pickup — the customer-facing record of one collection.
         "reports/pickup_proof_report.xml",
+        # PF Logistics pallet label + off-pallet card.
+        "reports/pfl_pallet_label.xml",
     ],
     "assets": {
         # Portal assets are served from the BUNDLE, never from a raw

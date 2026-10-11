@@ -82,3 +82,10 @@ from . import logistics_estimator_bridge
 
 # Weekly Capacity board RPCs (TODO 9-13).
 from . import dispatch_job_weekly_capacity
+
+# PF Logistics warehouse positions, reservations, pallet preparation.
+from . import logistics_position_reservation
+from . import stock_location_position
+from . import stock_quant_package_pfl
+from . import sale_order_pfl_warehouse
+from . import stock_picking_pfl_receipt

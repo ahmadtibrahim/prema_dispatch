@@ -1,0 +1,128 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <!-- ================================================================
+         PF Logistics pallet label.
+
+         Carries what a person at the rack actually needs: the barcode and the
+         readable package id, whose goods they are, which booking and customer
+         reference they belong to, and the position they are reserved for.
+
+         Two shapes of the same label:
+           * "Pallet Label" — the adhesive label for the pallet itself;
+           * "Pallet Card"  — the off-pallet card, for customers who do not
+             allow anything stuck to their pallets. It carries the same package
+             id and therefore the same exclusive position.
+         ================================================================ -->
+
+    <template id="pfl_pallet_label_body">
+        <div class="page" style="font-size:11px;">
+            <div class="row">
+                <div class="col-7">
+                    <div style="font-size:22px; font-weight:700;" t-field="o.name"/>
+                    <div t-if="o.package_type_id" class="text-muted">
+                        <span t-field="o.package_type_id.name"/>
+                    </div>
+                </div>
+                <div class="col-5 text-end">
+                    <div t-if="card_mode" style="border:2px solid #000; padding:2px 6px;
+                                display:inline-block; font-weight:700;">
+                        OFF-PALLET CARD
+                    </div>
+                </div>
+            </div>
+
+            <div class="text-center mt-2 mb-2">
+                <div t-field="o.name"
+                     t-options="{'widget': 'barcode', 'symbology': 'Code128',
+                                 'width': 600, 'height': 90,
+                                 'img_style': 'width:100%;max-width:420px;height:auto;'}">
+                    <div class="bg-light border rounded p-3 text-muted text-center">
+                        (package barcode)
+                    </div>
+                </div>
+                <div style="font-family:monospace; font-size:16px; letter-spacing:1px;"
+                     t-out="o.name"/>
+            </div>
+
+            <table class="table table-sm table-borderless mb-1"
+                   style="font-size:11px;">
+                <tr>
+                    <td style="width:38%;" class="text-muted">Customer / Freight owner</td>
+                    <td><strong t-out="owner_name or '—'"/></td>
+                </tr>
+                <tr>
+                    <td class="text-muted">Booking</td>
+                    <td><strong t-out="booking_name or '—'"/></td>
+                </tr>
+                <tr>
+                    <td class="text-muted">Customer reference</td>
+                    <td><strong t-out="customer_ref or '—'"/></td>
+                </tr>
+                <tr>
+                    <td class="text-muted">Reserved position</td>
+                    <td style="font-size:15px;"><strong t-out="position_name or 'not assigned'"/></td>
+                </tr>
+                <tr>
+                    <td class="text-muted">Current location</td>
+                    <td t-out="o.location_id.complete_name or '—'"/>
+                </tr>
+            </table>
+
+            <div class="text-muted" style="font-size:9px;">
+                PF Logistics · PremaFirm Logistics. This pallet is reserved for one
+                position only. Scan the package to confirm its booking, and scan the
+                position at the rack to confirm placement.
+            </div>
+        </div>
+    </template>
+
+    <template id="report_pfl_pallet_label">
+        <t t-call="web.basic_layout">
+            <t t-foreach="docs" t-as="o">
+                <t t-set="card_mode" t-value="False"/>
+                <t t-set="owner_name" t-value="o.x_pfl_freight_owner_id.name if 'x_pfl_freight_owner_id' in o._fields else ''"/>
+                <t t-set="booking_name" t-value="o.x_pfl_sale_order_id.name if 'x_pfl_sale_order_id' in o._fields else ''"/>
+                <t t-set="customer_ref" t-value="o.x_pfl_customer_ref if 'x_pfl_customer_ref' in o._fields else ''"/>
+                <t t-set="position_name" t-value="o.x_pfl_position_id.complete_name if 'x_pfl_position_id' in o._fields else ''"/>
+                <t t-call="prema_logistics_booking.pfl_pallet_label_body"/>
+            </t>
+        </t>
+    </template>
+
+    <template id="report_pfl_pallet_card">
+        <t t-call="web.basic_layout">
+            <t t-foreach="docs" t-as="o">
+                <t t-set="card_mode" t-value="True"/>
+                <t t-set="owner_name" t-value="o.x_pfl_freight_owner_id.name if 'x_pfl_freight_owner_id' in o._fields else ''"/>
+                <t t-set="booking_name" t-value="o.x_pfl_sale_order_id.name if 'x_pfl_sale_order_id' in o._fields else ''"/>
+                <t t-set="customer_ref" t-value="o.x_pfl_customer_ref if 'x_pfl_customer_ref' in o._fields else ''"/>
+                <t t-set="position_name" t-value="o.x_pfl_position_id.complete_name if 'x_pfl_position_id' in o._fields else ''"/>
+                <t t-call="prema_logistics_booking.pfl_pallet_label_body"/>
+            </t>
+        </t>
+    </template>
+
+    <record id="action_report_pfl_pallet_label" model="ir.actions.report">
+        <field name="name">Pallet Label</field>
+        <field name="model">stock.quant.package</field>
+        <field name="report_type">qweb-pdf</field>
+        <field name="report_name">prema_logistics_booking.report_pfl_pallet_label</field>
+        <field name="report_file">prema_logistics_booking.report_pfl_pallet_label</field>
+        <field name="print_report_name">'Pallet-Label-%s' % (object.name or 'pallet')</field>
+        <field name="binding_model_id" ref="stock.model_stock_quant_package"/>
+        <field name="binding_type">report</field>
+    </record>
+
+    <record id="action_report_pfl_pallet_card" model="ir.actions.report">
+        <field name="name">Pallet Card (off-pallet)</field>
+        <field name="model">stock.quant.package</field>
+        <field name="report_type">qweb-pdf</field>
+        <field name="report_name">prema_logistics_booking.report_pfl_pallet_card</field>
+        <field name="report_file">prema_logistics_booking.report_pfl_pallet_card</field>
+        <field name="print_report_name">'Pallet-Card-%s' % (object.name or 'pallet')</field>
+        <field name="binding_model_id" ref="stock.model_stock_quant_package"/>
+        <field name="binding_type">report</field>
+    </record>
+
+</odoo>
