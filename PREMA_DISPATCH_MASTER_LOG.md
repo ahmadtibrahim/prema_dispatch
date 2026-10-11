@@ -3144,3 +3144,21 @@ Verified **on prod itself** with a read-only portal session for the demo user (s
 **Deploy.** Commits **`929b67f`** (positions/reservations/preparation/labels/scan), **`ecc73cf`** (actual billing), **`28ead4b`** (= PIN). Rollback `ecc73cf`. Crons 72 → paused → restored identical; `-u prema_logistics_booking` EXIT=0; `preflight_prod_deploy.sh` PASS; restart; `smoke_prod.sh` PASS (0 bad queries, 0 schema errors, 0 HTTP tracebacks after the restart). Nothing pushed to the public repository.
 
 **NOT done (stated plainly).** One combined draft invoice covering warehouse + transport lines, and the interlock that stops a transport booking self-invoicing the same charge, are **not implemented** — the warehouse invoice is produced for warehouse orders only and transportation invoicing is untouched. `x_pfl_max_weight` is configurable but **not enforced** in allocation; only `x_pfl_blocked` and physical occupancy are. Rescheduling exists as `action_pfl_reschedule` (secure-then-release) but has no dedicated wizard UI yet.
+
+## 46. PF Logistics warehouse wording: "Package" → "Pallet" — 2026-10-11 — DEPLOYED TO PROD
+
+**Work order.** Rename the customer- and staff-facing label "Package" to "Pallet" throughout the PF Logistics warehouse workflow — receipt/release views, scanning screens, labels, cards and Proof of Pickup — using **"Pallet ID"** for the identifier and **"Prepare Pallets"** for the preparation action. Keep Odoo's native package model, the existing ids (`PACK0000006…`), the barcodes and every tracking relationship unchanged, and scope the change to PF Logistics warehousing.
+
+**What changed (wording only — no model, no data, no id).**
+* **"Pallet ID"** for the identifier: the reservation's pallet link (was "Pallet Package"), the scan wizard's field and scan box (was "Pallet Label" / "Package"), and the label/card.
+* **"Prepare Pallets"** for the receipt action (was "Prepare Pallet Entries"); "Prepared Entries" reads **"Prepared Pallets"**. The booking button stays **"Prepare Pallets & Labels"** because it also prints.
+* **Proof of Pickup** — portal page and PDF: "Pallets / packages collected" → **"Pallets collected"**, `Packages:` → **"Pallet IDs:"**, "Pallets / packages released" → **"Pallets released:"**. The collection field is now labelled **"Pallets Released"**.
+* Label placeholder reads **"(pallet barcode)"**; the label footer says "Scan the pallet ID…".
+
+**Deliberately unchanged.** The native model (`stock.quant.package`), the package ids, the barcode values and the quant/move/package-level relationships; Python identifiers, method names and JSON keys (`/pfl/scan/package/<code>` keeps its API keys, so nothing that already calls it breaks); `package_type_id` stock — record ids are never renamed. No other brand or transportation template was touched.
+
+**Verification — 23 checks, 0 failures, on Prod-db** (`/root/service_bookings_phase2/verify_wording.py`): the four prepared ids and their positions are exactly as before; the receipt arch reads "Prepare Pallets" and no longer contains "Prepare Pallet Entries"; the scan screen, reservation form and fields carry "Pallet ID"; the Proof of Pickup PDF reads "Pallets collected" / "Pallet IDs:" / "Pallets released:" and says "packages" nowhere; the label PDF shows the ids and a real barcode image and says "package" nowhere; the reader-visible text of the label templates is clean while `package_type_id` and the native model reference remain. The live portal list and pickup pages render 200 with no "Package". MoonVella views are present and untouched.
+
+**Deploy.** Commit **`bcd4c74`** (= PIN), module **18.0.13.70.0**, rollback `991de09`. Crons 72 → paused → restored identical; `-u` EXIT=0; `preflight_prod_deploy.sh` PASS; restart; `smoke_prod.sh` PASS. Nothing pushed.
+
+**State unchanged:** `S00108` / `PFL-IN00002` still prepared but **unvalidated** — four pallets `PACK0000006…9` on `A/A1-1, A1-2, A1-3, A2-1` reserved 10:45–17:15 America/Toronto, nothing confirmed, no stock, no charges.
