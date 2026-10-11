@@ -170,6 +170,9 @@ class SaleOrder(models.Model):
                 ", ".join(unpriced.mapped("product_id.display_name"))))
 
         measured, events = self.pfl_measured_actuals()
+        # The charges are derived from this order and are read-only in the UI,
+        # so the rewrite runs elevated: whoever may open the order may
+        # recalculate it, and nobody edits the rows by hand.
         Charge = self.env["logistics.warehouse.charge"].sudo()
         Charge.search([("sale_order_id", "=", self.id)]).unlink()
 
