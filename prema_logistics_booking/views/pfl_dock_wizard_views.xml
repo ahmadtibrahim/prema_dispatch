@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <!-- ================================================================
+         Dock screens, opened from Barcode in the standard dialog. The
+         operator never leaves Barcode for a backend form.
+         ================================================================ -->
+
+    <record id="view_pfl_dock_receive_form" model="ir.ui.view">
+        <field name="name">pfl.dock.receive.form</field>
+        <field name="model">pfl.dock.receive</field>
+        <field name="arch" type="xml">
+            <form string="Receive pallets">
+                <group>
+                    <field name="picking_id" readonly="1"/>
+                </group>
+                <div class="alert alert-info" role="alert">
+                    Say what actually came off the truck. Nothing is received by
+                    saving this — the receipt is completed when you validate the
+                    transfer.
+                </div>
+                <field name="line_ids">
+                    <list editable="bottom" create="false" delete="false">
+                        <!-- force_save: a readonly field on a NEW line is
+                             otherwise dropped by the client and the wizard
+                             would not know which pallet a row is -->
+                        <field name="package_id" force_save="1"/>
+                        <field name="position_name" force_save="1"/>
+                        <field name="state"/>
+                        <field name="note"/>
+                    </list>
+                </field>
+                <group>
+                    <field name="damage_note" placeholder="Anything the driver or the pallets need noted"/>
+                    <field name="photo_name" invisible="1"/>
+                    <field name="photo" widget="image" class="o_avatar_image"/>
+                </group>
+                <footer>
+                    <button name="action_apply" type="object" string="Record the count"
+                            class="btn-primary"/>
+                    <button string="Cancel" class="btn-secondary" special="cancel"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+
+    <record id="view_pfl_dock_pickup_form" model="ir.ui.view">
+        <field name="name">pfl.dock.pickup.form</field>
+        <field name="model">pfl.dock.pickup</field>
+        <field name="arch" type="xml">
+            <form string="Record the collecting driver">
+                <group>
+                    <field name="picking_id" readonly="1"/>
+                    <field name="collection_id" readonly="1"/>
+                    <field name="authorized_party" readonly="1"/>
+                </group>
+                <div class="alert alert-warning" role="alert">
+                    A claimed company name is not a verification. Record how you
+                    established that this driver may collect for the authorized
+                    party. A different company needs a manager override.
+                </div>
+                <group>
+                    <group string="Who is actually here">
+                        <field name="collected_by_name"/>
+                        <field name="collected_company"/>
+                        <field name="truck_details"/>
+                    </group>
+                    <group string="How you verified it">
+                        <field name="verification_method"/>
+                        <field name="verification_result"/>
+                    </group>
+                </group>
+                <group string="Driver signature">
+                    <field name="signature" widget="signature"/>
+                </group>
+                <field name="customer_instructions" readonly="1"/>
+                <footer>
+                    <button name="action_apply" type="object" string="Record"
+                            class="btn-primary"/>
+                    <button string="Cancel" class="btn-secondary" special="cancel"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+
+</odoo>

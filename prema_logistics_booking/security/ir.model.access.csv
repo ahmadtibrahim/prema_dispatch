@@ -173,3 +173,7 @@ access_logistics_position_reservation_manager,logistics.position.reservation.man
 access_logistics_warehouse_charge_user,logistics.warehouse.charge.sales,model_logistics_warehouse_charge,sales_team.group_sale_salesman,1,0,0,0
 access_logistics_warehouse_charge_manager,logistics.warehouse.charge.manager,model_logistics_warehouse_charge,prema_dispatch.group_dispatch_manager,1,1,1,1
 access_pfl_pallet_scan_user,pfl.pallet.scan.user,model_pfl_pallet_scan,stock.group_stock_user,1,1,1,1
+access_pfl_dock_receive_user,pfl.dock.receive.user,model_pfl_dock_receive,stock.group_stock_user,1,1,1,1
+access_pfl_dock_receive_line_user,pfl.dock.receive.line.user,model_pfl_dock_receive_line,stock.group_stock_user,1,1,1,1
+access_pfl_dock_pickup_user,pfl.dock.pickup.user,model_pfl_dock_pickup,stock.group_stock_user,1,1,1,1
+access_pfl_dock_pickup_manager,pfl.dock.pickup.manager,model_pfl_dock_pickup,prema_dispatch.group_dispatch_manager,1,1,1,1

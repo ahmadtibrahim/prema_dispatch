@@ -1,7 +1,7 @@
 {
     "name": "Prema Logistics Booking",
 
-    "version": "18.0.13.75.0",
+    "version": "18.0.13.77.0",
     "summary": "Private customer LTL/FTL pricing, scheduling, and booking engine "
                "for PremaFirm Logistics — integrates with Prema Dispatch.",
     "category": "Logistics",
@@ -99,6 +99,8 @@ root for architecture notes, decisions, and phase status.
         # Warehouse pallet positions, reservations and the preparation/dock actions.
         "views/logistics_position_views.xml",
         "views/pfl_warehouse_views.xml",
+        # Dock dialogs opened from Barcode.
+        "views/pfl_dock_wizard_views.xml",
         "views/portal_cleanup_v6.xml",
         "views/request_quote_templates.xml",
         "reports/logistics_quotation_report.xml",

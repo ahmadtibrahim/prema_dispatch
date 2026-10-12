@@ -30,6 +30,42 @@ INSTRUCTION_CODES = ("PFL-XD-LTL", "PFL-XD-FTL", "PFL-WRAP", "PFL-PAL-SUP",
                      "PFL-LAB-HR", "PFL-STOR-DAY", "PFL-LABEL")
 
 
+def _placement_reservation(picking, package):
+    """The position reserved for a pallet on this booking, or an empty set."""
+    return picking.x_service_booking_id.pfl_reservation_ids.filtered(
+        lambda r: r.state == "reserved" and r.package_id == package).location_id
+
+
+class StockMoveLine(models.Model):
+    _inherit = "stock.move.line"
+
+    def write(self, vals):
+        """A pallet on a placement transfer may only go where it is reserved.
+
+        This bites whichever way the destination is set — scanning a location
+        in Barcode, typing it, or an RPC call — so a wrong position cannot be
+        accepted quietly. The module's own binder runs elevated and is exempt.
+        """
+        if not self.env.su and "location_dest_id" in vals:
+            for line in self:
+                picking = line.picking_id
+                if picking.picking_type_id.sequence_code != "PFL-INT" \
+                        or not picking.x_service_booking_id:
+                    continue
+                package = line.package_id or line.result_package_id
+                if not package:
+                    continue
+                reserved = _placement_reservation(picking, package)
+                if reserved and reserved.id != vals["location_dest_id"]:
+                    raise UserError(_(
+                        "Pallet %(pkg)s is reserved for %(want)s, not "
+                        "%(got)s. Scan the position shown on its label.",
+                        pkg=package.name, want=reserved.complete_name,
+                        got=self.env["stock.location"].browse(
+                            vals["location_dest_id"]).complete_name or "—"))
+        return super().write(vals)
+
+
 class StockPicking(models.Model):
     _inherit = "stock.picking"
 
@@ -39,13 +75,27 @@ class StockPicking(models.Model):
         string="PF Logistics Receipt", compute="_compute_pfl_barcode_flags")
     pfl_operational_summary = fields.Text(
         string="Dock Instructions", compute="_compute_pfl_operational_summary")
+    pfl_is_placement_transfer = fields.Boolean(
+        string="PF Logistics Placement", compute="_compute_pfl_barcode_flags")
+    pfl_is_release = fields.Boolean(
+        string="PF Logistics Release", compute="_compute_pfl_barcode_flags")
+    pfl_collection_state = fields.Selection(
+        [("authorized", "Authorized"), ("collected", "Collected"),
+         ("cancelled", "Cancelled")],
+        string="Collection", compute="_compute_pfl_barcode_flags")
 
-    @api.depends("x_service_booking_id", "picking_type_id")
+    @api.depends("x_service_booking_id", "picking_type_id",
+                 "pickup_collection_ids.state")
     def _compute_pfl_barcode_flags(self):
         for picking in self:
-            picking.pfl_is_warehouse_receipt = bool(
-                picking.x_service_booking_id
-                and picking.picking_type_id.sequence_code == "PFL-IN")
+            code = picking.picking_type_id.sequence_code
+            linked = bool(picking.x_service_booking_id)
+            picking.pfl_is_warehouse_receipt = bool(linked and code == "PFL-IN")
+            picking.pfl_is_placement_transfer = bool(linked and code == "PFL-INT")
+            picking.pfl_is_release = bool(linked and code == "PFL-OUT")
+            collection = self.env["logistics.pickup.collection"].search(
+                [("picking_id", "=", picking.id)], order="id desc", limit=1)
+            picking.pfl_collection_state = collection.state if collection else False
 
     @api.depends("x_service_booking_id", "move_line_ids.result_package_id",
                  "x_service_booking_id.x_requested_arrival")
@@ -122,6 +172,9 @@ class StockPicking(models.Model):
             "pfl_confirmed",
             "pfl_arrived_at",
             "pfl_shortage_note",
+            "pfl_is_placement_transfer",
+            "pfl_is_release",
+            "pfl_collection_state",
         ]
 
     # ── the dock actions, reachable from Barcode ───────────────────────
@@ -150,6 +203,116 @@ class StockPicking(models.Model):
                                     "confirm the count when the truck is done."),
                        "next": {"type": "ir.actions.act_window_close"}},
         }
+
+    # ── the dock steps, each opened from Barcode ───────────────────────
+    def _pfl_dialog(self, model, name):
+        self.ensure_one()
+        return {
+            "type": "ir.actions.act_window",
+            "name": name,
+            "res_model": model,
+            "view_mode": "form",
+            "views": [[False, "form"]],
+            "target": "new",
+            "context": {"default_picking_id": self.id, "active_id": self.id},
+        }
+
+    def action_pfl_create_placement(self):
+        """Create the placement transfer from the dock and open it in Barcode,
+        so the operator never has to go back to a Sales or Inventory form."""
+        self.ensure_one()
+        action = self.action_pfl_create_placement_transfer()
+        return {
+            "type": "ir.actions.client",
+            "tag": "stock_barcode_client_action",
+            "name": _("Placement"),
+            "params": {"actionId": False},
+            "context": {"active_id": action["res_id"], "active_model": "stock.picking"},
+        }
+
+    def action_pfl_open_receive(self):
+        """Confirm what actually arrived — the manual/exception counterpart of
+        scanning, in the same native dialog."""
+        self.ensure_one()
+        return self._pfl_dialog("pfl.dock.receive", _("Receive pallets"))
+
+    def action_pfl_open_pickup(self):
+        """Record the driver, the company, how authority was verified, and the
+        signature — on the release, at the dock."""
+        self.ensure_one()
+        if not self.env["logistics.pickup.collection"].search(
+                [("picking_id", "=", self.id)], limit=1):
+            raise UserError(_(
+                "%s has no pickup authorization record yet.", self.name))
+        return self._pfl_dialog("pfl.dock.pickup", _("Record the collecting driver"))
+
+    def action_pfl_scan_placement(self):
+        """Scan a pallet, then the position at the rack; a wrong position is
+        refused."""
+        self.ensure_one()
+        return {
+            "type": "ir.actions.act_window",
+            "name": _("Confirm placement"),
+            "res_model": "pfl.pallet.scan",
+            "view_mode": "form",
+            "views": [[False, "form"]],
+            "target": "new",
+            "context": {"default_picking_id": self.id},
+        }
+
+    def action_pfl_confirm_placement(self):
+        """Complete the placement: every pallet must be going to the position
+        reserved for it, then the native transfer is validated."""
+        self.ensure_one()
+        if self.picking_type_id.sequence_code != "PFL-INT":
+            raise UserError(_("%s is not a placement transfer.", self.name))
+        if not all(line.location_dest_id for line in self.move_line_ids):
+            raise UserError(_("Every pallet needs a destination before the "
+                              "placement can be confirmed."))
+        self.pfl_bind_pallets_to_destinations()
+        result = self.with_context(skip_sms=True).button_validate()
+        if isinstance(result, dict) and result.get("res_model"):
+            return result
+        return {
+            "type": "ir.actions.client",
+            "tag": "display_notification",
+            "params": {"type": "success",
+                       "message": _("Placement confirmed for %s pallet(s).",
+                                    self.pfl_prepared_pallet_count),
+                       "next": {"type": "ir.actions.act_window_close"}},
+        }
+
+    def action_pfl_complete_collection(self):
+        """Close the collection — only possible once the release is validated."""
+        self.ensure_one()
+        collection = self.env["logistics.pickup.collection"].search(
+            [("picking_id", "=", self.id)], order="id desc", limit=1)
+        if not collection:
+            raise UserError(_("%s has no collection recorded against it.",
+                              self.name))
+        collection.action_record_collection()
+        return {
+            "type": "ir.actions.client",
+            "tag": "display_notification",
+            "params": {"type": "success",
+                       "message": _("Collection completed for %s.",
+                                    collection.name),
+                       "next": {"type": "ir.actions.act_window_close"}},
+        }
+
+    def action_pfl_proof_of_pickup(self):
+        """The customer-facing Proof of Pickup, from the dock."""
+        self.ensure_one()
+        collection = self.env["logistics.pickup.collection"].search(
+            [("picking_id", "=", self.id), ("state", "=", "collected")],
+            order="id desc", limit=1)
+        if not collection:
+            raise UserError(_(
+                "There is no completed collection on %s yet, so there is no "
+                "Proof of Pickup to show.", self.name))
+        return self.env.ref(
+            "prema_logistics_booking.action_report_pickup_proof").report_action(
+                collection)
 
     def action_pfl_prepare_from_barcode(self):
         """Prepare the pallet entries and labels without leaving Barcode."""

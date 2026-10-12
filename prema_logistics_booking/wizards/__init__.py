@@ -5,3 +5,4 @@ from . import booking_price_adjust
 from . import region_test_coordinate
 from . import test_routing_decision
 from . import pfl_pallet_scan
+from . import pfl_dock_wizards

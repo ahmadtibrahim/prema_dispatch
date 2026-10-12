@@ -30,16 +30,29 @@ patch(BarcodePickingModel.prototype, {
         return buttons;
     },
 
-    /** Run a PFL dock action and tell the employee what happened. */
+    /** Run a PFL dock action: open its dialog, or report what it did. */
     async pflAction(method) {
         await this.save();
         try {
             const result = await this.orm.call(this.resModel, method, [[this.resId]]);
+            // a dialog, a report or a client notification — whatever the
+            // server returned is what the native client does with actions
+            if (result && (result.res_model || result.type)) {
+                if (result.type === "ir.actions.client"
+                        && result.tag === "display_notification") {
+                    const params = result.params || {};
+                    this.notification(params.message, { type: params.type || "info" });
+                    return;
+                }
+                await this.action.doAction(result);
+                return;
+            }
             const params = result && result.params;
             if (params && params.message) {
                 this.notification(params.message, { type: params.type || "info" });
             }
         } catch (error) {
+            console.error("PFL dock action failed:", error && (error.stack || error));
             this.notification(error.message || _t("That action failed."),
                               { type: "danger" });
         }

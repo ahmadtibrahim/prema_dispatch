@@ -24,10 +24,65 @@
                 <div t-if="env.model.record.pfl_operational_summary"
                      class="alert alert-info text-start small mt-2" style="white-space: pre-line"
                      t-out="env.model.record.pfl_operational_summary"/>
+                <button class="w-100 fs-4 btn btn-secondary mb-2 py-2 o_pfl_receive"
+                        t-on-click="() => env.model.pflAction('action_pfl_open_receive')">
+                    Record the received count
+                </button>
+                <button t-if="env.model.record.state == 'done'"
+                        class="w-100 fs-4 btn btn-secondary mb-2 py-2 o_pfl_create_placement"
+                        t-on-click="() => env.model.pflAction('action_pfl_create_placement')">
+                    Create placement transfer
+                </button>
                 <div class="text-muted small">
                     Received <t t-out="env.model.record.pfl_received_pallet_count or 0"/>
                     of <t t-out="env.model.record.pfl_prepared_pallet_count or 0"/>
                     prepared pallet(s).
+                </div>
+            </div>
+
+            <div t-if="env.model.record.pfl_is_placement_transfer" class="w-100 my-2">
+                <div class="w-100 my-2 d-flex justify-contents-center">
+                    <hr class="flex-grow-1"/>
+                    <span class="fs-5 fw-bold text-center text-muted mt-1 px-2">
+                        PF Logistics — placement
+                    </span>
+                    <hr class="flex-grow-1"/>
+                </div>
+                <button class="w-100 fs-4 btn btn-secondary mb-2 py-2 o_pfl_scan_position"
+                        t-on-click="() => env.model.pflAction('action_pfl_scan_placement')">
+                    Scan a pallet and its position
+                </button>
+                <button class="w-100 fs-4 btn btn-secondary mb-2 py-2 o_pfl_confirm_placement"
+                        t-on-click="() => env.model.pflAction('action_pfl_confirm_placement')">
+                    Confirm placement
+                </button>
+                <div t-if="env.model.record.pfl_operational_summary"
+                     class="alert alert-info text-start small mt-2" style="white-space: pre-line"
+                     t-out="env.model.record.pfl_operational_summary"/>
+            </div>
+
+            <div t-if="env.model.record.pfl_is_release" class="w-100 my-2">
+                <div class="w-100 my-2 d-flex justify-contents-center">
+                    <hr class="flex-grow-1"/>
+                    <span class="fs-5 fw-bold text-center text-muted mt-1 px-2">
+                        PF Logistics — release
+                    </span>
+                    <hr class="flex-grow-1"/>
+                </div>
+                <button class="w-100 fs-4 btn btn-secondary mb-2 py-2 o_pfl_pickup"
+                        t-on-click="() => env.model.pflAction('action_pfl_open_pickup')">
+                    Record the collecting driver
+                </button>
+                <button class="w-100 fs-4 btn btn-secondary mb-2 py-2 o_pfl_complete"
+                        t-on-click="() => env.model.pflAction('action_pfl_complete_collection')">
+                    Complete collection
+                </button>
+                <button class="w-100 fs-4 btn btn-secondary mb-2 py-2 o_pfl_proof"
+                        t-on-click="() => env.model.pflAction('action_pfl_proof_of_pickup')">
+                    Proof of Pickup
+                </button>
+                <div class="text-muted small">
+                    Collection: <t t-out="env.model.record.pfl_collection_state or 'not started'"/>
                 </div>
             </div>
         </xpath>
