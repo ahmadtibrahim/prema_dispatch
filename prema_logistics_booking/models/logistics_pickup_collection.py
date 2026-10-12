@@ -48,6 +48,13 @@ PORTAL_EDITABLE_FIELDS = frozenset({
     "pickup_reference", "customer_instructions",
 })
 
+#: Only a manager may set these. A warehouse operator records what actually
+#: happened at the dock; overriding a missing or mismatched authorization is a
+#: separate authority, and an operator may never approve their own override.
+MANAGER_ONLY_FIELDS = frozenset({
+    "override_reason", "override_user_id", "override_at",
+})
+
 #: How staff established that the person at the dock may collect for the
 #: authorized company. Chosen explicitly — a claimed company name on its own is
 #: NOT a verification, which is why this is a required, recorded fact.
@@ -214,6 +221,12 @@ class LogisticsPickupCollection(models.Model):
                 raise UserError(_(
                     "This pickup has already been collected — its authorization "
                     "can no longer be changed."))
+        manager_fields = set(vals) & MANAGER_ONLY_FIELDS
+        if manager_fields and not self._is_manager():
+            raise AccessError(_(
+                "A manager override is not part of the warehouse operator role: "
+                "%s can only be set by a warehouse or dispatch manager.",
+                ", ".join(sorted(manager_fields))))
         return super().write(vals)
 
     # ── snapshot ───────────────────────────────────────────────────────
@@ -224,6 +237,11 @@ class LogisticsPickupCollection(models.Model):
         return self.write(dict(contact._snapshot_vals(), authorized_contact_id=contact.id))
 
     # ── staff: is this release allowed to leave? ───────────────────────
+    def _is_manager(self):
+        return (self.env.su
+                or self.env.user.has_group("prema_dispatch.group_dispatch_manager")
+                or self.env.user.has_group("stock.group_stock_manager"))
+
     def _override_approved(self):
         self.ensure_one()
         return bool(self.override_reason and self.override_user_id)
@@ -310,6 +328,10 @@ class LogisticsPickupCollection(models.Model):
         self.ensure_one()
         if self._is_portal_user():
             raise AccessError(_("Only warehouse staff can override."))
+        if not self._is_manager():
+            raise AccessError(_(
+                "Recording a manager override needs manager authority — a "
+                "warehouse operator cannot approve their own override."))
         if not (reason or "").strip():
             raise UserError(_("An override reason is required."))
         self.write({"override_reason": reason.strip(),

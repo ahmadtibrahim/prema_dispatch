@@ -31,6 +31,7 @@ Inventory, outside Prema Dispatch.
 """
 import base64
 import json
+import re
 import logging
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
@@ -301,7 +302,7 @@ class ServiceBookingPortal(http.Controller):
             taxes = self._service_taxes(product, partner)
             table.append({
                 "code": product.default_code,
-                "name": product.display_name,
+                "name": self._customer_name(product),
                 "unit": SERVICE_UNITS.get(product.default_code, _("each")),
                 "rate": product.list_price,
                 "qty_source": self.QTY_SOURCE.get(product.default_code, "one"),
@@ -311,6 +312,72 @@ class ServiceBookingPortal(http.Controller):
                 "estimated": product.default_code == "PFL-STOR-DAY",
             })
         return table
+
+    #: A warehouse booking consumes pallet positions as soon as any of these is
+    #: selected — FTL too, because it still occupies four positions.
+    PALLET_BASED = ("PFL-XD-LTL", "PFL-XD-FTL", "PFL-WRAP", "PFL-PAL-SUP",
+                    "PFL-STOR-DAY")
+
+    @staticmethod
+    def _customer_name(product):
+        """The product name as a customer should read it: no internal code."""
+        label = product.display_name or product.name or ""
+        label = re.sub(r"^\[[^\]]+\]\s*", "", label)
+        return re.sub(r"^PFL\s+", "", label).strip()
+
+    def _service_options(self):
+        """What the form lists, and what the estimate is keyed on."""
+        return [{"id": product.id, "code": product.default_code,
+                 "label": self._customer_name(product)}
+                for product in self._services()]
+
+    @staticmethod
+    def _whole(value):
+        """A positive whole number, or None when it is not one."""
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return None
+        if number <= 0 or number != int(number):
+            return None
+        return int(number)
+
+    def _validate_quantities(self, inputs):
+        """The booking form's own rules, applied on the server.
+
+        Returns an error code, or None. The browser runs the same checks; this
+        is the one that decides.
+        """
+        codes = inputs["codes"]
+        pallets = inputs["expected_pallets"]
+        pallet_based = [c for c in codes if c in self.PALLET_BASED]
+        if pallet_based and pallets <= 0:
+            return "pallets_required"
+        raw = inputs.get("expected_pallets_raw") or ""
+        if raw:
+            try:
+                if float(raw) != int(float(raw)):
+                    return "pallets_required"
+            except (TypeError, ValueError):
+                return "pallets_required"
+        if "PFL-WRAP" in codes:
+            wrapped = self._whole(inputs["wrap_qty"])
+            if wrapped is None:
+                return "wrap_invalid"
+            if pallets and wrapped > pallets:
+                return "wrap_exceeds_pallets"
+        if "PFL-PAL-SUP" in codes:
+            supplied = self._whole(inputs["pallet_supply_qty"])
+            if supplied is None:
+                return "supply_invalid"
+            if pallets and supplied > pallets:
+                return "supply_exceeds_pallets"
+        if "PFL-LAB-HR" in codes:
+            workers = self._whole(inputs["labour_persons"])
+            hours = inputs["labour_hours"]
+            if workers is None or hours <= 0:
+                return "labour_invalid"
+        return None
 
     def _booking_inputs(self, post):
         """The customer's raw inputs, parsed once.
@@ -323,14 +390,17 @@ class ServiceBookingPortal(http.Controller):
                 return max(0.0, float(_clean(post.get(key)) or 0))
             except (TypeError, ValueError):
                 return 0.0
+        raw_pallets = _clean(post.get("expected_pallets"))
         try:
-            expected = int(float(_clean(post.get("expected_pallets")) or 0))
+            expected = int(float(raw_pallets or 0))
         except (TypeError, ValueError):
             expected = 0
         return {
             "codes": [c for c in request.httprequest.form.getlist("service_code")
                       if c in SERVICE_CODES],
             "expected_pallets": expected,
+            # kept raw so "2.5 pallets" can be refused rather than truncated
+            "expected_pallets_raw": raw_pallets,
             "wrap_qty": number("wrap_qty"),
             "pallet_supply_qty": number("pallet_supply_qty"),
             "labour_persons": number("labour_persons"),
@@ -411,12 +481,12 @@ class ServiceBookingPortal(http.Controller):
                 line_untaxed = computed["total_excluded"]
                 line_total = computed["total_included"]
                 if rate == 0:
-                    needs_rate.append(product.display_name)
+                    needs_rate.append(self._customer_name(product))
                 untaxed += line_untaxed
                 taxed += line_total - line_untaxed
                 rows.append({
                     "code": code,
-                    "name": product.display_name,
+                    "name": self._customer_name(product),
                     "description": product.description_sale or "",
                     "unit": SERVICE_UNITS.get(code, _("each")),
                     "quantity": quantity,
@@ -529,6 +599,7 @@ class ServiceBookingPortal(http.Controller):
         form["summary"] = self._quote_summary(self._booking_inputs({}))
         return request.render("prema_logistics_booking.portal_my_service_booking_new", {
             "services": self._services(),
+            "service_options": self._service_options(),
             "ltl_code": LTL_CODE,
             "ftl_code": FTL_CODE,
             "warehouse_tz": WAREHOUSE_TZ,
@@ -550,6 +621,7 @@ class ServiceBookingPortal(http.Controller):
             return request.render(
                 "prema_logistics_booking.portal_my_service_booking_new", {
                     "services": self._services(),
+                    "service_options": self._service_options(),
                     "ltl_code": LTL_CODE,
                     "ftl_code": FTL_CODE,
                     "warehouse_tz": WAREHOUSE_TZ,
@@ -580,6 +652,10 @@ class ServiceBookingPortal(http.Controller):
         departure = inputs["departure"]
         summary = self._quote_summary(inputs)
 
+        quantity_error = self._validate_quantities(inputs)
+        if quantity_error:
+            return reject(quantity_error)
+
         # Acceptance is captured here, not in a second journey: the customer
         # sees the services, quantities, rates, taxes and terms, and signs once.
         accepted_name = _clean(post.get("accept_name"))
@@ -592,6 +668,7 @@ class ServiceBookingPortal(http.Controller):
             return request.render(
                 "prema_logistics_booking.portal_my_service_booking_new", {
                     "services": self._services(),
+                    "service_options": self._service_options(),
                     "ltl_code": LTL_CODE,
                     "ftl_code": FTL_CODE,
                     "warehouse_tz": WAREHOUSE_TZ,
@@ -611,6 +688,7 @@ class ServiceBookingPortal(http.Controller):
             return request.render(
                 "prema_logistics_booking.portal_my_service_booking_new", {
                     "services": self._services(),
+                    "service_options": self._service_options(),
                     "ltl_code": LTL_CODE,
                     "ftl_code": FTL_CODE,
                     "warehouse_tz": WAREHOUSE_TZ,
@@ -642,6 +720,7 @@ class ServiceBookingPortal(http.Controller):
             return request.render(
                 "prema_logistics_booking.portal_my_service_booking_new", {
                     "services": self._services(),
+                    "service_options": self._service_options(),
                     "ltl_code": LTL_CODE,
                     "ftl_code": FTL_CODE,
                     "warehouse_tz": WAREHOUSE_TZ,

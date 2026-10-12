@@ -411,6 +411,112 @@
                 .filter(function (code) { return !!byCode[code]; });
         }
 
+        // ── which extra-service controls are on screen ────────────────
+        function showOnly(id, visible) {
+            var el = document.getElementById(id);
+            if (el) { el.classList.toggle("d-none", !visible); }
+        }
+        function syncControls() {
+            var codes = selected();
+            showOnly("qty_wrap_wrap", codes.indexOf("PFL-WRAP") >= 0);
+            showOnly("qty_pallet_supply_wrap", codes.indexOf("PFL-PAL-SUP") >= 0);
+            showOnly("qty_labour_wrap", codes.indexOf("PFL-LAB-HR") >= 0);
+            var hint = document.getElementById("service_quantities_hint");
+            if (hint) {
+                var any = codes.indexOf("PFL-WRAP") >= 0
+                    || codes.indexOf("PFL-PAL-SUP") >= 0
+                    || codes.indexOf("PFL-LAB-HR") >= 0;
+                hint.classList.toggle("d-none", any);
+            }
+        }
+
+        // ── the booking form's own quantity rules ─────────────────────
+        var PALLET_BASED = ["PFL-XD-LTL", "PFL-XD-FTL", "PFL-WRAP",
+                            "PFL-PAL-SUP", "PFL-STOR-DAY"];
+
+        function whole(value) {
+            var number = parseFloat(value);
+            if (!isFinite(number) || number <= 0 || number !== Math.floor(number)) {
+                return null;
+            }
+            return number;
+        }
+
+        function fieldError(id, message) {
+            var el = document.getElementById(id);
+            var input = document.getElementById(id.replace("_error", ""));
+            if (el) {
+                el.textContent = message || "";
+                el.classList.toggle("d-none", !message);
+            }
+            if (input) { input.classList.toggle("is-invalid", !!message); }
+            return !!message;
+        }
+
+        function validateQuantities() {
+            var codes = selected();
+            var pallets = whole(document.getElementById("expected_pallets").value);
+            var needsPallets = codes.some(function (c) {
+                return PALLET_BASED.indexOf(c) >= 0;
+            });
+            var bad = false;
+
+            if (needsPallets && pallets === null) {
+                bad = fieldError("expected_pallets_error",
+                    "Enter a whole number of pallets, at least one. FTL " +
+                    "occupies positions too, so it needs a count.") || bad;
+            } else {
+                fieldError("expected_pallets_error", "");
+            }
+
+            if (codes.indexOf("PFL-WRAP") >= 0) {
+                var wrapped = whole(document.getElementById("wrap_qty").value);
+                if (wrapped === null) {
+                    bad = fieldError("wrap_qty_error",
+                        "Enter a whole number of pallets to wrap, at least one.") || bad;
+                } else if (pallets !== null && wrapped > pallets) {
+                    bad = fieldError("wrap_qty_error",
+                        "More pallets than the " + pallets + " expected. Lower this " +
+                        "to " + pallets + " or fewer, or raise Expected Pallets.") || bad;
+                } else {
+                    fieldError("wrap_qty_error", "");
+                }
+            } else {
+                fieldError("wrap_qty_error", "");
+            }
+
+            if (codes.indexOf("PFL-PAL-SUP") >= 0) {
+                var supplied = whole(document.getElementById("pallet_supply_qty").value);
+                if (supplied === null) {
+                    bad = fieldError("pallet_supply_qty_error",
+                        "Enter a whole number of pallets to supply, at least one.") || bad;
+                } else if (pallets !== null && supplied > pallets) {
+                    bad = fieldError("pallet_supply_qty_error",
+                        "More pallets than the " + pallets + " expected. Lower this " +
+                        "to " + pallets + " or fewer, or raise Expected Pallets.") || bad;
+                } else {
+                    fieldError("pallet_supply_qty_error", "");
+                }
+            } else {
+                fieldError("pallet_supply_qty_error", "");
+            }
+
+            if (codes.indexOf("PFL-LAB-HR") >= 0) {
+                var workers = whole(document.getElementById("labour_persons").value);
+                var hours = parseFloat(document.getElementById("labour_hours").value);
+                if (workers === null || !isFinite(hours) || hours <= 0) {
+                    bad = fieldError("labour_error",
+                        "Give an estimated number of workers and the estimated hours " +
+                        "per worker.") || bad;
+                } else {
+                    fieldError("labour_error", "");
+                }
+            } else {
+                fieldError("labour_error", "");
+            }
+            return !bad;
+        }
+
         function recalc() {
             var codes = selected();
             var payload = [];
@@ -454,6 +560,7 @@
                     needsRate.join(", ") + ". Nothing is confirmed at zero.";
             }
             if (hidden) { hidden.value = has ? JSON.stringify(payload) : ""; }
+            syncControls();
         }
 
         // LTL and FTL are alternative ways of charging the same job.
@@ -474,9 +581,23 @@
                 enforceExclusive(ev.target);
             }
             recalc();
+            validateQuantities();
         });
-        form.addEventListener("input", recalc);
+        form.addEventListener("input", function () {
+            recalc();
+            validateQuantities();
+        });
+        // Block submission until the quantities are right — never silently
+        // change what the customer typed.
+        form.addEventListener("submit", function (ev) {
+            if (!validateQuantities()) {
+                ev.preventDefault();
+                var firstBad = form.querySelector(".is-invalid");
+                if (firstBad) { firstBad.focus(); }
+            }
+        });
         recalc();
+        validateQuantities();
     }
 
     function boot() {

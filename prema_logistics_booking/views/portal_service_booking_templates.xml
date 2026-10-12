@@ -190,6 +190,29 @@
             <t t-if="error == 'ltl_ftl'">
                 <div class="alert alert-danger" role="alert">Choose either LTL or FTL — not both.</div>
             </t>
+            <t t-if="error == 'pallets_required'">
+                <div class="alert alert-danger" role="alert">
+                    Enter how many pallets this booking is for. It must be a whole number of at
+                    least one — it sets the space we reserve, including for a flat-fee FTL job.
+                </div>
+            </t>
+            <t t-if="error in ('wrap_invalid', 'supply_invalid')">
+                <div class="alert alert-danger" role="alert">
+                    Enter a whole number of at least one for the service you selected.
+                </div>
+            </t>
+            <t t-if="error in ('wrap_exceeds_pallets', 'supply_exceeds_pallets')">
+                <div class="alert alert-danger" role="alert">
+                    A wrapping or pallet-supply quantity cannot be more than the expected pallet
+                    count. Lower the quantity, or raise the expected pallet count.
+                </div>
+            </t>
+            <t t-if="error == 'labour_invalid'">
+                <div class="alert alert-danger" role="alert">
+                    Give an estimated number of workers (a whole number) and the estimated hours
+                    per worker.
+                </div>
+            </t>
             <t t-if="error == 'estimate_changed'">
                 <div class="alert alert-warning" role="alert">
                     <strong>Your estimate changed while you were signing.</strong>
@@ -248,13 +271,14 @@
                         <span class="badge text-bg-primary ms-1">Required</span>
                     </label>
                     <div id="svc_group">
-                        <t t-foreach="services" t-as="s">
+                        <t t-foreach="service_options" t-as="option">
                             <div class="form-check">
                                 <input class="form-check-input" type="checkbox" name="service_code"
-                                       t-att-value="s.default_code" t-att-id="'svc_%s' % s.id"
-                                       t-att-checked="s.default_code in (form.get('service_codes') or [])"/>
-                                <label class="form-check-label" t-att-for="'svc_%s' % s.id">
-                                    <span t-field="s.display_name"/>
+                                       t-att-value="option['code']"
+                                       t-att-id="'svc_%s' % option['id']"
+                                       t-att-checked="option['code'] in (form.get('service_codes') or [])"/>
+                                <label class="form-check-label" t-att-for="'svc_%s' % option['id']">
+                                    <t t-out="option['label']"/>
                                 </label>
                             </div>
                         </t>
@@ -263,35 +287,6 @@
                         <t t-set="help_id" t-value="'help_services'"/>
                         <t t-set="help_body" t-value="'Choose what you need done at our warehouse. LTL and FTL cannot be combined — LTL is priced per pallet, FTL is one flat fee.'"/>
                     </t>
-                    <div class="row mt-2" id="service_quantities">
-                        <div class="col-md-4 mb-2">
-                            <label class="form-label" for="wrap_qty">Wrapping — pallets</label>
-                            <input type="number" min="0" step="1" class="form-control"
-                                   id="wrap_qty" name="wrap_qty"
-                                   t-att-value="form.get('wrap_qty') or ''"/>
-                            <div class="form-text">Only the pallets you want wrapped.</div>
-                        </div>
-                        <div class="col-md-4 mb-2">
-                            <label class="form-label" for="pallet_supply_qty">Pallet supply — pallets</label>
-                            <input type="number" min="0" step="1" class="form-control"
-                                   id="pallet_supply_qty" name="pallet_supply_qty"
-                                   t-att-value="form.get('pallet_supply_qty') or ''"/>
-                            <div class="form-text">Only the pallets you need supplied.</div>
-                        </div>
-                        <div class="col-md-4 mb-2">
-                            <label class="form-label" for="labour_persons">Labour — people / hours</label>
-                            <div class="input-group">
-                                <input type="number" min="0" step="1" class="form-control"
-                                       id="labour_persons" name="labour_persons" placeholder="people"
-                                       t-att-value="form.get('labour_persons') or ''"/>
-                                <input type="number" min="0" step="0.5" class="form-control"
-                                       id="labour_hours" name="labour_hours" placeholder="hours"
-                                       t-att-value="form.get('labour_hours') or ''"/>
-                            </div>
-                            <div class="form-text">Billed in <strong>person-hours</strong>, minimum
-                                one hour per person.</div>
-                        </div>
-                    </div>
                 </div>
 
                 <div class="mb-3">
@@ -305,10 +300,65 @@
                     </label>
                     <input type="number" min="0" class="form-control" id="expected_pallets" name="expected_pallets"
                            t-att-value="form.get('expected_pallets') or ''"/>
+                    <div class="alert alert-danger py-2 mt-1 mb-0 d-none" role="alert"
+                         id="expected_pallets_error"/>
+
                     <t t-call="prema_logistics_booking.portal_field_help_body">
                         <t t-set="help_id" t-value="'help_pallets'"/>
                         <t t-set="help_body" t-value="'How many pallets you expect to send. Used to price LTL and to reserve dock space. Required when you request LTL.'"/>
                     </t>
+                </div>
+
+                <div id="service_quantities">
+                    <div class="mb-3 d-none" id="qty_wrap_wrap">
+                        <label class="form-label" for="wrap_qty">
+                            Pallet Wrapping — how many pallets
+                            <span class="text-muted small ms-1">(optional)</span>
+                        </label>
+                        <input type="number" min="1" step="1" class="form-control col-md-3"
+                               id="wrap_qty" name="wrap_qty"
+                               t-att-value="form.get('wrap_qty') or ''"/>
+                        <div class="form-text">Shrink wrapping the number of pallets selected.</div>
+                        <div class="alert alert-danger py-2 mt-1 mb-0 d-none" role="alert"
+                             id="wrap_qty_error"/>
+                    </div>
+                    <div class="mb-3 d-none" id="qty_pallet_supply_wrap">
+                        <label class="form-label" for="pallet_supply_qty">
+                            Pallet Supply — how many pallets
+                            <span class="text-muted small ms-1">(optional)</span>
+                        </label>
+                        <input type="number" min="1" step="1" class="form-control col-md-3"
+                               id="pallet_supply_qty" name="pallet_supply_qty"
+                               t-att-value="form.get('pallet_supply_qty') or ''"/>
+                        <div class="form-text">An empty pallet supplied by us. Placing your boxes
+                            onto it and wrapping are separate services.</div>
+                        <div class="alert alert-danger py-2 mt-1 mb-0 d-none" role="alert"
+                             id="pallet_supply_qty_error"/>
+                    </div>
+                    <div class="mb-3 d-none" id="qty_labour_wrap">
+                        <label class="form-label" for="labour_persons">Labour</label>
+                        <div class="row">
+                            <div class="col-md-3 mb-2">
+                                <label class="form-label small" for="labour_persons">Estimated workers</label>
+                                <input type="number" min="1" step="1" class="form-control"
+                                       id="labour_persons" name="labour_persons"
+                                       t-att-value="form.get('labour_persons') or ''"/>
+                            </div>
+                            <div class="col-md-3 mb-2">
+                                <label class="form-label small" for="labour_hours">Estimated hours per worker</label>
+                                <input type="number" min="0.5" step="0.5" class="form-control"
+                                       id="labour_hours" name="labour_hours"
+                                       t-att-value="form.get('labour_hours') or ''"/>
+                            </div>
+                        </div>
+                        <div class="form-text">This is an estimate. Final labour charges are based on
+                            work performed, with a minimum of one hour per worker.</div>
+                        <div class="alert alert-danger py-2 mt-1 mb-0 d-none" role="alert"
+                             id="labour_error"/>
+                    </div>
+                    <div class="text-muted small d-none" id="service_quantities_hint">
+                        Quantities for the services you selected appear here.
+                    </div>
                 </div>
 
                 <div class="mb-3">
@@ -366,7 +416,7 @@
                 </div>
 
                 <div class="row">
-                    <div class="col-md-4">
+                    <div class="col-md-6">
                         <t t-call="prema_logistics_booking.portal_contact_picker">
                             <t t-set="field" t-value="'freight_owner_contact_id'"/>
                             <t t-set="label" t-value="'Freight Owner'"/>
@@ -376,24 +426,14 @@
                             <t t-set="help" t-value="'The party that owns the goods. Leave blank if your company owns them.'"/>
                         </t>
                     </div>
-                    <div class="col-md-4">
-                        <t t-call="prema_logistics_booking.portal_contact_picker">
-                            <t t-set="field" t-value="'recipient_contact_id'"/>
-                            <t t-set="label" t-value="'Delivery Recipient'"/>
-                            <t t-set="required" t-value="False"/>
-                            <t t-set="value" t-value="form.get('recipient_text') or ''"/>
-                            <t t-set="value_id" t-value="form.get('recipient_id') or ''"/>
-                            <t t-set="help" t-value="'The final receiving party or destination, if relevant. This may be different from the carrier collecting them. Optional.'"/>
-                        </t>
-                    </div>
-                    <div class="col-md-4">
+                    <div class="col-md-6">
                         <t t-call="prema_logistics_booking.portal_contact_picker">
                             <t t-set="field" t-value="'pickup_party_contact_id'"/>
-                            <t t-set="label" t-value="'Authorized Pickup Party'"/>
+                            <t t-set="label" t-value="'Authorized Pickup Carrier / Person'"/>
                             <t t-set="required" t-value="True"/>
                             <t t-set="value" t-value="form.get('pickup_party_text') or ''"/>
                             <t t-set="value_id" t-value="form.get('pickup_party_id') or ''"/>
-                            <t t-set="help" t-value="'The company or person authorized to collect your goods from our warehouse. Required — you do not need to know the driver’s name yet.'"/>
+                            <t t-set="help" t-value="'Select the company or person authorized to collect your goods. The driver’s name can be provided later or recorded by our warehouse when they arrive.'"/>
                         </t>
                     </div>
                 </div>
@@ -595,6 +635,29 @@
             <t t-if="msg == 'saved'">
                 <div class="alert alert-success" role="alert">Pickup authorization saved.</div>
             </t>
+            <t t-if="error == 'pallets_required'">
+                <div class="alert alert-danger" role="alert">
+                    Enter how many pallets this booking is for. It must be a whole number of at
+                    least one — it sets the space we reserve, including for a flat-fee FTL job.
+                </div>
+            </t>
+            <t t-if="error in ('wrap_invalid', 'supply_invalid')">
+                <div class="alert alert-danger" role="alert">
+                    Enter a whole number of at least one for the service you selected.
+                </div>
+            </t>
+            <t t-if="error in ('wrap_exceeds_pallets', 'supply_exceeds_pallets')">
+                <div class="alert alert-danger" role="alert">
+                    A wrapping or pallet-supply quantity cannot be more than the expected pallet
+                    count. Lower the quantity, or raise the expected pallet count.
+                </div>
+            </t>
+            <t t-if="error == 'labour_invalid'">
+                <div class="alert alert-danger" role="alert">
+                    Give an estimated number of workers (a whole number) and the estimated hours
+                    per worker.
+                </div>
+            </t>
             <t t-if="error == 'estimate_changed'">
                 <div class="alert alert-warning" role="alert">
                     <strong>Your estimate changed while you were signing.</strong>
@@ -659,7 +722,7 @@
                     <div class="col-md-6">
                         <t t-call="prema_logistics_booking.portal_contact_picker">
                             <t t-set="field" t-value="'pickup_party_contact_id'"/>
-                            <t t-set="label" t-value="'Pickup Carrier'"/>
+                            <t t-set="label" t-value="'Authorized Pickup Carrier / Person'"/>
                             <t t-set="required" t-value="True"/>
                             <t t-set="value" t-value="form.get('party_text') or ''"/>
                             <t t-set="value_id" t-value="form.get('party_id') or ''"/>
