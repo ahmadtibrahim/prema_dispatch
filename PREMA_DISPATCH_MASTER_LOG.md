@@ -3234,3 +3234,27 @@ Verified **on prod itself** with a read-only portal session for the demo user (s
 3. **No physical scanner or label printer was tested** — no hardware is connected. Scan input was exercised only through the ORM/HTTP paths.
 
 **Deploy.** Commit `64e239f`, module **18.0.13.72.0**, rollback `306d3cd`. Nothing pushed; no invoices posted; no messages sent. **S00108, PFL-IN00002, PFL-INT00010 and every demo contact, pallet and reservation preserved.** Session: `verify_booking_form.py`, `verify_warehouse_role.py`, `audit_warehouse_role.py`, `inspect_warehouse_user.py`.
+
+## 51. Warehouse operator commercial isolation (DONE) + Barcode extension (IMPLEMENTED, NOT VERIFIED) — 2026-10-12
+
+**§1 finished — commercial records are now out of the operator's reach.**
+`warehouse_01@logistics.premafirm.com` no longer reads quotations, sale prices, invoices, accounting or CRM.
+
+*Why code and not an access rule.* Odoo is additive throughout: `ir.model.access` grants and `ir.rule` narrows, but a record rule belonging to one group is **OR-ed** with the rule sets of every other group the user holds, so a "restrictive" rule can never subtract what another group grants. The commercial models here are granted to **`base.group_user` itself**, and on this database `base.group_user` also implies **21 extra groups**; the only rule-based fix would be editing that shared group, which changes every internal user. Denying therefore has to be code.
+
+*The solution — one choke point.* `BaseModel._check_access(operation)` is the single method every ORM operation passes through before reading, writing, creating or unlinking. A policy table (`models/warehouse_operator_guard.py`) denies the commercial models there for reads **and** writes, which covers searches, direct reads, RPC, **report rendering** and **related-field lookups** — and it runs only when the environment is not `sudo`, so it applies to whoever is actually asking while privileged server code is unaffected. It is scoped to the warehouse **operator** role (a stock user holding no commercial, accounting, dispatch or manager role).
+
+`verify_commercial_isolation.py` **37/37 as the employee**: search and direct read denied on `sale.order`, `sale.order.line`, `sale.order.template`, `product.pricelist(.item)`, `account.move(.line)`, `account.payment`, `account.journal`, `account.tax`, `account.fiscal.position`, `account.account`, `crm.lead`, `sale.report`; the quotation **report** denied (the AccessError surfaces inside the QWeb rendering); create denied; the booking's totals refused. The operator **keeps** receipts, pallets, positions, reservations, the pickup authorization, products and locations. **No collateral damage**: admin, a salesperson, a dispatch manager and a warehouse manager all keep `sale.order`, `account.move` and `crm.lead` — and `base.group_user` was **not** modified, nor was any other user's access.
+
+**Known residual (stated, not hidden):** `product.template.list_price` / `standard_price` remain readable, because the operator must read products to work at all and Odoo has no per-field access rule that could hide the price from this role without also hiding it from sales. Closing it needs a field-level `groups` decision, which is the owner's.
+
+**§2 partly built — the Barcode extension exists but is NOT verified.**
+* `stock.picking._get_fields_stock_barcode()` — the override point `stock_barcode` **documents** for injecting fields — now also carries the receipt's PF Logistics flags, its prepared/received counts and a dock summary.
+* The dock summary is read through an explicit **field whitelist**, elevated only after the record is confirmed to be a PF Logistics receipt — the guard refused the first version that read `sale.order` directly, which is the isolation working as intended. Verified: the summary names the customer, the arrival, the pallet IDs and their reserved positions, and contains **no price, rate, `$` or total**.
+* A small OWL patch adds two label buttons to Barcode's own **Print** section and a "PF Logistics" block with **Truck Arrived** and **Prepare Pallets**, all calling methods that already exist on `stock.picking`.
+* What **was** verified in Chromium as the employee: the Barcode app **opens with no JavaScript error** with these assets loaded (so the template inheritance does not break it), and the dock summary as above.
+* What was **NOT** verified: the actual Barcode click-path — finding the receipt, the PF Logistics block rendering, printing labels, receiving by scan or manual entry, recording shortage/excess/damage/photos, placing pallets, pick/stage/load, pickup verification and signature, Proof of Pickup. Several of those (§7's exception handling, §5's in-Barcode receiving console) are **not built**. **The employee workflow is therefore NOT complete and must not be reported as such.**
+
+**Demo records for the walkthrough:** order **S00209** (`BC-DEMO-1`), receipt **PFL-IN00034**, four pallets **PACK0000139–142** reserved, prepared and **unvalidated**. S00108, PFL-IN00002, PFL-INT00010 and their completed movements untouched.
+
+**Deploy.** Module **18.0.13.73.0**, commit `bb87518`, rollback `25f3462`. `preflight` PASS, `smoke_prod.sh` PASS. No scanner or printer hardware was tested — scan input was exercised only through the ORM/HTTP paths and labels only as generated PDFs. Nothing pushed; no invoices posted; no messages sent.
