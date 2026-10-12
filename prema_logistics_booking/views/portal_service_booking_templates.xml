@@ -190,6 +190,13 @@
             <t t-if="error == 'ltl_ftl'">
                 <div class="alert alert-danger" role="alert">Choose either LTL or FTL — not both.</div>
             </t>
+            <t t-if="error == 'estimate_changed'">
+                <div class="alert alert-warning" role="alert">
+                    <strong>Your estimate changed while you were signing.</strong>
+                    Please review the updated estimate below and sign again —
+                    nothing has been booked from the previous signature.
+                </div>
+            </t>
             <t t-if="error == 'acceptance_required'">
                 <div class="alert alert-danger" role="alert">
                     Please review the rates and terms below, type your name, tick the box and
@@ -225,6 +232,11 @@
             <form action="/my/service-bookings/submit" method="post" enctype="multipart/form-data"
                   class="col-lg-8 contact-picker-form" id="service_booking_form">
                 <input type="hidden" name="csrf_token" t-att-value="request.csrf_token()"/>
+                <!-- Rates for the live preview. A data attribute, not a
+                     <script> body: script content is not entity-decoded, so
+                     the escaped JSON would never parse. -->
+                <div id="pfl_rate_table" class="d-none"
+                     t-att-data-rates="rate_table_json"/>
 
                 <div class="mb-3">
                     <label class="form-label fw-bold" for="svc_group">
@@ -251,6 +263,35 @@
                         <t t-set="help_id" t-value="'help_services'"/>
                         <t t-set="help_body" t-value="'Choose what you need done at our warehouse. LTL and FTL cannot be combined — LTL is priced per pallet, FTL is one flat fee.'"/>
                     </t>
+                    <div class="row mt-2" id="service_quantities">
+                        <div class="col-md-4 mb-2">
+                            <label class="form-label" for="wrap_qty">Wrapping — pallets</label>
+                            <input type="number" min="0" step="1" class="form-control"
+                                   id="wrap_qty" name="wrap_qty"
+                                   t-att-value="form.get('wrap_qty') or ''"/>
+                            <div class="form-text">Only the pallets you want wrapped.</div>
+                        </div>
+                        <div class="col-md-4 mb-2">
+                            <label class="form-label" for="pallet_supply_qty">Pallet supply — pallets</label>
+                            <input type="number" min="0" step="1" class="form-control"
+                                   id="pallet_supply_qty" name="pallet_supply_qty"
+                                   t-att-value="form.get('pallet_supply_qty') or ''"/>
+                            <div class="form-text">Only the pallets you need supplied.</div>
+                        </div>
+                        <div class="col-md-4 mb-2">
+                            <label class="form-label" for="labour_persons">Labour — people / hours</label>
+                            <div class="input-group">
+                                <input type="number" min="0" step="1" class="form-control"
+                                       id="labour_persons" name="labour_persons" placeholder="people"
+                                       t-att-value="form.get('labour_persons') or ''"/>
+                                <input type="number" min="0" step="0.5" class="form-control"
+                                       id="labour_hours" name="labour_hours" placeholder="hours"
+                                       t-att-value="form.get('labour_hours') or ''"/>
+                            </div>
+                            <div class="form-text">Billed in <strong>person-hours</strong>, minimum
+                                one hour per person.</div>
+                        </div>
+                    </div>
                 </div>
 
                 <div class="mb-3">
@@ -446,54 +487,51 @@
                     </t>
                 </div>
 
-                <div class="card mb-3">
+                <div class="card mb-3" id="estimate_card">
                     <div class="card-header">
-                        <strong>Rates, taxes and terms</strong>
-                        <span t-if="rate_card" class="text-muted small ms-1">
-                            (indicative — the exact amount is confirmed on your quotation)
+                        <strong>Your estimate</strong>
+                        <span class="text-muted small ms-1">
+                            (indicative — the confirmed amounts are on your quotation)
                         </span>
                     </div>
                     <div class="card-body">
-                        <div class="table-responsive">
+                        <div id="estimate_empty" class="text-muted">
+                            Select services to see your estimate.
+                        </div>
+                        <div id="estimate_table_wrap" class="table-responsive d-none">
                             <table class="table table-sm mb-2">
                                 <thead>
-                                    <tr><th>Service</th><th>What it covers</th>
+                                    <tr><th>Service</th><th>Unit</th>
                                         <th class="text-end">Qty</th>
                                         <th class="text-end">Rate</th>
                                         <th>Tax</th>
                                         <th class="text-end">Amount</th></tr>
                                 </thead>
-                                <tbody>
-                                    <t t-foreach="form.get('summary', {}).get('rows', [])" t-as="row">
-                                        <tr>
-                                            <td><t t-out="row['name']"/></td>
-                                            <td class="text-muted small"><t t-out="row['description']"/></td>
-                                            <td class="text-end"><t t-out="row['quantity']"/></td>
-                                            <td class="text-end"><t t-out="row['rate']"/></td>
-                                            <td class="small"><t t-out="row['tax_label']"/></td>
-                                            <td class="text-end"><t t-out="'%.2f' % row['subtotal']"/></td>
-                                        </tr>
-                                    </t>
-                                </tbody>
+                                <tbody id="estimate_rows"/>
                                 <tfoot>
                                     <tr><td colspan="5" class="text-end">Subtotal</td>
-                                        <td class="text-end"><t t-out="'%.2f' % form.get('summary', {}).get('untaxed', 0)"/></td></tr>
+                                        <td class="text-end" id="estimate_subtotal">0.00</td></tr>
                                     <tr><td colspan="5" class="text-end">Tax</td>
-                                        <td class="text-end"><t t-out="'%.2f' % form.get('summary', {}).get('tax', 0)"/></td></tr>
+                                        <td class="text-end" id="estimate_tax">0.00</td></tr>
                                     <tr class="fw-bold"><td colspan="5" class="text-end">Estimated total</td>
-                                        <td class="text-end"><t t-out="'%.2f' % form.get('summary', {}).get('total', 0)"/></td></tr>
+                                        <td class="text-end" id="estimate_total">0.00</td></tr>
                                 </tfoot>
                             </table>
                         </div>
-                        <t t-if="form.get('summary', {}).get('needs_rate')">
-                            <div class="alert alert-warning py-2" role="alert">
-                                These services need an agreed rate and stay subject to quotation
-                                until our team prices them:
-                                <t t-out="', '.join(form.get('summary', {}).get('needs_rate', []))"/>.
-                                Nothing is confirmed at zero.
-                            </div>
-                        </t>
-                        <div class="border rounded p-2 bg-100 small"
+                        <div id="estimate_needs_rate" class="alert alert-warning py-2 d-none"
+                             role="alert"/>
+                        <div id="estimate_note" class="text-muted small d-none">
+                            Storage is shown from your requested dates and is an
+                            <strong>estimate</strong>: the first 24 hours are included, and the
+                            final charge uses each pallet's actual receipt and release times.
+                        </div>
+                        <div id="estimate_exclusive" class="alert alert-info py-2 mt-2 d-none"
+                             role="alert">
+                            LTL and FTL are alternative ways of charging the same job — only one
+                            can be selected.
+                        </div>
+                        <input type="hidden" name="estimate_preview" id="estimate_preview" value=""/>
+                        <div class="border rounded p-2 bg-100 small mt-3"
                              t-if="form.get('summary', {}).get('terms')">
                             <strong>PF Logistics Warehouse — Terms &amp; Conditions</strong>
                             <div t-out="form.get('summary', {}).get('terms')"/>
@@ -556,6 +594,13 @@
 
             <t t-if="msg == 'saved'">
                 <div class="alert alert-success" role="alert">Pickup authorization saved.</div>
+            </t>
+            <t t-if="error == 'estimate_changed'">
+                <div class="alert alert-warning" role="alert">
+                    <strong>Your estimate changed while you were signing.</strong>
+                    Please review the updated estimate below and sign again —
+                    nothing has been booked from the previous signature.
+                </div>
             </t>
             <t t-if="error == 'acceptance_required'">
                 <div class="alert alert-danger" role="alert">

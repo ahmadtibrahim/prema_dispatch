@@ -346,12 +346,146 @@
         sync();
     }
 
+    // ── 6. the live estimate ──────────────────────────────────────────
+    // A preview only: the server recomputes every amount on submit and never
+    // trusts what this sends back. The hidden field exists solely so the
+    // server can tell whether the estimate moved while the customer signed.
+    function wireEstimate() {
+        var table = document.getElementById("pfl_rate_table");
+        var form = document.getElementById("service_booking_form");
+        if (!table || !form) { return; }
+        var rates = [];
+        try { rates = JSON.parse(table.dataset.rates || "[]"); } catch (err) { return; }
+        var byCode = {};
+        rates.forEach(function (r) { byCode[r.code] = r; });
+
+        var empty = document.getElementById("estimate_empty");
+        var wrap = document.getElementById("estimate_table_wrap");
+        var rows = document.getElementById("estimate_rows");
+        var subtotalEl = document.getElementById("estimate_subtotal");
+        var taxEl = document.getElementById("estimate_tax");
+        var totalEl = document.getElementById("estimate_total");
+        var noteEl = document.getElementById("estimate_note");
+        var warnEl = document.getElementById("estimate_needs_rate");
+        var exclEl = document.getElementById("estimate_exclusive");
+        var hidden = document.getElementById("estimate_preview");
+
+        function num(id) {
+            var el = document.getElementById(id);
+            var value = el ? parseFloat(el.value) : 0;
+            return isFinite(value) && value > 0 ? value : 0;
+        }
+        function money(value) { return (Math.round(value * 100) / 100).toFixed(2); }
+
+        function storageDays() {
+            var from = document.getElementById("requested_arrival");
+            var to = document.getElementById("requested_departure");
+            if (!from || !to || !from.value || !to.value) { return 0; }
+            var start = new Date(from.value), end = new Date(to.value);
+            if (isNaN(start) || isNaN(end) || end <= start) { return 0; }
+            var hours = (end - start) / 3600000;
+            if (hours <= 24) { return 0; }              // first 24 h included
+            return Math.ceil((hours - 24) / 24);        // started periods only
+        }
+
+        function quantity(code) {
+            var rate = byCode[code];
+            if (!rate) { return 0; }
+            switch (rate.qty_source) {
+                case "one": return 1;
+                case "pallets": return num("expected_pallets");
+                case "wrap_qty": return num("wrap_qty");
+                case "pallet_supply_qty": return num("pallet_supply_qty");
+                case "labour":
+                    return Math.max(num("labour_hours"), num("labour_persons"));
+                case "storage_days_x_pallets":
+                    return storageDays() * num("expected_pallets");
+                default: return 1;
+            }
+        }
+
+        function selected() {
+            return Array.prototype.slice
+                .call(form.querySelectorAll("input[name=service_code]:checked"))
+                .map(function (box) { return box.value; })
+                .filter(function (code) { return !!byCode[code]; });
+        }
+
+        function recalc() {
+            var codes = selected();
+            var payload = [];
+            var subtotal = 0, tax = 0, needsRate = [], hasStorage = false;
+            rows.innerHTML = "";
+
+            codes.forEach(function (code) {
+                var rate = byCode[code];
+                var qty = quantity(code);
+                var line = Math.round(qty * rate.rate * 100) / 100;
+                var lineTax = Math.round(line * rate.tax_pct) / 100;
+                subtotal += line;
+                tax += lineTax;
+                if (rate.rate === 0) { needsRate.push(rate.name); }
+                if (rate.estimated) { hasStorage = true; }
+
+                var tr = document.createElement("tr");
+                tr.innerHTML = "<td>" + rate.name +
+                    (rate.estimated ? " <span class=\"text-muted small\">(estimated)</span>" : "") +
+                    "</td><td class=\"text-muted small\">" + rate.unit +
+                    "</td><td class=\"text-end\">" + qty +
+                    "</td><td class=\"text-end\">" + money(rate.rate) +
+                    "</td><td class=\"small\">" + rate.tax_label +
+                    "</td><td class=\"text-end\">" + money(line + lineTax) + "</td>";
+                rows.appendChild(tr);
+                payload.push({code: code, quantity: qty, rate: rate.rate,
+                              subtotal: line, tax: lineTax, total: line + lineTax});
+            });
+
+            var has = codes.length > 0;
+            empty.classList.toggle("d-none", has);
+            wrap.classList.toggle("d-none", !has);
+            subtotalEl.textContent = money(subtotal);
+            taxEl.textContent = money(tax);
+            totalEl.textContent = money(subtotal + tax);
+            noteEl.classList.toggle("d-none", !hasStorage);
+            warnEl.classList.toggle("d-none", needsRate.length === 0);
+            if (needsRate.length) {
+                warnEl.textContent = "These selected services need an agreed rate and stay " +
+                    "subject to quotation until our team prices them: " +
+                    needsRate.join(", ") + ". Nothing is confirmed at zero.";
+            }
+            if (hidden) { hidden.value = has ? JSON.stringify(payload) : ""; }
+        }
+
+        // LTL and FTL are alternative ways of charging the same job.
+        function enforceExclusive(box) {
+            var ltl = form.querySelector("input[name=service_code][value=PFL-XD-LTL]");
+            var ftl = form.querySelector("input[name=service_code][value=PFL-XD-FTL]");
+            if (!ltl || !ftl) { return; }
+            var clash = ltl.checked && ftl.checked;
+            if (clash && box) {
+                if (box.value === ltl.value) { ftl.checked = false; }
+                else { ltl.checked = false; }
+            }
+            exclEl.classList.toggle("d-none", !clash);
+        }
+
+        form.addEventListener("change", function (ev) {
+            if (ev.target && ev.target.name === "service_code") {
+                enforceExclusive(ev.target);
+            }
+            recalc();
+        });
+        form.addEventListener("input", recalc);
+        recalc();
+    }
+
     function boot() {
         each(document.querySelectorAll(".contact-picker"), wirePicker);
         each(document.querySelectorAll(".field-help-toggle"), wireHelp);
         wireSubmitGuard();
         wireSignaturePad();
         wireAppointmentRequirement();
+        wireEstimate();
     }
 
     if (document.readyState === "loading") {

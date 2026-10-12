@@ -30,11 +30,14 @@ order's Studio action ("Create PFL Receipt"); WMS operations stay in native
 Inventory, outside Prema Dispatch.
 """
 import base64
+import json
 import logging
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 from odoo import _, fields, http
+from odoo.addons.prema_logistics_booking.models.logistics_warehouse_billing import (
+    chargeable_storage_days)
 from odoo.http import request
 from werkzeug.exceptions import NotFound
 
@@ -49,6 +52,17 @@ SERVICE_CODES = [
     "PFL-XD-LTL", "PFL-XD-FTL", "PFL-STOR-DAY",
     "PFL-WRAP", "PFL-LABEL", "PFL-LAB-HR", "PFL-PAL-SUP",
 ]
+
+#: How each service is priced, shown next to its rate so nobody has to guess.
+SERVICE_UNITS = {
+    "PFL-XD-LTL": _("per pallet (in and out)"),
+    "PFL-XD-FTL": _("flat fee per job"),
+    "PFL-STOR-DAY": _("per pallet per chargeable day"),
+    "PFL-WRAP": _("per pallet"),
+    "PFL-LABEL": _("agreed rate"),
+    "PFL-LAB-HR": _("per person-hour"),
+    "PFL-PAL-SUP": _("per pallet"),
+}
 
 TEMPLATE_NAME = "PF Logistics Warehouse"
 BRAND = "premafirm_logistics"
@@ -255,57 +269,208 @@ class ServiceBookingPortal(http.Controller):
             "accept_name": _clean(post.get("accept_name")),
             "accept_terms": _clean(post.get("accept_terms")),
             "accept_signature": post.get("accept_signature") or "",
+            # Quantities the customer chose, kept through a rejected submission.
+            "wrap_qty": _clean(post.get("wrap_qty")),
+            "pallet_supply_qty": _clean(post.get("pallet_supply_qty")),
+            "labour_persons": _clean(post.get("labour_persons")),
+            "labour_hours": _clean(post.get("labour_hours")),
         }
 
-    def _quote_summary(self, codes, expected):
-        """What the customer is about to accept: services, quantities, rates,
-        taxes and the terms. Computed here so the page and the acceptance
-        snapshot are the same thing."""
-        rows, untaxed, taxed = [], 0.0, 0.0
-        needs_rate = []
-        products = request.env["product.template"].sudo().search(
-            [("default_code", "in", list(codes))], order="default_code")
-        for product in products:
-            code = product.default_code
-            if code == FTL_CODE:
-                qty = 1.0
-            elif code == LTL_CODE:
-                qty = float(expected or 1)
-            elif code == "PFL-STOR-DAY":
-                qty = 0.0            # billed on actual pallet-days after the free window
-            else:
-                qty = 1.0
-            rate = product.list_price
-            taxes = product.taxes_id
-            rate_pct = sum(taxes.mapped("amount"))
-            line_untaxed = qty * rate
-            line_tax = line_untaxed * rate_pct / 100.0
-            untaxed += line_untaxed
-            taxed += line_tax
-            if rate == 0:
-                needs_rate.append(product.display_name)
-            rows.append({
-                "code": code,
+    # ── the estimate ───────────────────────────────────────────────────
+    #: which customer input drives each service's quantity, for the live preview
+    QTY_SOURCE = {
+        "PFL-XD-LTL": "pallets",
+        "PFL-XD-FTL": "one",
+        "PFL-STOR-DAY": "storage_days_x_pallets",
+        "PFL-WRAP": "wrap_qty",
+        "PFL-PAL-SUP": "pallet_supply_qty",
+        "PFL-LAB-HR": "labour",
+        "PFL-LABEL": "one",
+    }
+
+    def _rate_table(self):
+        """Rates and resolved taxes for every selectable service.
+
+        Sent to the page so the estimate can be recalculated as the customer
+        types. It is a convenience only — the server recomputes on submit and
+        never trusts what the browser reports.
+        """
+        partner = self._commercial_partner()
+        table = []
+        for product in self._services():
+            taxes = self._service_taxes(product, partner)
+            table.append({
+                "code": product.default_code,
                 "name": product.display_name,
-                "description": product.description_sale or "",
-                "quantity": qty,
-                "rate": rate,
-                "tax_label": ", ".join("%s %s%%" % (t.name, t.amount) for t in taxes)
-                             or _("no tax"),
-                "subtotal": line_untaxed,
-                "tax": line_tax,
+                "unit": SERVICE_UNITS.get(product.default_code, _("each")),
+                "rate": product.list_price,
+                "qty_source": self.QTY_SOURCE.get(product.default_code, "one"),
+                "tax_pct": sum(taxes.mapped("amount")),
+                "tax_label": ", ".join(
+                    "%s %s%%" % (t.name, t.amount) for t in taxes) or _("no tax"),
+                "estimated": product.default_code == "PFL-STOR-DAY",
             })
+        return table
+
+    def _booking_inputs(self, post):
+        """The customer's raw inputs, parsed once.
+
+        The preview and the created order both read their quantities from
+        here, which is what keeps the two from drifting apart.
+        """
+        def number(key):
+            try:
+                return max(0.0, float(_clean(post.get(key)) or 0))
+            except (TypeError, ValueError):
+                return 0.0
+        try:
+            expected = int(float(_clean(post.get("expected_pallets")) or 0))
+        except (TypeError, ValueError):
+            expected = 0
+        return {
+            "codes": [c for c in request.httprequest.form.getlist("service_code")
+                      if c in SERVICE_CODES],
+            "expected_pallets": expected,
+            "wrap_qty": number("wrap_qty"),
+            "pallet_supply_qty": number("pallet_supply_qty"),
+            "labour_persons": number("labour_persons"),
+            "labour_hours": number("labour_hours"),
+            "arrival": _local_input_to_utc(post.get("requested_arrival")),
+            "departure": _local_input_to_utc(post.get("requested_departure")),
+        }
+
+    def _service_quantity(self, code, inputs):
+        """How much of one service the customer is asking for.
+
+        One rule per service, used by the preview and by the order alike.
+        """
+        if code == FTL_CODE:
+            return 1.0                      # one flat fee per job, whatever the pallets
+        if code == LTL_CODE:
+            return float(inputs["expected_pallets"] or 0)   # per pallet handled
+        if code == "PFL-WRAP":
+            return inputs["wrap_qty"]                       # only what was asked for
+        if code == "PFL-PAL-SUP":
+            return inputs["pallet_supply_qty"]
+        if code == "PFL-LAB-HR":
+            hours = inputs["labour_hours"]
+            persons = inputs["labour_persons"]
+            if not (hours or persons):
+                return 0.0
+            # one hour per person is the minimum, so a person booked for less
+            # than an hour still bills an hour
+            return max(hours, persons)
+        if code == "PFL-STOR-DAY":
+            arrival, departure = inputs["arrival"], inputs["departure"]
+            if not (arrival and departure) or departure <= arrival:
+                return 0.0
+            days = chargeable_storage_days(
+                (departure - arrival).total_seconds() / 3600.0)
+            return days * float(inputs["expected_pallets"] or 0)
+        return 1.0
+
+    def _service_taxes(self, product, partner):
+        """The taxes that will really apply — resolved the way a sale order
+        line resolves them, by company and fiscal position.
+
+        Summing `product.taxes_id` by hand is what applied two 13% HST taxes:
+        these products are shared across companies and legitimately carry one
+        13% HST per company. Odoo applies only the current company's, mapped
+        through the customer's fiscal position.
+        """
+        company = request.env.company
+        taxes = product.taxes_id.filtered(
+            lambda t: not t.company_id or t.company_id == company)
+        position = request.env["account.fiscal.position"].sudo()._get_fiscal_position(
+            partner)
+        if position:
+            taxes = position.map_tax(
+                taxes, product=product.product_variant_id, partner=partner)
+        return taxes.filtered(lambda t: t.company_id == company or not t.company_id)
+
+    def _quote_summary(self, inputs):
+        """What the customer is about to accept: the services they selected,
+        their quantities, the applicable rates and taxes, and the terms.
+
+        Nothing is computed for a service that was not selected.
+        """
+        partner = self._commercial_partner()
+        currency = request.env.company.currency_id
+        rows, untaxed, taxed, needs_rate = [], 0.0, 0.0, []
+        if inputs["codes"]:
+            products = request.env["product.template"].sudo().search(
+                [("default_code", "in", inputs["codes"])], order="default_code")
+            for product in products:
+                code = product.default_code
+                quantity = self._service_quantity(code, inputs)
+                rate = product.list_price
+                taxes = self._service_taxes(product, partner)
+                computed = taxes.compute_all(
+                    rate, currency=currency, quantity=quantity or 0.0,
+                    product=product.product_variant_id, partner=partner)
+                line_untaxed = computed["total_excluded"]
+                line_total = computed["total_included"]
+                if rate == 0:
+                    needs_rate.append(product.display_name)
+                untaxed += line_untaxed
+                taxed += line_total - line_untaxed
+                rows.append({
+                    "code": code,
+                    "name": product.display_name,
+                    "description": product.description_sale or "",
+                    "unit": SERVICE_UNITS.get(code, _("each")),
+                    "quantity": quantity,
+                    "rate": rate,
+                    "tax_label": ", ".join(
+                        "%s %s%%" % (t.name, t.amount) for t in taxes
+                    ) or _("no tax"),
+                    "subtotal": line_untaxed,
+                    "tax": line_total - line_untaxed,
+                    "total": line_total,
+                    "estimated": code == "PFL-STOR-DAY",
+                })
         template = request.env["sale.order.template"].sudo().search(
             [("name", "=", TEMPLATE_NAME)], limit=1)
         return {
             "rows": rows,
+            "has_selection": bool(inputs["codes"]),
             "untaxed": untaxed,
             "tax": taxed,
             "total": untaxed + taxed,
-            "currency": request.env.company.currency_id,
+            "currency": currency,
             "terms": template.note or "",
             "needs_rate": needs_rate,
         }
+
+    def _preview_rows(self, post):
+        """The rows the customer actually saw, sent back with the form.
+
+        Used only to notice that the estimate moved under them — never as a
+        source of truth for money.
+        """
+        raw = post.get("estimate_preview")
+        if not raw:
+            return None
+        try:
+            return json.loads(raw)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _previews_agree(shown, computed):
+        """Same services, same quantities, same money to the cent."""
+        if shown is None:
+            return True                    # nothing was displayed to disagree with
+        if len(shown) != len(computed):
+            return False
+        for left, right in zip(sorted(shown, key=lambda r: r.get("code", "")),
+                               sorted(computed, key=lambda r: r["code"])):
+            if left.get("code") != right["code"]:
+                return False
+            for key in ("quantity", "rate", "subtotal", "tax", "total"):
+                if abs(float(left.get(key) or 0) - float(right[key])) > 0.01:
+                    return False
+        return True
 
     def _check_pickers(self, post, require_party=True):
         """Apply the picker rules server-side.
@@ -361,7 +526,7 @@ class ServiceBookingPortal(http.Controller):
                 website=True, sitemap=False)
     def service_booking_new(self, **kwargs):
         form = self._booking_form()
-        form["summary"] = self._quote_summary(SERVICE_CODES, 1)
+        form["summary"] = self._quote_summary(self._booking_inputs({}))
         return request.render("prema_logistics_booking.portal_my_service_booking_new", {
             "services": self._services(),
             "ltl_code": LTL_CODE,
@@ -370,7 +535,8 @@ class ServiceBookingPortal(http.Controller):
             "page_name": "service_bookings",
             "error": kwargs.get("error"),
             "form": form,
-            "rate_card": True,
+            "rate_table": self._rate_table(),
+            "rate_table_json": json.dumps(self._rate_table()),
         })
 
     @http.route("/my/service-bookings/submit", type="http", auth="user",
@@ -380,13 +546,7 @@ class ServiceBookingPortal(http.Controller):
 
         def reject(code):
             form = self._booking_form(post)
-            codes = [c for c in request.httprequest.form.getlist("service_code")
-                     if c in SERVICE_CODES] or SERVICE_CODES
-            try:
-                expected = int(_clean(post.get("expected_pallets")) or 0)
-            except (TypeError, ValueError):
-                expected = 0
-            form["summary"] = self._quote_summary(codes, expected)
+            form["summary"] = self._quote_summary(self._booking_inputs(post))
             return request.render(
                 "prema_logistics_booking.portal_my_service_booking_new", {
                     "services": self._services(),
@@ -396,6 +556,8 @@ class ServiceBookingPortal(http.Controller):
                     "page_name": "service_bookings",
                     "error": code,
                     "form": form,
+                    "rate_table": self._rate_table(),
+            "rate_table_json": json.dumps(self._rate_table()),
                 })
 
         codes = [c for c in request.httprequest.form.getlist("service_code")
@@ -410,12 +572,13 @@ class ServiceBookingPortal(http.Controller):
         if error:
             return reject(error)
 
-        expected = int(_clean(post.get("expected_pallets")) or 0)
+        inputs = self._booking_inputs(post)
+        expected = inputs["expected_pallets"]
         client_ref = _clean(post.get("client_order_ref"))
         notes = _clean(post.get("notes"))
-        arrival = _local_input_to_utc(post.get("requested_arrival"))
-        departure = _local_input_to_utc(post.get("requested_departure"))
-        summary = self._quote_summary(codes, expected)
+        arrival = inputs["arrival"]
+        departure = inputs["departure"]
+        summary = self._quote_summary(inputs)
 
         # Acceptance is captured here, not in a second journey: the customer
         # sees the services, quantities, rates, taxes and terms, and signs once.
@@ -435,6 +598,27 @@ class ServiceBookingPortal(http.Controller):
                     "page_name": "service_bookings",
                     "error": "acceptance_required",
                     "form": form,
+                    "rate_table": self._rate_table(),
+            "rate_table_json": json.dumps(self._rate_table()),
+                })
+
+        # The customer signed a specific estimate. If what we now compute is
+        # not what they were shown, that signature no longer covers it: send
+        # them back to review and sign again rather than booking silently.
+        if not self._previews_agree(self._preview_rows(post), summary["rows"]):
+            form = self._booking_form(post)
+            form["summary"] = summary
+            return request.render(
+                "prema_logistics_booking.portal_my_service_booking_new", {
+                    "services": self._services(),
+                    "ltl_code": LTL_CODE,
+                    "ftl_code": FTL_CODE,
+                    "warehouse_tz": WAREHOUSE_TZ,
+                    "page_name": "service_bookings",
+                    "error": "estimate_changed",
+                    "form": form,
+                    "rate_table": self._rate_table(),
+            "rate_table_json": json.dumps(self._rate_table()),
                 })
 
         # A service with no agreed rate cannot be silently accepted at zero.
@@ -464,6 +648,8 @@ class ServiceBookingPortal(http.Controller):
                     "page_name": "service_bookings",
                     "error": "capacity",
                     "form": form,
+                    "rate_table": self._rate_table(),
+            "rate_table_json": json.dumps(self._rate_table()),
                 })
 
         Order = request.env["sale.order"].sudo()
@@ -492,24 +678,24 @@ class ServiceBookingPortal(http.Controller):
         freight_owner = owner_contact.partner_id or partner
         recipient = recipient_contact.partner_id or partner
 
-        # Only the requested services become lines. Quantities: FTL is one flat
-        # fee; the per-pallet LTL line carries the expected pallet count; the
-        # other services start at 1 for staff to confirm against actuals.
+        # Only the selected services become lines, at the quantities the
+        # estimate showed — the same rule, so the two cannot disagree.
         lines = []
         for code in codes:
             template_product = request.env["product.template"].sudo().search(
                 [("default_code", "=", code)], limit=1)
             if not template_product or not template_product.product_variant_id:
                 continue
-            if code == FTL_CODE:
-                qty = 1.0
-            elif code == LTL_CODE:
-                qty = float(expected or 1)
+            if code == "PFL-STOR-DAY":
+                # An intentional zero-quantity provision: storage is billed from
+                # the pallets' actual receipt and release, never from the
+                # estimate.
+                quantity = 0.0
             else:
-                qty = 1.0
+                quantity = self._service_quantity(code, inputs)
             lines.append((0, 0, {
                 "product_id": template_product.product_variant_id.id,
-                "product_uom_qty": qty,
+                "product_uom_qty": quantity,
                 "price_unit": template_product.list_price,
                 "name": template_product.display_name,
             }))
