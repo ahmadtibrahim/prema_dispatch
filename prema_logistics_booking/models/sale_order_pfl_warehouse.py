@@ -228,7 +228,7 @@ class SaleOrder(models.Model):
                 "is missing, so a warehouse receipt cannot be created."))
         owner = self.x_freight_owner_id or self.partner_id
         qty = self.x_expected_pallets or 1
-        return Picking.create({
+        picking = Picking.create({
             "picking_type_id": ptype.id,
             "partner_id": self.partner_id.id,
             "owner_id": owner.id,
@@ -244,6 +244,11 @@ class SaleOrder(models.Model):
                 "location_dest_id": ptype.default_location_dest_id.id,
             })],
         })
+        # Confirmed and reserved, because that is the state the dock works in —
+        # Barcode only offers a picking to receive once it is not a draft.
+        picking.action_confirm()
+        picking.action_assign()
+        return picking
 
     def action_pfl_open_receipt(self):
         self.ensure_one()

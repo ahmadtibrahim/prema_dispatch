@@ -1,7 +1,7 @@
 {
     "name": "Prema Logistics Booking",
 
-    "version": "18.0.13.74.0",
+    "version": "18.0.13.75.0",
     "summary": "Private customer LTL/FTL pricing, scheduling, and booking engine "
                "for PremaFirm Logistics — integrates with Prema Dispatch.",
     "category": "Logistics",
