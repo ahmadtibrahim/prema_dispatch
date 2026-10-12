@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+
+    <!-- Extend the native Barcode screen; do not replace it. -->
+    <t t-name="prema_logistics_booking.BarcodePflActions"
+       t-inherit="stock_barcode.MainComponent" t-inherit-mode="extension">
+        <xpath expr="//div[hasclass('o_barcode_settings')]" position="inside">
+            <div t-if="env.model.record.pfl_is_warehouse_receipt" class="w-100 my-2">
+                <div class="w-100 my-2 d-flex justify-contents-center">
+                    <hr class="flex-grow-1"/>
+                    <span class="fs-5 fw-bold text-center text-muted mt-1 px-2">
+                        PF Logistics
+                    </span>
+                    <hr class="flex-grow-1"/>
+                </div>
+                <button class="w-100 fs-4 btn btn-secondary mb-2 py-2 o_pfl_arrived"
+                        t-on-click="() => env.model.pflAction('action_pfl_mark_arrived')">
+                    Truck Arrived
+                </button>
+                <button class="w-100 fs-4 btn btn-secondary mb-2 py-2 o_pfl_prepare"
+                        t-on-click="() => env.model.pflAction('action_pfl_prepare_from_barcode')">
+                    Prepare Pallets
+                </button>
+                <div t-if="env.model.record.pfl_operational_summary"
+                     class="alert alert-info text-start small mt-2" style="white-space: pre-line"
+                     t-out="env.model.record.pfl_operational_summary"/>
+                <div class="text-muted small">
+                    Received <t t-out="env.model.record.pfl_received_pallet_count or 0"/>
+                    of <t t-out="env.model.record.pfl_prepared_pallet_count or 0"/>
+                    prepared pallet(s).
+                </div>
+            </div>
+        </xpath>
+    </t>
+
+</templates>

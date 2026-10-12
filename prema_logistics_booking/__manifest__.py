@@ -1,7 +1,7 @@
 {
     "name": "Prema Logistics Booking",
 
-    "version": "18.0.13.72.0",
+    "version": "18.0.13.73.0",
     "summary": "Private customer LTL/FTL pricing, scheduling, and booking engine "
                "for PremaFirm Logistics — integrates with Prema Dispatch.",
     "category": "Logistics",
@@ -18,7 +18,7 @@ phase is internal-staff configuration only. See CLAUDE.md in the module
 root for architecture notes, decisions, and phase status.
 """,
     "author": "PremaFirm Logistics",
-    "depends": ["base", "base_setup", "mail", "portal", "website", "fleet", "account", "sale_management", "purchase", "prema_dispatch", "agent_wa", "premafirm_ai_engine"],
+    "depends": ["base", "base_setup", "mail", "portal", "website", "fleet", "account", "sale_management", "purchase", "prema_dispatch", "agent_wa", "premafirm_ai_engine", "stock_barcode"],
     "data": [
         "security/logistics_security.xml",
         "security/ir.model.access.csv",
@@ -118,6 +118,9 @@ root for architecture notes, decisions, and phase status.
             "prema_logistics_booking/static/src/js/portal_contact_picker.js",
         ],
         "web.assets_backend": [
+            # Extends the native Barcode screen (loaded after stock_barcode's).
+            "prema_logistics_booking/static/src/barcode/pfl_barcode_patch.js",
+            "prema_logistics_booking/static/src/barcode/pfl_barcode_templates.xml",
             "prema_logistics_booking/static/src/css/where_we_go.css",
             "prema_logistics_booking/static/src/xml/where_we_go_action.xml",
             "prema_logistics_booking/static/src/js/where_we_go_action.js",

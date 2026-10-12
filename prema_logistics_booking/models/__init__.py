@@ -91,3 +91,5 @@ from . import sale_order_pfl_warehouse
 from . import stock_picking_pfl_receipt
 from . import logistics_warehouse_billing
 from . import stock_access_guard
+from . import warehouse_operator_guard
+from . import stock_picking_pfl_barcode
