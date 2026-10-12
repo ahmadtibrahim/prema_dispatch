@@ -3258,3 +3258,19 @@ Verified **on prod itself** with a read-only portal session for the demo user (s
 **Demo records for the walkthrough:** order **S00209** (`BC-DEMO-1`), receipt **PFL-IN00034**, four pallets **PACK0000139–142** reserved, prepared and **unvalidated**. S00108, PFL-IN00002, PFL-INT00010 and their completed movements untouched.
 
 **Deploy.** Module **18.0.13.73.0**, commit `bb87518`, rollback `25f3462`. `preflight` PASS, `smoke_prod.sh` PASS. No scanner or printer hardware was tested — scan input was exercised only through the ORM/HTTP paths and labels only as generated PDFs. Nothing pushed; no invoices posted; no messages sent.
+
+## 52. Operator restriction rebuilt on conditional GLOBAL record rules; BaseModel override withdrawn — 2026-10-12
+
+**Two corrections I owed.** (1) **Global record rules do intersect.** `ir.rule._compute_domain` returns `AND(global_domains + [OR(group_domains)])`, so a rule with **no group** is AND-ed with every group rule and **can subtract**. My earlier claim that "the only rule-based fix requires editing `base.group_user`" was **wrong**. (2) **`_check_access` is not a universal choke point.** Measured as the operator with the override live: it covered `search`, `search_count`, `read`, `browse().field`, `display_name`, `read_group`, `export_data`, `web_search_read`, `web_read`, `name_search`, `check_access`, `search_read` — but **`sudo().read`**, **raw SQL through the request cursor** and **`fields_get`** all went straight through.
+
+**Change.** The `BaseModel._check_access` override is **withdrawn**. In its place, **16 global `ir.rule` records** (`data/logistics_warehouse_operator_rules.xml`) whose domain is conditional on a new, narrowly scoped role group `prema_logistics_booking.group_pfl_warehouse_operator`:
+
+    [('id', '=', 0)] if user.has_group('...group_pfl_warehouse_operator') else [(1, '=', 1)]
+
+Covering `sale.order`, `sale.order.line`, `sale.order.template(.line)`, `sale.report`, `product.pricelist(.item)`, `account.move(.line)`, `account.payment`, `account.journal`, `account.tax`, `account.fiscal.position`, `account.account`, `account.invoice.report` and `crm.lead`, with read/write/create/unlink all on. **`base.group_user` is untouched; no code sits on any core Sales or Accounting model; no other user's access changes.**
+
+**Verified on the deployed system — `verify_operator_rules.py` 29/29 as the real users.** For the operator: every one of those models returns **zero** records (of 13 sale orders, 1851 journal entries, 262 leads in the database), `read`/field access/`read_group`/`create`/`write`/`unlink` are refused, and `sale.order.template`/`sale.report` are refused outright by the ACL. The operator **keeps** the receipt, pallets and positions, reservations, the pickup authorization and the price-free dock summary. **Other roles are unchanged** — admin 13/1851/262, `ahmad@premafirm.com` 8/1851/262, `dispatcher@` 8/1851/262, `dispatch@` 8/477/262 — measured with each user's **own** rights before and after, so the comparison is real.
+
+**What a record rule cannot protect (same blind spots as the withdrawn override, and inherent to both):** `sudo()` reads inside a custom endpoint; raw SQL via `cr.execute`; `fields_get` metadata (field names and labels, never values). No ACL or rule can see any of them. The mitigation is endpoint discipline — no custom endpoint may read commercial data under `sudo()`, and a privileged read that is genuinely necessary must go through an explicit field whitelist, as `stock.picking._pfl_dock_summary` does (verified price-free).
+
+**Deploy.** Commit `a1a5fb1`, module **18.0.13.74.0**, rollback `bb87518`. `preflight` PASS, `smoke_prod.sh` PASS. **The Barcode interface work did not advance in this round** — it remains as logged in §51: the extension exists, but the Barcode click-path is not verified and the in-Barcode receiving console is not built. The employee workflow is still **not complete**.
