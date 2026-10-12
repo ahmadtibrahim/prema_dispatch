@@ -1,0 +1,195 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- ================================================================
+         Warehouse operator: no commercial records.
+
+         **Global** rules (no group on the rule) with a domain conditional on
+         membership of the operator role. Odoo combines rules as
+         AND(global_domains + [OR(group_domains)]) in ir.rule._compute_domain,
+         so an operator matches no record and cannot be put back by any other
+         rule, while for everybody else [(1, '=', 1)] is a genuine no-op that
+         leaves their existing rules (company rules included) exactly as they
+         were.
+
+         No change to base.group_user; no code on core Sales or Accounting.
+         ================================================================ -->
+    <data>
+
+        <record id="rule_pfl_operator_no_sale_order" model="ir.rule">
+            <field name="name">PF Logistics warehouse operator: no sale.order</field>
+            <field name="model_id" ref="sale.model_sale_order"/>
+            <field name="domain_force">[('id', '=', 0)] if user.has_group('prema_logistics_booking.group_pfl_warehouse_operator') else [(1, '=', 1)]</field>
+            <field name="groups" eval="[(5, 0, 0)]"/>
+            <field name="perm_read" eval="True"/>
+            <field name="perm_write" eval="True"/>
+            <field name="perm_create" eval="True"/>
+            <field name="perm_unlink" eval="True"/>
+        </record>
+
+        <record id="rule_pfl_operator_no_sale_order_line" model="ir.rule">
+            <field name="name">PF Logistics warehouse operator: no sale.order.line</field>
+            <field name="model_id" ref="sale.model_sale_order_line"/>
+            <field name="domain_force">[('id', '=', 0)] if user.has_group('prema_logistics_booking.group_pfl_warehouse_operator') else [(1, '=', 1)]</field>
+            <field name="groups" eval="[(5, 0, 0)]"/>
+            <field name="perm_read" eval="True"/>
+            <field name="perm_write" eval="True"/>
+            <field name="perm_create" eval="True"/>
+            <field name="perm_unlink" eval="True"/>
+        </record>
+
+        <record id="rule_pfl_operator_no_sale_order_template" model="ir.rule">
+            <field name="name">PF Logistics warehouse operator: no sale.order.template</field>
+            <field name="model_id" ref="sale_management.model_sale_order_template"/>
+            <field name="domain_force">[('id', '=', 0)] if user.has_group('prema_logistics_booking.group_pfl_warehouse_operator') else [(1, '=', 1)]</field>
+            <field name="groups" eval="[(5, 0, 0)]"/>
+            <field name="perm_read" eval="True"/>
+            <field name="perm_write" eval="True"/>
+            <field name="perm_create" eval="True"/>
+            <field name="perm_unlink" eval="True"/>
+        </record>
+
+        <record id="rule_pfl_operator_no_product_pricelist" model="ir.rule">
+            <field name="name">PF Logistics warehouse operator: no product.pricelist</field>
+            <field name="model_id" ref="product.model_product_pricelist"/>
+            <field name="domain_force">[('id', '=', 0)] if user.has_group('prema_logistics_booking.group_pfl_warehouse_operator') else [(1, '=', 1)]</field>
+            <field name="groups" eval="[(5, 0, 0)]"/>
+            <field name="perm_read" eval="True"/>
+            <field name="perm_write" eval="True"/>
+            <field name="perm_create" eval="True"/>
+            <field name="perm_unlink" eval="True"/>
+        </record>
+
+        <record id="rule_pfl_operator_no_product_pricelist_item" model="ir.rule">
+            <field name="name">PF Logistics warehouse operator: no product.pricelist.item</field>
+            <field name="model_id" ref="product.model_product_pricelist_item"/>
+            <field name="domain_force">[('id', '=', 0)] if user.has_group('prema_logistics_booking.group_pfl_warehouse_operator') else [(1, '=', 1)]</field>
+            <field name="groups" eval="[(5, 0, 0)]"/>
+            <field name="perm_read" eval="True"/>
+            <field name="perm_write" eval="True"/>
+            <field name="perm_create" eval="True"/>
+            <field name="perm_unlink" eval="True"/>
+        </record>
+
+        <record id="rule_pfl_operator_no_account_move" model="ir.rule">
+            <field name="name">PF Logistics warehouse operator: no account.move</field>
+            <field name="model_id" ref="account.model_account_move"/>
+            <field name="domain_force">[('id', '=', 0)] if user.has_group('prema_logistics_booking.group_pfl_warehouse_operator') else [(1, '=', 1)]</field>
+            <field name="groups" eval="[(5, 0, 0)]"/>
+            <field name="perm_read" eval="True"/>
+            <field name="perm_write" eval="True"/>
+            <field name="perm_create" eval="True"/>
+            <field name="perm_unlink" eval="True"/>
+        </record>
+
+        <record id="rule_pfl_operator_no_account_move_line" model="ir.rule">
+            <field name="name">PF Logistics warehouse operator: no account.move.line</field>
+            <field name="model_id" ref="account.model_account_move_line"/>
+            <field name="domain_force">[('id', '=', 0)] if user.has_group('prema_logistics_booking.group_pfl_warehouse_operator') else [(1, '=', 1)]</field>
+            <field name="groups" eval="[(5, 0, 0)]"/>
+            <field name="perm_read" eval="True"/>
+            <field name="perm_write" eval="True"/>
+            <field name="perm_create" eval="True"/>
+            <field name="perm_unlink" eval="True"/>
+        </record>
+
+        <record id="rule_pfl_operator_no_account_payment" model="ir.rule">
+            <field name="name">PF Logistics warehouse operator: no account.payment</field>
+            <field name="model_id" ref="account.model_account_payment"/>
+            <field name="domain_force">[('id', '=', 0)] if user.has_group('prema_logistics_booking.group_pfl_warehouse_operator') else [(1, '=', 1)]</field>
+            <field name="groups" eval="[(5, 0, 0)]"/>
+            <field name="perm_read" eval="True"/>
+            <field name="perm_write" eval="True"/>
+            <field name="perm_create" eval="True"/>
+            <field name="perm_unlink" eval="True"/>
+        </record>
+
+        <record id="rule_pfl_operator_no_account_journal" model="ir.rule">
+            <field name="name">PF Logistics warehouse operator: no account.journal</field>
+            <field name="model_id" ref="account.model_account_journal"/>
+            <field name="domain_force">[('id', '=', 0)] if user.has_group('prema_logistics_booking.group_pfl_warehouse_operator') else [(1, '=', 1)]</field>
+            <field name="groups" eval="[(5, 0, 0)]"/>
+            <field name="perm_read" eval="True"/>
+            <field name="perm_write" eval="True"/>
+            <field name="perm_create" eval="True"/>
+            <field name="perm_unlink" eval="True"/>
+        </record>
+
+        <record id="rule_pfl_operator_no_account_tax" model="ir.rule">
+            <field name="name">PF Logistics warehouse operator: no account.tax</field>
+            <field name="model_id" ref="account.model_account_tax"/>
+            <field name="domain_force">[('id', '=', 0)] if user.has_group('prema_logistics_booking.group_pfl_warehouse_operator') else [(1, '=', 1)]</field>
+            <field name="groups" eval="[(5, 0, 0)]"/>
+            <field name="perm_read" eval="True"/>
+            <field name="perm_write" eval="True"/>
+            <field name="perm_create" eval="True"/>
+            <field name="perm_unlink" eval="True"/>
+        </record>
+
+        <record id="rule_pfl_operator_no_account_fiscal_position" model="ir.rule">
+            <field name="name">PF Logistics warehouse operator: no account.fiscal.position</field>
+            <field name="model_id" ref="account.model_account_fiscal_position"/>
+            <field name="domain_force">[('id', '=', 0)] if user.has_group('prema_logistics_booking.group_pfl_warehouse_operator') else [(1, '=', 1)]</field>
+            <field name="groups" eval="[(5, 0, 0)]"/>
+            <field name="perm_read" eval="True"/>
+            <field name="perm_write" eval="True"/>
+            <field name="perm_create" eval="True"/>
+            <field name="perm_unlink" eval="True"/>
+        </record>
+
+        <record id="rule_pfl_operator_no_account_account" model="ir.rule">
+            <field name="name">PF Logistics warehouse operator: no account.account</field>
+            <field name="model_id" ref="account.model_account_account"/>
+            <field name="domain_force">[('id', '=', 0)] if user.has_group('prema_logistics_booking.group_pfl_warehouse_operator') else [(1, '=', 1)]</field>
+            <field name="groups" eval="[(5, 0, 0)]"/>
+            <field name="perm_read" eval="True"/>
+            <field name="perm_write" eval="True"/>
+            <field name="perm_create" eval="True"/>
+            <field name="perm_unlink" eval="True"/>
+        </record>
+
+        <record id="rule_pfl_operator_no_crm_lead" model="ir.rule">
+            <field name="name">PF Logistics warehouse operator: no crm.lead</field>
+            <field name="model_id" ref="crm.model_crm_lead"/>
+            <field name="domain_force">[('id', '=', 0)] if user.has_group('prema_logistics_booking.group_pfl_warehouse_operator') else [(1, '=', 1)]</field>
+            <field name="groups" eval="[(5, 0, 0)]"/>
+            <field name="perm_read" eval="True"/>
+            <field name="perm_write" eval="True"/>
+            <field name="perm_create" eval="True"/>
+            <field name="perm_unlink" eval="True"/>
+        </record>
+
+        <record id="rule_pfl_operator_no_sale_report" model="ir.rule">
+            <field name="name">PF Logistics warehouse operator: no sale.report</field>
+            <field name="model_id" ref="sale.model_sale_report"/>
+            <field name="domain_force">[('id', '=', 0)] if user.has_group('prema_logistics_booking.group_pfl_warehouse_operator') else [(1, '=', 1)]</field>
+            <field name="groups" eval="[(5, 0, 0)]"/>
+            <field name="perm_read" eval="True"/>
+            <field name="perm_write" eval="True"/>
+            <field name="perm_create" eval="True"/>
+            <field name="perm_unlink" eval="True"/>
+        </record>
+
+        <record id="rule_pfl_operator_no_account_invoice_report" model="ir.rule">
+            <field name="name">PF Logistics warehouse operator: no account.invoice.report</field>
+            <field name="model_id" ref="account.model_account_invoice_report"/>
+            <field name="domain_force">[('id', '=', 0)] if user.has_group('prema_logistics_booking.group_pfl_warehouse_operator') else [(1, '=', 1)]</field>
+            <field name="groups" eval="[(5, 0, 0)]"/>
+            <field name="perm_read" eval="True"/>
+            <field name="perm_write" eval="True"/>
+            <field name="perm_create" eval="True"/>
+            <field name="perm_unlink" eval="True"/>
+        </record>
+
+        <record id="rule_pfl_operator_no_sale_order_template_line" model="ir.rule">
+            <field name="name">PF Logistics warehouse operator: no sale.order.template.line</field>
+            <field name="model_id" ref="sale_management.model_sale_order_template_line"/>
+            <field name="domain_force">[('id', '=', 0)] if user.has_group('prema_logistics_booking.group_pfl_warehouse_operator') else [(1, '=', 1)]</field>
+            <field name="groups" eval="[(5, 0, 0)]"/>
+            <field name="perm_read" eval="True"/>
+            <field name="perm_write" eval="True"/>
+            <field name="perm_create" eval="True"/>
+            <field name="perm_unlink" eval="True"/>
+        </record>
+
+    </data>
+</odoo>

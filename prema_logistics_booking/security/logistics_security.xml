@@ -166,6 +166,18 @@
              user can never read, select, edit or archive another's row.
              This rule (not dropdown filtering) is what enforces it; the
              controller additionally re-checks ownership before any sudo(). -->
+        <!-- PF LOGISTICS WAREHOUSE OPERATOR — a narrowly scoped role.
+             Membership of this group is the single fact that drives both the
+             conditional global record rules below and any endpoint check.
+             It grants nothing by itself; it only marks who the restriction
+             applies to. -->
+        <record id="group_pfl_warehouse_operator" model="res.groups">
+            <field name="name">PF Logistics Warehouse Operator</field>
+            <field name="comment">Warehouse operators who work the dock through
+                Barcode. Members see PF Logistics operational records and no
+                commercial, accounting or CRM data.</field>
+        </record>
+
         <record id="ir_rule_private_contact_portal_own" model="ir.rule">
             <field name="name">Portal: Own Private Contacts</field>
             <field name="model_id" ref="model_logistics_private_contact"/>

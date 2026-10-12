@@ -1,7 +1,7 @@
 {
     "name": "Prema Logistics Booking",
 
-    "version": "18.0.13.73.0",
+    "version": "18.0.13.74.0",
     "summary": "Private customer LTL/FTL pricing, scheduling, and booking engine "
                "for PremaFirm Logistics — integrates with Prema Dispatch.",
     "category": "Logistics",
@@ -22,6 +22,8 @@ root for architecture notes, decisions, and phase status.
     "data": [
         "security/logistics_security.xml",
         "security/ir.model.access.csv",
+        # Conditional GLOBAL record rules: no commercial data for the operator.
+        "data/logistics_warehouse_operator_rules.xml",
         "data/logistics_config_parameter_data.xml",
         # §7 (D-B2): seeded logistics payment methods (card / e-Transfer / terms).
         "data/logistics_payment_method_data.xml",
