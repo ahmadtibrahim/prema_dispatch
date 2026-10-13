@@ -3435,3 +3435,112 @@ Leftover `DOCK2-DEV-A/B/DEMO` records from §54 still appear on the schedule
 **Demo, preserved.** `S00209` / `PFL-IN00034` / `PACK0000139–142` are untouched
 (receipt still `assigned`, 4 prepared, count confirmed, arrival recorded, photo
 kept). `S00108` and its transfers untouched.
+
+## 56. PF Logistics warehouse service prices updated + "warehouse" product tag — 2026-10-13
+
+**Work order.** Final approved pricing (supersedes earlier proposals); append
+the native tag `warehouse`; short customer-facing service descriptions; update
+the warehouse pricing terms; keep every existing agreement frozen.
+
+**Catalogue (data only — no code).** Matched by **exact internal reference**;
+every reference resolved to exactly one product, so there was no discrepancy to
+report. Applied in one transaction (`/root/pfl_pricing/apply_pricing.py`):
+
+| Code | Product | Was | Now |
+|---|---|---|---|
+| `PFL-XD-LTL` | Cross-Docking LTL | $12.00 | **$20.00** /pallet |
+| `PFL-XD-FTL` | Cross-Docking FTL | $225.00 | **$300.00** /job |
+| `PFL-STOR-DAY` | Dry Storage | $2.00 | **$3.00** /pallet/day |
+| `PFL-WRAP` | Pallet Shrink Wrapping | $7.50 | $7.50 (unchanged) |
+| `PFL-LAB-HR` | Warehouse Labour | $40.00 | $40.00 (unchanged) |
+| `PFL-PAL-SUP` | Pallet Supply | $12.00 | **$15.00** /pallet |
+| `PFL-LABEL` | Pallet Labelling | $0.00 | $0.00 — quote-required, retained |
+
+**Tag.** `product.tag` **`warehouse`** did not exist and was created once (no
+duplicate). Appended with `[(4, id)]` to all seven, so the existing tag list is
+preserved — none of the seven had tags before, the `logistics` (5 products) and
+`MoonVella App` (1) tags are untouched, and `PFL-CUST-PAL`, the transportation
+products, the accessorials and MoonVella products are **not** tagged. The tag is
+organisational only: no eligibility rule, automation trigger or code path reads it.
+
+**Descriptions.** `description_sale` set to the approved short texts on all
+seven. Names, references, categories, units, accounts, taxes (one 13% HST per
+company, both preserved) and fiscal-position handling were not touched.
+
+**Terms.** The `sale.order.template` **"PF Logistics Warehouse"** `note` is the
+single place the pre-acceptance terms live — the portal renders it
+(`_quote_summary` → `terms`) and the accepted-terms snapshot is
+`rates snapshot + "\n\n" + note`. Rewritten with the approved commercial rules:
+$20/pallet LTL including one unload and one reload; $300/job FTL up to 26
+standard pallets, one inbound to one outbound truck, charged once; LTL and FTL
+mutually exclusive; sorting/rebuilding/additional handling separate; first 24 h
+included; then $3 per pallet per started 24 h until actual release; short-term =
+up to seven days including the free 24 h; longer stays need an agreed
+weekly/monthly arrangement and the daily rate continues (**no stop at day
+seven, no automatic discount**); a negotiated arrangement states its own period
+and never overlaps the daily rate; labour $40/person-hour, one-hour minimum;
+pallet supply = the empty pallet only; internal tracking labels included,
+customer labelling quoted separately and never free; dwell runs receipt →
+release, internal moves do not restart it; quotations are estimates and final
+billing uses the accepted rates; rates are CAD plus tax. **No minimum LTL job
+fee, after-hours fee, monthly catalogue rate or any other new charge was
+introduced.**
+
+**Pricing paths audited for hard-coded old prices — none found.** The estimate,
+the rate table sent to the page and the order creation all read
+`product.list_price`; the actual-charge engine bills `line.price_unit`, i.e. the
+**accepted rate on the order line**, so a later catalogue change cannot move an
+agreed price. `chargeable_storage_days()` already implemented the required
+semantics (first 24 h free, then started 24 h periods, no cap) — unchanged.
+
+**The one code change (`58f9026`, module 18.0.13.79.0).** The terms describe the
+seven-day rule, but nothing surfaced it to a customer requesting a longer stay,
+so the portal now **flags** it: `_is_long_stay()` in the controller
+(`SEVEN_DAYS_HOURS = 168`), an `estimate_long_stay` notice in the portal
+template, and the same test in the live estimate JS. It is informational only —
+the estimate keeps using the $3 daily rate, nothing is capped or discounted, and
+no booking is blocked.
+
+**Verified — 108 checks, 0 failures on Prod-db.**
+* `verify_pricing.py` **75/75** — the seven products read back at the right
+  price/description/tag; nothing else tagged; the required before-tax cases
+  computed with the module's **own** `_service_quantity` and
+  `chargeable_storage_days`: LTL ×4 6 h **$80**; LTL ×4 30 h **$92**; LTL ×4 +
+  wrap ×2 30 h **$107**; FTL 26 pallets 24 h **$300**; FTL 26 pallets 30 h
+  **$378**; 24 h **0**, 48 h **1 day**, 48 h+1 min **2 days**, seven days **6
+  days ($18/pallet)**, and billing **continues** past day seven (30 days → 29
+  days); two people one hour **$80**; one supplied pallet **$15** with nothing
+  auto-added; nothing selected **$0**; labelling still quote-required.
+* `verify_pricing_browser.py` **18/18 in Chromium as the customer** — the live
+  estimate shows $80 / $92 / $107 / $378, the longer-stay notice appears only
+  past seven days and keeps the $3 rate, one pallet alone is $15, two people one
+  hour is $80, and selecting labelling raises the "needs an agreed rate"
+  warning.
+* `verify_new_booking.py` **15/15 over real HTTP** — a genuinely new booking
+  (removed afterwards) landed with LTL at **$20 × 4**, a **storage line at the
+  accepted $3 rate with the intentional zero quantity**, 13% HST, $90.40 total,
+  and a signed terms snapshot carrying the new rates; no receipt, no invoice, no
+  stock.
+* Regressions: ACL 10/10; residue scan clean (0 warehouse bookings, 0
+  reservations, 0 packages, 0 pallet quants, `account.move` still 1851, no
+  VERIFY/DEMO reference left).
+* Crons 72 → paused → restored identical; `-u` EXIT 0, no ERROR. No backup,
+  dump or clone; nothing pushed; no emails; no invoices posted.
+
+**Not done, and why — the >26-pallet FTL limit.** The rule "a booking exceeding
+26 pallets must not silently receive the standard $300 FTL price" is **not
+currently enforced**: FTL is priced as a flat quantity of 1, and there is no
+maximum-pallet check anywhere in the portal controller, the server validation or
+the template. The existing quote-required mechanism is keyed on a product's rate
+being zero (`needs_rate`), not on a quantity, so reusing it would mean pricing
+an over-26 FTL job at zero and adding a matching billing guard — a behavioural
+change beyond pricing/wording, which this instruction asked me to avoid. The
+terms state the 26-pallet scope, and the description says "up to 26 standard
+pallets", so the limit is now disclosed but **not enforced in code**. Recorded
+as the one remaining limitation.
+
+**Existing agreements.** Nothing was repriced: **no `sale.order.line` and no
+`account.move.line` anywhere references a warehouse product** (the last test
+quotation, `S00107`, was deleted by a human user at 16:27 today, before this
+task — not by it). The catalogue change cannot touch a line anyway, and final
+billing reads the order line's accepted rate.
