@@ -47,6 +47,11 @@ _logger = logging.getLogger(__name__)
 LTL_CODE = "PFL-XD-LTL"
 FTL_CODE = "PFL-XD-FTL"
 
+#: Short-term storage is up to seven days, including the first free 24 hours.
+#: Past it a longer-stay rate must be agreed; the daily rate keeps running
+#: until one is (it is not capped at day seven).
+SEVEN_DAYS_HOURS = 7 * 24
+
 #: Services a customer may request. The tracking product `PFL-CUST-PAL` is
 #: deliberately excluded — it is not sold.
 SERVICE_CODES = [
@@ -510,7 +515,22 @@ class ServiceBookingPortal(http.Controller):
             "currency": currency,
             "terms": template.note or "",
             "needs_rate": needs_rate,
+            "long_stay": self._is_long_stay(inputs),
         }
+
+    @staticmethod
+    def _is_long_stay(inputs):
+        """Is the requested stay beyond the seven-day short-term window?
+
+        Short-term storage is up to seven days *including* the first free 24
+        hours; past that a longer-stay rate has to be agreed. This only raises
+        the flag — the estimate deliberately keeps using the $3 daily rate
+        until another arrangement is agreed in writing.
+        """
+        arrival, departure = inputs.get("arrival"), inputs.get("departure")
+        if not (arrival and departure) or departure <= arrival:
+            return False
+        return (departure - arrival).total_seconds() > SEVEN_DAYS_HOURS * 3600.0
 
     def _preview_rows(self, post):
         """The rows the customer actually saw, sent back with the form.

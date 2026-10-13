@@ -565,6 +565,14 @@
                             <strong>estimate</strong>: the first 24 hours are included, and the
                             final charge uses each pallet's actual receipt and release times.
                         </div>
+                        <div id="estimate_long_stay" class="alert alert-warning py-2 mt-2 d-none"
+                             role="alert">
+                            This stay is longer than the seven days of short-term storage.
+                            Longer stays need an agreed weekly or monthly arrangement — until one
+                            is agreed in writing the estimate keeps using the $3 daily rate per
+                            pallet, which continues past day seven. Please discuss a longer-stay
+                            rate with us.
+                        </div>
                         <div id="estimate_exclusive" class="alert alert-info py-2 mt-2 d-none"
                              role="alert">
                             LTL and FTL are alternative ways of charging the same job — only one

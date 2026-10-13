@@ -368,6 +368,7 @@
         var noteEl = document.getElementById("estimate_note");
         var warnEl = document.getElementById("estimate_needs_rate");
         var exclEl = document.getElementById("estimate_exclusive");
+        var longStayEl = document.getElementById("estimate_long_stay");
         var hidden = document.getElementById("estimate_preview");
 
         function num(id) {
@@ -377,16 +378,25 @@
         }
         function money(value) { return (Math.round(value * 100) / 100).toFixed(2); }
 
-        function storageDays() {
+        function stayHours() {
             var from = document.getElementById("requested_arrival");
             var to = document.getElementById("requested_departure");
             if (!from || !to || !from.value || !to.value) { return 0; }
             var start = new Date(from.value), end = new Date(to.value);
             if (isNaN(start) || isNaN(end) || end <= start) { return 0; }
-            var hours = (end - start) / 3600000;
+            return (end - start) / 3600000;
+        }
+
+        function storageDays() {
+            var hours = stayHours();
             if (hours <= 24) { return 0; }              // first 24 h included
             return Math.ceil((hours - 24) / 24);        // started periods only
         }
+
+        // Short-term storage is up to seven days, including the free 24 hours.
+        // Past it a longer-stay rate has to be agreed — flagged, never applied
+        // automatically, and the daily estimate keeps running meanwhile.
+        function isLongStay() { return stayHours() > 7 * 24; }
 
         function quantity(code) {
             var rate = byCode[code];
@@ -553,6 +563,7 @@
             taxEl.textContent = money(tax);
             totalEl.textContent = money(subtotal + tax);
             noteEl.classList.toggle("d-none", !hasStorage);
+            if (longStayEl) { longStayEl.classList.toggle("d-none", !isLongStay()); }
             warnEl.classList.toggle("d-none", needsRate.length === 0);
             if (needsRate.length) {
                 warnEl.textContent = "These selected services need an agreed rate and stay " +
