@@ -3307,3 +3307,130 @@ Covering `sale.order`, `sale.order.line`, `sale.order.template(.line)`, `sale.re
 **Verified in the browser vs at the model level, stated honestly.** The receive, exception, placement-creation and native validate steps were driven through the **Barcode UI in Chromium**. The placement *confirmation* and the pickup/collection/proof steps were verified **at the model level as the operator**, because the harness could not reliably drive Odoo's many2one dropdown inside the dialog — the code path is the same one the dialog's button calls, but the dialog's own rendering of those two steps was not clicked through in the browser. **No scanner or printer hardware was tested**; scans were typed and labels only generated as PDFs.
 
 **Demo data.** `S00209` (`BC-DEMO-1`), receipt **PFL-IN00034** (`assigned`), pallets **PACK0000139–142** — preserved untouched for the walkthrough, as are S00108, PFL-IN00002, PFL-INT00010 and their movements. Development used `DOCK2-DEV-A`/`-B`; the shortcut and rules checks ran on throwaway records that were rolled back.
+
+## 55. Dock Schedule landing screen + the four walkthrough defects — 2026-10-12
+
+**Work order.** Make the warehouse employee's day start from a **Dock Schedule**
+(today list + day/week calendar) built on the existing booking dates, native
+Inventory transfers and Barcode — no separate WMS app, no change to Prema
+Dispatch; actions straight from the schedule; fix four defects found in the
+walkthrough; keep the operator's access restrictions; preserve the demo.
+
+**The landing screen — `logistics.dock.schedule` (module `prema_logistics_booking`
+18.0.13.78.0).** One row per expected event: a **drop-off** and/or a **pickup**
+for a warehouse booking. Columns: time in **America/Toronto** (a Postgres
+`AT TIME ZONE` column, so it is Toronto whatever the viewer's timezone),
+direction, requested-vs-approved, status, customer, booking, reference/PO,
+reserved positions, expected / prepared / received pallets, requested services
+(quantities only), the authorized carrier, and the transfer. Calendar view
+(`mode=week`, day/week scales) on the appointment time.
+
+*Why a SQL view.* The schedule must show a pickup **whose outbound transfer does
+not exist yet**, so it is driven by the booking — and the operator role is denied
+`sale.order` outright by the §52 global rules. A read-only view over the booking
+and its operational records gives the operator the schedule without giving them
+the commercial record: the columns are an **explicit whitelist**, and no price,
+rate, tax, total or address is among them (the same discipline as
+`_pfl_dock_summary`). Verified: the model has no commercial field, no `$` and not
+the booking's `amount_total` anywhere in a row.
+*Rows are keyed `booking.id * 2 + direction`* so an action can never fire against
+the wrong event; the view is rebuilt in `init()` on every update, so it cannot
+drift from the schema.
+*Overdue jobs do not disappear.* A job past its time and unfinished is flagged
+`is_overdue`, sorted first and highlighted; the landing list defaults to
+**"Today and overdue"**, with separate **Today** and **Overdue** filters and a
+**Not finished** filter, plus group-bys.
+*Menu.* Dock Schedule (and Dock Calendar) sit under **Inventory ▸ Operations**,
+which the operator already reaches. The existing **Warehouse** menu hangs off
+Prema Dispatch and needs a dispatch role the operator deliberately does not hold,
+so it can never be the operator's landing screen — and **no dispatch group was
+granted** to make it one. Its own definition and groups are untouched; managers
+opening it now land on the same schedule.
+
+**Actions from the schedule, all reusing existing methods.** *Incoming*: Prepare
+Pallets (the same idempotent preparation; pressing it twice prepares nothing
+twice — verified), Print Pallet Labels / Print Pallet Cards, Truck Arrived
+(idempotent; it records the arrival and declares **nothing** received), Open in
+Barcode. *Outgoing*: Open pickup/loading in Barcode and Pickup verification —
+the release is **never created** from the schedule, so no duplicate transfer can
+be made. Printing was verified to leave the receipt `assigned` with zero
+received.
+
+**Defect 1 — both pallet reports failed for uid 345.** The QWeb read
+`o.x_pfl_sale_order_id.name`, i.e. the booking, which the operator is denied →
+`AccessError` inside the render for **both** the label and the card. Fixed with
+`stock.quant.package.pfl_label_facts()`: the **pallet is checked first**
+(`check_access('read')` — a pallet this user may not read is never labelled) and
+only then are the four non-commercial booking fields (owner, booking number,
+customer reference, position) read through a narrow elevation. Neither Sales
+access nor a broad sudo-render was added. Both reports now render for uid 345
+(verified PDFs).
+
+**Defect 2 — the To Do filter hid PFL-IN00034.** The native filter is
+`user_id in [uid, False] AND state not in (done, cancel)`. The receipt carried
+`user_id = OdooBot` (PFL transfers were created with a responsible — `user_id`
+defaults to `env.user`), so it vanished from every other operator's To Do while
+the operation tile still counted it (`count_picking_ready = 1`). **Cause proven,
+not guessed.** Fix: the receipt, the placement transfer and the release are all
+created **unassigned**; the 13 existing open PFL transfers that carried a
+responsible were cleared. Arrival, counts, notes and the photo were not touched.
+
+**Defect 3 — receiving photos.** They were shown through a widget that renders a
+full-size download box. Now: a **thumbnail gallery** on the receipt (96 px
+images, each wrapped in a link to the full image) and a 90×90 thumbnail in the
+receive dialog. Verified in the browser: small, and linked to `/web/content/…`.
+
+**Defect 4 — the S00209 "expected arrival 2027-09-07 13:00".** Two separate
+facts, neither a corruption:
+1. **The date is the demo's own.** `verify_barcode_operator.py` (§51) created
+   BC-DEMO-1 with `x_requested_arrival = tor(2027, 9, 7, 9)` — a deliberately
+   far-future appointment so the demo would not collide with real capacity. It is
+   stored, correct and untouched; the reservations follow it.
+2. **The time was mislabelled.** The dock summary appended
+   "(America/Toronto)" to the **raw UTC** value: 13:00 UTC is **09:00** EDT, so
+   the summary read four hours late *and* claimed a Toronto time it was not.
+   Fixed with `_toronto_stamp()`; the summary and the schedule now both read
+   **09:00**. No stored date was rewritten and no reservation was invalidated.
+
+**Verification — 91 checks, 0 failures, on Prod-db.**
+* `verify_schedule.py` **27/27 as uid 345** — the schedule reads, both directions
+  for S00209, Toronto times (09:00 / 17:00), status, services, positions, an
+  overdue job flagged *and* still listed, **both reports rendering**, the label
+  facts, the To Do list now containing the demo receipt, the menus reachable —
+  and the commercial models still returning **zero** records.
+* `verify_schedule_flow.py` **34/34 as the operator, on its own DOCK3-VERIFY-A
+  booking (removed afterwards)** — appears on the schedule, Prepare Pallets,
+  **repeated prepare creates nothing twice**, print label + card, **printing
+  received/placed nothing**, Truck Arrived idempotent and declaring nothing,
+  the photo gallery, no commercial column or value, and the **demo records
+  verified untouched**.
+* `verify_schedule_ui.py` **25/25 in Chromium as warehouse_01** — the list opens
+  with no JS error showing booking/customer/reference/services/positions/receipt,
+  no `$`, the row actions, the **calendar rendering with a week scale**, the To
+  Do list showing the receipt, and the photo **thumbnail linked to the full
+  image**.
+* Regressions: operator rules **29/29**, dock rules **18/18**, positions
+  **36/36**, wording **23/23**, ACL **10/10**, dock flow A **13/13** (browser).
+* Deploy: module **18.0.13.78.0**, commit `6b7510b`, rollback `e4bd46a`.
+  Crons 72 → paused → restored **identical**; `-u` EXIT 0 with **no ERROR** and
+  the "no access rules" warning listing only the two pre-existing wizards. No
+  backup, dump or clone was created (owner instruction). Nothing pushed; no
+  invoices posted; no messages sent.
+
+**A client-side trap worth keeping.** The search filters first used
+`datetime.datetime.combine(context_today(), datetime.time.min)`. The server is
+happy with that, but **filter domains are evaluated in the browser** by py.js,
+which does not implement `datetime.time.min` — "Cannot read properties of
+undefined (reading 'hour')" and the whole view died with an OwlError while
+`get_views` returned 200. Use `context_today().strftime('%Y-%m-%d 00:00:00')`.
+
+**Not built / not claimed.** No physical scanner or label printer was tested —
+scan and label paths were exercised through the ORM, HTTP and generated PDFs
+only. The schedule shows the appointment it is given; **no approval workflow**
+was invented (`x_approved_arrival` is honoured when set, never fabricated).
+Leftover `DOCK2-DEV-A/B/DEMO` records from §54 still appear on the schedule
+(2027 dates); they were **not** deleted.
+
+**Demo, preserved.** `S00209` / `PFL-IN00034` / `PACK0000139–142` are untouched
+(receipt still `assigned`, 4 prepared, count confirmed, arrival recorded, photo
+kept). `S00108` and its transfers untouched.
