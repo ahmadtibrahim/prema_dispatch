@@ -3392,7 +3392,8 @@ facts, neither a corruption:
    Fixed with `_toronto_stamp()`; the summary and the schedule now both read
    **09:00**. No stored date was rewritten and no reservation was invalidated.
 
-**Verification — 91 checks, 0 failures, on Prod-db.**
+**Verification — 86 new checks, 0 failures, on Prod-db (237 with the
+regressions below).**
 * `verify_schedule.py` **27/27 as uid 345** — the schedule reads, both directions
   for S00209, Toronto times (09:00 / 17:00), status, services, positions, an
   overdue job flagged *and* still listed, **both reports rendering**, the label
