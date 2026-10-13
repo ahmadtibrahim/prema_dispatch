@@ -156,6 +156,9 @@ qty = order.x_expected_pallets or 1
 picking = Picking.create({
     'picking_type_id': ptype.id,
     'partner_id': (recipient or order.partner_id).id,
+    # Unassigned: the To Do filter hides a picking assigned to someone else,
+    # which is exactly how the dock loses a release it must load today.
+    'user_id': False,
     'owner_id': owner.id,
     'x_service_booking_id': order.id,
     'origin': order.name,

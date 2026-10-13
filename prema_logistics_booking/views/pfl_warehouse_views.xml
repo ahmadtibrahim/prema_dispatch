@@ -140,6 +140,11 @@
                 <field name="pfl_placement_summary" readonly="1"
                        invisible="picking_type_id.sequence_code != 'PFL-INT'"/>
                 <field name="pfl_shortage_note" invisible="not x_service_booking_id"/>
+                <!-- Receiving photos as thumbnails; click one to open it full
+                     size. Read-only: they are dock evidence, not an upload box. -->
+                <field name="pfl_receiving_photos" widget="html" readonly="1"
+                       nolabel="0" string="Receiving Photos"
+                       invisible="not pfl_receiving_photo_ids"/>
             </xpath>
         </field>
     </record>

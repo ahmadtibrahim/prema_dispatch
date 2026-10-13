@@ -93,3 +93,5 @@ from . import logistics_warehouse_billing
 from . import stock_access_guard
 from . import warehouse_operator_guard
 from . import stock_picking_pfl_barcode
+# The dock schedule the warehouse employee lands on.
+from . import logistics_dock_schedule

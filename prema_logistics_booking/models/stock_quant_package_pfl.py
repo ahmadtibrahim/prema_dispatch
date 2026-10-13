@@ -84,6 +84,34 @@ class StockQuantPackage(models.Model):
         }
 
     # ── label support ──────────────────────────────────────────────────
+    def pfl_label_facts(self):
+        """The operational facts a label or an off-pallet card prints.
+
+        A warehouse operator has no access to the booking (the commercial
+        record is denied to that role), but the label legitimately needs the
+        booking number and the customer reference. So the pallet itself is
+        checked first — a pallet this user may not read is never labelled — and
+        only then are the four non-commercial fields read on the booking,
+        through a narrow elevation. Nothing else from the booking is touched,
+        so no price, total or address can reach the paper.
+        """
+        self.ensure_one()
+        self.check_access("read")
+        empty = {"owner_name": "", "booking_name": "", "customer_ref": "",
+                 "position_name": ""}
+        if not self._pfl_has_links():
+            return empty
+        elevated = self.sudo()
+        order = elevated.x_pfl_sale_order_id
+        owner = elevated.x_pfl_freight_owner_id
+        position = elevated.x_pfl_position_id
+        return {
+            "owner_name": owner.name or "",
+            "booking_name": order.name or "",
+            "customer_ref": elevated.x_pfl_customer_ref or order.client_order_ref or "",
+            "position_name": position.complete_name or "",
+        }
+
     def pfl_label_barcode_data_uri(self, symbology="Code128"):
         """A `data:` URI barcode, so the label never depends on an HTTP round
         trip (and so it still renders under `--no-http`)."""

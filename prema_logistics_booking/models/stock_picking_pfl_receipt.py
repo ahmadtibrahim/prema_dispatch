@@ -39,6 +39,45 @@ class StockPicking(models.Model):
     pfl_shortage_note = fields.Text(
         string="Receiving Notes",
         help="Shortages, damage or pallets held back at the dock.")
+    pfl_receiving_photo_ids = fields.Many2many(
+        "ir.attachment", string="Receiving Photos",
+        compute="_compute_pfl_receiving_photos",
+        help="Photos taken at the dock, newest first.")
+    pfl_receiving_photos = fields.Html(
+        string="Receiving Photos", compute="_compute_pfl_receiving_photos",
+        sanitize=False,
+        help="Small thumbnails; click one to open the photo full size.")
+
+    def _compute_pfl_receiving_photos(self):
+        """The images saved against this transfer, as thumbnails.
+
+        Not stored: the photos are ordinary `ir.attachment` rows created by the
+        dock wizard, and there is nothing to keep in sync — the gallery is a
+        view of what is attached right now. The standard attachment widget
+        showed a download box at full size, so the thumbnails are rendered
+        explicitly, each wrapped in a link to the full image.
+        """
+        Attachment = self.env["ir.attachment"]
+        for picking in self:
+            photos = Attachment.search([
+                ("res_model", "=", "stock.picking"),
+                ("res_id", "=", picking.id),
+                ("mimetype", "like", "image/%"),
+            ], order="id desc")
+            picking.pfl_receiving_photo_ids = photos
+            thumbs = []
+            for photo in photos:
+                url = "/web/content/%s?unique=%s" % (
+                    photo.id, photo.checksum or photo.write_date)
+                thumbs.append(
+                    '<a href="%s" target="_blank" rel="noopener" title="%s">'
+                    '<img src="%s" alt="%s" '
+                    'style="height:96px;width:auto;max-width:140px;object-fit:cover;'
+                    'border:1px solid #ccc;border-radius:4px;margin:2px;"/></a>'
+                    % (url, photo.name or "", url, photo.name or ""))
+            picking.pfl_receiving_photos = (
+                '<div class="d-flex flex-wrap align-items-start">%s</div>'
+                % "".join(thumbs)) if thumbs else False
 
     @api.depends("move_line_ids.package_id", "move_line_ids.location_dest_id",
                  "move_ids.location_dest_id")
@@ -311,6 +350,9 @@ class StockPicking(models.Model):
         placement = self.env["stock.picking"].sudo().create({
             "picking_type_id": ptype.id,
             "partner_id": self.partner_id.id,
+            # Unassigned, like every other PFL transfer: the To Do filter must
+            # not hide it from the operator who actually does the shelving.
+            "user_id": False,
             "owner_id": self.owner_id.id,
             "x_service_booking_id": self.x_service_booking_id.id,
             "origin": self.name,

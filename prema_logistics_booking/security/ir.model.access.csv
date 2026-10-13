@@ -177,3 +177,5 @@ access_pfl_dock_receive_user,pfl.dock.receive.user,model_pfl_dock_receive,stock.
 access_pfl_dock_receive_line_user,pfl.dock.receive.line.user,model_pfl_dock_receive_line,stock.group_stock_user,1,1,1,1
 access_pfl_dock_pickup_user,pfl.dock.pickup.user,model_pfl_dock_pickup,stock.group_stock_user,1,1,1,1
 access_pfl_dock_pickup_manager,pfl.dock.pickup.manager,model_pfl_dock_pickup,prema_dispatch.group_dispatch_manager,1,1,1,1
+access_logistics_dock_schedule_user,logistics.dock.schedule.user,model_logistics_dock_schedule,stock.group_stock_user,1,0,0,0
+access_logistics_dock_schedule_manager,logistics.dock.schedule.manager,model_logistics_dock_schedule,prema_dispatch.group_dispatch_manager,1,0,0,0

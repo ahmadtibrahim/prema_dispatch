@@ -231,6 +231,12 @@ class SaleOrder(models.Model):
         picking = Picking.create({
             "picking_type_id": ptype.id,
             "partner_id": self.partner_id.id,
+            # Left unassigned: whoever prepared it is not the only person who
+            # may receive it. The operation's To Do list filters on the
+            # responsible being the viewer or empty, so a picking assigned to
+            # the preparer disappears from every other operator's To Do while
+            # the tile still counts it.
+            "user_id": False,
             "owner_id": owner.id,
             "x_service_booking_id": self.id,
             "origin": self.name,

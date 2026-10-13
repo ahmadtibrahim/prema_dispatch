@@ -1,0 +1,229 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <!-- ================================================================
+         Dock Schedule — the warehouse employee's landing screen.
+
+         One row per expected event: a drop-off and/or a pickup for a
+         warehouse booking. Today's list opens with today's work *and*
+         anything overdue, so a job that was missed does not silently fall off
+         the screen when its date passes. The calendar gives the day and week
+         views. Every action reuses the methods the back office and Barcode
+         already use — nothing new is created by opening or printing.
+         ================================================================ -->
+
+    <record id="view_pfl_dock_schedule_list" model="ir.ui.view">
+        <field name="name">logistics.dock.schedule.list</field>
+        <field name="model">logistics.dock.schedule</field>
+        <field name="arch" type="xml">
+            <list string="Dock Schedule" create="false" edit="false" delete="false"
+                  decoration-danger="is_overdue"
+                  decoration-muted="status in ('received', 'collected')">
+                <field name="scheduled_local" string="When (Toronto)"/>
+                <field name="direction" widget="badge"
+                       decoration-info="direction == 'pickup'"/>
+                <field name="appointment_state" widget="badge"
+                       decoration-success="appointment_state == 'approved'"
+                       decoration-warning="appointment_state == 'requested'"/>
+                <field name="is_overdue" column_invisible="1"/>
+                <field name="status" widget="badge"
+                       decoration-success="status in ('received', 'collected')"
+                       decoration-info="status in ('arrived', 'count_confirmed', 'released')"
+                       decoration-warning="status in ('prepared', 'authorized', 'release_in_progress')"/>
+                <field name="customer_name"/>
+                <field name="booking_name"/>
+                <field name="reference" string="Reference / PO"/>
+                <field name="picking_name" string="Transfer"/>
+                <field name="expected_pallets" string="Exp."/>
+                <field name="prepared_pallets" string="Prep."/>
+                <field name="received_pallets" string="Rec."/>
+                <field name="positions" optional="show"/>
+                <field name="services" string="Services"/>
+                <field name="carrier" optional="show"/>
+                <field name="picking_id" column_invisible="1"/>
+                <field name="collection_id" column_invisible="1"/>
+                <button name="action_pfl_sched_prepare" type="object"
+                        string="Prepare Pallets" icon="fa-cubes" title="Prepare Pallets"
+                        invisible="direction != 'dropoff' or prepared_pallets &gt; 0"/>
+                <button name="action_pfl_sched_print_labels" type="object"
+                        string="Print Pallet Labels" icon="fa-tags" title="Print Pallet Labels"
+                        invisible="direction != 'dropoff' or not prepared_pallets"/>
+                <button name="action_pfl_sched_arrived" type="object"
+                        string="Truck Arrived" icon="fa-truck" title="Truck Arrived"
+                        invisible="direction != 'dropoff' or not picking_id or status in ('arrived', 'count_confirmed', 'received')"/>
+                <button name="action_pfl_sched_open_barcode" type="object"
+                        string="Open in Barcode" icon="fa-barcode" title="Open in Barcode"
+                        invisible="not picking_id"/>
+                <button name="action_pfl_sched_verify_pickup" type="object"
+                        string="Pickup Verification" icon="fa-id-card-o" title="Pickup Verification"
+                        invisible="direction != 'pickup' or not collection_id"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="view_pfl_dock_schedule_calendar" model="ir.ui.view">
+        <field name="name">logistics.dock.schedule.calendar</field>
+        <field name="model">logistics.dock.schedule</field>
+        <field name="arch" type="xml">
+            <calendar string="Dock Schedule" date_start="scheduled_datetime"
+                      date_stop="scheduled_stop" color="direction"
+                      mode="week" quick_create="false" create="false">
+                <field name="customer_name"/>
+                <field name="booking_name"/>
+                <field name="direction"/>
+                <field name="status"/>
+                <field name="scheduled_local"/>
+            </calendar>
+        </field>
+    </record>
+
+    <record id="view_pfl_dock_schedule_form" model="ir.ui.view">
+        <field name="name">logistics.dock.schedule.form</field>
+        <field name="model">logistics.dock.schedule</field>
+        <field name="arch" type="xml">
+            <form string="Dock Appointment" create="false" edit="false">
+                <header>
+                    <button name="action_pfl_sched_prepare" type="object"
+                            string="Prepare Pallets" class="btn-primary"
+                            invisible="direction != 'dropoff' or prepared_pallets &gt; 0"/>
+                    <button name="action_pfl_sched_print_labels" type="object"
+                            string="Print Pallet Labels" class="btn-secondary"
+                            invisible="direction != 'dropoff' or not prepared_pallets"/>
+                    <button name="action_pfl_sched_print_cards" type="object"
+                            string="Print Pallet Cards" class="btn-secondary"
+                            invisible="direction != 'dropoff' or not prepared_pallets"/>
+                    <button name="action_pfl_sched_arrived" type="object"
+                            string="Truck Arrived" class="btn-primary"
+                            invisible="direction != 'dropoff' or not picking_id or status in ('arrived', 'count_confirmed', 'received')"/>
+                    <button name="action_pfl_sched_open_barcode" type="object"
+                            string="Open in Barcode" class="btn-primary"
+                            invisible="not picking_id"/>
+                    <button name="action_pfl_sched_open_release" type="object"
+                            string="Open Pickup in Barcode" class="btn-primary"
+                            invisible="direction != 'pickup' or not picking_id"/>
+                    <button name="action_pfl_sched_verify_pickup" type="object"
+                            string="Pickup Verification" class="btn-primary"
+                            invisible="direction != 'pickup' or not collection_id"/>
+                    <field name="status" widget="statusbar" clickable="false"/>
+                </header>
+                <sheet>
+                    <div class="alert alert-danger" role="alert" invisible="not is_overdue">
+                        This appointment is past due and not finished.
+                    </div>
+                    <group>
+                        <group string="Appointment">
+                            <field name="scheduled_local" string="When (Toronto)"/>
+                            <field name="direction"/>
+                            <field name="appointment_state"/>
+                            <field name="is_overdue"/>
+                        </group>
+                        <group string="Who">
+                            <field name="customer_name"/>
+                            <field name="booking_name"/>
+                            <field name="reference" string="Reference / PO"/>
+                            <field name="carrier" invisible="direction != 'pickup'"/>
+                        </group>
+                    </group>
+                    <group string="Pallets">
+                        <field name="expected_pallets"/>
+                        <field name="prepared_pallets"/>
+                        <field name="received_pallets"/>
+                        <field name="positions"/>
+                    </group>
+                    <group string="Requested services (quantities only)">
+                        <field name="services" nolabel="1"/>
+                    </group>
+                    <group string="Transfer">
+                        <field name="picking_name"/>
+                        <field name="picking_state"/>
+                    </group>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <record id="view_pfl_dock_schedule_search" model="ir.ui.view">
+        <field name="name">logistics.dock.schedule.search</field>
+        <field name="model">logistics.dock.schedule</field>
+        <field name="arch" type="xml">
+            <search>
+                <field name="customer_name"/>
+                <field name="booking_name"/>
+                <field name="reference"/>
+                <field name="picking_name"/>
+                <!-- Plain string boundaries from context_today(): the client's
+                     py.js evaluates these filter domains, and its datetime
+                     helpers do not support `datetime.time.min`. -->
+                <filter name="filter_today" string="Today"
+                        domain="[('scheduled_datetime', '&gt;=', context_today().strftime('%Y-%m-%d 00:00:00')), ('scheduled_datetime', '&lt;=', context_today().strftime('%Y-%m-%d 23:59:59'))]"/>
+                <filter name="filter_overdue" string="Overdue"
+                        domain="[('is_overdue', '=', True)]"/>
+                <filter name="filter_attention" string="Today and overdue"
+                        domain="['|', ('is_overdue', '=', True), ('scheduled_datetime', '&gt;=', context_today().strftime('%Y-%m-%d 00:00:00'))]"/>
+                <separator/>
+                <filter name="filter_dropoff" string="Drop-offs"
+                        domain="[('direction', '=', 'dropoff')]"/>
+                <filter name="filter_pickup" string="Pickups"
+                        domain="[('direction', '=', 'pickup')]"/>
+                <filter name="filter_approved" string="Approved"
+                        domain="[('is_approved', '=', True)]"/>
+                <filter name="filter_requested" string="Requested only"
+                        domain="[('is_approved', '=', False)]"/>
+                <separator/>
+                <filter name="filter_todo" string="Not finished"
+                        domain="[('status', 'not in', ('received', 'collected'))]"/>
+                <group expand="0" string="Group By">
+                    <filter name="group_direction" string="Direction"
+                            context="{'group_by': 'direction'}"/>
+                    <filter name="group_status" string="Status"
+                            context="{'group_by': 'status'}"/>
+                    <filter name="group_appointment" string="Requested / Approved"
+                            context="{'group_by': 'appointment_state'}"/>
+                    <filter name="group_customer" string="Customer"
+                            context="{'group_by': 'customer_name'}"/>
+                </group>
+            </search>
+        </field>
+    </record>
+
+    <record id="action_pfl_dock_schedule_today" model="ir.actions.act_window">
+        <field name="name">Dock Schedule</field>
+        <field name="res_model">logistics.dock.schedule</field>
+        <field name="view_mode">list,calendar,form</field>
+        <field name="context">{'search_default_filter_attention': 1}</field>
+        <field name="help" type="html">
+            <p class="o_view_nocontent_smiling_face">Nothing expected at the dock</p>
+            <p>Appointments appear here from the warehouse bookings: drop-offs from
+               the requested arrival and pickups from the requested departure. A job
+               that is past due and unfinished stays on the list until it is done.</p>
+        </field>
+    </record>
+
+    <record id="action_pfl_dock_schedule_calendar" model="ir.actions.act_window">
+        <field name="name">Dock Calendar</field>
+        <field name="res_model">logistics.dock.schedule</field>
+        <field name="view_mode">calendar,list,form</field>
+        <field name="context">{'search_default_filter_attention': 1}</field>
+    </record>
+
+    <!-- The schedule sits in the Inventory app's Operations menu, which the
+         warehouse operator already reaches (Inventory / User). The existing
+         Warehouse menu hangs off Prema Dispatch and needs a dispatch role the
+         operator deliberately does not hold, so it can never be the operator's
+         landing screen — and no dispatch group is granted to fix that. -->
+    <menuitem id="menu_pfl_dock_schedule_today" name="Dock Schedule" sequence="2"
+              parent="stock.menu_stock_warehouse_mgmt"
+              action="action_pfl_dock_schedule_today"
+              groups="stock.group_stock_user"/>
+    <menuitem id="menu_pfl_dock_schedule_calendar" name="Dock Calendar" sequence="3"
+              parent="stock.menu_stock_warehouse_mgmt"
+              action="action_pfl_dock_schedule_calendar"
+              groups="stock.group_stock_user"/>
+
+    <!-- Managers opening the Warehouse menu land on the same schedule. Their
+         menu, its parent and its groups are untouched. -->
+    <record id="menu_pfl_warehouse_root" model="ir.ui.menu">
+        <field name="action" ref="action_pfl_dock_schedule_today"/>
+    </record>
+
+</odoo>

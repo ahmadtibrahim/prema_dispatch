@@ -11,9 +11,29 @@ many), and that privileged read happens only on the picking the operator is
 actually working with.
 """
 import logging
+from datetime import timezone
+from zoneinfo import ZoneInfo
 
 from odoo import _, api, fields, models
 from odoo.exceptions import UserError
+
+WAREHOUSE_TZ = "America/Toronto"
+
+
+def _toronto_stamp(value):
+    """A stored (UTC) datetime as the dock reads it: local, zone-labelled.
+
+    Appending "(America/Toronto)" to the raw UTC value is worse than no label
+    at all — it reads as a Toronto time and is four or five hours out, which is
+    how the demo booking's 13:00 UTC arrival was reported as "13:00 Toronto"
+    when the truck is expected at 09:00.
+    """
+    if not value:
+        return ""
+    return "%s (%s)" % (
+        value.replace(tzinfo=timezone.utc).astimezone(ZoneInfo(WAREHOUSE_TZ))
+        .strftime("%Y-%m-%d %H:%M"),
+        WAREHOUSE_TZ)
 
 
 def _as_id(value):
@@ -130,8 +150,8 @@ class StockPicking(models.Model):
             _as_id(data["partner_id"]))
         lines.append(_("Freight owner: %s", owner.display_name or "—"))
         if data["x_requested_arrival"]:
-            lines.append(_("Expected arrival: %s (America/Toronto)",
-                           data["x_requested_arrival"].strftime("%Y-%m-%d %H:%M")))
+            lines.append(_("Expected arrival: %s",
+                           _toronto_stamp(data["x_requested_arrival"])))
         lines.append(_("Expected pallets: %s", data["x_expected_pallets"] or 0))
         packages = self._pfl_prepared_packages()
         if packages:

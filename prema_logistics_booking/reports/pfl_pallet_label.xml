@@ -81,10 +81,11 @@
         <t t-call="web.basic_layout">
             <t t-foreach="docs" t-as="o">
                 <t t-set="card_mode" t-value="False"/>
-                <t t-set="owner_name" t-value="o.x_pfl_freight_owner_id.name if 'x_pfl_freight_owner_id' in o._fields else ''"/>
-                <t t-set="booking_name" t-value="o.x_pfl_sale_order_id.name if 'x_pfl_sale_order_id' in o._fields else ''"/>
-                <t t-set="customer_ref" t-value="o.x_pfl_customer_ref if 'x_pfl_customer_ref' in o._fields else ''"/>
-                <t t-set="position_name" t-value="o.x_pfl_position_id.complete_name if 'x_pfl_position_id' in o._fields else ''"/>
+                <t t-set="facts" t-value="o.pfl_label_facts()"/>
+                <t t-set="owner_name" t-value="facts['owner_name']"/>
+                <t t-set="booking_name" t-value="facts['booking_name']"/>
+                <t t-set="customer_ref" t-value="facts['customer_ref']"/>
+                <t t-set="position_name" t-value="facts['position_name']"/>
                 <t t-call="prema_logistics_booking.pfl_pallet_label_body"/>
             </t>
         </t>
@@ -94,10 +95,11 @@
         <t t-call="web.basic_layout">
             <t t-foreach="docs" t-as="o">
                 <t t-set="card_mode" t-value="True"/>
-                <t t-set="owner_name" t-value="o.x_pfl_freight_owner_id.name if 'x_pfl_freight_owner_id' in o._fields else ''"/>
-                <t t-set="booking_name" t-value="o.x_pfl_sale_order_id.name if 'x_pfl_sale_order_id' in o._fields else ''"/>
-                <t t-set="customer_ref" t-value="o.x_pfl_customer_ref if 'x_pfl_customer_ref' in o._fields else ''"/>
-                <t t-set="position_name" t-value="o.x_pfl_position_id.complete_name if 'x_pfl_position_id' in o._fields else ''"/>
+                <t t-set="facts" t-value="o.pfl_label_facts()"/>
+                <t t-set="owner_name" t-value="facts['owner_name']"/>
+                <t t-set="booking_name" t-value="facts['booking_name']"/>
+                <t t-set="customer_ref" t-value="facts['customer_ref']"/>
+                <t t-set="position_name" t-value="facts['position_name']"/>
                 <t t-call="prema_logistics_booking.pfl_pallet_label_body"/>
             </t>
         </t>
