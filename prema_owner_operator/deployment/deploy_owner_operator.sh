@@ -7,11 +7,12 @@ CONF=${CONF:-/etc/odoo18.conf}
 STAMP=$(date +%Y%m%d_%H%M)
 BK=${BK:-/root/ownerop_backup_$STAMP}
 FILESTORE=${FILESTORE:-/root/.local/share/Odoo/filestore/$DB}
+CODE_DIR=${CODE_DIR:-/opt/odoo/releases/prema_dispatch}
 
 mkdir -p "$BK"
 echo "== 1/5 backup code =="
-git -C /opt/odoo/releases/prema_dispatch rev-parse HEAD > "$BK/code_rev.txt"
-git -C /opt/odoo/releases/prema_dispatch status --short > "$BK/code_status.txt"
+git -C "$CODE_DIR" rev-parse HEAD > "$BK/code_rev.txt"
+git -C "$CODE_DIR" status --short > "$BK/code_status.txt"
 
 echo "== 2/5 backup database =="
 sudo -u postgres pg_dump -Fc "$DB" -f "/tmp/ownerop_$STAMP.dump"
@@ -30,7 +31,7 @@ cd /opt/odoo/odoo18
 /opt/odoo/venv-18/bin/python3 odoo-bin -c "$CONF" -d "$DB" \
   --stop-after-init --no-http -u prema_owner_operator --max-cron-threads 0
 sudo -u postgres psql -d "$DB" -c "UPDATE ir_cron SET active=true WHERE id IN ($IDS);"
-systemctl restart odoo18
+[ -n "${SKIP_RESTART:-}" ] || systemctl restart "${SERVICE:-odoo18}"
 
 echo "Deployed. Verify:"
 sudo -u postgres psql -d "$DB" -A -t -c \

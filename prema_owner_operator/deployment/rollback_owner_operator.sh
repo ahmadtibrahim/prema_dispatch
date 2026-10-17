@@ -6,11 +6,12 @@ set -euo pipefail
 BK=${1:?usage: $0 <backup-dir>}
 DB=${DB:-Prod-db}
 FILESTORE=${FILESTORE:-/root/.local/share/Odoo/filestore/$DB}
+CODE_DIR=${CODE_DIR:-/opt/odoo/releases/prema_dispatch}
 
-systemctl stop odoo18
+[ -n "${SKIP_RESTART:-}" ] || systemctl stop "${SERVICE:-odoo18}"
 
 echo "== code =="
-git -C /opt/odoo/releases/prema_dispatch checkout "$(cat "$BK/code_rev.txt")"
+git -C "$CODE_DIR" checkout "$(cat "$BK/code_rev.txt")"
 
 echo "== database =="
 sudo -u postgres dropdb --if-exists "$DB"
@@ -22,5 +23,5 @@ rm -rf "$FILESTORE"
 tar xzf "$BK/filestore.tgz" -C "$(dirname "$FILESTORE")"
 chown -R odoo18:odoo18 "$FILESTORE" 2>/dev/null || true
 
-systemctl start odoo18
+[ -n "${SKIP_RESTART:-}" ] || systemctl start "${SERVICE:-odoo18}"
 echo "Rolled back. Restore backup dir: $BK"

@@ -151,7 +151,16 @@ class FleetVehicle(models.Model):
 
     @api.model
     def _cron_refresh_availability(self):
-        """Re-evaluate the stored boolean, mainly for insurance expiry."""
-        vehicles = self.search([])
-        vehicles._compute_is_dispatch_available()
+        """Re-evaluate the stored boolean.
+
+        Insurance expiry is a DATE: nothing writes the operator when it
+        passes, so the operator's compliance has to be recomputed first, then
+        the trucks. Without this a lapsed COI would keep the truck offered
+        until someone edited the vehicle.
+        """
+        operators = self.env["prema.owner.operator"].search([])
+        if operators:
+            operators._compute_compliance()
+            operators.flush_recordset(["compliance_ok"])
+        self.search([])._compute_is_dispatch_available()
         return True

@@ -501,3 +501,43 @@ class TestEmailRouting(OwnerOperatorCase):
                 lambda m: m.message_type == "email").__len__())
         self.assertGreater(len(applicant.message_ids), 0,
                            "the reply must land on the existing applicant")
+
+
+class TestEligibilityRefresh(OwnerOperatorCase):
+    """Eligibility must follow compliance over time, and clearance must not
+    override another blocker."""
+
+    def _filter(self):
+        return self.env["fleet.vehicle"].search(
+            [("active", "=", True), ("x_operational_logistics", "=", True)])
+
+    def test_cron_removes_truck_when_insurance_expires(self):
+        app = self._applicant("expiry@test.invalid").owner_operator_application_id
+        op = self._complete(app)
+        vehicle = app.action_approve()
+        self.assertIn(vehicle, self._filter())
+        # expiry passes — NO edit to the vehicle or the operator
+        self.env.cr.execute(
+            "UPDATE prema_owner_operator SET insurance_expiry = %s WHERE id = %s",
+            (fields.Date.subtract(fields.Date.context_today(op), days=3), op.id))
+        op.invalidate_recordset(); vehicle.invalidate_recordset()
+        self.env["fleet.vehicle"]._cron_refresh_availability()
+        vehicle.invalidate_recordset()
+        self.assertNotIn(vehicle, self._filter(),
+                         "the scheduled refresh must drop an expired truck")
+
+    def test_issue_clearance_cannot_restore_while_compliance_blocked(self):
+        app = self._applicant("clear@test.invalid").owner_operator_application_id
+        op = self._complete(app)
+        vehicle = app.action_approve()
+        op.write({"insurance_expiry": fields.Date.subtract(
+            fields.Date.context_today(op), days=1)})
+        vehicle._compute_is_dispatch_available()
+        issue = self.env["fleet.vehicle.state"].search(
+            [("name", "ilike", "Issue")], limit=1)
+        vehicle.write({"state_id": issue.id, "issue_reason": "Repair"})
+        vehicle.action_clear_issue()
+        vehicle.invalidate_recordset()
+        self.assertFalse(vehicle.is_dispatch_available,
+                         "clearing the issue must not override expired cover")
+        self.assertNotIn(vehicle, self._filter())
