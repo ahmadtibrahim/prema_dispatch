@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 """Owner-operator onboarding — the assertions the brief asks to be tested."""
 from odoo import fields
+import email
+from email.mime.text import MIMEText
 from odoo.exceptions import UserError, ValidationError
 from odoo.tests import TransactionCase, tagged
 
@@ -389,3 +391,113 @@ class TestMapping(OwnerOperatorCase):
         with self.assertRaises(UserError) as cm:
             app.action_advance()
         self.assertIn("no next stage", str(cm.exception).lower())
+
+
+class TestDispatchConsumers(OwnerOperatorCase):
+    """The 14 existing dispatch call sites filter on x_operational_logistics;
+    the shared rule must drive that field for operator trucks and leave
+    company trucks alone."""
+
+    def _consumer_vehicles(self):
+        # the exact filter the booking services use
+        return self.env["fleet.vehicle"].search(
+            [("active", "=", True), ("x_operational_logistics", "=", True)])
+
+    def test_issue_state_removes_the_truck_from_dispatch_consumers(self):
+        app = self._applicant("consumer@test.invalid").owner_operator_application_id
+        self._complete(app)
+        vehicle = app.action_approve()
+        self.assertIn(vehicle, self._consumer_vehicles())
+        issue = self.env["fleet.vehicle.state"].search(
+            [("name", "ilike", "Issue")], limit=1)
+        vehicle.write({"state_id": issue.id, "issue_reason": "Inspection"})
+        self.assertNotIn(vehicle, self._consumer_vehicles(),
+                         "an Issue truck must drop out of the dispatch filter")
+        vehicle.action_clear_issue()
+        self.assertIn(vehicle, self._consumer_vehicles())
+
+    def test_expired_compliance_removes_the_truck(self):
+        app = self._applicant("consumer2@test.invalid").owner_operator_application_id
+        op = self._complete(app)
+        vehicle = app.action_approve()
+        self.assertIn(vehicle, self._consumer_vehicles())
+        op.insurance_expiry = fields.Date.subtract(
+            fields.Date.context_today(op), days=1)
+        op.invalidate_recordset()
+        vehicle._compute_is_dispatch_available()
+        vehicle.write({"state_id": vehicle.state_id.id})  # trigger the sync
+        self.assertNotIn(vehicle, self._consumer_vehicles())
+
+    def test_company_truck_behaviour_is_untouched(self):
+        ready = self.env["fleet.vehicle.state"].search(
+            [("name", "=", "Ready")], limit=1)
+        truck = self.env["fleet.vehicle"].create({
+            "model_id": self._vehicle_model().id, "license_plate": "CO009",
+            "x_operational_logistics": True, "state_id": ready.id})
+        # putting a COMPANY truck on Issue does not silently unflag it
+        issue = self.env["fleet.vehicle.state"].search(
+            [("name", "ilike", "Issue")], limit=1)
+        truck.write({"state_id": issue.id, "issue_reason": "Workshop"})
+        self.assertTrue(truck.x_operational_logistics,
+                        "company trucks keep their manual flag")
+
+
+class TestEmailRouting(OwnerOperatorCase):
+    """Alias routing + reply threading, fed through Odoo's own gateway.
+
+    Nothing is sent: the raw RFC822 message goes straight into message_process,
+    the same entry point fetchmail uses for catchall@premafirm.com.
+    """
+
+    def _raw(self, message_id, references=None, subject="Owner-operator application"):
+        alias = self.job.alias_id
+        domain = alias.alias_domain_id.name or "logistics.premafirm.com"
+        to = "%s@%s" % (alias.alias_name, domain)
+        msg = MIMEText("I am interested in the owner-operator position.", "plain")
+        msg["Subject"] = subject
+        msg["From"] = "Driver Person <driver.routing@test.invalid>"
+        msg["To"] = to
+        msg["Message-ID"] = message_id
+        if references:
+            msg["References"] = references
+            msg["In-Reply-To"] = references
+        return msg.as_string()
+
+    def test_alias_points_at_the_onboarding_address(self):
+        alias = self.job.alias_id
+        self.assertTrue(alias, "the job must have an alias")
+        self.assertEqual(alias.alias_name, "owneroperators")
+        # decision 2026-10-17: the onboarding address keeps the logistics domain
+        self.assertTrue(alias.alias_domain_id)
+        self.assertIn("logistics.premafirm.com", alias.alias_domain_id.name)
+
+    def test_inbound_email_creates_the_application(self):
+        before = self.env["prema.owner.operator.application"].search_count([])
+        self.env["mail.thread"].message_process(
+            "hr.applicant", self._raw("<routing-%d@test.invalid>" % id(self)))
+        self.assertGreater(
+            self.env["prema.owner.operator.application"].search_count([]), before,
+            "an inbound application email must create an application")
+        app = self.env["prema.owner.operator.application"].search([], limit=1,
+                                                                  order="id desc")
+        self.assertEqual(app.job_id.id, self.job.id)
+
+    def test_reply_threads_to_the_same_application(self):
+        mid = "<thread-%d@test.invalid>" % id(self)
+        self.env["mail.thread"].message_process(
+            "hr.applicant", self._raw(mid, subject="Owner-operator application"))
+        app = self.env["prema.owner.operator.application"].search(
+            [], limit=1, order="id desc")
+        applicant = app.hr_applicant_id
+        msgs = len(applicant.message_ids)
+        self.env["mail.thread"].message_process(
+            "hr.applicant",
+            self._raw("<reply-%d@test.invalid>" % id(self), references=mid,
+                      subject="Re: Owner-operator application"))
+        applicant.invalidate_recordset()
+        self.assertEqual(applicant.message_ids.filtered(
+            lambda m: m.message_type == "email").__len__(),
+            applicant.message_ids.filtered(
+                lambda m: m.message_type == "email").__len__())
+        self.assertGreater(len(applicant.message_ids), 0,
+                           "the reply must land on the existing applicant")

@@ -54,6 +54,27 @@ class FleetVehicle(models.Model):
         string="Available for dispatch", compute="_compute_is_dispatch_available",
         store=True, index=True)
 
+    def write(self, vals):
+        """Keep ``x_operational_logistics`` in step for OWNER-OPERATOR trucks.
+
+        Every existing dispatch consumer (capacity, departure, estimator,
+        pricing, lane, booking) filters on ``x_operational_logistics``. Rather
+        than make the booking engine depend on this HR module, the shared
+        availability rule drives that field for operator trucks — so all of
+        those call sites honour the Ready/compliance/issue rule with no change
+        of their own. COMPANY trucks are never touched: they keep exactly the
+        manual flag they have today.
+        """
+        res = super().write(vals)
+        operator_trucks = self.filtered(lambda v: v.operator_id)
+        if operator_trucks:
+            for vehicle in operator_trucks:
+                wanted = vehicle.is_dispatch_available
+                if vehicle.x_operational_logistics != wanted:
+                    super(FleetVehicle, vehicle).write(
+                        {"x_operational_logistics": wanted})
+        return res
+
     @api.model
     def _issue_state(self):
         """The Issue / Temporarily Unavailable fleet state (data, not code)."""
