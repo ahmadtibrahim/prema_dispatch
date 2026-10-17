@@ -24,6 +24,13 @@ sudo mv "/tmp/ownerop_$STAMP.dump" "$BK/db.dump"
 
 echo "== 3/5 backup filestore =="
 tar czf "$BK/filestore.tgz" -C "$(dirname "$FILESTORE")" "$(basename "$FILESTORE")"
+# 38 attachments referenced by the DB were written by earlier root-run
+# processes and live only in the legacy store. Back it up too.
+LEGACY_FILESTORE=${LEGACY_FILESTORE:-/root/.local/share/Odoo/filestore/$DB}
+if [ -d "$LEGACY_FILESTORE" ]; then
+  tar czf "$BK/filestore_root_extra.tgz" -C "$(dirname "$LEGACY_FILESTORE")" \
+    "$(basename "$LEGACY_FILESTORE")"
+fi
 
 echo "== 4/5 pause crons =="
 IDS=$(sudo -u postgres psql -d "$DB" -A -t -c "SELECT id FROM ir_cron WHERE active ORDER BY id;" | paste -sd, -)

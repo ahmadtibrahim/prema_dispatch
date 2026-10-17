@@ -32,6 +32,12 @@ echo "== filestore =="
 rm -rf "$FILESTORE"
 tar xzf "$BK/filestore.tgz" -C "$(dirname "$FILESTORE")"
 chown -R odoo18:odoo18 "$FILESTORE" 2>/dev/null || true
+LEGACY_FILESTORE=${LEGACY_FILESTORE:-/root/.local/share/Odoo/filestore/$DB}
+if [ -f "$BK/filestore_root_extra.tgz" ]; then
+  rm -rf "$LEGACY_FILESTORE"
+  tar xzf "$BK/filestore_root_extra.tgz" -C "$(dirname "$LEGACY_FILESTORE")"
+  chown -R odoo18:odoo18 "$LEGACY_FILESTORE" 2>/dev/null || true
+fi
 
 [ -n "${SKIP_RESTART:-}" ] || systemctl start "${SERVICE:-odoo18}"
 echo "Rolled back. Restore backup dir: $BK"
