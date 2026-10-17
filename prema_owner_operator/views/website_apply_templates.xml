@@ -206,7 +206,7 @@
                                           t-esc="post.get('availability', '')"/></label>
                         </fieldset>
 
-                        <button type="submit" class="o_oo_submit">Submit application</button>
+                        <button type="submit" class="o_oo_submit">Submit Application</button>
                         <p class="o_oo_hint">
                             Your documents are stored privately and are visible
                             only to the PremaFirm onboarding team.

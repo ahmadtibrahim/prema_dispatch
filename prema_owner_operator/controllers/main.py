@@ -18,7 +18,10 @@ from datetime import datetime, timedelta
 from werkzeug.exceptions import Forbidden, NotFound
 
 from odoo import _, http
+from odoo.addons.website_hr_recruitment.controllers.main import (
+    WebsiteHrRecruitment)
 from odoo.exceptions import AccessError, ValidationError
+from werkzeug.urls import url_quote
 
 _logger = logging.getLogger(__name__)
 
@@ -76,13 +79,10 @@ class OwnerOperatorController(http.Controller):
     # ------------------------------------------------------------------
     # public form
     # ------------------------------------------------------------------
-    @http.route("/owner-operator/apply", type="http", auth="public",
-                website=True, csrf=True, sitemap=False)
-    def apply(self, **post):
-        values = {"errors": [], "post": post}
-        job = http.request.env["prema.owner.operator.application"].sudo(
-        )._public_job()
-        values["job"] = job
+    def _apply_impl(self, job, post):
+        """Shared implementation for both entry points: the dedicated route
+        and the job's own /jobs/apply/<job> page."""
+        values = {"errors": [], "post": post, "job": job}
         if http.request.httprequest.method == "GET" or not post:
             return http.request.render(
                 "prema_owner_operator.apply_form", values)
@@ -109,6 +109,13 @@ class OwnerOperatorController(http.Controller):
         except Exception:  # noqa: BLE001 — an email must not lose the record
             _logger.warning("owner-operator acknowledgement failed", exc_info=True)
         return http.request.redirect("/owner-operator/thanks")
+
+    @http.route("/owner-operator/apply", type="http", auth="public",
+                website=True, csrf=True, sitemap=False)
+    def apply(self, **post):
+        job = http.request.env["prema.owner.operator.application"].sudo(
+        )._public_job()
+        return self._apply_impl(job, post)
 
     @http.route("/owner-operator/thanks", type="http", auth="public",
                 website=True, csrf=True, sitemap=False)
@@ -217,3 +224,23 @@ class OwnerOperatorController(http.Controller):
             ("X-Content-Type-Options", "nosniff"),
             ("Cache-Control", "private, no-store"),
         ])
+
+
+class OwnerOperatorJobApply(WebsiteHrRecruitment):
+    """Make the job's own apply page the custom application.
+
+    Re-decorating ``jobs_apply`` with an empty ``@http.route()`` keeps the
+    original route and binds this implementation to it, so
+    /jobs/apply/owner-operator-5 stops showing Odoo's résumé/LinkedIn form.
+    Every OTHER job keeps the standard form untouched.
+    """
+
+    @http.route()
+    def jobs_apply(self, job, **post):
+        Application = http.request.env[
+            "prema.owner.operator.application"].sudo()
+        target = Application._public_job()
+        if not target or job.id != target.id:
+            return super().jobs_apply(job, **post)
+        handler = OwnerOperatorController()
+        return handler._apply_impl(job, post)
