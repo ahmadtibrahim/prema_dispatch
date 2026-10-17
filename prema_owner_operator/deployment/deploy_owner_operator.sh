@@ -6,13 +6,17 @@ DB=${DB:-Prod-db}
 CONF=${CONF:-/etc/odoo18.conf}
 STAMP=$(date +%Y%m%d_%H%M)
 BK=${BK:-/root/ownerop_backup_$STAMP}
-FILESTORE=${FILESTORE:-/root/.local/share/Odoo/filestore/$DB}
+# The odoo18 service runs with HOME=/opt/odoo, so its data_dir is
+# /opt/odoo/.local/share/Odoo — NOT /root/.local/share/Odoo.
+FILESTORE=${FILESTORE:-/opt/odoo/.local/share/Odoo/filestore/$DB}
 CODE_DIR=${CODE_DIR:-/opt/odoo/releases/prema_dispatch}
 
 mkdir -p "$BK"
 echo "== 1/5 backup code =="
 git -C "$CODE_DIR" rev-parse HEAD > "$BK/code_rev.txt"
 git -C "$CODE_DIR" status --short > "$BK/code_status.txt"
+# The live tree carries uncommitted changes; a rev alone cannot restore it.
+tar czf "$BK/code.tgz" -C "$(dirname "$CODE_DIR")" "$(basename "$CODE_DIR")"
 
 echo "== 2/5 backup database =="
 sudo -u postgres pg_dump -Fc "$DB" -f "/tmp/ownerop_$STAMP.dump"
@@ -26,10 +30,18 @@ IDS=$(sudo -u postgres psql -d "$DB" -A -t -c "SELECT id FROM ir_cron WHERE acti
 echo "$IDS" > "$BK/cron_ids.txt"
 sudo -u postgres psql -d "$DB" -c "UPDATE ir_cron SET active=false;"
 
-echo "== 5/5 upgrade =="
+echo "== 5/5 install or upgrade =="
 cd /opt/odoo/odoo18
-/opt/odoo/venv-18/bin/python3 odoo-bin -c "$CONF" -d "$DB" \
-  --stop-after-init --no-http -u prema_owner_operator --max-cron-threads 0
+ACTION=-u
+if [ "$(sudo -u postgres psql -d "$DB" -A -t -c \
+    "SELECT state FROM ir_module_module WHERE name='prema_owner_operator';")" \
+    != "installed" ]; then
+  ACTION=-i
+fi
+# Run as the service user: HOME=/opt/odoo is what selects the real filestore.
+sudo -u odoo18 env HOME=/opt/odoo /opt/odoo/venv-18/bin/python3 odoo-bin \
+  -c "$CONF" -d "$DB" --stop-after-init --no-http $ACTION prema_owner_operator \
+  --max-cron-threads 0
 sudo -u postgres psql -d "$DB" -c "UPDATE ir_cron SET active=true WHERE id IN ($IDS);"
 [ -n "${SKIP_RESTART:-}" ] || systemctl restart "${SERVICE:-odoo18}"
 

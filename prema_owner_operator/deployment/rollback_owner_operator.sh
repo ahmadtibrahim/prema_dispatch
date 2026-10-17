@@ -5,13 +5,23 @@
 set -euo pipefail
 BK=${1:?usage: $0 <backup-dir>}
 DB=${DB:-Prod-db}
-FILESTORE=${FILESTORE:-/root/.local/share/Odoo/filestore/$DB}
+# The odoo18 service runs with HOME=/opt/odoo, so its data_dir is
+# /opt/odoo/.local/share/Odoo — NOT /root/.local/share/Odoo.
+FILESTORE=${FILESTORE:-/opt/odoo/.local/share/Odoo/filestore/$DB}
 CODE_DIR=${CODE_DIR:-/opt/odoo/releases/prema_dispatch}
 
 [ -n "${SKIP_RESTART:-}" ] || systemctl stop "${SERVICE:-odoo18}"
 
 echo "== code =="
-git -C "$CODE_DIR" checkout "$(cat "$BK/code_rev.txt")"
+if [ -f "$BK/code.tgz" ]; then
+  # Exact pre-deployment tree, including uncommitted live changes.
+  tar tzf "$BK/code.tgz" > /dev/null
+  rm -rf "$CODE_DIR"
+  tar xzf "$BK/code.tgz" -C "$(dirname "$CODE_DIR")"
+  chown -R odoo18:odoo18 "$CODE_DIR" 2>/dev/null || true
+else
+  git -C "$CODE_DIR" checkout "$(cat "$BK/code_rev.txt")"
+fi
 
 echo "== database =="
 sudo -u postgres dropdb --if-exists "$DB"
