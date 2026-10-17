@@ -30,6 +30,11 @@ class FleetVehicle(models.Model):
         index=True, readonly=True, copy=False, ondelete="restrict",
         help="The application that created this equipment.")
 
+    home_city = fields.Char(
+        string="Operator home city",
+        help="Where the operator is based, carried from the approved "
+             "application. City only — no street address.")
+    home_province = fields.Char(string="Operator home province")
     issue_reason = fields.Text(
         string="Issue reason",
         help="Why the truck is unavailable. Required while the fleet state is "

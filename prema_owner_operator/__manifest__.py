@@ -35,6 +35,11 @@ job positions keep their own recruitment stages untouched.
         "fleet",
         "sign",
         "mail",
+        # Owns the fleet.vehicle x_* fields this module maps (including
+        # x_operational_logistics, which is_dispatch_available depends on).
+        # Without it the computed field's @depends is validated before those
+        # fields are registered.
+        "premafirm_ai_engine",
     ],
     "data": [
         "security/owner_operator_security.xml",

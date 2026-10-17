@@ -207,6 +207,7 @@ class OwnerOperatorApplication(models.Model):
     ], string="Equipment type")
     equipment_model = fields.Char(string="Make / model")
     vin = fields.Char(string="VIN", index=True)
+    unit_number = fields.Char(string="Unit number")
     license_plate = fields.Char(string="Plate")
     plate_jurisdiction = fields.Char(string="Plate jurisdiction")
 
@@ -345,7 +346,7 @@ class OwnerOperatorApplication(models.Model):
             "contact_name", "email", "phone", "business_name",
             "business_number", "is_sole_proprietor", "home_city",
             "home_province", "equipment_type", "equipment_model", "vin",
-            "license_plate", "plate_jurisdiction", "payload_lbs",
+            "license_plate", "plate_jurisdiction", "unit_number", "payload_lbs",
             "pallet_capacity", "box_length_ft", "box_height_ft",
             "overall_length_ft", "vehicle_height_ft", "door_clearance_in",
             "dock_height_in", "gvwr_lbs", "has_reefer", "has_liftgate",
@@ -355,8 +356,12 @@ class OwnerOperatorApplication(models.Model):
         data = {k: v for k, v in vals.items() if k in allowed}
         if not (data.get("contact_name") or "").strip():
             raise ValidationError(_("Please give your full name."))
-        if not (data.get("email") or "").strip():
+        email = (data.get("email") or "").strip()
+        if not email:
             raise ValidationError(_("Please give an email address."))
+        if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
+            raise ValidationError(
+                _("That email address does not look valid."))
         if not (data.get("home_city") or "").strip() \
                 or not (data.get("home_province") or "").strip():
             raise ValidationError(
@@ -375,7 +380,6 @@ class OwnerOperatorApplication(models.Model):
         candidate = self.env["hr.candidate"].sudo().create({
             "partner_name": data["contact_name"],
             "email_from": data["email"],
-            "phone": data.get("phone") or False,
             "company_id": job.company_id.id,
         })
         applicant = self.env["hr.applicant"].sudo().create({
@@ -459,7 +463,7 @@ class OwnerOperatorApplication(models.Model):
         self.ensure_one()
         seq = target.sequence
         problems = []
-        if seq >= 2 and self._blocking("initial"):
+        if seq >= 1 and self._blocking("initial"):
             problems.append(_("initial uploads: %s")
                             % self._label(self._blocking("initial")))
         if seq >= 4 and self._blocking("qualification"):
@@ -484,7 +488,10 @@ class OwnerOperatorApplication(models.Model):
         for app in self:
             target = app._next_stage()
             if not target:
-                continue
+                raise UserError(_(
+                    "%s has no next stage: the job’s recruitment pipeline is "
+                    "not configured (or this is its last stage). Fix the job’s "
+                    "stages before advancing.") % app.name)
             app._guard_transition(target)
             app.hr_applicant_id.sudo().write({"stage_id": target.id})
             app._sync_state(target)
@@ -669,6 +676,8 @@ class OwnerOperatorApplication(models.Model):
             "company_id": self.company_id.id,
             "license_plate": self.license_plate,
             "vin_sn": self.vin,
+            "home_city": self.home_city,
+            "home_province": self.home_province,
             "driver_id": self.partner_id.id,
             "x_operational_logistics": True,
             "x_reefer": self.has_reefer,
@@ -678,13 +687,23 @@ class OwnerOperatorApplication(models.Model):
             "x_max_payload_lbs": self.payload_lbs,
             "x_gvwr_lbs": self.gvwr_lbs,
             "x_cargo_box_length_ft": self.box_length_ft,
-            "x_box_interior_height_ft": self.box_height_ft,
+            # CONTRACT: this column stores INCHES although its name says
+            # _ft. The only reading consistent with the live truck (interior
+            # 96 alongside door clearance 87 in and vehicle height 13 ft) is
+            # inches, so the applicant's feet are converted here.
+            "x_box_interior_height_ft": self.box_height_ft * 12.0
+            if self.box_height_ft else 0.0,
             "x_overall_length_ft": self.overall_length_ft,
             "x_vehicle_height_ft": self.vehicle_height_ft,
             "x_door_clearance_in": self.door_clearance_in,
             "x_dock_height_in": self.dock_height_in,
             "state_id": ready.id or False,
         })
+        # Unit number: reuse the Studio field the fleet already uses; never
+        # create a second column for the same thing.
+        if self.unit_number and "x_studio_unit_number" in self.env[
+                "fleet.vehicle"]._fields:
+            vehicle.write({"x_studio_unit_number": self.unit_number})
         self.write({"fleet_vehicle_id": vehicle.id,
                     "approved_on": fields.Datetime.now(),
                     "approved_by": self.env.user.id,

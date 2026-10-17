@@ -23,9 +23,33 @@ class OwnerOperatorCase(TransactionCase):
                 "company_id": cls.env.company.id,
                 "alias_name": "owneroperators",
             })
+            Stage = cls.env["hr.recruitment.stage"]
+            for seq, name in ((1, "Equipment Verification"),
+                              (2, "Initial Qualification"),
+                              (3, "Authority & Insurance Review"),
+                              (4, "Contract Proposal"),
+                              (5, "Contract Signed"),
+                              (6, "Approved — Ready for Dispatch")):
+                stage = Stage.search([("name", "=", name)], limit=1) or Stage.create(
+                    {"name": name, "sequence": seq})
+                stage.write({"job_ids": [(4, cls.job.id)]})
         cls.env["ir.config_parameter"].sudo().set_param(
             "prema_owner_operator.job_id", cls.job.id)
+        # Fleet states are data: make sure the two this module relies on exist.
+        State = cls.env["fleet.vehicle.state"]
+        for name, seq in (("Ready", 4),
+                          ("Issue / Temporarily Unavailable", 5)):
+            if not State.search([("name", "=", name)], limit=1):
+                State.create({"name": name, "sequence": seq})
         cls.Application = cls.env["prema.owner.operator.application"]
+
+    def _vehicle_model(self):
+        brand = self.env["fleet.vehicle.model.brand"].search(
+            [("name", "=", "Owner-operator")], limit=1) \
+            or self.env["fleet.vehicle.model.brand"].create(
+                {"name": "Owner-operator"})
+        return self.env["fleet.vehicle.model"].create(
+            {"name": "Test Truck", "brand_id": brand.id})
 
     def _applicant(self, email="driver@test.invalid"):
         candidate = self.env["hr.candidate"].create({
@@ -41,13 +65,13 @@ class OwnerOperatorCase(TransactionCase):
             "company_id": self.env.company.id,
         })
 
-    def _complete(self, app, sign=True):
+    def _complete(self, app, sign=True, vin=None):
         """Fill every checklist row so the workflow can run end to end."""
         app.write({
             "licence_class": "AZ",
             "licence_expiry": fields.Date.add(
                 fields.Date.context_today(app), years=2),
-            "vin": "1FVACXDT9DHBX3538",
+            "vin": vin or ("1FVACXDT9DHBX%04d" % (app.id % 9999)),
             "license_plate": "TEST001",
             "home_city": "Toronto",
             "home_province": "Ontario",
@@ -177,8 +201,13 @@ class TestStageGates(OwnerOperatorCase):
         insurer_doc = app.document_ids.filtered(
             lambda d: d.document_type == "coi_insurer")
         insurer_doc.write({"status": "pending"})
-        with self.assertRaises(UserError):
-            app.action_advance()
+        # the gate that matters: Contract Proposal cannot be reached without
+        # the insurer-direct certificate
+        contract = self.env["hr.recruitment.stage"].search(
+            [("name", "=", "Contract Proposal")], limit=1)
+        with self.assertRaises(UserError) as cm:
+            app._guard_transition(contract)
+        self.assertIn("insurer", str(cm.exception).lower())
 
 
 class TestApproval(OwnerOperatorCase):
@@ -204,7 +233,7 @@ class TestApproval(OwnerOperatorCase):
         other = self.Application._create_from_public({
             "contact_name": "Other", "email": "other@test.invalid",
             "home_city": "Toronto", "home_province": "Ontario",
-            "equipment_type": "dry_van", "vin": "1FVACXDT9DHBX3538",
+            "equipment_type": "dry_van", "vin": "CONFLICTVIN000001",
         })
         foreign_op = self.env["prema.owner.operator"].create({
             "partner_id": other.partner_id.id,
@@ -214,26 +243,18 @@ class TestApproval(OwnerOperatorCase):
         })
         self.env["fleet.vehicle"].create({
             "model_id": self._vehicle_model().id,
-            "vin_sn": "1FVACXDT9DHBX3538", "operator_id": foreign_op.id,
+            "vin_sn": "CONFLICTVIN000001", "operator_id": foreign_op.id,
             "state_id": self.env["fleet.vehicle.state"].search(
                 [("name", "=", "Ready")], limit=1).id,
         })
         app = self._applicant("conflict@test.invalid").owner_operator_application_id
-        self._complete(app)
+        self._complete(app, vin="CONFLICTVIN000001")
         with self.assertRaises(UserError) as cm:
             app.action_approve()
         self.assertIn("conflict", str(cm.exception).lower())
 
 
 class TestFleetAvailability(OwnerOperatorCase):
-
-    def _vehicle_model(self):
-        brand = self.env["fleet.vehicle.model.brand"].search(
-            [("name", "=", "Owner-operator")], limit=1) \
-            or self.env["fleet.vehicle.model.brand"].create(
-                {"name": "Owner-operator"})
-        return self.env["fleet.vehicle.model"].create(
-            {"name": "Test Truck", "brand_id": brand.id})
 
     def _issue_state(self):
         state = self.env["fleet.vehicle.state"].search(
@@ -290,3 +311,81 @@ class TestFleetAvailability(OwnerOperatorCase):
         op.invalidate_recordset()
         vehicle._compute_is_dispatch_available()
         self.assertFalse(vehicle.is_dispatch_available)
+
+
+class TestPublicSubmissionAtomicity(OwnerOperatorCase):
+    """An invalid public submission must leave NOTHING behind."""
+
+    def _counts(self):
+        return (
+            self.env["hr.applicant"].search_count([]),
+            self.env["prema.owner.operator.application"].search_count([]),
+            self.env["ir.attachment"].search_count(
+                [("res_model", "=", "prema.owner.operator.document")]),
+        )
+
+    def test_missing_required_fields_create_nothing(self):
+        before = self._counts()
+        for bad in (
+            {"contact_name": "A", "email": "a@test.invalid"},            # no city
+            {"contact_name": "", "email": "a@test.invalid",
+             "home_city": "Toronto", "home_province": "Ontario"},         # no name
+            {"contact_name": "A", "email": "not-an-email",
+             "home_city": "Toronto", "home_province": "Ontario"},
+        ):
+            with self.assertRaises(ValidationError):
+                self.Application._create_from_public(bad)
+            self.assertEqual(self._counts(), before,
+                             "a rejected submission left a record behind")
+
+    def test_missing_province_creates_nothing(self):
+        before = self._counts()
+        with self.assertRaises(ValidationError):
+            self.Application._create_from_public({
+                "contact_name": "A", "email": "b@test.invalid",
+                "home_city": "Toronto"})
+        self.assertEqual(self._counts(), before)
+
+
+class TestMapping(OwnerOperatorCase):
+
+    def test_box_height_is_stored_in_inches(self):
+        """The column holds INCHES despite its _ft name; the form collects
+        feet."""
+        applicant = self._applicant("inches@test.invalid")
+        app = applicant.owner_operator_application_id
+        app.write({"box_height_ft": 8.0})
+        self._complete(app)
+        vehicle = app.action_approve()
+        self.assertAlmostEqual(vehicle.x_box_interior_height_ft, 96.0, places=2)
+
+    def test_home_base_and_unit_number_reach_the_vehicle(self):
+        applicant = self._applicant("home@test.invalid")
+        app = applicant.owner_operator_application_id
+        app.write({"home_city": "Toronto", "home_province": "Ontario",
+                   "unit_number": "U-42"})
+        self._complete(app)
+        vehicle = app.action_approve()
+        self.assertEqual(vehicle.home_city, "Toronto")
+        self.assertEqual(vehicle.home_province, "Ontario")
+        if "x_studio_unit_number" in self.env["fleet.vehicle"]._fields:
+            self.assertEqual(vehicle.x_studio_unit_number, "U-42")
+
+    def test_advance_without_stage_configuration_raises(self):
+        job = self.env["hr.job"].create({
+            "name": "No stages", "is_published": True,
+        })
+        self.env["ir.config_parameter"].sudo().set_param(
+            "prema_owner_operator.job_id", job.id)
+        candidate = self.env["hr.candidate"].create(
+            {"partner_name": "X", "email_from": "x@test.invalid"})
+        applicant = self.env["hr.applicant"].create({
+            "candidate_id": candidate.id, "job_id": job.id,
+            "partner_name": "X", "email_from": "x@test.invalid",
+        })
+        app = applicant.owner_operator_application_id
+        if not app:
+            self.skipTest("no application for this job")
+        with self.assertRaises(UserError) as cm:
+            app.action_advance()
+        self.assertIn("no next stage", str(cm.exception).lower())

@@ -100,6 +100,9 @@
                                 <label>Plate jurisdiction
                                     <input type="text" name="plate_jurisdiction"
                                            t-att-value="post.get('plate_jurisdiction', '')"/></label>
+                                <label>Unit number
+                                    <input type="text" name="unit_number"
+                                           t-att-value="post.get('unit_number', '')"/></label>
                             </div>
                             <div class="o_oo_row">
                                 <label>Legal payload (lbs)
