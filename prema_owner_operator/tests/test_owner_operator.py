@@ -489,6 +489,208 @@ class TestEmailRouting(OwnerOperatorCase):
         app = self.env["prema.owner.operator.application"].search(
             [], limit=1, order="id desc")
         applicant = app.hr_applicant_id
+        self.assertTrue(applicant, "the first email must create an applicant")
+
+        applicants_before = self.env["hr.applicant"].search_count([])
+        applications_before = self.env[
+            "prema.owner.operator.application"].search_count([])
+
+        reply_mid = "<reply-%d@test.invalid>" % id(self)
+        self.env["mail.thread"].message_process(
+            "hr.applicant",
+            self._raw(reply_mid, references=mid,
+                      subject="Re: Owner-operator application"))
+
+        # 1) no second applicant and no second onboarding record
+        self.assertEqual(self.env["hr.applicant"].search_count([]),
+                         applicants_before,
+                         "the reply must not create a duplicate applicant")
+        self.assertEqual(
+            self.env["prema.owner.operator.application"].search_count([]),
+            applications_before,
+            "the reply must not create a second application")
+        # 2) the reply is attached to the ORIGINAL applicant
+        applicant.invalidate_recordset()
+        message_ids = [(m.message_id or "").strip("<>")
+                       for m in applicant.message_ids]
+        self.assertIn(reply_mid.strip("<>"), message_ids,
+                      "the reply must land on the original applicant")
+
+
+class TestPublicSubmissionAtomicity(OwnerOperatorCase):
+    """An invalid public submission must leave NOTHING behind."""
+
+    def _counts(self):
+        return (
+            self.env["hr.applicant"].search_count([]),
+            self.env["prema.owner.operator.application"].search_count([]),
+            self.env["ir.attachment"].search_count(
+                [("res_model", "=", "prema.owner.operator.document")]),
+        )
+
+    def test_missing_required_fields_create_nothing(self):
+        before = self._counts()
+        for bad in (
+            {"contact_name": "A", "email": "a@test.invalid"},            # no city
+            {"contact_name": "", "email": "a@test.invalid",
+             "home_city": "Toronto", "home_province": "Ontario"},         # no name
+            {"contact_name": "A", "email": "not-an-email",
+             "home_city": "Toronto", "home_province": "Ontario"},
+        ):
+            with self.assertRaises(ValidationError):
+                self.Application._create_from_public(bad)
+            self.assertEqual(self._counts(), before,
+                             "a rejected submission left a record behind")
+
+    def test_missing_province_creates_nothing(self):
+        before = self._counts()
+        with self.assertRaises(ValidationError):
+            self.Application._create_from_public({
+                "contact_name": "A", "email": "b@test.invalid",
+                "home_city": "Toronto"})
+        self.assertEqual(self._counts(), before)
+
+
+class TestMapping(OwnerOperatorCase):
+
+    def test_box_height_is_stored_in_inches(self):
+        """The column holds INCHES despite its _ft name; the form collects
+        feet."""
+        applicant = self._applicant("inches@test.invalid")
+        app = applicant.owner_operator_application_id
+        app.write({"box_height_ft": 8.0})
+        self._complete(app)
+        vehicle = app.action_approve()
+        self.assertAlmostEqual(vehicle.x_box_interior_height_ft, 96.0, places=2)
+
+    def test_home_base_and_unit_number_reach_the_vehicle(self):
+        applicant = self._applicant("home@test.invalid")
+        app = applicant.owner_operator_application_id
+        app.write({"home_city": "Toronto", "home_province": "Ontario",
+                   "unit_number": "U-42"})
+        self._complete(app)
+        vehicle = app.action_approve()
+        self.assertEqual(vehicle.home_city, "Toronto")
+        self.assertEqual(vehicle.home_province, "Ontario")
+        if "x_studio_unit_number" in self.env["fleet.vehicle"]._fields:
+            self.assertEqual(vehicle.x_studio_unit_number, "U-42")
+
+    def test_advance_without_stage_configuration_raises(self):
+        job = self.env["hr.job"].create({
+            "name": "No stages", "is_published": True,
+        })
+        self.env["ir.config_parameter"].sudo().set_param(
+            "prema_owner_operator.job_id", job.id)
+        candidate = self.env["hr.candidate"].create(
+            {"partner_name": "X", "email_from": "x@test.invalid"})
+        applicant = self.env["hr.applicant"].create({
+            "candidate_id": candidate.id, "job_id": job.id,
+            "partner_name": "X", "email_from": "x@test.invalid",
+        })
+        app = applicant.owner_operator_application_id
+        if not app:
+            self.skipTest("no application for this job")
+        with self.assertRaises(UserError) as cm:
+            app.action_advance()
+        self.assertIn("no next stage", str(cm.exception).lower())
+
+
+class TestDispatchConsumers(OwnerOperatorCase):
+    """The 14 existing dispatch call sites filter on x_operational_logistics;
+    the shared rule must drive that field for operator trucks and leave
+    company trucks alone."""
+
+    def _consumer_vehicles(self):
+        # the exact filter the booking services use
+        return self.env["fleet.vehicle"].search(
+            [("active", "=", True), ("x_operational_logistics", "=", True)])
+
+    def test_issue_state_removes_the_truck_from_dispatch_consumers(self):
+        app = self._applicant("consumer@test.invalid").owner_operator_application_id
+        self._complete(app)
+        vehicle = app.action_approve()
+        self.assertIn(vehicle, self._consumer_vehicles())
+        issue = self.env["fleet.vehicle.state"].search(
+            [("name", "ilike", "Issue")], limit=1)
+        vehicle.write({"state_id": issue.id, "issue_reason": "Inspection"})
+        self.assertNotIn(vehicle, self._consumer_vehicles(),
+                         "an Issue truck must drop out of the dispatch filter")
+        vehicle.action_clear_issue()
+        self.assertIn(vehicle, self._consumer_vehicles())
+
+    def test_expired_compliance_removes_the_truck(self):
+        app = self._applicant("consumer2@test.invalid").owner_operator_application_id
+        op = self._complete(app)
+        vehicle = app.action_approve()
+        self.assertIn(vehicle, self._consumer_vehicles())
+        op.insurance_expiry = fields.Date.subtract(
+            fields.Date.context_today(op), days=1)
+        op.invalidate_recordset()
+        vehicle._compute_is_dispatch_available()
+        vehicle.write({"state_id": vehicle.state_id.id})  # trigger the sync
+        self.assertNotIn(vehicle, self._consumer_vehicles())
+
+    def test_company_truck_behaviour_is_untouched(self):
+        ready = self.env["fleet.vehicle.state"].search(
+            [("name", "=", "Ready")], limit=1)
+        truck = self.env["fleet.vehicle"].create({
+            "model_id": self._vehicle_model().id, "license_plate": "CO009",
+            "x_operational_logistics": True, "state_id": ready.id})
+        # putting a COMPANY truck on Issue does not silently unflag it
+        issue = self.env["fleet.vehicle.state"].search(
+            [("name", "ilike", "Issue")], limit=1)
+        truck.write({"state_id": issue.id, "issue_reason": "Workshop"})
+        self.assertTrue(truck.x_operational_logistics,
+                        "company trucks keep their manual flag")
+
+
+class TestEmailRouting(OwnerOperatorCase):
+    """Alias routing + reply threading, fed through Odoo's own gateway.
+
+    Nothing is sent: the raw RFC822 message goes straight into message_process,
+    the same entry point fetchmail uses for catchall@premafirm.com.
+    """
+
+    def _raw(self, message_id, references=None, subject="Owner-operator application"):
+        alias = self.job.alias_id
+        domain = alias.alias_domain_id.name or "logistics.premafirm.com"
+        to = "%s@%s" % (alias.alias_name, domain)
+        msg = MIMEText("I am interested in the owner-operator position.", "plain")
+        msg["Subject"] = subject
+        msg["From"] = "Driver Person <driver.routing@test.invalid>"
+        msg["To"] = to
+        msg["Message-ID"] = message_id
+        if references:
+            msg["References"] = references
+            msg["In-Reply-To"] = references
+        return msg.as_string()
+
+    def test_alias_points_at_the_onboarding_address(self):
+        alias = self.job.alias_id
+        self.assertTrue(alias, "the job must have an alias")
+        self.assertEqual(alias.alias_name, "owneroperators")
+        # decision 2026-10-17: the onboarding address keeps the logistics domain
+        self.assertTrue(alias.alias_domain_id)
+        self.assertIn("logistics.premafirm.com", alias.alias_domain_id.name)
+
+    def test_inbound_email_creates_the_application(self):
+        before = self.env["prema.owner.operator.application"].search_count([])
+        self.env["mail.thread"].message_process(
+            "hr.applicant", self._raw("<routing-%d@test.invalid>" % id(self)))
+        self.assertGreater(
+            self.env["prema.owner.operator.application"].search_count([]), before,
+            "an inbound application email must create an application")
+        app = self.env["prema.owner.operator.application"].search([], limit=1,
+                                                                  order="id desc")
+        self.assertEqual(app.job_id.id, self.job.id)
+
+    def test_reply_threads_to_the_same_application(self):
+        mid = "<thread-%d@test.invalid>" % id(self)
+        self.env["mail.thread"].message_process(
+            "hr.applicant", self._raw(mid, subject="Owner-operator application"))
+        app = self.env["prema.owner.operator.application"].search(
+            [], limit=1, order="id desc")
+        applicant = app.hr_applicant_id
         msgs = len(applicant.message_ids)
         self.env["mail.thread"].message_process(
             "hr.applicant",
