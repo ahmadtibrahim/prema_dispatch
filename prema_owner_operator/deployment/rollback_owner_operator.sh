@@ -9,8 +9,16 @@ DB=${DB:-Prod-db}
 # /opt/odoo/.local/share/Odoo — NOT /root/.local/share/Odoo.
 FILESTORE=${FILESTORE:-/opt/odoo/.local/share/Odoo/filestore/$DB}
 CODE_DIR=${CODE_DIR:-/opt/odoo/releases/prema_dispatch}
+MODULE_ADDONS_DIR=${MODULE_ADDONS_DIR:-/opt/odoo/releases/prema_owner_operator}
 
 [ -n "${SKIP_RESTART:-}" ] || systemctl stop "${SERVICE:-odoo18}"
+
+# The addon lives OUTSIDE the prema_dispatch git worktree. Move it aside
+# before restoring the code tree so a rollback removes it from the addons
+# path, while keeping the files for audit.
+if [ -d "$MODULE_ADDONS_DIR" ]; then
+  mv "$MODULE_ADDONS_DIR" "$BK/module_removed_$(date +%Y%m%d_%H%M%S)"
+fi
 
 echo "== code =="
 if [ -f "$BK/code.tgz" ]; then

@@ -10,6 +10,7 @@ BK=${BK:-/root/ownerop_backup_$STAMP}
 # /opt/odoo/.local/share/Odoo — NOT /root/.local/share/Odoo.
 FILESTORE=${FILESTORE:-/opt/odoo/.local/share/Odoo/filestore/$DB}
 CODE_DIR=${CODE_DIR:-/opt/odoo/releases/prema_dispatch}
+MODULE_ADDONS_DIR=${MODULE_ADDONS_DIR:-/opt/odoo/releases/prema_owner_operator}
 
 mkdir -p "$BK"
 echo "== 1/5 backup code =="
@@ -17,6 +18,10 @@ git -C "$CODE_DIR" rev-parse HEAD > "$BK/code_rev.txt"
 git -C "$CODE_DIR" status --short > "$BK/code_status.txt"
 # The live tree carries uncommitted changes; a rev alone cannot restore it.
 tar czf "$BK/code.tgz" -C "$(dirname "$CODE_DIR")" "$(basename "$CODE_DIR")"
+if [ -d "$MODULE_ADDONS_DIR" ]; then
+  tar czf "$BK/module_addons.tgz" -C "$(dirname "$MODULE_ADDONS_DIR")" \
+    "$(basename "$MODULE_ADDONS_DIR")"
+fi
 
 echo "== 2/5 backup database =="
 sudo -u postgres pg_dump -Fc "$DB" -f "/tmp/ownerop_$STAMP.dump"
