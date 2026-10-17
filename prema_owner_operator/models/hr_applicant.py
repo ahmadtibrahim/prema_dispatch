@@ -21,7 +21,9 @@ class HrApplicant(models.Model):
     owner_operator_document_ids = fields.One2many(
         related="owner_operator_application_id.document_ids",
         string="Owner-operator documents", readonly=True)
-    oo_service_provinces = fields.Char(compute="_compute_oo_service_provinces")
+    oo_service_provinces = fields.Char(
+        string="Provinces / territories served",
+        compute="_compute_oo_service_provinces")
 
     # Read-only mirrors of the ONE application record. They are related
     # fields, not a second copy of the data.
