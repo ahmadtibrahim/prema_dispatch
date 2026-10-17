@@ -21,79 +21,167 @@
                     <div class="oe_title"><h1><field name="name" readonly="1"/></h1></div>
                     <group>
                         <group string="Applicant">
-                            <field name="contact_name"/>
-                            <field name="email" widget="email"/>
-                            <field name="phone" widget="phone"/>
+                            <field name="contact_name" readonly="1"/>
+                            <field name="email" widget="email" readonly="1"/>
+                            <field name="phone" widget="phone" readonly="1"/>
                             <field name="partner_id" readonly="1"/>
                             <field name="hr_applicant_id" readonly="1"/>
                             <field name="stage_id" readonly="1"/>
                         </group>
-                        <group string="Business">
-                            <field name="business_name"/>
-                            <field name="business_number"/>
-                            <field name="is_sole_proprietor"/>
-                            <field name="home_city"/>
-                            <field name="home_province"/>
+                        <group string="Review status">
+                            <field name="can_approve"/>
+                            <field name="licence_current"/>
+                            <field name="missing_initial"/>
+                            <field name="missing_qualification"/>
+                            <field name="missing_verification"/>
+                            <field name="missing_contract"/>
                         </group>
                     </group>
                     <notebook>
-                        <page string="Equipment">
+                        <page string="Business &amp; Driver" name="business_driver">
                             <group>
-                                <group>
-                                    <field name="equipment_type"/>
+                                <group string="Business">
+                                    <field name="business_name"/>
+                                    <field name="business_structure"/>
+                                    <field name="is_sole_proprietor"/>
+                                    <field name="home_city"/>
+                                    <field name="home_province"/>
+                                    <field name="service_province_ids" widget="many2many_tags"/>
+                                </group>
+                                <group string="Driver licence">
+                                    <field name="licence_class"/>
+                                    <field name="licence_jurisdiction"/>
+                                    <field name="licence_expiry"/>
+                                    <field name="licence_suspension"/>
+                                </group>
+                            </group>
+                            <group>
+                                <group string="Experience">
+                                    <field name="commercial_driving_experience"/>
+                                    <field name="owner_operator_experience"/>
+                                    <field name="tdg_training"/>
+                                </group>
+                                <group string="History">
+                                    <field name="recent_collisions"/>
+                                    <field name="recent_convictions"/>
+                                    <field name="recent_driving_work"/>
+                                </group>
+                            </group>
+                        </page>
+
+                        <page string="Vehicle &amp; Equipment" name="vehicle_equipment">
+                            <group>
+                                <group string="Vehicle">
+                                    <field name="vehicle_type"/>
                                     <field name="equipment_model"/>
-                                    <field name="vin"/>
+                                    <field name="truck_year"/>
+                                    <field name="unit_number"/>
+                                    <field name="vehicle_ownership"/>
+                                    <field name="transmission"/>
+                                    <field name="odometer_km"/>
+                                    <field name="truck_plate_jurisdiction"/>
                                     <field name="license_plate"/>
                                     <field name="plate_jurisdiction"/>
                                 </group>
-                                <group>
-                                    <field name="payload_lbs"/>
-                                    <field name="pallet_capacity"/>
-                                    <field name="gvwr_lbs"/>
-                                    <field name="box_length_ft"/>
-                                    <field name="box_height_ft"/>
-                                    <field name="overall_length_ft"/>
-                                    <field name="vehicle_height_ft"/>
-                                    <field name="door_clearance_in"/>
-                                    <field name="dock_height_in"/>
+                                <group string="Derived for Fleet">
+                                    <field name="equipment_type" readonly="1"/>
+                                    <field name="has_reefer" readonly="1"/>
+                                    <field name="has_liftgate" readonly="1"/>
+                                    <field name="has_air_ride" readonly="1"/>
                                 </group>
                             </group>
-                            <group string="Capabilities">
-                                <field name="has_reefer"/>
-                                <field name="has_liftgate"/>
-                                <field name="has_air_ride"/>
+                            <group string="Cargo body (van / straight truck)">
+                                <group>
+                                    <field name="cargo_body_type"/>
+                                    <field name="payload_lbs"/>
+                                    <field name="pallet_capacity"/>
+                                    <field name="box_length_ft"/>
+                                    <field name="cargo_width_in"/>
+                                    <field name="cargo_height_in"/>
+                                    <field name="door_clearance_in"/>
+                                </group>
+                                <group>
+                                    <field name="liftgate"/>
+                                    <field name="liftgate_capacity_lb"/>
+                                    <field name="dock_height_capable"/>
+                                    <field name="air_ride"/>
+                                    <field name="reefer_temperature_range"/>
+                                </group>
+                            </group>
+                            <group string="Trailer (tractor / power unit)">
+                                <group>
+                                    <field name="trailer_ownership"/>
+                                    <field name="trailer_type"/>
+                                    <field name="trailer_length_ft"/>
+                                    <field name="trailer_unit"/>
+                                </group>
                             </group>
                         </page>
-                        <page string="Documents">
+
+                        <page string="Service &amp; Availability" name="service_availability">
+                            <group>
+                                <group>
+                                    <field name="preferred_service_area"/>
+                                    <field name="service_province_ids" widget="many2many_tags"/>
+                                    <field name="available_start_date"/>
+                                    <field name="work_preference"/>
+                                    <field name="whatsapp_consent"/>
+                                    <field name="application_declaration"/>
+                                </group>
+                                <group>
+                                    <field name="additional_notes" readonly="1"/>
+                                </group>
+                            </group>
+                        </page>
+
+                        <page string="Documents &amp; Compliance" name="documents_compliance">
+                            <group>
+                                <group string="CVOR (manual review)">
+                                    <field name="cvor_number"/>
+                                    <field name="cvor_verification_status"/>
+                                    <button name="action_verify_cvor" type="object"
+                                            string="Mark CVOR verified"
+                                            class="btn-link"
+                                            invisible="cvor_verification_status == 'verified' or not cvor_number"/>
+                                    <button name="action_reject_cvor" type="object"
+                                            string="Reject CVOR"
+                                            class="btn-link"
+                                            invisible="cvor_verification_status == 'rejected' or not cvor_number"/>
+                                </group>
+                                <group string="Insurance agent">
+                                    <field name="insurance_agent_name"/>
+                                    <field name="insurance_agent_email" widget="email"/>
+                                    <field name="authority_state"/>
+                                </group>
+                            </group>
                             <field name="document_ids">
-                                <list>
+                                <list editable="bottom">
                                     <field name="document_type"/>
                                     <field name="required_stage"/>
                                     <field name="source"/>
                                     <field name="status" widget="badge"/>
-                                    <field name="file_name"/>
-                                    <field name="verified_on"/>
+                                    <field name="attachment_id"/>
+                                    <field name="file_name" readonly="1"/>
+                                    <field name="expiry_date"/>
+                                    <field name="verified_by" readonly="1"/>
+                                    <field name="verified_on" readonly="1"/>
+                                    <field name="notes"/>
                                 </list>
                             </field>
-                        </page>
-                        <page string="Qualification">
-                            <group>
-                                <group string="Driver licence (private)">
-                                    <field name="licence_class"/>
-                                    <field name="licence_jurisdiction"/>
-                                    <field name="licence_expiry"/>
+                            <group string="Agreement / signature">
+                                <group>
+                                    <field name="sign_request_id" readonly="1"/>
+                                    <field name="sign_template_id" readonly="1"/>
+                                    <field name="contract_sent_on" readonly="1"/>
+                                    <field name="contract_signed_on" readonly="1"/>
                                 </group>
-                                <group string="Authority">
-                                    <field name="crosses_border"/>
-                                    <field name="mc_number"/>
-                                    <field name="usdot_number"/>
-                                    <field name="authority_state"/>
+                                <group string="Fleet hand-off">
+                                    <field name="operator_id" readonly="1"/>
+                                    <field name="fleet_vehicle_id" readonly="1"/>
+                                    <field name="approved_on" readonly="1"/>
+                                    <field name="approved_by" readonly="1"/>
                                 </group>
                             </group>
-                        </page>
-                        <page string="Preferences">
-                            <field name="preferred_lanes"/>
-                            <field name="availability"/>
                         </page>
                     </notebook>
                 </sheet>
@@ -113,11 +201,13 @@
             <list string="Applications">
                 <field name="name"/>
                 <field name="contact_name"/>
+                <field name="business_name"/>
                 <field name="home_city"/>
                 <field name="home_province"/>
-                <field name="equipment_type"/>
+                <field name="vehicle_type"/>
+                <field name="preferred_service_area"/>
                 <field name="state" widget="badge"/>
-                <field name="missing_initial" optional="hide"/>
+                <field name="missing_verification" optional="hide"/>
                 <field name="create_date"/>
             </list>
         </field>

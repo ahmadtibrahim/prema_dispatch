@@ -95,9 +95,8 @@ class OwnerOperator(models.Model):
     # ── compliance roll-up (read by the Fleet availability predicate) ─
     compliance_ok = fields.Boolean(
         string="Compliance current", compute="_compute_compliance", store=True,
-        help="Authority verified (or genuinely not required) and insurance "
-             "coverage in date. Owner-operator equipment is only offered "
-             "when this is true.")
+        help="Authority verified AND insurance coverage in date. "
+             "Owner-operator equipment is only offered when this is true.")
     blocked_issue = fields.Boolean(
         string="Has blocking issue", compute="_compute_compliance", store=True)
 
@@ -112,7 +111,7 @@ class OwnerOperator(models.Model):
     def _compute_compliance(self):
         today = fields.Date.context_today(self)
         for op in self:
-            authority_ok = op.authority_state in ("verified", "not_provided")
+            authority_ok = op.authority_state == "verified"
             insurance_ok = bool(op.coi_verified_direct) and bool(
                 op.insurance_expiry) and op.insurance_expiry >= today
             op.compliance_ok = authority_ok and insurance_ok

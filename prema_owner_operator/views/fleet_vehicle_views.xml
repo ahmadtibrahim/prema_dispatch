@@ -9,6 +9,10 @@
         <field name="arch" type="xml">
             <xpath expr="//notebook" position="inside">
                 <page string="Availability" name="owner_operator">
+                    <button name="action_open_source_application" type="object"
+                            string="Open source application"
+                            class="btn-secondary mb-2"
+                            invisible="not application_id"/>
                     <group>
                         <field name="operator_id"/>
                         <field name="application_id"/>

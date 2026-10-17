@@ -1,6 +1,6 @@
 {
     "name": "Prema Owner-Operator Onboarding",
-    "version": "18.0.1.0.0",
+    "version": "18.0.1.1.0",
     "summary": "Owner-operator application, qualification, contract signing and Fleet hand-off for logistics.premafirm.com",
     "category": "Logistics",
     "description": """
@@ -48,6 +48,7 @@ job positions keep their own recruitment stages untouched.
         "data/mail_templates.xml",
         "views/owner_operator_views.xml",
         "views/owner_operator_application_views.xml",
+        "views/hr_applicant_owner_operator_views.xml",
         "views/fleet_vehicle_views.xml",
         "views/website_apply_templates.xml",
     ],

@@ -39,6 +39,14 @@ def post_init_hook(env):
 
     _check_alias(job)
 
+    # Replay any saved "Other Information" chatter notes into the new
+    # structured fields. Repeat-safe and no email is sent.
+    updated = env["prema.owner.operator.application"]._backfill_from_other_information()
+    if updated:
+        _logger.info(
+            "owner-operator: backfilled structured answers for %s application(s)",
+            updated)
+
     # Only the owner-operator pipeline is asserted here; everything else is
     # reported, never changed.
     expected = ["Equipment Verification", "Initial Qualification",

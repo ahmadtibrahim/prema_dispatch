@@ -137,6 +137,19 @@ class FleetVehicle(models.Model):
                 subtype_xmlid="mail.mt_note")
         return True
 
+    def action_open_source_application(self):
+        self.ensure_one()
+        if not self.application_id:
+            return False
+        return {
+            "type": "ir.actions.act_window",
+            "name": _("Source application"),
+            "res_model": "prema.owner.operator.application",
+            "res_id": self.application_id.id,
+            "view_mode": "form",
+            "target": "current",
+        }
+
     # ------------------------------------------------------------------
     # the ONE availability authority
     # ------------------------------------------------------------------

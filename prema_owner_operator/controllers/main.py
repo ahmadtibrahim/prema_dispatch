@@ -23,6 +23,8 @@ from odoo.addons.website_hr_recruitment.controllers.main import (
 from odoo.exceptions import AccessError, ValidationError
 from werkzeug.urls import url_quote
 
+from ..application_mapping import UPLOAD_MAP, normalise_public
+
 _logger = logging.getLogger(__name__)
 
 ALLOWED_MIMETYPES = {
@@ -87,21 +89,49 @@ class OwnerOperatorController(http.Controller):
             return http.request.render(
                 "prema_owner_operator.apply_form", values)
 
-        errors = self._validate(post)
+        vals, errors = normalise_public(post, strict=True)
+
+        email = vals.get("email")
+        if email:
+            since = datetime.now() - timedelta(hours=1)
+            recent = http.request.env["prema.owner.operator.application"].sudo(
+            ).search_count([
+                ("email", "=ilike", email),
+                ("create_date", ">=", since),
+            ])
+            if recent >= 3:
+                errors.append(_(
+                    "Several applications were already received from this "
+                    "address. Please wait before submitting again."))
+        if self._throttled(self._client_ip()):
+            errors.append(_("Too many attempts — please try again shortly."))
+
+        # Validate every upload BEFORE creating anything. A rejected
+        # submission must leave no candidate, applicant or application.
+        uploads = {}
+        for raw_name, doc_type in UPLOAD_MAP.items():
+            upload = post.get(raw_name)
+            if upload and getattr(upload, "filename", None):
+                problem = self._check_upload(upload)
+                if problem:
+                    errors.append("%s: %s" % (raw_name, problem))
+                else:
+                    uploads[doc_type] = upload
+
         if errors:
             values["errors"] = errors
             return http.request.render(
                 "prema_owner_operator.apply_form", values)
 
         Application = http.request.env["prema.owner.operator.application"].sudo()
-        app = Application._create_from_public(post)
-        # initial uploads: one row per uploaded file, matched to its slot
-        for slot in ("cvor", "coi_applicant", "business_registration",
-                     "photo_front", "photo_rear", "photo_left", "photo_right",
-                     "photo_cargo_interior"):
-            upload = post.get("file_%s" % slot)
-            if upload and getattr(upload, "filename", None):
-                self._store_upload(app, slot, upload)
+        try:
+            app = Application._create_from_public(vals)
+        except ValidationError as exc:
+            values["errors"] = [str(exc)]
+            return http.request.render(
+                "prema_owner_operator.apply_form", values)
+        for doc_type, upload in uploads.items():
+            self._store_upload(app, doc_type, upload)
         try:
             http.request.env.ref(
                 "prema_owner_operator.mail_template_ack"
@@ -121,47 +151,6 @@ class OwnerOperatorController(http.Controller):
                 website=True, csrf=True, sitemap=False)
     def thanks(self, **kw):
         return http.request.render("prema_owner_operator.apply_thanks")
-
-    def _validate(self, post):
-        errors = []
-        required = {
-            "contact_name": "full name",
-            "email": "email address",
-            "phone": "phone number",
-            "home_city": "home city",
-            "home_province": "home province",
-            "equipment_type": "equipment type",
-            "vin": "VIN",
-        }
-        for key, label in required.items():
-            if not (post.get(key) or "").strip():
-                errors.append(_("Please provide your %s.") % label)
-        email = (post.get("email") or "").strip()
-        if email and "@" not in email:
-            errors.append(_("That email address does not look valid."))
-        # per-email cap — survives workers and restarts, unlike a memory hit
-        if email:
-            since = datetime.now() - timedelta(hours=1)
-            recent = http.request.env["prema.owner.operator.application"].sudo(
-            ).search_count([
-                ("email", "=ilike", email),
-                ("create_date", ">=", since),
-            ])
-            if recent >= 3:
-                errors.append(_(
-                    "Several applications were already received from this "
-                    "address. Please wait before submitting again."))
-        if self._throttled(self._client_ip()):
-            errors.append(_("Too many attempts — please try again shortly."))
-        for slot in ("cvor", "coi_applicant", "business_registration",
-                     "photo_front", "photo_rear", "photo_left", "photo_right",
-                     "photo_cargo_interior"):
-            upload = post.get("file_%s" % slot)
-            if upload and getattr(upload, "filename", None):
-                problem = self._check_upload(upload)
-                if problem:
-                    errors.append("%s: %s" % (slot, problem))
-        return errors
 
     def _check_upload(self, upload):
         data = upload.read()
