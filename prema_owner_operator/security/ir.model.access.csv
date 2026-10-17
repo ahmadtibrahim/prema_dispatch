@@ -1,0 +1,7 @@
+id,name,model_id:id,group_id:id,perm_read,perm_write,perm_create,perm_unlink
+access_owner_operator,owner operator,model_prema_owner_operator,prema_owner_operator.group_owner_operator,1,1,1,1
+access_owner_operator_mgr,owner operator manager,model_prema_owner_operator,hr_recruitment.group_hr_recruitment_manager,1,1,1,1
+access_application,owner operator application,model_prema_owner_operator_application,prema_owner_operator.group_owner_operator,1,1,1,1
+access_application_officer,owner operator application officer,model_prema_owner_operator_application,hr_recruitment.group_hr_recruitment_user,1,0,0,0
+access_document,owner operator document,model_prema_owner_operator_document,prema_owner_operator.group_owner_operator,1,1,1,1
+access_document_officer,owner operator document officer,model_prema_owner_operator_document,hr_recruitment.group_hr_recruitment_user,1,0,0,0

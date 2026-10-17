@@ -1,0 +1,135 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_application_form" model="ir.ui.view">
+        <field name="name">prema.owner.operator.application.form</field>
+        <field name="model">prema.owner.operator.application</field>
+        <field name="arch" type="xml">
+            <form string="Owner-Operator Application">
+                <header>
+                    <button name="action_advance" type="object"
+                            string="Advance stage" class="btn-primary"
+                            invisible="state in ('approved','rejected')"/>
+                    <button name="action_send_contract" type="object"
+                            string="Send agreement" invisible="sign_request_id"/>
+                    <button name="action_approve" type="object"
+                            string="Approve → Fleet" class="btn-success"
+                            invisible="not can_approve"/>
+                    <field name="state" widget="statusbar"
+                           statusbar_visible="submitted,qualifying,authority_review,contract,signed,approved"/>
+                </header>
+                <sheet>
+                    <div class="oe_title"><h1><field name="name" readonly="1"/></h1></div>
+                    <group>
+                        <group string="Applicant">
+                            <field name="contact_name"/>
+                            <field name="email" widget="email"/>
+                            <field name="phone" widget="phone"/>
+                            <field name="partner_id" readonly="1"/>
+                            <field name="hr_applicant_id" readonly="1"/>
+                            <field name="stage_id" readonly="1"/>
+                        </group>
+                        <group string="Business">
+                            <field name="business_name"/>
+                            <field name="business_number"/>
+                            <field name="is_sole_proprietor"/>
+                            <field name="home_city"/>
+                            <field name="home_province"/>
+                        </group>
+                    </group>
+                    <notebook>
+                        <page string="Equipment">
+                            <group>
+                                <group>
+                                    <field name="equipment_type"/>
+                                    <field name="equipment_model"/>
+                                    <field name="vin"/>
+                                    <field name="license_plate"/>
+                                    <field name="plate_jurisdiction"/>
+                                </group>
+                                <group>
+                                    <field name="payload_lbs"/>
+                                    <field name="pallet_capacity"/>
+                                    <field name="gvwr_lbs"/>
+                                    <field name="box_length_ft"/>
+                                    <field name="box_height_ft"/>
+                                    <field name="overall_length_ft"/>
+                                    <field name="vehicle_height_ft"/>
+                                    <field name="door_clearance_in"/>
+                                    <field name="dock_height_in"/>
+                                </group>
+                            </group>
+                            <group string="Capabilities">
+                                <field name="has_reefer"/>
+                                <field name="has_liftgate"/>
+                                <field name="has_air_ride"/>
+                            </group>
+                        </page>
+                        <page string="Documents">
+                            <field name="document_ids">
+                                <list>
+                                    <field name="document_type"/>
+                                    <field name="required_stage"/>
+                                    <field name="source"/>
+                                    <field name="status" widget="badge"/>
+                                    <field name="file_name"/>
+                                    <field name="verified_on"/>
+                                </list>
+                            </field>
+                        </page>
+                        <page string="Qualification">
+                            <group>
+                                <group string="Driver licence (private)">
+                                    <field name="licence_class"/>
+                                    <field name="licence_jurisdiction"/>
+                                    <field name="licence_expiry"/>
+                                </group>
+                                <group string="Authority">
+                                    <field name="crosses_border"/>
+                                    <field name="mc_number"/>
+                                    <field name="usdot_number"/>
+                                    <field name="authority_state"/>
+                                </group>
+                            </group>
+                        </page>
+                        <page string="Preferences">
+                            <field name="preferred_lanes"/>
+                            <field name="availability"/>
+                        </page>
+                    </notebook>
+                </sheet>
+                <div class="oe_chatter">
+                    <field name="message_follower_ids"/>
+                    <field name="activity_ids"/>
+                    <field name="message_ids"/>
+                </div>
+            </form>
+        </field>
+    </record>
+
+    <record id="view_application_list" model="ir.ui.view">
+        <field name="name">prema.owner.operator.application.list</field>
+        <field name="model">prema.owner.operator.application</field>
+        <field name="arch" type="xml">
+            <list string="Applications">
+                <field name="name"/>
+                <field name="contact_name"/>
+                <field name="home_city"/>
+                <field name="home_province"/>
+                <field name="equipment_type"/>
+                <field name="state" widget="badge"/>
+                <field name="missing_initial" optional="hide"/>
+                <field name="create_date"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="action_application" model="ir.actions.act_window">
+        <field name="name">Owner-Operator Applications</field>
+        <field name="res_model">prema.owner.operator.application</field>
+        <field name="view_mode">list,form</field>
+    </record>
+
+    <menuitem id="menu_application" name="Applications"
+              parent="menu_owner_operator_root" action="action_application"
+              sequence="5"/>
+</odoo>

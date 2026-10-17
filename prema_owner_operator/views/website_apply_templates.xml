@@ -1,0 +1,246 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- Standalone page: no website navigation and no footer. This is an
+         application reached directly from Indeed, not a browsing
+         destination. noindex, and the route is out of the sitemap. -->
+    <template id="apply_form" name="Owner-Operator Application">
+        <html>
+            <head>
+                <meta charset="utf-8"/>
+                <meta name="viewport" content="width=device-width, initial-scale=1"/>
+                <meta name="robots" content="noindex, nofollow"/>
+                <title>Owner-Operator Application — PremaFirm Logistics</title>
+                <t t-call-assets="web.assets_frontend"/>
+            </head>
+            <body class="o_oo_apply">
+                <main class="o_oo_apply_shell">
+                    <header class="o_oo_apply_head">
+                        <h1>Owner-Operator application</h1>
+                        <p class="o_oo_apply_sub">
+                            PremaFirm Logistics · Ontario &amp; cross-border lanes
+                        </p>
+                    </header>
+
+                    <div t-if="errors" class="o_oo_apply_errors" role="alert">
+                        <p><strong>Please correct the following:</strong></p>
+                        <ul><li t-foreach="errors" t-as="e" t-esc="e"/></ul>
+                    </div>
+                    <div t-if="not job" class="o_oo_apply_errors">
+                        This position is not currently open.
+                    </div>
+
+                    <form t-if="job" method="post" enctype="multipart/form-data"
+                          class="o_oo_apply_form" id="oo_apply_form">
+                        <input type="hidden" name="csrf_token" t-att-value="request.csrf_token()"/>
+
+                        <fieldset>
+                            <legend>Your details</legend>
+                            <div class="o_oo_row">
+                                <label>Full name <span class="o_oo_req">*</span>
+                                    <input type="text" name="contact_name" required="required"
+                                           t-att-value="post.get('contact_name', '')"/></label>
+                                <label>Email <span class="o_oo_req">*</span>
+                                    <input type="email" name="email" required="required"
+                                           t-att-value="post.get('email', '')"/></label>
+                            </div>
+                            <div class="o_oo_row">
+                                <label>Phone <span class="o_oo_req">*</span>
+                                    <input type="tel" name="phone" required="required"
+                                           t-att-value="post.get('phone', '')"/></label>
+                                <label>Business name
+                                    <input type="text" name="business_name"
+                                           t-att-value="post.get('business_name', '')"/></label>
+                            </div>
+                            <div class="o_oo_row">
+                                <label>Business / registration no.
+                                    <input type="text" name="business_number"
+                                           t-att-value="post.get('business_number', '')"/></label>
+                                <label class="o_oo_check">
+                                    <input type="checkbox" name="is_sole_proprietor"
+                                           t-att-checked="bool(post.get('is_sole_proprietor'))"/>
+                                    I operate as a sole proprietor
+                                </label>
+                            </div>
+                            <div class="o_oo_row">
+                                <label>Home city <span class="o_oo_req">*</span>
+                                    <input type="text" name="home_city" required="required"
+                                           t-att-value="post.get('home_city', '')"/></label>
+                                <label>Home province <span class="o_oo_req">*</span>
+                                    <input type="text" name="home_province" required="required"
+                                           placeholder="e.g. Ontario"
+                                           t-att-value="post.get('home_province', '')"/></label>
+                            </div>
+                            <p class="o_oo_hint">City and province only — we do not
+                               collect a street address here.</p>
+                        </fieldset>
+
+                        <fieldset>
+                            <legend>Equipment</legend>
+                            <div class="o_oo_row">
+                                <label>Equipment type <span class="o_oo_req">*</span>
+                                    <select name="equipment_type" required="required">
+                                        <option value="">Choose…</option>
+                                        <option t-foreach="[('dry_van','Dry van'),('reefer','Reefer'),('flatbed','Flatbed'),('step_deck','Step deck'),('straight_truck','Straight truck'),('other','Other')]"
+                                                t-as="opt" t-key="opt[0]"
+                                                t-att-value="opt[0]"
+                                                t-att-selected="post.get('equipment_type') == opt[0]"
+                                                t-esc="opt[1]"/>
+                                    </select></label>
+                                <label>Make / model
+                                    <input type="text" name="equipment_model"
+                                           t-att-value="post.get('equipment_model', '')"/></label>
+                            </div>
+                            <div class="o_oo_row">
+                                <label>VIN <span class="o_oo_req">*</span>
+                                    <input type="text" name="vin" required="required" maxlength="17"
+                                           t-att-value="post.get('vin', '')"/></label>
+                                <label>Plate
+                                    <input type="text" name="license_plate"
+                                           t-att-value="post.get('license_plate', '')"/></label>
+                                <label>Plate jurisdiction
+                                    <input type="text" name="plate_jurisdiction"
+                                           t-att-value="post.get('plate_jurisdiction', '')"/></label>
+                            </div>
+                            <div class="o_oo_row">
+                                <label>Legal payload (lbs)
+                                    <input type="number" step="any" name="payload_lbs"
+                                           t-att-value="post.get('payload_lbs', '')"/></label>
+                                <label>Pallet capacity
+                                    <input type="number" name="pallet_capacity"
+                                           t-att-value="post.get('pallet_capacity', '')"/></label>
+                                <label>GVWR (lbs)
+                                    <input type="number" step="any" name="gvwr_lbs"
+                                           t-att-value="post.get('gvwr_lbs', '')"/></label>
+                            </div>
+                            <div class="o_oo_row">
+                                <label>Cargo box length (ft)
+                                    <input type="number" step="any" name="box_length_ft"
+                                           t-att-value="post.get('box_length_ft', '')"/></label>
+                                <label>Cargo box interior height (ft)
+                                    <input type="number" step="any" name="box_height_ft"
+                                           t-att-value="post.get('box_height_ft', '')"/></label>
+                                <label>Overall length (ft)
+                                    <input type="number" step="any" name="overall_length_ft"
+                                           t-att-value="post.get('overall_length_ft', '')"/></label>
+                                <label>Vehicle height (ft)
+                                    <input type="number" step="any" name="vehicle_height_ft"
+                                           t-att-value="post.get('vehicle_height_ft', '')"/></label>
+                            </div>
+                            <div class="o_oo_row">
+                                <label>Door clearance (in)
+                                    <input type="number" step="any" name="door_clearance_in"
+                                           t-att-value="post.get('door_clearance_in', '')"/></label>
+                                <label>Dock height (in)
+                                    <input type="number" step="any" name="dock_height_in"
+                                           t-att-value="post.get('dock_height_in', '')"/></label>
+                            </div>
+                            <div class="o_oo_row o_oo_checks">
+                                <label class="o_oo_check"><input type="checkbox" name="has_reefer"
+                                    t-att-checked="bool(post.get('has_reefer'))"/> Reefer unit</label>
+                                <label class="o_oo_check"><input type="checkbox" name="has_liftgate"
+                                    t-att-checked="bool(post.get('has_liftgate'))"/> Liftgate</label>
+                                <label class="o_oo_check"><input type="checkbox" name="has_air_ride"
+                                    t-att-checked="bool(post.get('has_air_ride'))"/> Air-ride suspension</label>
+                            </div>
+                        </fieldset>
+
+                        <fieldset>
+                            <legend>Authority</legend>
+                            <label class="o_oo_check">
+                                <input type="checkbox" name="crosses_border" id="oo_crosses_border"
+                                       t-att-checked="bool(post.get('crosses_border'))"/>
+                                I run cross-border lanes (MC / USDOT required)
+                            </label>
+                            <div class="o_oo_row" id="oo_authority_block">
+                                <label>MC number
+                                    <input type="text" name="mc_number"
+                                           t-att-value="post.get('mc_number', '')"/></label>
+                                <label>USDOT number
+                                    <input type="text" name="usdot_number"
+                                           t-att-value="post.get('usdot_number', '')"/></label>
+                            </div>
+                            <p class="o_oo_hint">MC / USDOT / CVOR numbers are
+                               verified manually for now — your application will
+                               show “pending manual verification”.</p>
+                        </fieldset>
+
+                        <fieldset>
+                            <legend>Documents</legend>
+                            <div class="o_oo_row">
+                                <label>CVOR / provincial certificate
+                                    <input type="file" name="file_cvor" accept=".pdf,.jpg,.jpeg,.png"/></label>
+                                <label>Certificate of insurance (your copy)
+                                    <input type="file" name="file_coi_applicant" accept=".pdf,.jpg,.jpeg,.png"/></label>
+                            </div>
+                            <div class="o_oo_row">
+                                <label>Corporate / business registration
+                                    <input type="file" name="file_business_registration" accept=".pdf,.jpg,.jpeg,.png"/>
+                                    <span class="o_oo_hint">Not required for a sole proprietor.</span></label>
+                            </div>
+                            <p class="o_oo_hint">Truck photos — front, rear, both
+                               sides and the cargo interior:</p>
+                            <div class="o_oo_row">
+                                <label>Front <input type="file" name="file_photo_front" accept=".jpg,.jpeg,.png,.webp"/></label>
+                                <label>Rear <input type="file" name="file_photo_rear" accept=".jpg,.jpeg,.png,.webp"/></label>
+                            </div>
+                            <div class="o_oo_row">
+                                <label>Left side <input type="file" name="file_photo_left" accept=".jpg,.jpeg,.png,.webp"/></label>
+                                <label>Right side <input type="file" name="file_photo_right" accept=".jpg,.jpeg,.png,.webp"/></label>
+                            </div>
+                            <div class="o_oo_row">
+                                <label>Cargo interior <input type="file" name="file_photo_cargo_interior" accept=".jpg,.jpeg,.png,.webp"/></label>
+                            </div>
+                            <p class="o_oo_hint">PDF, JPG, PNG or WEBP · 10 MB max each.</p>
+                        </fieldset>
+
+                        <fieldset>
+                            <legend>Preferences</legend>
+                            <label>Preferred lanes
+                                <textarea name="preferred_lanes" rows="3"
+                                          t-esc="post.get('preferred_lanes', '')"/></label>
+                            <label>Availability
+                                <textarea name="availability" rows="3"
+                                          t-esc="post.get('availability', '')"/></label>
+                        </fieldset>
+
+                        <button type="submit" class="o_oo_submit">Submit application</button>
+                        <p class="o_oo_hint">
+                            Your documents are stored privately and are visible
+                            only to the PremaFirm onboarding team.
+                        </p>
+                    </form>
+                </main>
+                <script>
+                    (function () {
+                        var cb = document.getElementById("oo_crosses_border");
+                        var block = document.getElementById("oo_authority_block");
+                        if (!cb || !block) { return; }
+                        function sync() { block.style.display = cb.checked ? "" : "none"; }
+                        cb.addEventListener("change", sync); sync();
+                    })();
+                </script>
+            </body>
+        </html>
+    </template>
+
+    <template id="apply_thanks" name="Owner-Operator Application Received">
+        <html>
+            <head>
+                <meta charset="utf-8"/>
+                <meta name="viewport" content="width=device-width, initial-scale=1"/>
+                <meta name="robots" content="noindex, nofollow"/>
+                <title>Application received — PremaFirm Logistics</title>
+                <t t-call-assets="web.assets_frontend"/>
+            </head>
+            <body class="o_oo_apply">
+                <main class="o_oo_apply_shell o_oo_apply_thanks">
+                    <h1>Thank you</h1>
+                    <p>Your owner-operator application has been received. A
+                       confirmation is on its way to your email address.</p>
+                    <p>Our onboarding team will contact you with the next step.</p>
+                    <p class="o_oo_apply_sub">PremaFirm Logistics</p>
+                </main>
+            </body>
+        </html>
+    </template>
+</odoo>

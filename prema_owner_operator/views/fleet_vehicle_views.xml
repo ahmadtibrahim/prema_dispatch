@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- Issue / availability block on the standard Fleet form. Additive only:
+         no existing field is moved or removed. -->
+    <record id="view_fleet_vehicle_form_issue" model="ir.ui.view">
+        <field name="name">fleet.vehicle.form.owner_operator</field>
+        <field name="model">fleet.vehicle</field>
+        <field name="inherit_id" ref="fleet.fleet_vehicle_view_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//notebook" position="inside">
+                <page string="Availability" name="owner_operator">
+                    <group>
+                        <field name="operator_id"/>
+                        <field name="application_id"/>
+                        <field name="is_dispatch_available"/>
+                        <field name="operator_compliance_ok"/>
+                        <field name="issue_blocking"/>
+                        <field name="issue_expected_return"/>
+                        <field name="issue_cleared_on"/>
+                        <field name="issue_cleared_by"/>
+                        <field name="issue_reason"/>
+                    </group>
+                    <button name="action_clear_issue" type="object"
+                            string="Clear issue and return to Ready"
+                            class="btn-secondary" invisible="not issue_blocking"/>
+                </page>
+            </xpath>
+        </field>
+    </record>
+</odoo>

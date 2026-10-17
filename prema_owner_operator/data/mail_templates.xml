@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data noupdate="1">
+        <record id="mail_template_ack" model="mail.template">
+            <field name="name">Owner-Operator: Application acknowledged</field>
+            <field name="model_id" ref="model_prema_owner_operator_application"/>
+            <field name="subject">We received your owner-operator application ({{ object.name }})</field>
+            <field name="email_from">{{ (object.company_id.email or 'owneroperators@premafirm.com') }}</field>
+            <field name="partner_to">{{ object.partner_id.id }}</field>
+            <field name="body_html" type="html">
+                <div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#1b2330">
+                    <p>Hello {{ object.contact_name or '' }},</p>
+                    <p>Thank you — we have received your owner-operator application
+                       <strong>{{ object.name }}</strong> for the
+                       {{ object.job_id.name or 'Owner Operator' }} position.</p>
+                    <p>What happens next:</p>
+                    <ol>
+                        <li>We review your equipment and initial documents.</li>
+                        <li>At the qualification step we request your driver licence
+                            and a certificate of insurance directly from your insurer.</li>
+                        <li>If we proceed, you receive the agreement for signature.</li>
+                    </ol>
+                    <p>Please reply to this email if anything changes.</p>
+                    <p>PremaFirm Logistics</p>
+                </div>
+            </field>
+            <field name="auto_delete" eval="False"/>
+        </record>
+
+        <record id="mail_template_initial_docs" model="mail.template">
+            <field name="name">Owner-Operator: Initial documents requested</field>
+            <field name="model_id" ref="model_prema_owner_operator_application"/>
+            <field name="subject">Documents needed for your application {{ object.name }}</field>
+            <field name="email_from">{{ (object.company_id.email or 'owneroperators@premafirm.com') }}</field>
+            <field name="partner_to">{{ object.partner_id.id }}</field>
+            <field name="body_html" type="html">
+                <div style="font-family:Arial,Helvetica,sans-serif;font-size:14px">
+                    <p>Hello {{ object.contact_name or '' }},</p>
+                    <p>To continue, please send:</p>
+                    <p>{{ object.missing_initial or 'No documents are outstanding.' }}</p>
+                    <p>Reply to this email with the files attached.</p>
+                    <p>PremaFirm Logistics</p>
+                </div>
+            </field>
+            <field name="auto_delete" eval="False"/>
+        </record>
+
+        <record id="mail_template_qualification_docs" model="mail.template">
+            <field name="name">Owner-Operator: Qualification documents requested</field>
+            <field name="model_id" ref="model_prema_owner_operator_application"/>
+            <field name="subject">Qualification documents for {{ object.name }}</field>
+            <field name="email_from">{{ (object.company_id.email or 'owneroperators@premafirm.com') }}</field>
+            <field name="partner_to">{{ object.partner_id.id }}</field>
+            <field name="body_html" type="html">
+                <div style="font-family:Arial,Helvetica,sans-serif;font-size:14px">
+                    <p>Hello {{ object.contact_name or '' }},</p>
+                    <p>We are at the qualification step. Please provide:</p>
+                    <p>{{ object.missing_qualification or 'No documents are outstanding.' }}</p>
+                    <p>Your certificate of insurance is requested directly from
+                       your insurance agent — an applicant copy alone is not
+                       sufficient for this step.</p>
+                    <p>PremaFirm Logistics</p>
+                </div>
+            </field>
+            <field name="auto_delete" eval="False"/>
+        </record>
+
+        <record id="mail_template_contract" model="mail.template">
+            <field name="name">Owner-Operator: Agreement for signature</field>
+            <field name="model_id" ref="model_prema_owner_operator_application"/>
+            <field name="subject">Agreement for signature — {{ object.name }}</field>
+            <field name="email_from">{{ (object.company_id.email or 'owneroperators@premafirm.com') }}</field>
+            <field name="partner_to">{{ object.partner_id.id }}</field>
+            <field name="body_html" type="html">
+                <div style="font-family:Arial,Helvetica,sans-serif;font-size:14px">
+                    <p>Hello {{ object.contact_name or '' }},</p>
+                    <p>Your application has reached the contract step. The
+                       agreement is sent separately through our signing system.</p>
+                    <p>PremaFirm Logistics</p>
+                </div>
+            </field>
+            <field name="auto_delete" eval="False"/>
+        </record>
+    </data>
+</odoo>
