@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_owner_operator_document_form" model="ir.ui.view">
+        <field name="name">prema.owner.operator.document.form</field>
+        <field name="model">prema.owner.operator.document</field>
+        <field name="arch" type="xml">
+            <form string="Application Document">
+                <sheet>
+                    <div class="oe_title">
+                        <h1><field name="name" readonly="1"/></h1>
+                    </div>
+                    <group>
+                        <group string="File">
+                            <field name="attachment_id" readonly="1"/>
+                            <field name="file_name" readonly="1"/>
+                            <field name="mimetype" readonly="1"/>
+                            <field name="can_preview"
+                                   widget="owner_operator_document_view"
+                                   string="Preview"/>
+                        </group>
+                        <group string="Review">
+                            <field name="application_id" readonly="1"/>
+                            <field name="required_stage" readonly="1"/>
+                            <field name="source" readonly="1"/>
+                            <field name="status" readonly="1"/>
+                            <field name="requested_on" readonly="1"/>
+                            <field name="received_on" readonly="1"/>
+                            <field name="verified_by" readonly="1"/>
+                            <field name="verified_on" readonly="1"/>
+                        </group>
+                    </group>
+                    <group string="Certificate details">
+                        <field name="insurer_name" readonly="1"/>
+                        <field name="policy_number" readonly="1"/>
+                        <field name="expiry_date" readonly="1"/>
+                    </group>
+                    <field name="notes" readonly="1"/>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <record id="action_owner_operator_document" model="ir.actions.act_window">
+        <field name="name">Application Documents</field>
+        <field name="res_model">prema.owner.operator.document</field>
+        <field name="view_mode">list,form</field>
+    </record>
+</odoo>

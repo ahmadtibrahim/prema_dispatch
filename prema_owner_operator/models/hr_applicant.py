@@ -55,7 +55,10 @@ class HrApplicant(models.Model):
     oo_box_length_ft = fields.Float(related="owner_operator_application_id.box_length_ft", readonly=True)
     oo_cargo_width_in = fields.Float(related="owner_operator_application_id.cargo_width_in", readonly=True)
     oo_cargo_height_in = fields.Float(related="owner_operator_application_id.cargo_height_in", readonly=True)
+    oo_door_width_in = fields.Float(related="owner_operator_application_id.door_width_in", readonly=True)
     oo_door_clearance_in = fields.Float(related="owner_operator_application_id.door_clearance_in", readonly=True)
+    oo_liftgate_platform_length_in = fields.Float(related="owner_operator_application_id.liftgate_platform_length_in", readonly=True)
+    oo_liftgate_platform_width_in = fields.Float(related="owner_operator_application_id.liftgate_platform_width_in", readonly=True)
     oo_liftgate = fields.Selection(related="owner_operator_application_id.liftgate", readonly=True)
     oo_liftgate_capacity_lb = fields.Float(related="owner_operator_application_id.liftgate_capacity_lb", readonly=True)
     oo_dock_height_capable = fields.Selection(related="owner_operator_application_id.dock_height_capable", readonly=True)
@@ -66,9 +69,53 @@ class HrApplicant(models.Model):
     oo_trailer_length_ft = fields.Float(related="owner_operator_application_id.trailer_length_ft", readonly=True)
     oo_trailer_unit = fields.Char(related="owner_operator_application_id.trailer_unit", readonly=True)
     oo_preferred_service_area = fields.Selection(related="owner_operator_application_id.preferred_service_area", readonly=True)
+    oo_preferred_service_areas = fields.Many2many(
+        related="owner_operator_application_id.preferred_service_area_ids",
+        readonly=True)
     oo_available_start_date = fields.Date(related="owner_operator_application_id.available_start_date", readonly=True)
     oo_work_preference = fields.Selection(related="owner_operator_application_id.work_preference", readonly=True)
+    oo_work_preferences = fields.Many2many(
+        related="owner_operator_application_id.work_preference_ids",
+        readonly=True)
     oo_whatsapp_consent = fields.Selection(related="owner_operator_application_id.whatsapp_consent", readonly=True)
+    oo_load_notification_channel = fields.Selection(
+        related="owner_operator_application_id.load_notification_channel",
+        readonly=True)
+    oo_load_notification_email = fields.Char(
+        related="owner_operator_application_id.load_notification_email",
+        readonly=True)
+    oo_whatsapp_number = fields.Char(
+        related="owner_operator_application_id.whatsapp_number", readonly=True)
+    oo_whatsapp_consent_granted = fields.Boolean(
+        related="owner_operator_application_id.whatsapp_consent_granted",
+        readonly=True)
+    oo_whatsapp_consent_at = fields.Datetime(
+        related="owner_operator_application_id.whatsapp_consent_at",
+        readonly=True)
+    oo_whatsapp_consent_version = fields.Char(
+        related="owner_operator_application_id.whatsapp_consent_version",
+        readonly=True)
+    oo_load_notification_opt_out = fields.Boolean(
+        related="owner_operator_application_id.load_notification_opt_out",
+        readonly=True)
+    oo_equipment_complete = fields.Boolean(
+        related="owner_operator_application_id.equipment_complete",
+        readonly=True)
+    oo_equipment_missing = fields.Text(
+        related="owner_operator_application_id.equipment_missing",
+        readonly=True)
+    oo_coi_request_sent_at = fields.Datetime(
+        related="owner_operator_application_id.coi_request_sent_at",
+        readonly=True)
+    oo_coi_request_count = fields.Integer(
+        related="owner_operator_application_id.coi_request_count",
+        readonly=True)
+    oo_setup_email_sent_at = fields.Datetime(
+        related="owner_operator_application_id.setup_email_sent_at",
+        readonly=True)
+    oo_home_base_tag_issue = fields.Text(
+        related="owner_operator_application_id.home_base_tag_issue",
+        readonly=True)
     oo_application_declaration = fields.Boolean(related="owner_operator_application_id.application_declaration", readonly=True)
     oo_additional_notes = fields.Html(related="owner_operator_application_id.additional_notes", readonly=True)
     oo_cvor_number = fields.Char(related="owner_operator_application_id.cvor_number", readonly=True)
@@ -100,6 +147,21 @@ class HrApplicant(models.Model):
     def _owner_operator_job(self):
         return self.env["prema.owner.operator.application"]._public_job()
 
+    def write(self, vals):
+        """Detect a deliberate move into Authority & Insurance Review."""
+        old_stage = {}
+        if "stage_id" in vals:
+            old_stage = {applicant.id: applicant.stage_id for applicant in self}
+        res = super().write(vals)
+        if "stage_id" in vals and not self.env.context.get(
+                "owner_operator_skip_stage_hook"):
+            for applicant in self:
+                app = applicant.owner_operator_application_id
+                if app:
+                    app._on_stage_change(
+                        old_stage.get(applicant.id), applicant.stage_id)
+        return res
+
     @api.model
     def message_new(self, msg_dict, custom_values=None):
         """Inbound mail: tie the applicant to the owner-operator job.
@@ -109,7 +171,17 @@ class HrApplicant(models.Model):
         empty and never got its onboarding record. The alias that received the
         message is in the context; if it is ours, set the job explicitly and
         let create() build the checklist.
+
+        Verification mail must never create an applicant. If it reaches this
+        model because the dedicated alias was missing, route it to the
+        verification queue instead.
         """
+        recipients = " ".join(str(msg_dict.get(key) or "") for key in (
+            "to", "cc", "recipients")).lower()
+        if "verification@premafirm.com" in recipients:
+            return self.env[
+                "prema.owner.operator.verification"].sudo().message_new(
+                    msg_dict, custom_values)
         applicant = super().message_new(msg_dict, custom_values)
         job = self._owner_operator_job()
         if job and not applicant.job_id and self._addressed_to_job(msg_dict, job):

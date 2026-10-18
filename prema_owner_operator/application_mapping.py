@@ -96,12 +96,67 @@ SERVICE_AREAS = {
     "Selected provinces": "Selected provinces / territories",
 }
 
+SERVICE_AREA_CODES = {
+    "Toronto / GTA": "toronto_gta",
+    "Ontario wide": "ontario_wide",
+    "Quebec": "quebec",
+    "Ontario and Quebec": "ontario_quebec",
+    "Canada wide": "canada_wide",
+    "Selected provinces": "selected_provinces",
+}
+
+SERVICE_AREA_RAW = {
+    "PreferredAreaTorontoGTA": "toronto_gta",
+    "PreferredAreaOntarioWide": "ontario_wide",
+    "PreferredAreaQuebec": "quebec",
+    "PreferredAreaOntarioQuebec": "ontario_quebec",
+    "PreferredAreaCanadaWide": "canada_wide",
+    "PreferredAreaSelectedProvinces": "selected_provinces",
+}
+
 WORK_PREFERENCES = {
     "local": "Local",
     "regional": "Regional",
     "longhaul": "Long haul",
     "flexible": "Flexible",
 }
+
+WORK_PREFERENCE_RAW = {
+    "WorkPreferenceLocal": "local",
+    "WorkPreferenceRegional": "regional",
+    "WorkPreferenceLonghaul": "longhaul",
+    "WorkPreferenceFlexible": "flexible",
+}
+
+EQUIPMENT_RAW_MAP = {
+    "CargoBodyType": "cargo_body_type",
+    "LegalPayloadLb": "payload_lbs",
+    "PalletCapacity": "pallet_capacity",
+    "CargoLengthFt": "box_length_ft",
+    "CargoWidthIn": "cargo_width_in",
+    "CargoHeightIn": "cargo_height_in",
+    "DoorWidthIn": "door_width_in",
+    "DoorHeightIn": "door_clearance_in",
+    "Liftgate": "liftgate",
+    "LiftgateCapacityLb": "liftgate_capacity_lb",
+    "LiftgatePlatformLengthIn": "liftgate_platform_length_in",
+    "LiftgatePlatformWidthIn": "liftgate_platform_width_in",
+    "DockHeightCapable": "dock_height_capable",
+    "ReeferTemperatureRange": "reefer_temperature_range",
+    "TrailerType": "trailer_type",
+    "TrailerLengthFt": "trailer_length_ft",
+}
+
+WHATSAPP_CONSENT_TEXT = (
+    "I agree to receive load quote requests and load offers by WhatsApp at "
+    "the number I provided. I may change this preference or opt out at any "
+    "time."
+)
+
+try:
+    import phonenumbers
+except ImportError:  # pragma: no cover — phone_validation is installed
+    phonenumbers = None
 
 # Raw website name -> internal application field. None means "handled
 # separately" (provinces and uploads).
@@ -140,18 +195,23 @@ FIELD_MAP = {
     "CargoLengthFt": "box_length_ft",
     "CargoWidthIn": "cargo_width_in",
     "CargoHeightIn": "cargo_height_in",
+    "DoorWidthIn": "door_width_in",
     "DoorHeightIn": "door_clearance_in",
     "Liftgate": "liftgate",
     "LiftgateCapacityLb": "liftgate_capacity_lb",
+    "LiftgatePlatformLengthIn": "liftgate_platform_length_in",
+    "LiftgatePlatformWidthIn": "liftgate_platform_width_in",
     "DockHeightCapable": "dock_height_capable",
     "AirRide": "air_ride",
     "ReeferTemperatureRange": "reefer_temperature_range",
     "CVORNumber": "cvor_number",
-    "InsuranceAgent": "insurance_agent_name",
-    "InsuranceAgentEmail": "insurance_agent_email",
     "PreferredLanes": "preferred_service_area",
     "AvailabilityDate": "available_start_date",
     "WorkPreference": "work_preference",
+    "LoadNotificationChannel": "load_notification_channel",
+    "WhatsAppNumber": "whatsapp_number",
+    "LoadNotificationEmail": "load_notification_email",
+    "WhatsAppConsentGranted": "whatsapp_consent_granted",
     "WhatsAppConsent": "whatsapp_consent",
     "ApplicationDeclaration": "application_declaration",
     "applicant_notes": "applicant_notes",
@@ -176,7 +236,7 @@ REQUIRED_RAW = (
     "CommercialDrivingYears", "DriverLicenceClass", "LicenceJurisdiction",
     "LicenceSuspension", "RecentCollisions", "RecentConvictions",
     "VehicleType", "TruckMakeModel", "VehicleOwnership", "OdometerKm",
-    "TruckPlateJurisdiction", "PreferredLanes", "WhatsAppConsent",
+    "TruckPlateJurisdiction", "LoadNotificationChannel",
     "ApplicationDeclaration",
 )
 
@@ -187,8 +247,7 @@ REQUIRED_INTERNAL = (
     "licence_class", "licence_jurisdiction", "licence_suspension",
     "recent_collisions", "recent_convictions", "vehicle_type",
     "equipment_model", "vehicle_ownership", "odometer_km",
-    "truck_plate_jurisdiction", "preferred_service_area",
-    "whatsapp_consent", "application_declaration",
+    "truck_plate_jurisdiction", "application_declaration",
 )
 
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
@@ -199,6 +258,29 @@ PLATE_SPLIT_RE = re.compile(r"\s*[/,]\s*")
 def _text(value):
     return (value or "").strip() if isinstance(value, str) else (
         "" if value is None else str(value).strip())
+
+
+def normalize_phone(value, region="CA"):
+    """Return an E.164 number, or False when it is not a usable number.
+
+    A WhatsApp number is stored separately from the contact phone and is
+    never inferred from it unless the applicant explicitly ticks “use my
+    contact phone number”.
+    """
+    value = _text(value)
+    if not value:
+        return False
+    if phonenumbers is None:  # pragma: no cover
+        digits = re.sub(r"[^0-9]", "", value)
+        return "+" + digits if 8 <= len(digits) <= 15 else False
+    try:
+        number = phonenumbers.parse(value, region)
+        if not phonenumbers.is_valid_number(number):
+            return False
+        return phonenumbers.format_number(
+            number, phonenumbers.PhoneNumberFormat.E164)
+    except Exception:  # noqa: BLE001 — invalid input is a validation error
+        return False
 
 
 def _choice(value, allowed, label, errors):
@@ -368,24 +450,28 @@ def normalise_public(post, strict=True):
         if jurisdiction:
             vals["plate_jurisdiction"] = jurisdiction[:64]
 
+    trailer_own = None
     if vehicle_type == "tractor":
-        put("TrailerOwnership", "trailer_ownership",
-            _choice(post.get("TrailerOwnership"),
-                    {"own": "own", "power_only": "power_only"},
-                    "trailer ownership", errors))
+        trailer_own = _choice(post.get("TrailerOwnership"),
+                              {"own": "own", "power_only": "power_only"},
+                              "trailer ownership", errors)
+        put("TrailerOwnership", "trailer_ownership", trailer_own)
         put("TrailerType", "trailer_type",
             _choice(post.get("TrailerType"), set(TRAILER_TYPES),
                     "trailer type", errors))
         put("TrailerLengthFt", "trailer_length_ft",
             _number(post.get("TrailerLengthFt"), "trailer length", errors,
-                    minimum=1, maximum=60))
+                    minimum=0, maximum=60))
         put("TrailerUnit", "trailer_unit", _text(post.get("TrailerUnit")))
-        if strict and _text(post.get("TrailerOwnership")) == "own" \
+        if strict and trailer_own == "own" \
                 and not _text(post.get("TrailerType")):
             errors.append("Choose the trailer type.")
-        # Cargo-capacity answers are not part of a power unit. They are
-        # ignored even if a caller posts them by hand.
-    elif vehicle_type in ("cargo_van", "straight"):
+        if strict and not trailer_own:
+            errors.append("Choose whether you have your own trailer.")
+
+    cargo_applicable = vehicle_type in ("cargo_van", "straight") or (
+        vehicle_type == "tractor" and trailer_own == "own")
+    if cargo_applicable:
         put("CargoBodyType", "cargo_body_type",
             _choice(post.get("CargoBodyType"), set(CARGO_BODIES),
                     "cargo body type", errors))
@@ -404,6 +490,9 @@ def normalise_public(post, strict=True):
         put("CargoHeightIn", "cargo_height_in",
             _number(post.get("CargoHeightIn"), "cargo height", errors,
                     minimum=0, maximum=150))
+        put("DoorWidthIn", "door_width_in",
+            _number(post.get("DoorWidthIn"), "door opening width", errors,
+                    minimum=0, maximum=150))
         put("DoorHeightIn", "door_clearance_in",
             _number(post.get("DoorHeightIn"), "door opening height", errors,
                     minimum=0, maximum=150))
@@ -413,6 +502,14 @@ def normalise_public(post, strict=True):
         put("LiftgateCapacityLb", "liftgate_capacity_lb",
             _number(post.get("LiftgateCapacityLb"), "liftgate capacity",
                     errors, minimum=0, maximum=20000))
+        put("LiftgatePlatformLengthIn", "liftgate_platform_length_in",
+            _number(post.get("LiftgatePlatformLengthIn"),
+                    "liftgate platform length", errors,
+                    minimum=0, maximum=150))
+        put("LiftgatePlatformWidthIn", "liftgate_platform_width_in",
+            _number(post.get("LiftgatePlatformWidthIn"),
+                    "liftgate platform width", errors,
+                    minimum=0, maximum=150))
         put("DockHeightCapable", "dock_height_capable",
             _choice(post.get("DockHeightCapable"),
                     {"yes": "yes", "no": "no"},
@@ -430,15 +527,6 @@ def normalise_public(post, strict=True):
     except ValueError as exc:
         errors.append(str(exc))
 
-    put("InsuranceAgent", "insurance_agent_name",
-        _text(post.get("InsuranceAgent")))
-    agent_email = _text(post.get("InsuranceAgentEmail")).lower()
-    if agent_email:
-        if EMAIL_RE.match(agent_email):
-            vals["insurance_agent_email"] = agent_email
-        else:
-            errors.append("The insurance agent email is not valid.")
-
     service_codes = [
         code for code in PROVINCES
         if _text(post.get("ServiceProvince%s" % code))
@@ -446,21 +534,96 @@ def normalise_public(post, strict=True):
     if service_codes:
         vals["service_province_codes"] = service_codes
 
-    preferred = _choice(post.get("PreferredLanes"), set(SERVICE_AREAS),
-                        "preferred service area", errors)
-    put("PreferredLanes", "preferred_service_area", preferred)
-    if strict and preferred == "Selected provinces" and not service_codes:
+    area_codes = [
+        code for raw, code in SERVICE_AREA_RAW.items()
+        if _truthy(post.get(raw))
+    ]
+    if not area_codes:
+        legacy_area = _choice(
+            post.get("PreferredLanes"), set(SERVICE_AREAS),
+            "preferred service area", errors)
+        if legacy_area:
+            area_codes = [SERVICE_AREA_CODES[legacy_area]]
+    if area_codes:
+        vals["preferred_service_area_codes"] = area_codes
+        first_label = next(
+            (label for label, code in SERVICE_AREA_CODES.items()
+             if code == area_codes[0]), None)
+        if first_label:
+            vals["preferred_service_area"] = first_label
+    elif strict:
+        errors.append("Select at least one preferred service area.")
+    if strict and "selected_provinces" in area_codes and not service_codes:
         errors.append(
             "Select at least one province or territory you will serve.")
     put("AvailabilityDate", "available_start_date",
         _parse_date(post.get("AvailabilityDate"), "available start date",
                     errors))
-    put("WorkPreference", "work_preference",
-        _choice(post.get("WorkPreference"), set(WORK_PREFERENCES),
-                "work preference", errors))
-    put("WhatsAppConsent", "whatsapp_consent",
-        _choice(post.get("WhatsAppConsent"),
-                {"yes": "yes", "no": "no"}, "WhatsApp answer", errors))
+
+    pref_codes = [
+        code for raw, code in WORK_PREFERENCE_RAW.items()
+        if _truthy(post.get(raw))
+    ]
+    if not pref_codes:
+        legacy_pref = _choice(
+            post.get("WorkPreference"), set(WORK_PREFERENCES),
+            "work preference", errors)
+        if legacy_pref:
+            pref_codes = [legacy_pref]
+    if pref_codes:
+        vals["work_preference_codes"] = pref_codes
+        vals["work_preference"] = pref_codes[0]
+    elif strict:
+        errors.append("Select at least one work preference.")
+
+    channel = _choice(
+        post.get("LoadNotificationChannel"), {"whatsapp", "email"},
+        "load-notification channel", errors)
+    if channel:
+        vals["load_notification_channel"] = channel
+        if channel == "whatsapp":
+            consent = _truthy(post.get("WhatsAppConsentGranted"))
+            if strict and not consent:
+                errors.append(
+                    "Please agree to WhatsApp load notifications, or choose "
+                    "email.")
+            use_phone = _truthy(post.get("UseContactPhoneForWhatsApp"))
+            raw_number = _text(post.get("partner_phone")) if use_phone \
+                else _text(post.get("WhatsAppNumber"))
+            number = normalize_phone(raw_number)
+            if strict and not number:
+                errors.append(
+                    "Provide a valid WhatsApp number including country code.")
+            if number:
+                vals["whatsapp_number"] = number
+                vals["whatsapp_consent_granted"] = True
+                vals["whatsapp_consent_text"] = WHATSAPP_CONSENT_TEXT
+                vals["whatsapp_consent_version"] = "1"
+                vals["whatsapp_consent_at"] = datetime.now()
+                vals["whatsapp_consent"] = "yes"
+        else:
+            use_app = _truthy(
+                post.get("UseApplicationEmailForNotifications"))
+            raw_email = vals.get("email") if use_app \
+                else _text(post.get("LoadNotificationEmail")).lower()
+            if raw_email and EMAIL_RE.match(raw_email):
+                vals["load_notification_email"] = raw_email
+                vals["whatsapp_consent"] = "no"
+            elif strict:
+                errors.append(
+                    "Provide a valid load-notification email address.")
+    elif strict:
+        errors.append("Choose how you want to receive load notifications.")
+    if _truthy(post.get("LoadNotificationOptOut")):
+        vals["load_notification_opt_out"] = True
+        vals["load_notification_opt_out_at"] = datetime.now()
+
+    provided = {}
+    for raw, field in EQUIPMENT_RAW_MAP.items():
+        if _text(post.get(raw)):
+            provided[field] = True
+    if provided:
+        vals["equipment_provided"] = provided
     if _truthy(post.get("ApplicationDeclaration")):
         vals["application_declaration"] = True
     elif strict:

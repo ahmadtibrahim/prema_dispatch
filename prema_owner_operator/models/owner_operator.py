@@ -133,13 +133,14 @@ class OwnerOperator(models.Model):
                     "authority_verified_by": self.env.user.id})
         return True
 
-    def action_verify_coi_with_insurer(self, document):
+    def action_verify_coi_with_insurer(self, document=None):
         """Record that the COI came from the insurer, not from the applicant.
 
         Kept as an explicit human action: the module must never infer
         insurer-direct verification from an uploaded file.
         """
         self.ensure_one()
+        document = document or self.coi_document_id
         if not document or document.document_type != "coi_insurer" \
                 or document.source != "insurer":
             raise ValidationError(_(

@@ -64,16 +64,19 @@
                             <field name="oo_odometer_km" readonly="1"/>
                             <field name="oo_truck_plate_jurisdiction" readonly="1"/>
                         </group>
-                        <group string="Cargo body">
+                        <group string="Cargo body / trailer specifications">
                             <field name="oo_cargo_body_type" readonly="1"/>
                             <field name="oo_payload_lbs" readonly="1"/>
                             <field name="oo_pallet_capacity" readonly="1"/>
                             <field name="oo_box_length_ft" readonly="1"/>
                             <field name="oo_cargo_width_in" readonly="1"/>
                             <field name="oo_cargo_height_in" readonly="1"/>
+                            <field name="oo_door_width_in" readonly="1"/>
                             <field name="oo_door_clearance_in" readonly="1"/>
                             <field name="oo_liftgate" readonly="1"/>
                             <field name="oo_liftgate_capacity_lb" readonly="1"/>
+                            <field name="oo_liftgate_platform_length_in" readonly="1"/>
+                            <field name="oo_liftgate_platform_width_in" readonly="1"/>
                             <field name="oo_dock_height_capable" readonly="1"/>
                             <field name="oo_air_ride" readonly="1"/>
                             <field name="oo_reefer_temperature_range" readonly="1"/>
@@ -85,19 +88,33 @@
                         <field name="oo_trailer_length_ft" readonly="1"/>
                         <field name="oo_trailer_unit" readonly="1"/>
                     </group>
+                    <group string="Dispatch completeness">
+                        <field name="oo_equipment_complete" readonly="1"/>
+                        <field name="oo_equipment_missing" readonly="1"/>
+                    </group>
                 </page>
 
                 <page string="Service &amp; Availability" name="oo_service_availability"
                       invisible="not owner_operator_application_id">
                     <field name="owner_operator_application_id" invisible="1"/>
                     <group>
-                        <group>
-                            <field name="oo_preferred_service_area" readonly="1"/>
+                        <group string="Coverage">
+                            <field name="oo_preferred_service_areas"
+                                   widget="many2many_tags" readonly="1"/>
                             <field name="oo_service_provinces" readonly="1"/>
+                            <field name="oo_work_preferences"
+                                   widget="many2many_tags" readonly="1"/>
                             <field name="oo_available_start_date" readonly="1"/>
-                            <field name="oo_work_preference" readonly="1"/>
-                            <field name="oo_whatsapp_consent" readonly="1"/>
                             <field name="oo_application_declaration" readonly="1"/>
+                        </group>
+                        <group string="Load notifications">
+                            <field name="oo_load_notification_channel" readonly="1"/>
+                            <field name="oo_load_notification_email" readonly="1"/>
+                            <field name="oo_whatsapp_number" readonly="1"/>
+                            <field name="oo_whatsapp_consent_granted" readonly="1"/>
+                            <field name="oo_whatsapp_consent_at" readonly="1"/>
+                            <field name="oo_whatsapp_consent_version" readonly="1"/>
+                            <field name="oo_load_notification_opt_out" readonly="1"/>
                         </group>
                         <group string="Additional notes">
                             <field name="oo_additional_notes" readonly="1"/>
@@ -113,14 +130,22 @@
                             <field name="oo_cvor_number" readonly="1"/>
                             <field name="oo_cvor_verification_status" readonly="1"/>
                         </group>
-                        <group string="Insurance agent">
+                        <group string="Insurance agent (legacy)">
                             <field name="oo_insurance_agent_name" readonly="1"/>
                             <field name="oo_insurance_agent_email" readonly="1"/>
                         </group>
                     </group>
                     <group string="Review status">
                         <field name="oo_licence_current" readonly="1"/>
+                        <field name="oo_equipment_complete" readonly="1"/>
+                        <field name="oo_equipment_missing" readonly="1"/>
                         <field name="oo_missing_verification" readonly="1"/>
+                        <field name="oo_home_base_tag_issue" readonly="1"/>
+                    </group>
+                    <group string="Insurer-direct COI request">
+                        <field name="oo_coi_request_sent_at" readonly="1"/>
+                        <field name="oo_coi_request_count" readonly="1"/>
+                        <field name="oo_setup_email_sent_at" readonly="1"/>
                     </group>
                     <field name="owner_operator_document_ids" readonly="1">
                         <list>
@@ -129,6 +154,9 @@
                             <field name="source"/>
                             <field name="status" widget="badge"/>
                             <field name="file_name"/>
+                            <field name="mimetype" column_invisible="1"/>
+                            <field name="can_preview"
+                                   widget="owner_operator_document_view"/>
                             <field name="expiry_date"/>
                             <field name="verified_by"/>
                             <field name="verified_on"/>

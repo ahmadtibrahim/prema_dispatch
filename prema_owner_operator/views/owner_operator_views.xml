@@ -56,6 +56,11 @@
                                 <field name="coi_verified_direct"/>
                                 <field name="coi_verified_on"/>
                                 <field name="coi_document_id"/>
+                                <button name="action_verify_coi_with_insurer"
+                                        type="object"
+                                        string="Verify COI with insurer"
+                                        class="btn-link"
+                                        invisible="coi_verified_direct or not coi_document_id"/>
                             </group>
                             <group string="Agent">
                                 <field name="insurance_agent_name"/>

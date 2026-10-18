@@ -13,7 +13,7 @@ from odoo import _, api, fields, models
 from odoo.exceptions import AccessError, UserError, ValidationError
 
 from ..application_mapping import (
-    REQUIRED_INTERNAL, normalise_public,
+    PROVINCES, REQUIRED_INTERNAL, normalise_public,
     parse_other_information, split_plate_jurisdiction)
 
 # Ordered so the checklist reads the way the process runs.
@@ -75,6 +75,84 @@ APPLICATION_STATE = [
     ("rejected", "Rejected"),
 ]
 
+# The owner-operator pipeline for job 5, in order. Names are the stable key;
+# sequences are assigned by the migration/hook. The removed stages keep their
+# records and any history, but job 5 is unlinked from them.
+STAGE_NEW = "New"
+STAGE_AUTHORITY = "Authority & Insurance Review"
+STAGE_FINAL = "Final Review"
+STAGE_CONTRACT = "Contract Proposal"
+STAGE_SIGNED = "Contract Signed"
+STAGE_APPROVED = "Approved — Ready for Dispatch"
+PIPELINE = [
+    STAGE_NEW,
+    STAGE_AUTHORITY,
+    STAGE_FINAL,
+    STAGE_CONTRACT,
+    STAGE_SIGNED,
+    STAGE_APPROVED,
+]
+REMOVED_FROM_JOB5 = [
+    "Equipment Verification",
+    "Initial Qualification",
+    "First Interview",
+    "Second Interview",
+]
+
+# The exact certificate-holder wording the applicant forwards to the broker.
+CERTIFICATE_HOLDER = (
+    "PremaFirm Inc.\n"
+    "994 Westport Cres, Unit 7A\n"
+    "Mississauga, ON L5T 1G1\n"
+    "Canada"
+)
+
+WHATSAPP_CONSENT_TEXT = (
+    "I agree to receive load quote requests and load offers by WhatsApp at "
+    "the number I provided. I may change this preference or opt out at any "
+    "time."
+)
+
+# Raw public-form keys -> structured equipment fields. A key is "provided"
+# when the submitted string is non-empty, even when it is exactly "0".
+EQUIPMENT_RAW_MAP = {
+    "CargoBodyType": "cargo_body_type",
+    "LegalPayloadLb": "payload_lbs",
+    "PalletCapacity": "pallet_capacity",
+    "CargoLengthFt": "box_length_ft",
+    "CargoWidthIn": "cargo_width_in",
+    "CargoHeightIn": "cargo_height_in",
+    "DoorWidthIn": "door_width_in",
+    "DoorHeightIn": "door_clearance_in",
+    "Liftgate": "liftgate",
+    "LiftgateCapacityLb": "liftgate_capacity_lb",
+    "LiftgatePlatformLengthIn": "liftgate_platform_length_in",
+    "LiftgatePlatformWidthIn": "liftgate_platform_width_in",
+    "DockHeightCapable": "dock_height_capable",
+    "ReeferTemperatureRange": "reefer_temperature_range",
+    "TrailerType": "trailer_type",
+    "TrailerLengthFt": "trailer_length_ft",
+}
+
+EQUIPMENT_LABELS = {
+    "cargo_body_type": "Cargo body type",
+    "payload_lbs": "Legal payload",
+    "pallet_capacity": "Pallet capacity",
+    "box_length_ft": "Cargo interior length",
+    "cargo_width_in": "Cargo interior width",
+    "cargo_height_in": "Cargo interior height",
+    "door_width_in": "Rear door opening width",
+    "door_clearance_in": "Rear door opening height",
+    "liftgate": "Liftgate",
+    "liftgate_capacity_lb": "Liftgate capacity",
+    "liftgate_platform_length_in": "Liftgate platform length",
+    "liftgate_platform_width_in": "Liftgate platform width",
+    "dock_height_capable": "Dock-height capability",
+    "reefer_temperature_range": "Reefer temperature range",
+    "trailer_type": "Trailer type",
+    "trailer_length_ft": "Trailer length",
+}
+
 # The ONLY fields the public form may write. Workflow, approval, signature,
 # verification, Fleet and operator links are deliberately absent.
 SUBMISSION_FIELDS = {
@@ -88,11 +166,17 @@ SUBMISSION_FIELDS = {
     "plate_jurisdiction", "cargo_body_type", "trailer_ownership",
     "trailer_type", "trailer_length_ft", "trailer_unit", "payload_lbs",
     "pallet_capacity", "box_length_ft", "cargo_width_in", "cargo_height_in",
-    "door_clearance_in", "liftgate", "liftgate_capacity_lb",
-    "dock_height_capable", "air_ride", "reefer_temperature_range",
-    "cvor_number", "insurance_agent_name", "insurance_agent_email",
-    "preferred_service_area", "available_start_date", "work_preference",
-    "whatsapp_consent", "application_declaration",
+    "door_width_in", "door_clearance_in", "liftgate",
+    "liftgate_capacity_lb", "liftgate_platform_length_in",
+    "liftgate_platform_width_in", "dock_height_capable", "air_ride",
+    "reefer_temperature_range", "cvor_number", "preferred_service_area",
+    "available_start_date", "work_preference", "preferred_service_area_codes",
+    "work_preference_codes", "whatsapp_consent", "application_declaration",
+    "equipment_provided", "load_notification_channel",
+    "load_notification_email", "whatsapp_number",
+    "whatsapp_consent_granted", "whatsapp_consent_text",
+    "whatsapp_consent_version", "whatsapp_consent_at",
+    "load_notification_opt_out", "load_notification_opt_out_at",
 }
 
 
@@ -128,6 +212,10 @@ class OwnerOperatorDocument(models.Model):
              "public /web/content URL.")
     file_name = fields.Char(related="attachment_id.name")
     mimetype = fields.Char(related="attachment_id.mimetype")
+    can_preview = fields.Boolean(
+        string="View", compute="_compute_can_preview",
+        help="True only while a file is attached; drives the row/detail "
+             "preview button. Requested documents without a file show none.")
 
     source = fields.Selection(SOURCE, default="applicant", required=True)
     status = fields.Selection(STATUS, default="pending", required=True)
@@ -158,6 +246,11 @@ class OwnerOperatorDocument(models.Model):
     def _compute_required_stage(self):
         for doc in self:
             doc.required_stage = DOCUMENT_STAGE.get(doc.document_type, "initial")
+
+    @api.depends("attachment_id")
+    def _compute_can_preview(self):
+        for doc in self:
+            doc.can_preview = bool(doc.attachment_id)
 
     @api.constrains("attachment_id", "status")
     def _check_file_present(self):
@@ -225,15 +318,33 @@ class OwnerOperatorApplication(models.Model):
              "document set.")
 
     # ── home base: CITY + PROVINCE only, by design ──────────────────
-    home_city = fields.Char(string="Home city")
+    home_city = fields.Char(
+        string="Home city",
+        help="City where the truck normally parks or returns between jobs. "
+             "Used to identify nearby load opportunities; no street address "
+             "is collected at this stage.")
     home_province = fields.Char(
         string="Home province",
-        help="Province or state only. No street address is collected here.")
+        help="Province or territory only, paired with the home city where the "
+             "truck normally parks or returns between jobs. No street "
+             "address is collected here.")
     service_province_ids = fields.Many2many(
         "res.country.state", "prema_owner_operator_service_province_rel",
         "application_id", "state_id", string="Provinces / territories served",
         domain=[("country_id.code", "=", "CA")],
         help="Multiple Canadian provinces/territories selected on the form.")
+    preferred_service_area_ids = fields.Many2many(
+        "prema.owner.operator.service.area",
+        "prema_oo_app_service_area_rel", "application_id", "area_id",
+        string="Preferred service areas",
+        help="Multiple choices. The legacy single-value field below is kept "
+             "only for historical records and older consumers.")
+    work_preference_ids = fields.Many2many(
+        "prema.owner.operator.work.preference",
+        "prema_oo_app_work_pref_rel", "application_id", "preference_id",
+        string="Work preferences",
+        help="Multiple choices. The legacy single-value field below is kept "
+             "only for historical records and older consumers.")
 
     # ── equipment ───────────────────────────────────────────────────
     equipment_type = fields.Selection([
@@ -258,9 +369,26 @@ class OwnerOperatorApplication(models.Model):
     box_height_ft = fields.Float(string="Cargo box interior height (ft)")
     overall_length_ft = fields.Float(string="Overall length (ft)")
     vehicle_height_ft = fields.Float(string="Vehicle height (ft)")
-    door_clearance_in = fields.Float(string="Door clearance (in)")
+    door_width_in = fields.Float(string="Rear door opening width (in)")
+    door_clearance_in = fields.Float(string="Rear door opening height (in)")
+    liftgate_platform_length_in = fields.Float(
+        string="Liftgate usable platform length (in)")
+    liftgate_platform_width_in = fields.Float(
+        string="Liftgate usable platform width (in)")
     dock_height_in = fields.Float(string="Dock height (in)")
     gvwr_lbs = fields.Float(string="GVWR (lbs)")
+    equipment_provided = fields.Json(
+        string="Submitted equipment answers", default=dict, copy=True,
+        help="Which equipment answers the applicant actually supplied, "
+             "including an explicit zero. Distinguishes NOT PROVIDED from 0.")
+    equipment_data_confirmed = fields.Boolean(
+        string="Equipment data reviewed",
+        help="Set by a reviewer when a deliberate zero is valid for a field "
+             "that the completeness gate would otherwise treat as missing.")
+    equipment_missing = fields.Text(
+        string="Missing dispatch-critical equipment", compute="_compute_equipment")
+    equipment_complete = fields.Boolean(
+        string="Dispatch equipment complete", compute="_compute_equipment")
     has_reefer = fields.Boolean(string="Reefer")
     has_liftgate = fields.Boolean(string="Liftgate")
     has_air_ride = fields.Boolean(string="Air-ride suspension")
@@ -396,7 +524,31 @@ class OwnerOperatorApplication(models.Model):
         string="Work preference")
     whatsapp_consent = fields.Selection([
         ("yes", "Yes"), ("no", "No")],
-        string="WhatsApp load notifications")
+        string="WhatsApp load notifications (legacy)",
+        help="Historical single answer. New records use the explicit "
+             "notification channel and consent fields below.")
+    load_notification_channel = fields.Selection([
+        ("whatsapp", "WhatsApp"),
+        ("email", "Email"),
+    ], string="Load-notification channel", tracking=True)
+    load_notification_email = fields.Char(
+        string="Load-notification email", tracking=True,
+        help="Stored separately from the application email.")
+    whatsapp_number = fields.Char(
+        string="WhatsApp number", tracking=True,
+        help="Normalised E.164 number, stored separately from the contact "
+             "phone. Never inferred from the phone number alone.")
+    whatsapp_consent_granted = fields.Boolean(
+        string="WhatsApp consent given", tracking=True)
+    whatsapp_consent_text = fields.Text(string="Consent wording")
+    whatsapp_consent_version = fields.Char(string="Consent version")
+    whatsapp_consent_at = fields.Datetime(string="Consent captured at")
+    load_notification_opt_out = fields.Boolean(
+        string="Opted out of load notifications", tracking=True)
+    load_notification_opt_out_at = fields.Datetime(string="Opted out at")
+    notification_preference_log_ids = fields.One2many(
+        "prema.owner.operator.notification.log", "application_id",
+        string="Notification preference changes")
     application_declaration = fields.Boolean(
         string="Application declaration signed")
     availability = fields.Text(string="Availability (legacy free text)")
@@ -418,6 +570,29 @@ class OwnerOperatorApplication(models.Model):
                                        ondelete="restrict", copy=False)
     contract_sent_on = fields.Datetime()
     contract_signed_on = fields.Datetime()
+    contract_completed_on = fields.Datetime(
+        string="Sign request fully completed", readonly=True, copy=False)
+    setup_email_sent_at = fields.Datetime(readonly=True, copy=False)
+    setup_email_message_id = fields.Char(readonly=True, copy=False)
+    home_base_tag_issue = fields.Text(
+        string="Home-base tag issue", readonly=True, copy=False,
+        help="Set when city/province tags could not be applied. Correct the "
+             "structured home city/province; never invent a location.")
+
+    coi_request_sent_at = fields.Datetime(readonly=True, copy=False)
+    coi_request_sent_by = fields.Many2one(
+        "res.users", readonly=True, copy=False)
+    coi_request_message_id = fields.Char(readonly=True, copy=False)
+    coi_request_last_subject = fields.Char(readonly=True, copy=False)
+    coi_request_count = fields.Integer(
+        default=0, readonly=True, copy=False,
+        help="How many times the insurer-direct COI request was sent.")
+    coi_min_auto_liability = fields.Float(
+        string="Review threshold — auto liability",
+        compute="_compute_review_thresholds")
+    coi_min_cargo = fields.Float(
+        string="Review threshold — cargo",
+        compute="_compute_review_thresholds")
 
     approved_on = fields.Datetime(readonly=True, copy=False)
     approved_by = fields.Many2one("res.users", readonly=True, copy=False)
@@ -473,10 +648,95 @@ class OwnerOperatorApplication(models.Model):
         labels = dict(DOCUMENT_TYPES)
         return ", ".join(labels.get(t, t) for t in types)
 
+    @api.depends("vehicle_type", "trailer_ownership", "trailer_type",
+                 "trailer_length_ft", "cargo_body_type", "payload_lbs",
+                 "pallet_capacity", "box_length_ft", "cargo_width_in",
+                 "cargo_height_in", "door_width_in", "door_clearance_in",
+                 "liftgate", "liftgate_capacity_lb",
+                 "liftgate_platform_length_in", "liftgate_platform_width_in",
+                 "dock_height_capable", "has_reefer",
+                 "reefer_temperature_range", "equipment_provided",
+                 "equipment_data_confirmed")
+    def _compute_equipment(self):
+        for app in self:
+            missing = []
+            provided = app.equipment_provided or {}
+
+            def has(field):
+                if app.equipment_data_confirmed:
+                    return bool(app[field]) or field in provided
+                return bool(app[field]) or bool(provided.get(field))
+
+            def need(field):
+                if not has(field):
+                    missing.append(EQUIPMENT_LABELS[field])
+
+            vehicle = app.vehicle_type
+            if vehicle in ("cargo_van", "straight"):
+                need("cargo_body_type")
+                need("payload_lbs")
+                need("pallet_capacity")
+                need("box_length_ft")
+                need("cargo_width_in")
+                need("cargo_height_in")
+                need("door_width_in")
+                need("door_clearance_in")
+                need("dock_height_capable")
+                need("liftgate")
+                if app.liftgate == "yes":
+                    need("liftgate_capacity_lb")
+                    need("liftgate_platform_length_in")
+                    need("liftgate_platform_width_in")
+                if app.cargo_body_type in ("reefer", "both") \
+                        or app.has_reefer:
+                    need("reefer_temperature_range")
+            elif vehicle == "tractor":
+                if app.trailer_ownership == "own":
+                    # These are the specs of the actual supplied trailer.
+                    need("trailer_type")
+                    need("trailer_length_ft")
+                    need("cargo_body_type")
+                    need("payload_lbs")
+                    need("pallet_capacity")
+                    need("box_length_ft")
+                    need("cargo_width_in")
+                    need("cargo_height_in")
+                    need("door_width_in")
+                    need("door_clearance_in")
+                    need("dock_height_capable")
+                    need("liftgate")
+                    if app.liftgate == "yes":
+                        need("liftgate_capacity_lb")
+                        need("liftgate_platform_length_in")
+                        need("liftgate_platform_width_in")
+                    if app.cargo_body_type in ("reefer", "both") \
+                            or app.has_reefer:
+                        need("reefer_temperature_range")
+                elif app.trailer_ownership == "power_only":
+                    # The assigned trailer supplies capacity. Never demand
+                    # cargo numbers from the power unit.
+                    pass
+                else:
+                    missing.append(EQUIPMENT_LABELS["trailer_type"])
+            else:
+                missing.append(_("Vehicle type"))
+            app.equipment_missing = ", ".join(missing) or False
+            app.equipment_complete = not missing
+
+    def _compute_review_thresholds(self):
+        icp = self.env["ir.config_parameter"].sudo()
+        auto = icp.get_param(
+            "prema_owner_operator.coi_min_auto_liability") or 0.0
+        cargo = icp.get_param(
+            "prema_owner_operator.coi_min_cargo") or 0.0
+        for app in self:
+            app.coi_min_auto_liability = float(auto)
+            app.coi_min_cargo = float(cargo)
+
     @api.depends("document_ids.status", "document_ids.document_type",
                  "is_sole_proprietor", "operator_id.compliance_ok",
                  "contract_signed_on", "fleet_vehicle_id",
-                 "licence_expiry", "licence_class")
+                 "licence_expiry", "licence_class", "equipment_complete")
     def _compute_missing(self):
         today = fields.Date.context_today(self)
         for app in self:
@@ -498,6 +758,7 @@ class OwnerOperatorApplication(models.Model):
             app.can_approve = bool(
                 not unverified and app.licence_current
                 and app.contract_signed_on
+                and app.equipment_complete
                 and app.operator_id and app.operator_id.compliance_ok
                 and not app.fleet_vehicle_id
                 and app.state not in ("rejected",))
@@ -602,14 +863,21 @@ class OwnerOperatorApplication(models.Model):
         """
         self.ensure_one()
         vals = dict(vals)
-        supplied_type = vals.get("vehicle_type")
-        if supplied_type == "tractor":
-            # A power unit has no cargo body; never store capacity answers.
-            for field in (
-                    "cargo_body_type", "payload_lbs", "pallet_capacity",
-                    "box_length_ft", "cargo_width_in", "cargo_height_in",
-                    "door_clearance_in", "liftgate", "liftgate_capacity_lb",
-                    "dock_height_capable", "reefer_temperature_range"):
+        supplied_type = vals.get("vehicle_type") or self.vehicle_type
+        supplied_trailer = vals.get("trailer_ownership") \
+            or self.trailer_ownership
+        cargo_fields = (
+            "cargo_body_type", "payload_lbs", "pallet_capacity",
+            "box_length_ft", "cargo_width_in", "cargo_height_in",
+            "door_width_in", "door_clearance_in", "liftgate",
+            "liftgate_capacity_lb", "liftgate_platform_length_in",
+            "liftgate_platform_width_in", "dock_height_capable",
+            "reefer_temperature_range",
+        )
+        if supplied_type == "tractor" and supplied_trailer == "power_only":
+            # A power-only unit has no cargo body of its own. The assigned
+            # trailer supplies capacity; never store it on the tractor.
+            for field in cargo_fields:
                 vals.pop(field, None)
         elif supplied_type in ("cargo_van", "straight"):
             for field in (
@@ -648,6 +916,46 @@ class OwnerOperatorApplication(models.Model):
             if states and set(states.ids) != set(self.service_province_ids.ids):
                 write_vals["service_province_ids"] = [(6, 0, states.ids)]
 
+        area_codes = vals.get("preferred_service_area_codes") or []
+        if not area_codes and vals.get("preferred_service_area"):
+            legacy_label = vals["preferred_service_area"]
+            area = self.env["prema.owner.operator.service.area"].search(
+                [("name", "=", legacy_label)], limit=1)
+            if area:
+                area_codes = [area.code]
+        if area_codes:
+            areas = self.env["prema.owner.operator.service.area"].search(
+                [("code", "in", area_codes)])
+            if areas and (not only_empty
+                          or not self.preferred_service_area_ids):
+                write_vals["preferred_service_area_ids"] = [
+                    (6, 0, areas.ids)]
+                write_vals["preferred_service_area"] = \
+                    self._fields["preferred_service_area"].convert_to_cache(
+                        areas[0].name, self)
+                write_vals["preferred_lanes"] = ", ".join(areas.mapped("name"))
+
+        pref_codes = vals.get("work_preference_codes") or []
+        if not pref_codes and vals.get("work_preference"):
+            legacy_code = vals["work_preference"]
+            pref = self.env["prema.owner.operator.work.preference"].search(
+                [("code", "=", legacy_code)], limit=1)
+            if pref:
+                pref_codes = [pref.code]
+        if pref_codes:
+            prefs = self.env["prema.owner.operator.work.preference"].search(
+                [("code", "in", pref_codes)])
+            if prefs and (not only_empty or not self.work_preference_ids):
+                write_vals["work_preference_ids"] = [(6, 0, prefs.ids)]
+                write_vals["work_preference"] = self._fields[
+                    "work_preference"].convert_to_cache(
+                        prefs[0].code, self)
+
+        provided = dict(self.equipment_provided or {})
+        provided.update(vals.get("equipment_provided") or {})
+        if provided != (self.equipment_provided or {}):
+            write_vals["equipment_provided"] = provided
+
         business = write_vals.get(
             "business_structure", self.business_structure)
         if business:
@@ -674,7 +982,7 @@ class OwnerOperatorApplication(models.Model):
 
         area = write_vals.get(
             "preferred_service_area", self.preferred_service_area)
-        if area:
+        if area and not area_codes:
             put("preferred_lanes", area)
         start = write_vals.get(
             "available_start_date", self.available_start_date)
@@ -685,9 +993,145 @@ class OwnerOperatorApplication(models.Model):
                 and self.cvor_verification_status == "not_provided":
             write_vals["cvor_verification_status"] = "pending"
 
+        if write_vals.get("whatsapp_consent_granted"):
+            write_vals["whatsapp_consent_version"] = (
+                self.env["ir.config_parameter"].sudo().get_param(
+                    "prema_owner_operator.whatsapp_consent_version") or "1")
+
         if write_vals:
             self.write(write_vals)
         return bool(write_vals)
+
+    # ------------------------------------------------------------------
+    # notification preference audit
+    # ------------------------------------------------------------------
+    NOTIFICATION_FIELDS = {
+        "load_notification_channel", "load_notification_email",
+        "whatsapp_number", "whatsapp_consent_granted",
+        "whatsapp_consent_text", "whatsapp_consent_version",
+        "whatsapp_consent_at", "load_notification_opt_out",
+        "load_notification_opt_out_at",
+    }
+
+    def write(self, vals):
+        tracked = bool(self.NOTIFICATION_FIELDS & set(vals))
+        before = {}
+        if tracked:
+            before = {
+                app.id: {
+                    f: app[f] for f in self.NOTIFICATION_FIELDS
+                } for app in self
+            }
+        res = super().write(vals)
+        if tracked and not self.env.context.get("oo_skip_notification_log"):
+            for app in self:
+                app._log_notification_change(before.get(app.id, {}))
+        return res
+
+    def _log_notification_change(self, before):
+        self.ensure_one()
+        after = {f: self[f] for f in self.NOTIFICATION_FIELDS}
+        if before == after:
+            return
+        self.env["prema.owner.operator.notification.log"].sudo().create({
+            "application_id": self.id,
+            "user_id": self.env.user.id,
+            "channel": self.load_notification_channel,
+            "whatsapp_number": self.whatsapp_number,
+            "email": self.load_notification_email,
+            "consent_given": self.whatsapp_consent_granted,
+            "consent_text": self.whatsapp_consent_text,
+            "consent_version": self.whatsapp_consent_version,
+            "opt_out": self.load_notification_opt_out,
+            "note": _("Preference changed from public form or backend."),
+        })
+
+    # ------------------------------------------------------------------
+    # stage transitions and the insurer-direct COI request
+    # ------------------------------------------------------------------
+    def _stage_by_name(self, name):
+        self.ensure_one()
+        job = self.hr_applicant_id.job_id or self._public_job()
+        if not job:
+            return self.env["hr.recruitment.stage"]
+        return self.env["hr.recruitment.stage"].search(
+            [("name", "=", name), ("job_ids", "in", job.id)], limit=1)
+
+    def _on_stage_change(self, old_stage, new_stage):
+        """Called from hr.applicant.write after a deliberate stage move.
+
+        Only entering Authority & Insurance Review triggers the COI request.
+        Ordinary edits never call this; the sent timestamp prevents a second
+        send when the record is moved out and back.
+        """
+        self.ensure_one()
+        if self.env.context.get("owner_operator_skip_stage_hook"):
+            return False
+        if not new_stage or new_stage.name != STAGE_AUTHORITY:
+            return False
+        if old_stage and old_stage.id == new_stage.id:
+            return False
+        if self.coi_request_sent_at:
+            return False
+        self._send_coi_request()
+        return True
+
+    def _send_coi_request(self):
+        self.ensure_one()
+        if not (self.business_name or "").strip():
+            raise UserError(_(
+                "The insured’s legal business name is missing; the COI "
+                "request cannot be sent."))
+        template = self.env.ref(
+            "prema_owner_operator.mail_template_coi_request",
+            raise_if_not_found=False)
+        if not template:
+            raise UserError(_("The COI request template is missing."))
+        mail_id = template.sudo().send_mail(self.id, force_send=False)
+        mail = self.env["mail.mail"].sudo().browse(mail_id)
+        self.sudo().write({
+            "coi_request_sent_at": fields.Datetime.now(),
+            "coi_request_sent_by": self.env.user.id,
+            "coi_request_message_id": mail.message_id or False,
+            "coi_request_last_subject": mail.subject,
+            "coi_request_count": (self.coi_request_count or 0) + 1,
+        })
+        self.message_post(
+            body=_(
+                "Insurer-direct COI request sent to %(email)s "
+                "(subject: %(subject)s).") % {
+                    "email": self.email or "",
+                    "subject": mail.subject or "",
+                },
+            subtype_xmlid="mail.mt_note")
+        return mail
+
+    def action_resend_coi_request(self):
+        self.ensure_one()
+        mail = self._send_coi_request()
+        self.message_post(
+            body=_("COI request deliberately re-sent by %s.")
+            % self.env.user.name,
+            subtype_xmlid="mail.mt_note")
+        return True
+
+    def _advance_to_final_review(self, reason=None):
+        """Move forward to Final Review; never move backward."""
+        self.ensure_one()
+        final = self._stage_by_name(STAGE_FINAL)
+        applicant = self.hr_applicant_id
+        if not final or not applicant:
+            return False
+        current = applicant.stage_id
+        if not current or current.name != STAGE_AUTHORITY:
+            return False
+        applicant.sudo().with_context(
+            owner_operator_skip_stage_hook=True).write(
+                {"stage_id": final.id})
+        self._sync_state(final)
+        if reason:
+            self.message_post(body=reason, subtype_xmlid="mail.mt_note")
+        return True
 
     @api.model
     def _backfill_from_other_information(self):
@@ -778,23 +1222,32 @@ class OwnerOperatorApplication(models.Model):
         return self.env["hr.recruitment.stage"]
 
     def _guard_transition(self, target):
-        """Refuse to advance while the target stage's documents are missing."""
+        """Refuse to advance while the target stage's requirements are unmet.
+
+        Stage NAMES are the stable key: the pipeline was renumbered when
+        Equipment Verification and Initial Qualification left job 5, so a
+        sequence-number gate would silently skip checks.
+        """
         self.ensure_one()
-        seq = target.sequence
+        name = target.name
         problems = []
-        if seq >= 1 and self._blocking("initial"):
-            problems.append(_("initial uploads: %s")
-                            % self._label(self._blocking("initial")))
-        if seq >= 4 and self._blocking("qualification"):
-            problems.append(_("qualification documents: %s")
-                            % self._label(self._blocking("qualification")))
-        if seq >= 4 and not (self.licence_class and self.licence_expiry):
-            problems.append(_("driver licence class and expiry"))
-        if seq >= 4 and not self.licence_current:
-            problems.append(_("a CURRENT driver licence (expiry has passed)"))
-        if seq >= 5 and (self._blocking("contract") or not self.contract_signed_on):
-            problems.append(_("a completed signature"))
-        if seq >= 6:
+        if name == STAGE_AUTHORITY:
+            if self._blocking("initial"):
+                problems.append(_("initial uploads: %s")
+                                % self._label(self._blocking("initial")))
+        if name in (STAGE_CONTRACT, STAGE_SIGNED, STAGE_APPROVED):
+            if self._blocking("qualification"):
+                problems.append(_("qualification documents: %s")
+                                % self._label(self._blocking("qualification")))
+            if not (self.licence_class and self.licence_expiry):
+                problems.append(_("driver licence class and expiry"))
+            if not self.licence_current:
+                problems.append(_(
+                    "a CURRENT driver licence (expiry has passed)"))
+        if name in (STAGE_SIGNED, STAGE_APPROVED):
+            if self._blocking("contract") or not self.contract_signed_on:
+                problems.append(_("a completed signature"))
+        if name == STAGE_APPROVED:
             unverified = []
             for bucket in ("initial", "qualification", "contract"):
                 for doc_type in self._verified_missing(bucket):
@@ -808,6 +1261,9 @@ class OwnerOperatorApplication(models.Model):
                                   "(authority + insurer-direct COI)"))
             if not self._vin_clear():
                 problems.append(_("VIN conflict resolution"))
+            if not self.equipment_complete:
+                problems.append(_("dispatch-critical equipment data: %s")
+                                % (self.equipment_missing or ""))
         if problems:
             raise UserError(_(
                 "Cannot move to “%s” yet:\n• %s")
@@ -822,25 +1278,37 @@ class OwnerOperatorApplication(models.Model):
                     "not configured (or this is its last stage). Fix the job’s "
                     "stages before advancing.") % app.name)
             app._guard_transition(target)
+            if target.name == STAGE_APPROVED:
+                # Final activation is the Fleet hand-off, not a bare stage
+                # move. action_approve sets the stage itself.
+                app.action_approve()
+                continue
             app.hr_applicant_id.sudo().write({"stage_id": target.id})
             app._sync_state(target)
-            app._send_stage_mail(target)
         return True
 
     def _sync_state(self, stage):
         self.ensure_one()
-        seq = stage.sequence
-        state = "submitted"
-        if seq >= 1:
-            state = "qualifying"
-        if seq >= 3:
-            state = "authority_review"
-        if seq >= 4:
-            state = "contract"
-        if seq >= 5:
-            state = "signed"
-        if seq >= 6:
-            state = "approved"
+        mapping = {
+            STAGE_NEW: "submitted",
+            STAGE_AUTHORITY: "authority_review",
+            STAGE_FINAL: "authority_review",
+            STAGE_CONTRACT: "contract",
+            STAGE_SIGNED: "signed",
+            STAGE_APPROVED: "approved",
+        }
+        state = mapping.get(stage.name)
+        if state is None:
+            seq = stage.sequence
+            state = "submitted"
+            if seq >= 1:
+                state = "qualifying"
+            if seq >= 3:
+                state = "contract"
+            if seq >= 4:
+                state = "signed"
+            if seq >= 5:
+                state = "approved"
         self.write({"state": state})
 
     # ------------------------------------------------------------------
@@ -901,23 +1369,167 @@ class OwnerOperatorApplication(models.Model):
                           subtype_xmlid="mail.mt_note")
         return request
 
+    def _completed_signature_attachment(self):
+        """The genuine completed PDF, or an empty recordset."""
+        self.ensure_one()
+        request = self.sign_request_id
+        if not request:
+            return self.env["ir.attachment"]
+        attachment = request.completed_document_attachment_ids[:1]
+        if attachment:
+            return attachment
+        if request.completed_document:
+            return self.env["ir.attachment"].sudo().create({
+                "name": "%s-signed.pdf" % (self.name or "agreement"),
+                "datas": request.completed_document,
+                "mimetype": "application/pdf",
+                "res_model": "sign.request",
+                "res_id": request.id,
+            })
+        return self.env["ir.attachment"]
+
+    def _signature_is_genuine_and_complete(self):
+        self.ensure_one()
+        request = self.sign_request_id
+        if not request or request.state != "signed" or request.nb_wait:
+            return False
+        items = request.request_item_ids
+        if not items or any(item.state != "completed" for item in items):
+            return False
+        # The application's own contact must be one of the required signers.
+        if self.partner_id and self.partner_id not in items.partner_id:
+            return False
+        if not self._completed_signature_attachment():
+            return False
+        return True
+
+    def _move_to_signed_stage(self):
+        self.ensure_one()
+        signed = self._stage_by_name(STAGE_SIGNED)
+        applicant = self.hr_applicant_id
+        if not signed or not applicant:
+            return False
+        current = applicant.stage_id
+        if current and current.sequence >= signed.sequence:
+            return False
+        applicant.sudo().with_context(
+            owner_operator_skip_stage_hook=True).write(
+                {"stage_id": signed.id})
+        self._sync_state(signed)
+        return True
+
+    def _apply_home_base_tags(self):
+        """Append city + canonical province tags, preserving all others.
+
+        Structured home city/province remain the source of truth; tags are a
+        filter aid only and never a distance calculation.
+        """
+        self.ensure_one()
+        city = re.sub(r"\s+", " ", (self.home_city or "")).strip()
+        province = re.sub(r"\s+", " ", (self.home_province or "")).strip()
+        applicant = self.hr_applicant_id
+        if not applicant:
+            return False
+        if not city or not province:
+            issue = _(
+                "Home-base tags not applied: the structured home city and "
+                "province are incomplete. Correct them; do not invent a "
+                "location.")
+            self.write({"home_base_tag_issue": issue})
+            self.message_post(body=issue, subtype_xmlid="mail.mt_note")
+            return False
+        code = province.upper()
+        if code not in PROVINCES:
+            code = next(
+                (key for key, name in PROVINCES.items()
+                 if name.lower() == province.lower()), None)
+        if not code:
+            issue = _(
+                "Home-base tags not applied: “%s” is not a recognised "
+                "Canadian province or territory.") % province
+            self.write({"home_base_tag_issue": issue})
+            self.message_post(body=issue, subtype_xmlid="mail.mt_note")
+            return False
+        Category = self.env["hr.applicant.category"].sudo()
+
+        def tag_for(value):
+            found = Category.search([("name", "=ilike", value)], limit=1)
+            return found or Category.create({"name": value})
+
+        city_tag = tag_for(city.title())
+        province_tag = tag_for(code)
+        applicant.sudo().write({"categ_ids": [
+            (4, city_tag.id), (4, province_tag.id)]})
+        self.write({"home_base_tag_issue": False})
+        self.message_post(
+            body=_("Home-base tags applied: %(city)s, %(province)s.")
+            % {"city": city_tag.name, "province": province_tag.name},
+            subtype_xmlid="mail.mt_note")
+        return True
+
+    def _send_account_setup_email(self):
+        self.ensure_one()
+        if self.setup_email_sent_at:
+            return False
+        template = self.env.ref(
+            "prema_owner_operator.mail_template_account_setup",
+            raise_if_not_found=False)
+        if not template:
+            return False
+        mail_id = template.sudo().send_mail(self.id, force_send=False)
+        mail = self.env["mail.mail"].sudo().browse(mail_id)
+        self.write({
+            "setup_email_sent_at": fields.Datetime.now(),
+            "setup_email_message_id": mail.message_id or False,
+        })
+        self.message_post(
+            body=_("Account-setup acknowledgement sent."),
+            subtype_xmlid="mail.mt_note")
+        return True
+
     @api.model
     def _cron_sync_signatures(self):
-        """Mark applications signed when the Sign request completes."""
+        """Advance genuine, fully-completed Sign requests exactly once.
+
+        Everything is verified from the Sign request itself: fully-signed
+        state, no waiting signer, every item completed, the application
+        contact among the required signers, and a completed PDF. Duplicate
+        completion events are absorbed by contract_signed_on.
+        """
         for app in self.search([("sign_request_id", "!=", False),
                                 ("contract_signed_on", "=", False)]):
-            if app.sign_request_id.state == "signed":
-                doc = app.document_ids.filtered(
-                    lambda d: d.document_type == "signed_agreement")[:1]
-                if doc and doc.status != "verified":
-                    doc.sudo().write({
-                        "status": "verified",
-                        "attachment_id": app.sign_request_id.signed_document_id.id,
-                        "verified_on": fields.Datetime.now(),
-                    })
-                app.write({"contract_signed_on": fields.Datetime.now()})
-                app.message_post(body=_("Agreement signed."),
-                                 subtype_xmlid="mail.mt_note")
+            if not app._signature_is_genuine_and_complete():
+                continue
+            attachment = app._completed_signature_attachment()
+            now = fields.Datetime.now()
+            doc = app.document_ids.filtered(
+                lambda d: d.document_type == "signed_agreement")[:1]
+            if not doc:
+                doc = self.env["prema.owner.operator.document"].sudo().create({
+                    "application_id": app.id,
+                    "document_type": "signed_agreement",
+                    "source": "private",
+                })
+            if doc:
+                doc.sudo().write({
+                    "status": "received",
+                    "source": "private",
+                    "attachment_id": attachment.id,
+                    "received_on": now,
+                    "notes": _("Completed via Odoo Sign request %s.")
+                    % app.sign_request_id.id,
+                })
+            app.write({
+                "contract_signed_on": now,
+                "contract_completed_on": now,
+            })
+            app._move_to_signed_stage()
+            app._apply_home_base_tags()
+            app._send_account_setup_email()
+            app.message_post(
+                body=_("Odoo Sign request %s completed; signed PDF linked.")
+                % app.sign_request_id.id,
+                subtype_xmlid="mail.mt_note")
         return True
 
     # ------------------------------------------------------------------
@@ -975,6 +1587,58 @@ class OwnerOperatorApplication(models.Model):
             brand = Brand.create({"name": "Owner-operator"})
         return Model.create({"name": name, "brand_id": brand.id})
 
+    def _operator_vals(self):
+        self.ensure_one()
+        return {
+            "partner_id": self.partner_id.id,
+            "company_id": self.company_id.id,
+            "is_sole_proprietor": self.is_sole_proprietor,
+            "business_number": self.business_number,
+            "home_city": self.home_city,
+            "home_province": self.home_province,
+            "mc_number": self.mc_number,
+            "usdot_number": self.usdot_number,
+            "cvor_number": self.cvor_number,
+            "insurance_agent_name": self.insurance_agent_name,
+            "insurance_agent_email": self.insurance_agent_email,
+            "authority_state": self.authority_state,
+        }
+
+    def _open_operator(self, operator):
+        return {
+            "type": "ir.actions.act_window",
+            "name": _("Operator profile"),
+            "res_model": "prema.owner.operator",
+            "res_id": operator.id,
+            "view_mode": "form",
+            "target": "current",
+        }
+
+    def action_prepare_operator(self):
+        """Create/link the compliance profile WITHOUT approving dispatch.
+
+        Final Review needs a place to verify authority and the insurer-direct
+        COI. Before this action the application's operator link was read-only
+        and the profile was only created by approval itself, which left the
+        approval gate unreachable. This creates or links the profile and opens
+        it; it does not verify anything, create a vehicle or change the stage.
+        """
+        self.ensure_one()
+        if self.operator_id:
+            return self._open_operator(self.operator_id)
+        if not self.partner_id:
+            raise UserError(_("The application has no contact to link."))
+        Operator = self.env["prema.owner.operator"].sudo()
+        operator = Operator.search(
+            [("partner_id", "=", self.partner_id.id)], limit=1)
+        if not operator:
+            operator = Operator.create(self._operator_vals())
+        self.write({"operator_id": operator.id})
+        self.message_post(
+            body=_("Compliance profile created/linked for Final Review."),
+            subtype_xmlid="mail.mt_note")
+        return self._open_operator(operator)
+
     def action_approve(self):
         """Create/link the operator profile and its fleet.vehicle.
 
@@ -984,6 +1648,13 @@ class OwnerOperatorApplication(models.Model):
         """
         self.ensure_one()
         if self.fleet_vehicle_id:
+            approved = self._stage_by_name(STAGE_APPROVED)
+            if approved and self.hr_applicant_id \
+                    and self.hr_applicant_id.stage_id.id != approved.id:
+                self.hr_applicant_id.sudo().with_context(
+                    owner_operator_skip_stage_hook=True).write(
+                        {"stage_id": approved.id})
+                self._sync_state(approved)
             return self.fleet_vehicle_id
         if not self.can_approve:
             raise UserError(_(
@@ -998,20 +1669,7 @@ class OwnerOperatorApplication(models.Model):
         Operator = self.env["prema.owner.operator"].sudo()
         operator = self.operator_id
         if not operator:
-            operator = Operator.create({
-                "partner_id": self.partner_id.id,
-                "company_id": self.company_id.id,
-                "is_sole_proprietor": self.is_sole_proprietor,
-                "business_number": self.business_number,
-                "home_city": self.home_city,
-                "home_province": self.home_province,
-                "mc_number": self.mc_number,
-                "usdot_number": self.usdot_number,
-                "cvor_number": self.cvor_number,
-                "insurance_agent_name": self.insurance_agent_name,
-                "insurance_agent_email": self.insurance_agent_email,
-                "authority_state": self.authority_state,
-            })
+            operator = Operator.create(self._operator_vals())
             self.operator_id = operator.id
         else:
             updates = {}
@@ -1071,6 +1729,19 @@ class OwnerOperatorApplication(models.Model):
         if "x_studio_dock_height" in self.env["fleet.vehicle"]._fields:
             vehicle_vals["x_studio_dock_height"] = (
                 self.dock_height_capable == "yes")
+        if self.vehicle_type == "tractor":
+            # A power unit is not a cargo body. Trailer specifications stay on
+            # the application/trailer; never copy them onto the tractor.
+            for field in (
+                    "x_max_pallets", "x_max_payload_lbs",
+                    "x_cargo_box_length_ft", "x_box_interior_height_ft",
+                    "x_door_clearance_in", "x_dock_height_in",
+                    "x_studio_dock_height"):
+                vehicle_vals.pop(field, None)
+            vehicle_vals.update({
+                "x_reefer": self.trailer_type == "reefer",
+                "x_liftgate": False,
+            })
         vehicle = self.env["fleet.vehicle"].sudo().create(vehicle_vals)
         # Unit number: reuse the Studio field the fleet already uses; never
         # create a second column for the same thing.
@@ -1081,6 +1752,12 @@ class OwnerOperatorApplication(models.Model):
                     "approved_on": fields.Datetime.now(),
                     "approved_by": self.env.user.id,
                     "state": "approved"})
+        approved = self._stage_by_name(STAGE_APPROVED)
+        if approved and self.hr_applicant_id:
+            self.hr_applicant_id.sudo().with_context(
+                owner_operator_skip_stage_hook=True).write(
+                    {"stage_id": approved.id})
+            self._sync_state(approved)
         self.message_post(
             body=_("Approved — equipment %s handed to Fleet.")
             % (vehicle.license_plate or vehicle.id),

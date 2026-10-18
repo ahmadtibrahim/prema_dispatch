@@ -150,7 +150,10 @@ class OwnerOperatorController(http.Controller):
     @http.route("/owner-operator/thanks", type="http", auth="public",
                 website=True, csrf=True, sitemap=False)
     def thanks(self, **kw):
-        return http.request.render("prema_owner_operator.apply_thanks")
+        job = http.request.env["prema.owner.operator.application"].sudo(
+        )._public_job()
+        return http.request.render(
+            "prema_owner_operator.apply_thanks", {"job": job})
 
     def _check_upload(self, upload):
         data = upload.read()
@@ -205,7 +208,13 @@ class OwnerOperatorController(http.Controller):
             raise NotFound()
         attachment = doc.attachment_id.sudo()
         filename = attachment.name or "document"
-        disposition = "attachment" if download else "inline"
+        # Only PDFs and images are shown inline; anything else is offered as
+        # a download even if the caller omits ?download=1.
+        previewable = (attachment.mimetype or "").startswith(
+            ("application/pdf", "image/"))
+        wants_download = str(download).lower() not in ("", "0", "false", "none")
+        disposition = "inline" if previewable and not wants_download \
+            else "attachment"
         return http.request.make_response(attachment.raw or b"", headers=[
             ("Content-Type", attachment.mimetype or "application/octet-stream"),
             ("Content-Disposition", "%s; filename=\"%s\"" % (

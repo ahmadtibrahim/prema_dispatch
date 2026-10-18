@@ -33,18 +33,23 @@ class OwnerOperatorCase(TransactionCase):
         # staging copy can share a sequence between two stages, which makes
         # _next_stage skip one; normalise the test pipeline explicitly.
         Stage = cls.env["hr.recruitment.stage"]
-        for seq, name in ((1, "Equipment Verification"),
-                          (2, "Initial Qualification"),
-                          (3, "Authority & Insurance Review"),
-                          (4, "Contract Proposal"),
-                          (5, "Contract Signed"),
-                          (6, "Approved — Ready for Dispatch")):
+        for seq, name in ((0, "New"),
+                          (1, "Authority & Insurance Review"),
+                          (2, "Final Review"),
+                          (3, "Contract Proposal"),
+                          (4, "Contract Signed"),
+                          (5, "Approved — Ready for Dispatch")):
             stage = Stage.search(
                 [("name", "=", name), ("job_ids", "in", cls.job.id)],
                 limit=1) or Stage.search([("name", "=", name)], limit=1)
             if not stage:
                 stage = Stage.create({"name": name})
             stage.write({"sequence": seq, "job_ids": [(4, cls.job.id)]})
+        for name in ("Equipment Verification", "Initial Qualification",
+                     "First Interview", "Second Interview"):
+            for stage in Stage.search([("name", "=", name),
+                                       ("job_ids", "in", cls.job.id)]):
+                stage.write({"job_ids": [(3, cls.job.id)]})
         cls.env["ir.config_parameter"].sudo().set_param(
             "prema_owner_operator.job_id", cls.job.id)
         # Fleet states are data: make sure the two this module relies on exist.
@@ -110,19 +115,22 @@ class OwnerOperatorCase(TransactionCase):
             "box_length_ft": 26,
             "cargo_width_in": 100,
             "cargo_height_in": 96,
+            "door_width_in": 96,
             "door_clearance_in": 87,
             "liftgate": "yes",
             "liftgate_capacity_lb": 3000,
+            "liftgate_platform_length_in": 72,
+            "liftgate_platform_width_in": 40,
             "dock_height_capable": "yes",
             "air_ride": "yes",
             "reefer_temperature_range": "-20 to 4 C",
             "cvor_number": "123-456-789",
-            "insurance_agent_name": "Test Agent",
-            "insurance_agent_email": "agent@test.invalid",
             "preferred_service_area": "Ontario and Quebec",
             "available_start_date": fields.Date.today(),
             "work_preference": "regional",
             "whatsapp_consent": "no",
+            "load_notification_channel": "email",
+            "load_notification_email": "driver@test.invalid",
             "application_declaration": True,
             "service_province_codes": ["ON", "QC"],
             "applicant_notes": "Test notes",
@@ -140,8 +148,20 @@ class OwnerOperatorCase(TransactionCase):
             "license_plate": "TEST001",
             "home_city": "Toronto",
             "home_province": "Ontario",
+            "vehicle_type": "straight",
+            "cargo_body_type": "dry",
+            "payload_lbs": 13000,
+            "pallet_capacity": 13,
+            "box_length_ft": 26,
+            "cargo_width_in": 100,
+            "cargo_height_in": 96,
+            "door_width_in": 96,
+            "door_clearance_in": 87,
+            "liftgate": "no",
+            "dock_height_capable": "yes",
             "equipment_type": "dry_van",
-            "has_liftgate": True,
+            "has_liftgate": False,
+            "has_reefer": False,
         })
         for doc in app.document_ids:
             att = self.env["ir.attachment"].create({
@@ -665,11 +685,22 @@ class TestStructuredSubmission(OwnerOperatorCase):
         self.assertEqual(app.reefer_temperature_range, "-20 to 4 C")
         self.assertEqual(app.cvor_number, "123-456-789")
         self.assertEqual(app.cvor_verification_status, "pending")
-        self.assertEqual(app.insurance_agent_name, "Test Agent")
-        self.assertEqual(app.insurance_agent_email, "agent@test.invalid")
+        # insurance-agent fields were removed from public intake
+        self.assertFalse(app.insurance_agent_name)
+        self.assertFalse(app.insurance_agent_email)
         self.assertEqual(app.preferred_service_area, "Ontario and Quebec")
         self.assertEqual(app.work_preference, "regional")
+        self.assertEqual(
+            set(app.preferred_service_area_ids.mapped("code")),
+            {"ontario_quebec"})
+        self.assertEqual(
+            set(app.work_preference_ids.mapped("code")), {"regional"})
         self.assertEqual(app.whatsapp_consent, "no")
+        self.assertEqual(app.door_width_in, 96)
+        self.assertEqual(app.liftgate_platform_length_in, 72)
+        self.assertEqual(app.liftgate_platform_width_in, 40)
+        self.assertEqual(app.load_notification_channel, "email")
+        self.assertEqual(app.load_notification_email, "driver@test.invalid")
         self.assertTrue(app.application_declaration)
         self.assertIn("Test notes", str(app.additional_notes))
         # derived Fleet roll-ups
@@ -680,36 +711,57 @@ class TestStructuredSubmission(OwnerOperatorCase):
         # the intake collects no VIN
         self.assertFalse(app.vin)
 
-    def test_tractor_excludes_cargo_capacity(self):
-        app = self.Application._create_from_public(self._public_vals(
+    def test_tractor_keeps_owned_trailer_specs_but_power_only_drops_them(self):
+        owned = self.Application._create_from_public(self._public_vals(
             vehicle_type="tractor", trailer_ownership="own",
             trailer_type="reefer", trailer_length_ft=53,
             trailer_unit="TR-9", cargo_body_type="dry",
             payload_lbs=99999, pallet_capacity=30, box_length_ft=53,
-            cargo_width_in=120, cargo_height_in=120,
+            cargo_width_in=120, cargo_height_in=120, door_width_in=96,
             door_clearance_in=120, liftgate="yes",
-            liftgate_capacity_lb=5000, dock_height_capable="yes",
+            liftgate_capacity_lb=5000, liftgate_platform_length_in=72,
+            liftgate_platform_width_in=40, dock_height_capable="yes",
             reefer_temperature_range="frozen"))
-        self.assertEqual(app.vehicle_type, "tractor")
-        self.assertEqual(app.trailer_ownership, "own")
-        self.assertEqual(app.trailer_type, "reefer")
-        self.assertEqual(app.trailer_length_ft, 53)
-        self.assertEqual(app.trailer_unit, "TR-9")
-        # every cargo answer is excluded, even when posted by hand
-        self.assertFalse(app.cargo_body_type)
-        self.assertFalse(app.payload_lbs)
-        self.assertFalse(app.pallet_capacity)
-        self.assertFalse(app.box_length_ft)
-        self.assertFalse(app.cargo_width_in)
-        self.assertFalse(app.cargo_height_in)
-        self.assertFalse(app.door_clearance_in)
-        self.assertFalse(app.liftgate)
-        self.assertFalse(app.liftgate_capacity_lb)
-        self.assertFalse(app.dock_height_capable)
-        self.assertFalse(app.reefer_temperature_range)
-        self.assertTrue(app.has_reefer)       # from the trailer
-        self.assertFalse(app.has_liftgate)    # not a power unit attribute
-        self.assertEqual(app.equipment_type, "reefer")
+        self.assertEqual(owned.vehicle_type, "tractor")
+        self.assertEqual(owned.trailer_ownership, "own")
+        self.assertEqual(owned.trailer_type, "reefer")
+        self.assertEqual(owned.trailer_length_ft, 53)
+        self.assertEqual(owned.trailer_unit, "TR-9")
+        # An owned trailer's specifications are kept on the application.
+        self.assertEqual(owned.cargo_body_type, "dry")
+        self.assertEqual(owned.payload_lbs, 99999)
+        self.assertEqual(owned.pallet_capacity, 30)
+        self.assertEqual(owned.box_length_ft, 53)
+        self.assertEqual(owned.cargo_width_in, 120)
+        self.assertEqual(owned.cargo_height_in, 120)
+        self.assertEqual(owned.door_width_in, 96)
+        self.assertEqual(owned.door_clearance_in, 120)
+        self.assertEqual(owned.liftgate, "yes")
+        self.assertEqual(owned.liftgate_capacity_lb, 5000)
+        self.assertEqual(owned.liftgate_platform_length_in, 72)
+        self.assertEqual(owned.liftgate_platform_width_in, 40)
+        self.assertEqual(owned.dock_height_capable, "yes")
+        self.assertEqual(owned.reefer_temperature_range, "frozen")
+        self.assertTrue(owned.has_reefer)       # from the trailer
+        self.assertFalse(owned.has_liftgate)    # not a power-unit attribute
+        self.assertEqual(owned.equipment_type, "reefer")
+
+        power_only = self.Application._create_from_public(self._public_vals(
+            email="poweronly@test.invalid", vehicle_type="tractor",
+            trailer_ownership="power_only", cargo_body_type="dry",
+            payload_lbs=99999, pallet_capacity=30, box_length_ft=53,
+            cargo_width_in=120, cargo_height_in=120, door_width_in=96,
+            door_clearance_in=120, liftgate="yes",
+            liftgate_capacity_lb=5000, liftgate_platform_length_in=72,
+            liftgate_platform_width_in=40, dock_height_capable="yes",
+            reefer_temperature_range="frozen"))
+        for field in ("cargo_body_type", "payload_lbs", "pallet_capacity",
+                      "box_length_ft", "cargo_width_in", "cargo_height_in",
+                      "door_width_in", "door_clearance_in", "liftgate",
+                      "liftgate_capacity_lb", "liftgate_platform_length_in",
+                      "liftgate_platform_width_in", "dock_height_capable",
+                      "reefer_temperature_range"):
+            self.assertFalse(power_only[field], field)
 
     def test_cargo_van_and_straight_branches(self):
         van = self.Application._create_from_public(self._public_vals(
@@ -858,41 +910,84 @@ class TestBackfill(OwnerOperatorCase):
         self.assertEqual(app.home_city, "Manual")
 
 
-class TestStageEmails(OwnerOperatorCase):
+class TestCOIRequest(OwnerOperatorCase):
 
-    def test_stage_mail_fires_once_and_unrelated_edit_does_not_resend(self):
-        stage1 = self.env["hr.recruitment.stage"].search(
-            [("name", "=", "Equipment Verification"),
+    def _authority(self):
+        stage = self.env["hr.recruitment.stage"].search(
+            [("name", "=", "Authority & Insurance Review"),
              ("job_ids", "in", self.job.id)], limit=1)
-        self.env["ir.config_parameter"].sudo().set_param(
-            "prema_owner_operator.stage_mail_%s" % stage1.sequence,
-            "prema_owner_operator.mail_template_initial_docs")
+        stage.write({"template_id": False})
+        return stage
+
+    def _move_to_authority(self, app):
+        app.hr_applicant_id.write({"stage_id": self._authority().id})
+
+    def _coi_mails(self, app):
+        return self.env["mail.mail"].search([
+            ("subject", "ilike", "Insurance verification required"),
+            ("subject", "ilike", app.name),
+        ])
+
+    def test_entering_authority_sends_one_correct_email(self):
         app = self.Application._create_from_public(self._public_vals())
-        self._complete(app, sign=False)
+        before = len(self._coi_mails(app))
+        self._move_to_authority(app)
+        mails = self._coi_mails(app)
+        self.assertEqual(len(mails), before + 1)
+        mail = mails[:1]
+        body = mail.body_html or ""
+        self.assertIn("verification@premafirm.com", body)
+        self.assertIn("PremaFirm Inc.", body)
+        self.assertIn("994 Westport Cres, Unit 7A", body)
+        self.assertIn("Mississauga, ON L5T 1G1", body)
+        self.assertIn("Canada", body)
+        self.assertIn(app.business_name, body)
+        self.assertIn(app.name, body)
+        self.assertIn(app.business_name, mail.subject)
+        self.assertIn(app.name, mail.subject)
+        self.assertIn(app.partner_id, mail.recipient_ids)
+        self.assertEqual(app.partner_id.email, app.email)
+        app.invalidate_recordset()
+        self.assertTrue(app.coi_request_sent_at)
+        self.assertEqual(app.coi_request_count, 1)
+        self.assertTrue(app.coi_request_message_id)
+        self.assertEqual(app.coi_request_sent_by, self.env.user)
 
-        before = self.env["mail.mail"].search_count([])
-        app.action_advance()                      # New -> Equipment Verification
-        after = self.env["mail.mail"].search_count([])
-        self.assertEqual(after, before + 1,
-                         "the stage email must fire exactly once")
-        app.write({"home_city": "Mississauga"})
-        self.assertEqual(self.env["mail.mail"].search_count([]), after,
-                         "editing an unrelated field must not resend")
+    def test_ordinary_edit_does_not_resend(self):
+        app = self.Application._create_from_public(self._public_vals())
+        self._move_to_authority(app)
+        count = len(self._coi_mails(app))
+        app.write({"home_city": "Mississauga",
+                   "recent_driving_work": "Edited"})
+        self.assertEqual(len(self._coi_mails(app)), count)
 
-        stage2 = self.env["hr.recruitment.stage"].search(
-            [("name", "=", "Initial Qualification"),
-             ("job_ids", "in", self.job.id)], limit=1)
-        # clear the stock stage template so this test measures OUR stage-mail
-        # switch exactly once, not two mechanisms at once
-        stage2.write({"template_id": False})
-        self.env["ir.config_parameter"].sudo().set_param(
-            "prema_owner_operator.stage_mail_%s" % stage2.sequence,
-            "prema_owner_operator.mail_template_qualification_docs")
-        before2 = self.env["mail.mail"].search_count([])
-        app.action_advance()                      # -> Initial Qualification
-        after2 = self.env["mail.mail"].search_count([])
-        self.assertEqual(after2, before2 + 1,
-                         "the qualification stage email must fire exactly once")
+    def test_deliberate_resend_is_logged(self):
+        app = self.Application._create_from_public(self._public_vals())
+        self._move_to_authority(app)
+        count = len(self._coi_mails(app))
+        app.action_resend_coi_request()
+        self.assertEqual(len(self._coi_mails(app)), count + 1)
+        app.invalidate_recordset()
+        self.assertEqual(app.coi_request_count, 2)
+        self.assertTrue(any(
+            "re-sent" in (m.body or "") for m in app.message_ids))
+
+    def test_migration_does_not_send_and_does_not_advance(self):
+        from odoo.addons.prema_owner_operator.hooks import ensure_pipeline
+        app = self._applicant("migrate@test.invalid").owner_operator_application_id
+        removed = self.env["hr.recruitment.stage"].search(
+            [("name", "=", "Equipment Verification")], limit=1)
+        removed.write({"job_ids": [(4, self.job.id)]})
+        app.hr_applicant_id.with_context(
+            owner_operator_skip_stage_hook=True).write(
+                {"stage_id": removed.id})
+        before = len(self._coi_mails(app))
+        ensure_pipeline(self.env)
+        app.invalidate_recordset()
+        self.assertEqual(len(self._coi_mails(app)), before)
+        self.assertNotEqual(app.hr_applicant_id.stage_id.name,
+                            "Authority & Insurance Review")
+        self.assertEqual(app.hr_applicant_id.stage_id.name, "New")
 
 
 class TestOtherJobs(OwnerOperatorCase):
@@ -952,17 +1047,27 @@ class TestPublicRoutes(HttpCase):
             "OdometerKm": "350000",
             "TruckPlateJurisdiction": "DEMO 621 / Ontario",
             "CargoBodyType": "reefer",
+            "LegalPayloadLb": "13000",
+            "PalletCapacity": "13",
             "CargoLengthFt": "26",
+            "CargoWidthIn": "100",
             "CargoHeightIn": "96",
+            "DoorWidthIn": "96",
             "DoorHeightIn": "87",
             "Liftgate": "yes",
+            "LiftgateCapacityLb": "3000",
+            "LiftgatePlatformLengthIn": "72",
+            "LiftgatePlatformWidthIn": "40",
             "DockHeightCapable": "yes",
             "AirRide": "yes",
+            "ReeferTemperatureRange": "-20 to 4 C",
             "CVORNumber": "123456789",
             "ServiceProvinceON": "Ontario",
             "ServiceProvinceQC": "Quebec",
-            "PreferredLanes": "Ontario and Quebec",
-            "WhatsAppConsent": "no",
+            "PreferredAreaOntarioQuebec": "1",
+            "WorkPreferenceRegional": "1",
+            "LoadNotificationChannel": "email",
+            "UseApplicationEmailForNotifications": "1",
             "ApplicationDeclaration": "Confirmed",
             "applicant_notes": "Browser demo submission.",
         }
@@ -973,11 +1078,30 @@ class TestPublicRoutes(HttpCase):
         self.assertIn("LegalBusinessName", response.text)
         self.assertIn("TruckPlateJurisdiction", response.text)
         self.assertIn("ServiceProvinceON", response.text)
+        self.assertIn("DoorWidthIn", response.text)
+        self.assertIn("LiftgatePlatformLengthIn", response.text)
+        self.assertIn("PreferredAreaOntarioWide", response.text)
+        self.assertIn("WorkPreferenceLocal", response.text)
+        self.assertIn("LoadNotificationChannel", response.text)
+        self.assertIn("WhatsAppNumber", response.text)
+        self.assertNotIn('name="InsuranceAgent"', response.text)
+        self.assertNotIn('name="InsuranceAgentEmail"', response.text)
         self.assertIn("csrf_token", response.text)
+        # The backend website preview needs the website metadata to name the
+        # main object; without it its systray raises on this page.
+        self.assertIn("data-website-id=", response.text)
+        self.assertIn('data-main-object="hr.job(5,)"', response.text)
         # no résumé/LinkedIn and no VIN field on the owner-operator page
         self.assertNotIn('name="linkedin_profile"', response.text)
         self.assertNotIn('name="Resume"', response.text)
         self.assertNotIn('name="vin"', response.text)
+
+    def test_job_apply_route_carries_preview_metadata(self):
+        response = self.url_open("/jobs/apply/owner-operator-5")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('data-website-id=', response.text)
+        self.assertIn('data-main-object="hr.job(5,)"', response.text)
+        self.assertIn("Owner-Operator Application", response.text)
 
     def test_public_post_creates_one_linked_application(self):
         import re
@@ -989,6 +1113,8 @@ class TestPublicRoutes(HttpCase):
         response = self.url_open("/owner-operator/apply", data=payload)
         self.assertEqual(response.status_code, 200)
         self.assertIn("Thank you", response.text)
+        self.assertIn("data-website-id=", response.text)
+        self.assertIn('data-main-object="hr.job(5,)"', response.text)
         apps = self.env["prema.owner.operator.application"].search(
             [("email", "=", self.demo_email)])
         self.assertEqual(len(apps), 1)
@@ -1001,3 +1127,133 @@ class TestPublicRoutes(HttpCase):
         self.assertEqual(
             self.env["prema.owner.operator.application"].search_count(
                 [("hr_applicant_id", "=", app.hr_applicant_id.id)]), 1)
+
+
+@tagged("post_install", "-at_install")
+class TestDocumentDelivery(HttpCase):
+    """The View button loads the private route; it never writes a status."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        job = cls.env["hr.job"].browse(5)
+        if not job.exists():
+            job = cls.env["hr.job"].create({
+                "name": "Owner Operator (delivery test)",
+                "is_published": True,
+                "company_id": cls.env.company.id,
+            })
+        job.write({"is_published": True})
+        cls.job = job
+        cls.env["ir.config_parameter"].sudo().set_param(
+            "prema_owner_operator.job_id", job.id)
+
+    def setUp(self):
+        super().setUp()
+        candidate = self.env["hr.candidate"].create({
+            "partner_name": "Route Tester",
+            "email_from": "route-%s@test.invalid" % uuid.uuid4().hex[:8],
+            "company_id": self.job.company_id.id or self.env.company.id,
+        })
+        applicant = self.env["hr.applicant"].create({
+            "candidate_id": candidate.id,
+            "job_id": self.job.id,
+            "partner_name": "Route Tester",
+            "email_from": candidate.email_from,
+            "company_id": self.job.company_id.id or self.env.company.id,
+        })
+        self.app = applicant.owner_operator_application_id
+        self.reviewer = self.env["res.users"].create({
+            "name": "OO Reviewer",
+            "login": "oo.reviewer.%s" % uuid.uuid4().hex[:8],
+            "password": "Reviewer#123",
+            "groups_id": [(6, 0, [
+                self.env.ref("base.group_user").id,
+                self.env.ref(
+                    "prema_owner_operator.group_owner_operator").id])],
+        })
+        self.outsider = self.env["res.users"].create({
+            "name": "OO Outsider",
+            "login": "oo.outsider.%s" % uuid.uuid4().hex[:8],
+            "password": "Outsider#123",
+            "groups_id": [(6, 0, [self.env.ref("base.group_user").id])],
+        })
+
+    def _doc(self, doc_type, data, mimetype, name, status="received"):
+        doc = self.app.document_ids.filtered(
+            lambda d: d.document_type == doc_type)[:1]
+        if not doc:
+            doc = self.env["prema.owner.operator.document"].create({
+                "application_id": self.app.id, "document_type": doc_type})
+        attachment = self.env["ir.attachment"].create({
+            "name": name,
+            "raw": data,
+            "mimetype": mimetype,
+            "res_model": "prema.owner.operator.document",
+            "res_id": doc.id,
+            "public": False,
+        })
+        doc.write({"attachment_id": attachment.id, "status": status})
+        return doc
+
+    def test_pdf_opens_inline_and_never_verifies(self):
+        doc = self._doc("cvor", b"%PDF-1.4\npreview", "application/pdf",
+                        "cvor.pdf")
+        self.assertTrue(doc.can_preview)
+        self.authenticate(self.reviewer.login, "Reviewer#123")
+        response = self.url_open("/owner_operator/document/%d" % doc.id)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers.get("Content-Type"),
+                         "application/pdf")
+        self.assertIn("inline", response.headers.get("Content-Disposition"))
+        self.assertTrue(response.content.startswith(b"%PDF"))
+        self.assertEqual(doc.status, "received")
+        self.assertFalse(doc.verified_on)
+
+    def test_photo_opens_inline(self):
+        doc = self._doc("photo_front", b"\xff\xd8\xff\xe0photo",
+                        "image/jpeg", "truck.jpg")
+        self.authenticate(self.reviewer.login, "Reviewer#123")
+        response = self.url_open("/owner_operator/document/%d" % doc.id)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers.get("Content-Type"), "image/jpeg")
+        self.assertIn("inline", response.headers.get("Content-Disposition"))
+
+    def test_unsupported_format_is_only_offered_as_download(self):
+        doc = self._doc("other", b"plain text", "text/plain", "notes.txt")
+        self.authenticate(self.reviewer.login, "Reviewer#123")
+        response = self.url_open("/owner_operator/document/%d" % doc.id)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("attachment",
+                      response.headers.get("Content-Disposition"))
+        explicit = self.url_open(
+            "/owner_operator/document/%d?download=1" % doc.id)
+        self.assertIn("attachment",
+                      explicit.headers.get("Content-Disposition"))
+
+    def test_requested_document_without_file_has_no_button(self):
+        doc = self.app.document_ids.filtered(
+            lambda d: d.document_type == "licence_front")[:1]
+        self.assertTrue(doc)
+        self.assertFalse(doc.attachment_id)
+        self.assertFalse(doc.can_preview)
+        self.authenticate(self.reviewer.login, "Reviewer#123")
+        response = self.url_open("/owner_operator/document/%d" % doc.id)
+        self.assertEqual(response.status_code, 404)
+
+    def test_user_without_the_group_cannot_open_the_file(self):
+        doc = self._doc("coi_applicant", b"%PDF-1.4\nprivate",
+                        "application/pdf", "coi.pdf")
+        self.authenticate(self.outsider.login, "Outsider#123")
+        response = self.url_open("/owner_operator/document/%d" % doc.id)
+        self.assertEqual(response.status_code, 403)
+        self.assertNotIn(b"%PDF", response.content)
+
+    def test_anonymous_request_is_sent_to_login(self):
+        doc = self._doc("cvor", b"%PDF-1.4\nprivate", "application/pdf",
+                        "cvor.pdf")
+        self.authenticate(None, None)
+        response = self.url_open(
+            "/owner_operator/document/%d" % doc.id, allow_redirects=False)
+        self.assertIn(response.status_code, (301, 302, 303))
+        self.assertIn("login", response.headers.get("Location", ""))

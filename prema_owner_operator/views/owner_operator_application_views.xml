@@ -9,6 +9,12 @@
                     <button name="action_advance" type="object"
                             string="Advance stage" class="btn-primary"
                             invisible="state in ('approved','rejected')"/>
+                    <button name="action_resend_coi_request" type="object"
+                            string="Resend COI request"
+                            invisible="not coi_request_sent_at"/>
+                    <button name="action_prepare_operator" type="object"
+                            string="Operator profile"
+                            invisible="operator_id"/>
                     <button name="action_send_contract" type="object"
                             string="Send agreement" invisible="sign_request_id"/>
                     <button name="action_approve" type="object"
@@ -31,10 +37,13 @@
                         <group string="Review status">
                             <field name="can_approve"/>
                             <field name="licence_current"/>
+                            <field name="equipment_complete"/>
+                            <field name="equipment_missing"/>
                             <field name="missing_initial"/>
                             <field name="missing_qualification"/>
                             <field name="missing_verification"/>
                             <field name="missing_contract"/>
+                            <field name="home_base_tag_issue"/>
                         </group>
                     </group>
                     <notebook>
@@ -90,7 +99,7 @@
                                     <field name="has_air_ride" readonly="1"/>
                                 </group>
                             </group>
-                            <group string="Cargo body (van / straight truck)">
+                            <group string="Cargo body (van / straight truck; trailer specs when an owned trailer is supplied)">
                                 <group>
                                     <field name="cargo_body_type"/>
                                     <field name="payload_lbs"/>
@@ -98,11 +107,14 @@
                                     <field name="box_length_ft"/>
                                     <field name="cargo_width_in"/>
                                     <field name="cargo_height_in"/>
+                                    <field name="door_width_in"/>
                                     <field name="door_clearance_in"/>
                                 </group>
                                 <group>
                                     <field name="liftgate"/>
                                     <field name="liftgate_capacity_lb"/>
+                                    <field name="liftgate_platform_length_in"/>
+                                    <field name="liftgate_platform_width_in"/>
                                     <field name="dock_height_capable"/>
                                     <field name="air_ride"/>
                                     <field name="reefer_temperature_range"/>
@@ -111,26 +123,71 @@
                             <group string="Trailer (tractor / power unit)">
                                 <group>
                                     <field name="trailer_ownership"/>
-                                    <field name="trailer_type"/>
-                                    <field name="trailer_length_ft"/>
-                                    <field name="trailer_unit"/>
+                                    <field name="trailer_type"
+                                           invisible="vehicle_type != 'tractor'"/>
+                                    <field name="trailer_length_ft"
+                                           invisible="vehicle_type != 'tractor'"/>
+                                    <field name="trailer_unit"
+                                           invisible="vehicle_type != 'tractor'"/>
+                                </group>
+                                <group string="Dispatch completeness">
+                                    <field name="equipment_complete" readonly="1"/>
+                                    <field name="equipment_missing" readonly="1"/>
+                                    <field name="equipment_data_confirmed"/>
+                                    <field name="equipment_provided" invisible="1"/>
                                 </group>
                             </group>
                         </page>
 
                         <page string="Service &amp; Availability" name="service_availability">
                             <group>
-                                <group>
-                                    <field name="preferred_service_area"/>
-                                    <field name="service_province_ids" widget="many2many_tags"/>
+                                <group string="Coverage">
+                                    <field name="preferred_service_area_ids"
+                                           widget="many2many_tags"/>
+                                    <field name="service_province_ids"
+                                           widget="many2many_tags"/>
+                                    <field name="work_preference_ids"
+                                           widget="many2many_tags"/>
                                     <field name="available_start_date"/>
-                                    <field name="work_preference"/>
-                                    <field name="whatsapp_consent"/>
                                     <field name="application_declaration"/>
                                 </group>
-                                <group>
-                                    <field name="additional_notes" readonly="1"/>
+                                <group string="Legacy single answers">
+                                    <field name="preferred_service_area" readonly="1"/>
+                                    <field name="work_preference" readonly="1"/>
+                                    <field name="whatsapp_consent" readonly="1"/>
                                 </group>
+                            </group>
+                            <group string="Load-notification contact">
+                                <group>
+                                    <field name="load_notification_channel"/>
+                                    <field name="load_notification_email"/>
+                                    <field name="whatsapp_number"/>
+                                    <field name="load_notification_opt_out"/>
+                                    <field name="load_notification_opt_out_at" readonly="1"/>
+                                </group>
+                                <group string="WhatsApp consent">
+                                    <field name="whatsapp_consent_granted"/>
+                                    <field name="whatsapp_consent_at" readonly="1"/>
+                                    <field name="whatsapp_consent_version" readonly="1"/>
+                                    <field name="whatsapp_consent_text" readonly="1"/>
+                                </group>
+                            </group>
+                            <group string="Additional notes">
+                                <field name="additional_notes" readonly="1"/>
+                            </group>
+                            <group string="Notification preference history">
+                                <field name="notification_preference_log_ids"
+                                       readonly="1">
+                                    <list>
+                                        <field name="create_date"/>
+                                        <field name="user_id"/>
+                                        <field name="channel"/>
+                                        <field name="whatsapp_number"/>
+                                        <field name="email"/>
+                                        <field name="consent_given"/>
+                                        <field name="opt_out"/>
+                                    </list>
+                                </field>
                             </group>
                         </page>
 
@@ -148,10 +205,23 @@
                                             class="btn-link"
                                             invisible="cvor_verification_status == 'rejected' or not cvor_number"/>
                                 </group>
-                                <group string="Insurance agent">
-                                    <field name="insurance_agent_name"/>
-                                    <field name="insurance_agent_email" widget="email"/>
+                                <group string="Insurance agent (legacy — not collected on the public form)">
+                                    <field name="insurance_agent_name" readonly="1"/>
+                                    <field name="insurance_agent_email" widget="email" readonly="1"/>
                                     <field name="authority_state"/>
+                                </group>
+                            </group>
+                            <group string="Insurer-direct COI request">
+                                <group>
+                                    <field name="coi_request_sent_at" readonly="1"/>
+                                    <field name="coi_request_sent_by" readonly="1"/>
+                                    <field name="coi_request_count" readonly="1"/>
+                                    <field name="coi_request_last_subject" readonly="1"/>
+                                    <field name="coi_request_message_id" readonly="1"/>
+                                </group>
+                                <group string="Review thresholds (settings)">
+                                    <field name="coi_min_auto_liability" readonly="1"/>
+                                    <field name="coi_min_cargo" readonly="1"/>
                                 </group>
                             </group>
                             <field name="document_ids">
@@ -162,6 +232,10 @@
                                     <field name="status" widget="badge"/>
                                     <field name="attachment_id"/>
                                     <field name="file_name" readonly="1"/>
+                                    <field name="mimetype" column_invisible="1"/>
+                                    <field name="can_preview"
+                                           widget="owner_operator_document_view"
+                                           readonly="1"/>
                                     <field name="expiry_date"/>
                                     <field name="verified_by" readonly="1"/>
                                     <field name="verified_on" readonly="1"/>
@@ -174,12 +248,16 @@
                                     <field name="sign_template_id" readonly="1"/>
                                     <field name="contract_sent_on" readonly="1"/>
                                     <field name="contract_signed_on" readonly="1"/>
+                                    <field name="contract_completed_on" readonly="1"/>
+                                    <field name="setup_email_sent_at" readonly="1"/>
+                                    <field name="setup_email_message_id" readonly="1"/>
                                 </group>
                                 <group string="Fleet hand-off">
                                     <field name="operator_id" readonly="1"/>
                                     <field name="fleet_vehicle_id" readonly="1"/>
                                     <field name="approved_on" readonly="1"/>
                                     <field name="approved_by" readonly="1"/>
+                                    <field name="home_base_tag_issue" readonly="1"/>
                                 </group>
                             </group>
                         </page>
@@ -205,7 +283,7 @@
                 <field name="home_city"/>
                 <field name="home_province"/>
                 <field name="vehicle_type"/>
-                <field name="preferred_service_area"/>
+                <field name="preferred_service_area_ids" widget="many2many_tags"/>
                 <field name="state" widget="badge"/>
                 <field name="missing_verification" optional="hide"/>
                 <field name="create_date"/>

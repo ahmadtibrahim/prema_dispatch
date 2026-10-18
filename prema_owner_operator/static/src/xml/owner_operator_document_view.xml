@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+    <t t-name="prema_owner_operator.OwnerOperatorDocumentView">
+        <button t-if="hasFile"
+                type="button"
+                class="btn btn-link btn-sm p-0 o_oo_document_view"
+                t-att-title="buttonLabel"
+                t-att-aria-label="buttonLabel"
+                t-on-click.stop.prevent="onClick">
+            <i t-attf-class="fa {{ buttonIcon }}"/>
+            <span class="ms-1" t-esc="buttonLabel"/>
+        </button>
+    </t>
+</templates>

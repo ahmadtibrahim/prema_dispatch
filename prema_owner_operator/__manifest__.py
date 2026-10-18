@@ -1,6 +1,6 @@
 {
     "name": "Prema Owner-Operator Onboarding",
-    "version": "18.0.1.1.0",
+    "version": "18.0.1.2.2",
     "summary": "Owner-operator application, qualification, contract signing and Fleet hand-off for logistics.premafirm.com",
     "category": "Logistics",
     "description": """
@@ -35,6 +35,7 @@ job positions keep their own recruitment stages untouched.
         "fleet",
         "sign",
         "mail",
+        "base_setup",
         # Owns the fleet.vehicle x_* fields this module maps (including
         # x_operational_logistics, which is_dispatch_available depends on).
         # Without it the computed field's @depends is validated before those
@@ -45,14 +46,22 @@ job positions keep their own recruitment stages untouched.
         "security/owner_operator_security.xml",
         "security/ir.model.access.csv",
         "data/owner_operator_data.xml",
+        "data/owner_operator_config_data.xml",
         "data/mail_templates.xml",
         "views/owner_operator_views.xml",
         "views/owner_operator_application_views.xml",
+        "views/owner_operator_document_views.xml",
+        "views/owner_operator_verification_views.xml",
+        "views/owner_operator_settings_views.xml",
         "views/hr_applicant_owner_operator_views.xml",
         "views/fleet_vehicle_views.xml",
         "views/website_apply_templates.xml",
     ],
     "assets": {
+        "web.assets_backend": [
+            "prema_owner_operator/static/src/js/owner_operator_document_view.js",
+            "prema_owner_operator/static/src/xml/owner_operator_document_view.xml",
+        ],
         "web.assets_frontend": [
             "prema_owner_operator/static/src/scss/apply.scss",
         ],

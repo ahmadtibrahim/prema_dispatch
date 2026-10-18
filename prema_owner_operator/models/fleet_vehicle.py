@@ -32,9 +32,14 @@ class FleetVehicle(models.Model):
 
     home_city = fields.Char(
         string="Operator home city",
-        help="Where the operator is based, carried from the approved "
-             "application. City only — no street address.")
-    home_province = fields.Char(string="Operator home province")
+        help="City where the truck normally parks or returns between jobs, "
+             "carried from the approved application. Used to identify nearby "
+             "load opportunities — city only, no street address, and never a "
+             "live truck position.")
+    home_province = fields.Char(
+        string="Operator home province",
+        help="Province or territory paired with the home city. A parking "
+             "city is not a live truck location.")
     issue_reason = fields.Text(
         string="Issue reason",
         help="Why the truck is unavailable. Required while the fleet state is "
