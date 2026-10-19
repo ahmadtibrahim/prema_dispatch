@@ -88,7 +88,11 @@
                                 <group string="Experience">
                                     <field name="commercial_driving_experience"/>
                                     <field name="owner_operator_experience"/>
-                                    <field name="tdg_training"/>
+                                    <field name="tdg_status"/>
+                                    <field name="tdg_class_ids"
+                                           widget="many2many_tags"/>
+                                    <field name="tdg_special_training"/>
+                                    <field name="tdg_training" readonly="1"/>
                                 </group>
                                 <group string="History">
                                     <field name="recent_collisions"/>
@@ -235,6 +239,57 @@
                                             string="Reject CVOR"
                                             class="btn-link"
                                             invisible="cvor_verification_status == 'rejected' or not cvor_number"/>
+                                </group>
+                                <group string="CVOR extraction (proposal only — not verification)">
+                                    <field name="cvor_extraction_status"/>
+                                    <field name="cvor_proposed_number" readonly="1"/>
+                                    <field name="cvor_extraction_confidence" readonly="1"/>
+                                    <field name="cvor_extraction_method" readonly="1"/>
+                                    <field name="cvor_extraction_mismatch" readonly="1"/>
+                                    <field name="cvor_extraction_reason" readonly="1"/>
+                                    <field name="cvor_extraction_candidates" readonly="1"/>
+                                    <field name="cvor_extraction_source_document_id"
+                                           readonly="1"/>
+                                    <field name="cvor_extraction_checked_on" readonly="1"/>
+                                    <button name="action_extract_cvor" type="object"
+                                            string="Extract CVOR number"
+                                            class="btn-link"/>
+                                    <button name="action_preview_cvor_source"
+                                            type="object" string="Preview source"
+                                            class="btn-link"
+                                            invisible="not cvor_extraction_source_document_id"/>
+                                    <button name="action_confirm_cvor_extraction"
+                                            type="object" string="Confirm proposed number"
+                                            class="btn-link"
+                                            invisible="not cvor_proposed_number or cvor_extraction_status == 'confirmed'"/>
+                                    <button name="action_reject_cvor_extraction"
+                                            type="object" string="Reject proposal"
+                                            class="btn-link"
+                                            invisible="not cvor_proposed_number or cvor_extraction_status == 'rejected'"/>
+                                </group>
+                                <group string="Canadian TDG certificate (reviewer)">
+                                    <field name="tdg_certificate_result"
+                                           widget="badge"
+                                           decoration-success="tdg_certificate_result == 'verified'"
+                                           decoration-danger="tdg_certificate_result == 'rejected'"
+                                           decoration-secondary="tdg_certificate_result == 'pending'"/>
+                                    <field name="tdg_certificate_issuer"/>
+                                    <field name="tdg_certificate_issue_date"/>
+                                    <field name="tdg_certificate_expiry_date"/>
+                                    <field name="tdg_certificate_activities"/>
+                                    <field name="tdg_certificate_verified_on" readonly="1"/>
+                                    <field name="tdg_certificate_verified_by" readonly="1"/>
+                                    <button name="action_open_tdg_certificate" type="object"
+                                            string="Open / upload TDG certificate"
+                                            class="btn-link"/>
+                                    <button name="action_verify_tdg_certificate" type="object"
+                                            string="Verify TDG certificate"
+                                            class="btn-link"
+                                            invisible="tdg_certificate_result == 'verified' or tdg_status != 'current'"/>
+                                    <button name="action_reject_tdg_certificate" type="object"
+                                            string="Reject TDG certificate"
+                                            class="btn-link"
+                                            invisible="tdg_certificate_result == 'rejected'"/>
                                 </group>
                                 <group string="Insurance agent (legacy — not collected on the public form)">
                                     <field name="insurance_agent_name" readonly="1"/>

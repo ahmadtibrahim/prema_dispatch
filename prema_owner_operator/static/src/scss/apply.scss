@@ -78,6 +78,20 @@
         gap: 12px 16px;
     }
     .o_oo_span2 { grid-column: 1 / -1; }
+    .o_oo_subcard {
+        grid-column: 1 / -1;
+        border: 1px solid #eef1f6;
+        border-radius: 8px;
+        padding: 12px 14px;
+        margin-bottom: 4px;
+        background: #fbfcfe;
+    }
+    .o_oo_tdg_help {
+        margin: 4px 0 10px;
+        font-size: 12px;
+        color: #5a6779;
+    }
+    .o_oo_tdg_help summary { cursor: pointer; font-weight: 600; }
     .o_oo_field {
         display: flex;
         flex-direction: column;

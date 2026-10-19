@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data noupdate="1">
+        <record id="tdg_class_1" model="prema.owner.operator.tdg.class">
+            <field name="code">1</field>
+            <field name="name">Class 1 — Explosives</field>
+            <field name="sequence">1</field>
+        </record>
+        <record id="tdg_class_2" model="prema.owner.operator.tdg.class">
+            <field name="code">2</field>
+            <field name="name">Class 2 — Gases</field>
+            <field name="sequence">2</field>
+        </record>
+        <record id="tdg_class_3" model="prema.owner.operator.tdg.class">
+            <field name="code">3</field>
+            <field name="name">Class 3 — Flammable liquids</field>
+            <field name="sequence">3</field>
+        </record>
+        <record id="tdg_class_4" model="prema.owner.operator.tdg.class">
+            <field name="code">4</field>
+            <field name="name">Class 4 — Flammable solids</field>
+            <field name="sequence">4</field>
+        </record>
+        <record id="tdg_class_5" model="prema.owner.operator.tdg.class">
+            <field name="code">5</field>
+            <field name="name">Class 5 — Oxidizers / organic peroxides</field>
+            <field name="sequence">5</field>
+        </record>
+        <record id="tdg_class_6" model="prema.owner.operator.tdg.class">
+            <field name="code">6</field>
+            <field name="name">Class 6 — Toxic / infectious substances</field>
+            <field name="sequence">6</field>
+        </record>
+        <record id="tdg_class_7" model="prema.owner.operator.tdg.class">
+            <field name="code">7</field>
+            <field name="name">Class 7 — Radioactive materials</field>
+            <field name="sequence">7</field>
+        </record>
+        <record id="tdg_class_8" model="prema.owner.operator.tdg.class">
+            <field name="code">8</field>
+            <field name="name">Class 8 — Corrosives</field>
+            <field name="sequence">8</field>
+        </record>
+        <record id="tdg_class_9" model="prema.owner.operator.tdg.class">
+            <field name="code">9</field>
+            <field name="name">Class 9 — Miscellaneous dangerous goods</field>
+            <field name="sequence">9</field>
+        </record>
+    </data>
+</odoo>

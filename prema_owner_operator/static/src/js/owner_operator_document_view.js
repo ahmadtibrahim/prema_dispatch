@@ -80,35 +80,67 @@ export class OwnerOperatorDocumentView extends Component {
     }
 
     get file() {
-        return {
-            filename: this.fileName,
+        return this._fileFor({
+            id: this.documentId,
             name: this.fileName,
-            displayName: this.fileName,
             mimetype: this.mimetype,
-            isImage: this.isImage,
-            isPdf: this.isPdf,
-            isViewable: true,
-            defaultSource: this.fileSource,
-            downloadUrl: this.downloadRoute,
+        });
+    }
+
+    _fileFor(item) {
+        const mimetype = item.mimetype || "";
+        const isPdf = mimetype.startsWith("application/pdf");
+        const isImage = mimetype.startsWith("image/");
+        const route = `/owner_operator/document/${item.id}`;
+        const source = isPdf
+            ? `/web/static/lib/pdfjs/web/viewer.html?file=${encodeURIComponent(
+                  url(route)
+              )}#pagemode=none`
+            : url(route);
+        return {
+            id: item.id,
+            filename: item.name,
+            name: item.name,
+            displayName: item.name,
+            mimetype,
+            isImage,
+            isPdf,
+            isViewable: isPdf || isImage,
+            defaultSource: source,
+            downloadUrl: url(route, { download: 1 }),
         };
     }
 
-    onClick() {
+    async onClick() {
         if (!this.hasFile || !this.documentId) {
             return;
         }
-        if (this.isPreviewable) {
-            this.fileViewer.open(this.file);
+        if (!this.isPreviewable) {
+            const link = document.createElement("a");
+            link.href = this.file.downloadUrl;
+            link.download = this.fileName;
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
             return;
         }
-        // Unsupported formats are offered as a download through the same
-        // private route; the server also forces attachment disposition.
-        const link = document.createElement("a");
-        link.href = this.downloadRoute;
-        link.download = this.fileName;
-        document.body.appendChild(link);
-        link.click();
-        link.remove();
+        let files = [];
+        try {
+            const siblings = await this.env.services.orm.call(
+                "prema.owner.operator.document",
+                "_viewer_files",
+                [this.documentId]
+            );
+            files = (siblings || []).map((item) => this._fileFor(item));
+        } catch (error) {
+            files = [];
+        }
+        const current = files.find((file) => file.id === this.documentId);
+        if (current) {
+            this.fileViewer.open(current, files);
+        } else {
+            this.fileViewer.open(this.file);
+        }
     }
 }
 

@@ -51,6 +51,11 @@
                             <field name="oo_licence_suspension" readonly="1"/>
                             <field name="oo_commercial_driving_experience" readonly="1"/>
                             <field name="oo_owner_operator_experience" readonly="1"/>
+                            <field name="oo_tdg_status" readonly="1"/>
+                            <field name="oo_tdg_class_ids"
+                                   widget="many2many_tags" readonly="1"/>
+                            <field name="oo_tdg_special_training" readonly="1"/>
+                            <field name="oo_tdg_certificate_result" readonly="1"/>
                             <field name="oo_tdg_training" readonly="1"/>
                         </group>
                     </group>
@@ -149,6 +154,8 @@
                         <group string="CVOR (manual review)">
                             <field name="oo_cvor_number" readonly="1"/>
                             <field name="oo_cvor_verification_status" readonly="1"/>
+                            <field name="oo_cvor_extraction_status" readonly="1"/>
+                            <field name="oo_cvor_proposed_number" readonly="1"/>
                         </group>
                         <group string="Insurance agent (legacy)">
                             <field name="oo_insurance_agent_name" readonly="1"/>

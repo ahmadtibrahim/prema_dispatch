@@ -5,6 +5,11 @@
         <field name="model">prema.owner.operator.document</field>
         <field name="arch" type="xml">
             <form string="Application Document">
+                <header>
+                    <button name="action_open_upload_wizard" type="object"
+                            string="Upload / replace file"
+                            class="btn-secondary"/>
+                </header>
                 <sheet>
                     <div class="oe_title">
                         <h1><field name="name" readonly="1"/></h1>
@@ -44,5 +49,31 @@
         <field name="name">Application Documents</field>
         <field name="res_model">prema.owner.operator.document</field>
         <field name="view_mode">list,form</field>
+    </record>
+
+    <record id="action_owner_operator_document_upload" model="ir.actions.act_window">
+        <field name="name">Upload document</field>
+        <field name="res_model">prema.owner.operator.document.upload</field>
+        <field name="view_mode">form</field>
+        <field name="target">new</field>
+    </record>
+
+    <record id="view_owner_operator_document_upload_form" model="ir.ui.view">
+        <field name="name">prema.owner.operator.document.upload.form</field>
+        <field name="model">prema.owner.operator.document.upload</field>
+        <field name="arch" type="xml">
+            <form string="Upload document">
+                <group>
+                    <field name="document_id" readonly="1"/>
+                    <field name="filename"/>
+                    <field name="file" filename="filename"/>
+                </group>
+                <footer>
+                    <button name="action_upload" type="object" string="Upload"
+                            class="btn-primary"/>
+                    <button special="cancel" string="Cancel"/>
+                </footer>
+            </form>
+        </field>
     </record>
 </odoo>

@@ -8,6 +8,7 @@ or vehicle is only ever linked through an id stored on this record, and a VIN
 that already belongs to someone else stops the approval for manual review.
 """
 import base64
+import logging
 import re
 
 from odoo import _, api, fields, models
@@ -16,6 +17,8 @@ from odoo.exceptions import AccessError, UserError, ValidationError
 from ..application_mapping import (
     CARGO_BODIES, PROVINCES, REQUIRED_INTERNAL, TRAILER_TYPES, VEHICLE_TYPES,
     normalise_public, parse_other_information, split_plate_jurisdiction)
+
+_logger = logging.getLogger(__name__)
 
 # Ordered so the checklist reads the way the process runs.
 DOCUMENT_TYPES = [
@@ -30,6 +33,7 @@ DOCUMENT_TYPES = [
     ("photo_cargo_interior", "Truck photo — cargo interior"),
     ("licence_front", "Driver licence — front"),
     ("licence_back", "Driver licence — back"),
+    ("tdg_certificate", "Canadian TDG training certificate"),
     ("signed_agreement", "Signed agreement / NDA"),
     ("other", "Other document"),
 ]
@@ -65,6 +69,7 @@ DOCUMENT_STAGE = {
     "photo_cargo_interior": "initial",
     "licence_front": "qualification",
     "licence_back": "qualification",
+    "tdg_certificate": "qualification",
     "coi_insurer": "qualification",
     "signed_agreement": "contract",
 }
@@ -192,7 +197,9 @@ SUBMISSION_FIELDS = {
     "licence_class", "licence_jurisdiction", "licence_province",
     "owner_operator_experience",
     "licence_suspension", "recent_collisions", "recent_convictions",
-    "tdg_training", "recent_driving_work", "vehicle_type", "equipment_model",
+    "tdg_training", "tdg_status", "tdg_class_codes",
+    "tdg_special_training", "recent_driving_work", "vehicle_type",
+    "equipment_model",
     "truck_make", "truck_model", "gvwr_lbs",
     "truck_year", "unit_number", "vehicle_ownership", "transmission",
     "odometer_km", "truck_plate_jurisdiction", "license_plate",
@@ -305,6 +312,36 @@ class OwnerOperatorDocument(models.Model):
     def action_reject(self):
         self.write({"status": "rejected"})
         return True
+
+    def action_open_upload_wizard(self):
+        self.ensure_one()
+        return {
+            "type": "ir.actions.act_window",
+            "name": _("Upload document"),
+            "res_model": "prema.owner.operator.document.upload",
+            "view_mode": "form",
+            "target": "new",
+            "context": {"default_document_id": self.id},
+        }
+
+    @api.model
+    def _viewer_files(self, document_id):
+        """Viewable sibling files for the SAME application only."""
+        doc = self.browse(document_id).exists()
+        if not doc or not doc.application_id:
+            return []
+        siblings = self.search([
+            ("application_id", "=", doc.application_id.id),
+            ("attachment_id", "!=", False),
+            ("status", "in", ("received", "verified")),
+        ], order="document_type, id")
+        return [
+            {"id": sibling.id, "name": sibling.name,
+             "mimetype": sibling.mimetype or ""}
+            for sibling in siblings
+            if (sibling.mimetype or "").startswith(
+                ("application/pdf", "image/"))
+        ]
 
 
 class OwnerOperatorApplication(models.Model):
@@ -505,7 +542,35 @@ class OwnerOperatorApplication(models.Model):
         ("yes", "Current certificate"),
         ("no", "No"),
         ("expired", "Expired / renewal needed")],
-        string="Dangerous goods training")
+        string="Dangerous goods training (legacy)")
+    tdg_status = fields.Selection([
+        ("current", "Current Canadian TDG road training certificate"),
+        ("expired", "Expired / renewal needed"),
+        ("none", "No TDG training"),
+    ], default="none", required=True, string="TDG training status")
+    tdg_class_ids = fields.Many2many(
+        "prema.owner.operator.tdg.class",
+        "prema_oo_app_tdg_class_rel", "application_id", "class_id",
+        string="TDG classes covered")
+    tdg_special_training = fields.Text(
+        string="Special TDG training / experience",
+        help="Only if the certificate actually covers it (for example "
+             "bulk/tank transport or spill response).")
+    tdg_certificate_issuer = fields.Char(string="TDG certificate issuer")
+    tdg_certificate_issue_date = fields.Date(string="TDG certificate issued")
+    tdg_certificate_expiry_date = fields.Date(
+        string="TDG certificate expires")
+    tdg_certificate_activities = fields.Text(
+        string="TDG certificate activities / classes",
+        help="What the certificate itself says the holder is trained for.")
+    tdg_certificate_result = fields.Selection([
+        ("pending", "Pending review"),
+        ("verified", "Verified"),
+        ("rejected", "Rejected"),
+    ], default="pending", required=True, string="TDG certificate review")
+    tdg_certificate_verified_on = fields.Datetime(readonly=True, copy=False)
+    tdg_certificate_verified_by = fields.Many2one(
+        "res.users", readonly=True, copy=False)
     recent_driving_work = fields.Text(string="Recent driving work / clients")
 
     vehicle_type = fields.Selection([
@@ -596,6 +661,30 @@ class OwnerOperatorApplication(models.Model):
         ("rejected", "Rejected"),
     ], default="not_provided", required=True,
         help="Formatting the number is NOT authority verification.")
+    cvor_extraction_status = fields.Selection([
+        ("pending", "Not processed"),
+        ("done", "Number proposed"),
+        ("review", "Review required"),
+        ("failed", "Unreadable / no number"),
+        ("confirmed", "Reviewer confirmed"),
+        ("rejected", "Reviewer rejected"),
+    ], default="pending", required=True, copy=False)
+    cvor_proposed_number = fields.Char(
+        string="Proposed CVOR number (extraction)", copy=False)
+    cvor_extraction_confidence = fields.Float(
+        string="Extraction confidence", copy=False)
+    cvor_extraction_method = fields.Char(copy=False)
+    cvor_extraction_reason = fields.Text(copy=False)
+    cvor_extraction_candidates = fields.Text(
+        string="Plausible numbers found", copy=False)
+    cvor_extraction_source_attachment_id = fields.Many2one(
+        "ir.attachment", string="Extraction source file", copy=False)
+    cvor_extraction_source_document_id = fields.Many2one(
+        "prema.owner.operator.document", string="Extraction source checklist",
+        copy=False)
+    cvor_extraction_checked_on = fields.Datetime(copy=False)
+    cvor_extraction_mismatch = fields.Boolean(
+        string="Differs from entered CVOR", copy=False)
     insurance_agent_name = fields.Char(string="Insurance agent / broker")
     insurance_agent_email = fields.Char(string="Insurance agent email")
 
@@ -760,9 +849,12 @@ class OwnerOperatorApplication(models.Model):
                    "photo_left", "photo_right", "photo_cargo_interior"]
         if not self.is_sole_proprietor:
             initial.append("business_registration")
+        qualification = ["licence_front", "licence_back", "coi_insurer"]
+        if self.tdg_status == "current":
+            qualification.append("tdg_certificate")
         return {
             "initial": initial,
-            "qualification": ["licence_front", "licence_back", "coi_insurer"],
+            "qualification": qualification,
             "contract": ["signed_agreement"],
         }
 
@@ -1125,6 +1217,21 @@ class OwnerOperatorApplication(models.Model):
                     "work_preference"].convert_to_cache(
                         prefs[0].code, self)
 
+        tdg_codes = vals.get("tdg_class_codes") or []
+        if tdg_codes:
+            classes = self.env["prema.owner.operator.tdg.class"].search(
+                [("code", "in", [str(c) for c in tdg_codes])])
+            write_vals["tdg_class_ids"] = [(6, 0, classes.ids)]
+        elif "tdg_status" in vals and not only_empty:
+            write_vals["tdg_class_ids"] = [(5, 0, 0)]
+        status = vals.get("tdg_status")
+        if status:
+            legacy_tdg = {
+                "current": "yes", "expired": "expired", "none": "no",
+            }.get(status, self.tdg_training)
+            if not only_empty or self.tdg_training != legacy_tdg:
+                write_vals["tdg_training"] = legacy_tdg
+
         provided = dict(self.equipment_provided or {})
         provided.update(vals.get("equipment_provided") or {})
         if provided != (self.equipment_provided or {}):
@@ -1201,6 +1308,8 @@ class OwnerOperatorApplication(models.Model):
                 } for app in self
             }
         res = super().write(vals)
+        if "tdg_status" in vals:
+            self._ensure_checklist()
         if tracked and not self.env.context.get("oo_skip_notification_log"):
             for app in self:
                 app._log_notification_change(before.get(app.id, {}))
@@ -1818,6 +1927,179 @@ class OwnerOperatorApplication(models.Model):
     def action_reject_cvor(self):
         self.write({"cvor_verification_status": "rejected"})
         return True
+
+    # ------------------------------------------------------------------
+    # TDG certificate review (self-selection never authorizes dispatch)
+    # ------------------------------------------------------------------
+    def action_verify_tdg_certificate(self):
+        self.ensure_one()
+        if not self._is_verification_reviewer():
+            raise AccessError(_("Not available to this user."))
+        if self.tdg_status != "current":
+            raise UserError(_("The applicant did not declare current TDG training."))
+        doc = self.document_ids.filtered(
+            lambda d: d.document_type == "tdg_certificate"
+            and d.attachment_id)[:1]
+        if not doc:
+            raise UserError(_("Upload the TDG certificate before verifying it."))
+        if not (self.tdg_certificate_issuer or "").strip():
+            raise UserError(_("Enter the certificate issuer."))
+        if not self.tdg_certificate_expiry_date:
+            raise UserError(_("Enter the certificate expiry date."))
+        if self.tdg_certificate_expiry_date < fields.Date.context_today(self):
+            raise UserError(_("That TDG certificate is expired."))
+        self.write({
+            "tdg_certificate_result": "verified",
+            "tdg_certificate_verified_on": fields.Datetime.now(),
+            "tdg_certificate_verified_by": self.env.user.id,
+        })
+        self.message_post(
+            body=_("TDG certificate verified by %s.") % self.env.user.name,
+            subtype_xmlid="mail.mt_note")
+        return True
+
+    def action_reject_tdg_certificate(self):
+        self.ensure_one()
+        if not self._is_verification_reviewer():
+            raise AccessError(_("Not available to this user."))
+        self.write({
+            "tdg_certificate_result": "rejected",
+            "tdg_certificate_verified_on": fields.Datetime.now(),
+            "tdg_certificate_verified_by": self.env.user.id,
+        })
+        return True
+
+    def action_open_tdg_certificate(self):
+        self.ensure_one()
+        doc = self.document_ids.filtered(
+            lambda d: d.document_type == "tdg_certificate")[:1]
+        if not doc:
+            doc = self.env["prema.owner.operator.document"].sudo().create({
+                "application_id": self.id,
+                "document_type": "tdg_certificate",
+                "source": "applicant",
+            })
+        return {
+            "type": "ir.actions.act_window",
+            "name": _("TDG certificate"),
+            "res_model": "prema.owner.operator.document",
+            "res_id": doc.id,
+            "view_mode": "form",
+            "target": "current",
+        }
+
+    # ------------------------------------------------------------------
+    # CVOR extraction (proposal only; never authority verification)
+    # ------------------------------------------------------------------
+    def _cvor_source_document(self):
+        self.ensure_one()
+        return self.document_ids.filtered(
+            lambda d: d.document_type == "cvor" and d.attachment_id)[:1]
+
+    def action_extract_cvor(self, force=False):
+        self.ensure_one()
+        doc = self._cvor_source_document()
+        if not doc:
+            self.write({
+                "cvor_extraction_status": "failed",
+                "cvor_extraction_reason": _("No CVOR certificate attached."),
+                "cvor_extraction_checked_on": fields.Datetime.now(),
+            })
+            return False
+        attachment = doc.attachment_id
+        if (not force
+                and self.cvor_extraction_source_attachment_id == attachment
+                and self.cvor_extraction_status in (
+                    "done", "review", "failed", "confirmed", "rejected")):
+            return False
+        text, method = "", "none"
+        try:
+            from odoo.addons.premafirm_ai_engine.services.document_extractor \
+                import extract_text
+            text, method = extract_text(
+                attachment.raw or b"", attachment.mimetype or "",
+                attachment.name or "")
+        except Exception:  # noqa: BLE001 — extraction must never lose the file
+            _logger.warning("CVOR extraction failed", exc_info=True)
+        candidates = []
+        seen = set()
+        for match in re.finditer(
+                r"(?<!\d)(\d{3})[\s\-]?(\d{3})[\s\-]?(\d{3})(?!\d)", text or ""):
+            digits = "".join(match.groups())
+            if digits not in seen:
+                seen.add(digits)
+                candidates.append(digits)
+        confidence = {"pdf_text": 0.9, "pdf_ocr": 0.6,
+                      "image_ocr": 0.6}.get(method, 0.0)
+        entered = re.sub(r"\D", "", self.cvor_number or "")
+        proposed = candidates[0] if candidates else False
+        reasons = []
+        status = "done"
+        if not text or method == "none":
+            status = "failed"
+            reasons.append(_("No readable text could be extracted."))
+            confidence = 0.0
+        elif not candidates:
+            status = "failed"
+            reasons.append(_("No nine-digit CVOR number was found."))
+        elif len(candidates) > 1:
+            status = "review"
+            reasons.append(_("Multiple plausible numbers were found."))
+        elif entered and entered != proposed:
+            status = "review"
+            reasons.append(_("The extracted number differs from the "
+                             "applicant-entered number."))
+        if candidates and confidence and confidence < 0.7:
+            status = "review"
+            reasons.append(_("Low-confidence OCR result."))
+        self.write({
+            "cvor_extraction_status": status,
+            "cvor_proposed_number": proposed and "%s-%s-%s" % (
+                proposed[:3], proposed[3:6], proposed[6:]),
+            "cvor_extraction_confidence": confidence,
+            "cvor_extraction_method": method,
+            "cvor_extraction_reason": "\n".join(reasons) or False,
+            "cvor_extraction_candidates": "\n".join(
+                "%s-%s-%s" % (c[:3], c[3:6], c[6:]) for c in candidates)
+                or False,
+            "cvor_extraction_source_attachment_id": attachment.id,
+            "cvor_extraction_source_document_id": doc.id,
+            "cvor_extraction_checked_on": fields.Datetime.now(),
+            "cvor_extraction_mismatch": bool(
+                entered and proposed and entered != proposed),
+        })
+        return True
+
+    def action_confirm_cvor_extraction(self):
+        self.ensure_one()
+        if not self.cvor_proposed_number:
+            raise UserError(_("There is no proposed CVOR number to confirm."))
+        if self.cvor_verification_status == "verified":
+            raise UserError(_(
+                "The CVOR is already verified. Reset verification before "
+                "replacing the number."))
+        self.write({
+            "cvor_number": self.cvor_proposed_number,
+            "cvor_verification_status": "pending",
+            "cvor_extraction_status": "confirmed",
+        })
+        return True
+
+    def action_reject_cvor_extraction(self):
+        self.ensure_one()
+        self.write({"cvor_extraction_status": "rejected"})
+        return True
+
+    def action_preview_cvor_source(self):
+        self.ensure_one()
+        if not self.cvor_extraction_source_document_id:
+            raise UserError(_("Run CVOR extraction first."))
+        return {
+            "type": "ir.actions.act_url",
+            "url": "/owner_operator/document/%d"
+            % self.cvor_extraction_source_document_id.id,
+            "target": "new",
+        }
 
     # ------------------------------------------------------------------
     # contract (Odoo Sign) — blocked while no approved template exists
@@ -2543,6 +2825,11 @@ class OwnerOperatorApplication(models.Model):
             raise UserError(_(
                 "This application cannot be approved yet — missing documents, "
                 "signature or compliance."))
+        if self.tdg_status == "current" \
+                and self.tdg_certificate_result != "verified":
+            raise UserError(_(
+                "Verify the Canadian TDG certificate before approval; "
+                "self-declared TDG training is not enough."))
         if not self._vin_clear():
             raise UserError(_(
                 "This VIN is already attached to other equipment or another "
