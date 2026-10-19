@@ -382,6 +382,15 @@ class TestDocumentPermissionsAudit(HttpCase):
                 self.env.ref("fleet.fleet_group_user").id,
             ])],
         })
+        self.fleet_manager = self.env["res.users"].create({
+            "name": "Fleet Manager",
+            "login": "fleet-%s" % uuid.uuid4().hex[:8],
+            "password": "Fleet#123",
+            "groups_id": [(6, 0, [
+                self.env.ref("base.group_user").id,
+                self.env.ref("fleet.fleet_group_manager").id,
+            ])],
+        })
 
     def test_onboarding_reviewer_has_scoped_documents_only(self):
         self.assertFalse(self.reviewer.has_group(
@@ -391,6 +400,12 @@ class TestDocumentPermissionsAudit(HttpCase):
         self.assertFalse(self.reviewer.has_group(
             "prema_logistics_booking.group_logistics_pricing_manager"))
         self.doc.with_user(self.reviewer).check_access("read")
+        # A Fleet manager keeps their existing company-wide document access
+        # AND can read the operator-linked copies.
+        self.assertFalse(self.fleet_manager.has_group(
+            "documents.group_documents_user"))
+        self.doc.with_user(self.fleet_manager).check_access("read")
+        self.unrelated.with_user(self.fleet_manager).check_access("read")
         for record, user, label in (
                 (self.unrelated, self.reviewer, "reviewer/unrelated"),
                 (self.doc, self.unrelated_user, "unrelated/user-doc")):
