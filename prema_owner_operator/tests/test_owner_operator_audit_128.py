@@ -287,6 +287,35 @@ class TestCOIApprovalChain(OwnerOperatorCase):
             self.assertFalse(self.env["fleet.vehicle"].search(
                 [("application_id", "=", app.id)]), label)
 
+    def test_hr_manager_can_move_applicant_without_owner_group(self):
+        app = self.Application._create_from_public(self._public_vals(
+            email="hrmgr-%s@test.invalid" % uuid.uuid4().hex[:8]))
+        app._ensure_checklist()
+        app.write({
+            "licence_expiry": fields.Date.add(
+                fields.Date.context_today(app), years=2),
+            "home_province_code": "ON", "home_province": "Ontario",
+        })
+        manager = self.env["res.users"].create({
+            "name": "HR Manager",
+            "login": "hrmgr-%s" % uuid.uuid4().hex[:8],
+            "email": "hrmgr-%s@test.invalid" % uuid.uuid4().hex[:8],
+            "password": "HrManager#123",
+            "groups_id": [(6, 0, [
+                self.env.ref("base.group_user").id,
+                self.env.ref(
+                    "hr_recruitment.group_hr_recruitment_manager").id,
+            ])],
+        })
+        self.assertFalse(manager.has_group(
+            "prema_owner_operator.group_owner_operator"))
+        app.hr_applicant_id.with_user(manager).write(
+            {"stage_id": self.authority.id})
+        app.invalidate_recordset()
+        self.assertEqual(app.hr_applicant_id.stage_id, self.authority)
+        self.assertTrue(app.coi_request_sent_at)
+        self.assertTrue(app.message_ids)
+
 
 @tagged("post_install", "-at_install")
 class TestCargoHeightContract(OwnerOperatorCase):
