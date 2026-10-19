@@ -59,10 +59,12 @@ class OwnerOperatorController(http.Controller):
     # guards
     # ------------------------------------------------------------------
     def _require_reviewer(self):
-        if not http.request.env.user.has_group(
-                "prema_owner_operator.group_owner_operator"):
+        user = http.request.env.user
+        if not (user.has_group("prema_owner_operator.group_owner_operator")
+                or user.has_group(
+                    "hr_recruitment.group_hr_recruitment_manager")):
             raise AccessError(_("Not available to this user."))
-        return http.request.env.user
+        return user
 
     def _throttled(self, key):
         now = time.time()
@@ -194,6 +196,35 @@ class OwnerOperatorController(http.Controller):
     # ------------------------------------------------------------------
     # private document delivery
     # ------------------------------------------------------------------
+    @http.route("/owner_operator/coi_version/<int:version_id>", type="http",
+                auth="user", website=False, csrf=False, sitemap=False)
+    def coi_version(self, version_id, download=0, **kw):
+        """Private delivery for a stored COI version (current or historical)."""
+        self._require_reviewer()
+        version = http.request.env[
+            "prema.owner.operator.coi.version"].browse(version_id)
+        if not version.exists() or not version.attachment_id:
+            raise NotFound()
+        try:
+            version.check_access("read")
+            version.application_id.check_access("read")
+        except AccessError:
+            raise NotFound()
+        attachment = version.attachment_id.sudo()
+        filename = attachment.name or "coi"
+        previewable = (attachment.mimetype or "").startswith(
+            ("application/pdf", "image/"))
+        wants_download = str(download).lower() not in ("", "0", "false", "none")
+        disposition = "inline" if previewable and not wants_download \
+            else "attachment"
+        return http.request.make_response(attachment.raw or b"", headers=[
+            ("Content-Type", attachment.mimetype or "application/octet-stream"),
+            ("Content-Disposition", "%s; filename=\"%s\"" % (
+                disposition, filename.replace('"', ""))),
+            ("X-Content-Type-Options", "nosniff"),
+            ("Cache-Control", "private, no-store"),
+        ])
+
     @http.route("/owner_operator/document/<int:document_id>", type="http",
                 auth="user", website=False, csrf=False, sitemap=False)
     def document(self, document_id, download=0, **kw):

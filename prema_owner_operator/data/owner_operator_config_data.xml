@@ -63,6 +63,18 @@
             <field name="key">prema_owner_operator.coi_min_cargo</field>
             <field name="value">0</field>
         </record>
+        <record id="param_coi_min_ai_confidence" model="ir.config_parameter">
+            <field name="key">prema_owner_operator.coi_min_ai_confidence</field>
+            <field name="value">0</field>
+        </record>
+        <record id="param_coi_holder_name" model="ir.config_parameter">
+            <field name="key">prema_owner_operator.coi_certificate_holder_name</field>
+            <field name="value">PremaFirm Inc.</field>
+        </record>
+        <record id="param_coi_holder_address" model="ir.config_parameter">
+            <field name="key">prema_owner_operator.coi_certificate_holder_address</field>
+            <field name="value">994 Westport Cres, Unit 7A, Mississauga, ON L5T 1G1, Canada</field>
+        </record>
         <record id="param_trusted_insurer_domains" model="ir.config_parameter">
             <field name="key">prema_owner_operator.trusted_insurer_domains</field>
             <field name="value"></field>

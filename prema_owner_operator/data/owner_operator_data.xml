@@ -26,6 +26,16 @@
         <field name="active" eval="True"/>
     </record>
 
+    <record id="ir_cron_extract_coi" model="ir.cron">
+        <field name="name">Owner-operator: extract COI documents</field>
+        <field name="model_id" ref="model_prema_owner_operator_coi_version"/>
+        <field name="state">code</field>
+        <field name="code">model._cron_extract_coi()</field>
+        <field name="interval_number">5</field>
+        <field name="interval_type">minutes</field>
+        <field name="active" eval="True"/>
+    </record>
+
     <record id="ir_cron_sync_signatures" model="ir.cron">
         <field name="name">Owner-operator: sync signatures</field>
         <field name="model_id" ref="model_prema_owner_operator_application"/>

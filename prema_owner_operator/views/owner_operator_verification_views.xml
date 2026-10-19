@@ -23,8 +23,8 @@
         <field name="arch" type="xml">
             <form string="Verification Email" create="false" edit="true">
                 <header>
-                    <button name="action_manual_attach" type="object"
-                            string="Attach certificate to application"
+                    <button name="action_match_to_application" type="object"
+                            string="Match to Application"
                             class="btn-primary"
                             invisible="not matched_application_id or state == 'manual'"/>
                     <field name="state" widget="statusbar"
@@ -53,7 +53,21 @@
                         <field name="to_headers" readonly="1"/>
                         <field name="cc_headers" readonly="1"/>
                         <field name="references_header" readonly="1"/>
+                        <field name="authentication_headers" readonly="1"/>
                         <field name="raw_headers" readonly="1"/>
+                    </group>
+                    <group string="Stored COI versions">
+                        <field name="coi_version_ids" readonly="1">
+                            <list>
+                                <field name="received_date"/>
+                                <field name="source"/>
+                                <field name="is_current"/>
+                                <field name="effective_date"/>
+                                <field name="expiry_date"/>
+                                <field name="file_name"/>
+                                <field name="sha256"/>
+                            </list>
+                        </field>
                     </group>
                     <notebook>
                         <page string="Body">

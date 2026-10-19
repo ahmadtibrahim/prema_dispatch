@@ -15,6 +15,9 @@
                         type="object" string="Owner-Operator Application"
                         class="btn-primary"
                         invisible="not owner_operator_application_id"/>
+                <button name="action_open_coi_emails" type="object"
+                        string="Insurance Email" icon="fa-envelope"
+                        invisible="not owner_operator_application_id"/>
             </xpath>
 
             <xpath expr="//field[@name='linkedin_profile']" position="attributes">
@@ -142,6 +145,16 @@
                         <field name="oo_missing_verification" readonly="1"/>
                         <field name="oo_home_base_tag_issue" readonly="1"/>
                     </group>
+                    <group string="Insurance verification">
+                        <field name="oo_verification_status" widget="badge"
+                               decoration-success="oo_verification_status == 'verified'"
+                               decoration-danger="oo_verification_status == 'review'"
+                               decoration-secondary="oo_verification_status == 'pending'"/>
+                        <field name="oo_verification_reasons" readonly="1"/>
+                        <field name="oo_coi_email_count" readonly="1"/>
+                        <button name="action_open_coi_emails" type="object"
+                                string="Insurance Email" class="btn-link"/>
+                    </group>
                     <group string="Insurer-direct COI request">
                         <field name="oo_coi_request_sent_at" readonly="1"/>
                         <field name="oo_coi_request_count" readonly="1"/>
@@ -170,6 +183,42 @@
                         <field name="oo_approved_on" readonly="1"/>
                     </group>
                 </page>
+            </xpath>
+        </field>
+    </record>
+
+    <!-- Owner-operator verification badge on the applicant kanban card. -->
+    <record id="view_hr_applicant_kanban_owner_operator" model="ir.ui.view">
+        <field name="name">hr.applicant.kanban.owner_operator</field>
+        <field name="model">hr.applicant</field>
+        <field name="inherit_id" ref="hr_recruitment.hr_kanban_view_applicant"/>
+        <field name="arch" type="xml">
+            <xpath expr="//kanban" position="attributes">
+                <attribute name="decoration-danger">oo_verification_status == 'review'</attribute>
+            </xpath>
+            <xpath expr="//kanban" position="inside">
+                <field name="oo_verification_status"/>
+                <field name="oo_verification_reasons"/>
+                <field name="oo_coi_email_count"/>
+            </xpath>
+            <xpath expr="//t[@t-name='card']" position="inside">
+                <div t-if="record.oo_verification_status.raw_value == 'review'"
+                     class="border border-danger border-2 rounded p-1 mb-1">
+                    <field name="oo_verification_status" widget="badge"
+                           decoration-danger="True"/>
+                    <div class="small text-danger mt-1"
+                         t-esc="record.oo_verification_reasons.raw_value"/>
+                </div>
+                <div t-elif="record.oo_verification_status.raw_value == 'verified'"
+                     class="mb-1">
+                    <field name="oo_verification_status" widget="badge"
+                           decoration-success="True"/>
+                </div>
+                <div t-elif="record.oo_verification_status.raw_value == 'pending'"
+                     class="mb-1">
+                    <field name="oo_verification_status" widget="badge"
+                           decoration-secondary="True"/>
+                </div>
             </xpath>
         </field>
     </record>

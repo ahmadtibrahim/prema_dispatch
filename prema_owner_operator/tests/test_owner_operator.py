@@ -29,15 +29,16 @@ class OwnerOperatorCase(TransactionCase):
                 "company_id": cls.env.company.id,
                 "alias_name": "owneroperators",
             })
-        # Production has the five owner-operator stages in this order. The
+        # Production has the six owner-operator stages in this order. The
         # staging copy can share a sequence between two stages, which makes
         # _next_stage skip one; normalise the test pipeline explicitly.
         Stage = cls.env["hr.recruitment.stage"]
         for seq, name in ((0, "New"),
                           (1, "Authority & Insurance Review"),
-                          (2, "Contract Proposal"),
-                          (3, "Contract Signed"),
-                          (4, "Approved — Ready for Dispatch")):
+                          (2, "Verified"),
+                          (3, "Contract Proposal"),
+                          (4, "Contract Signed"),
+                          (5, "Approved — Ready for Dispatch")):
             stage = Stage.search(
                 [("name", "=", name), ("job_ids", "in", cls.job.id)],
                 limit=1) or Stage.search([("name", "=", name)], limit=1)
@@ -923,7 +924,7 @@ class TestCOIRequest(OwnerOperatorCase):
 
     def _coi_mails(self, app):
         return self.env["mail.mail"].search([
-            ("subject", "ilike", "Insurance verification required"),
+            ("subject", "ilike", "Action Required: Certificate of Insurance"),
             ("subject", "ilike", app.name),
         ])
 
@@ -942,7 +943,6 @@ class TestCOIRequest(OwnerOperatorCase):
         self.assertIn("Canada", body)
         self.assertIn(app.business_name, body)
         self.assertIn(app.name, body)
-        self.assertIn(app.business_name, mail.subject)
         self.assertIn(app.name, mail.subject)
         self.assertIn(app.partner_id, mail.recipient_ids)
         self.assertEqual(app.partner_id.email, app.email)
@@ -1256,3 +1256,49 @@ class TestDocumentDelivery(HttpCase):
             "/owner_operator/document/%d" % doc.id, allow_redirects=False)
         self.assertIn(response.status_code, (301, 302, 303))
         self.assertIn("login", response.headers.get("Location", ""))
+
+    def _coi_version(self, data=b"%PDF-1.4\ncoi"):
+        doc = self._doc("coi_insurer", data, "application/pdf", "coi.pdf")
+        version = self.env["prema.owner.operator.coi.version"].sudo().create({
+            "application_id": self.app.id,
+            "document_id": doc.id,
+            "source": "insurer",
+            "is_direct": True,
+            "is_current": True,
+            "sender": "broker@insurer.test",
+            "received_date": fields.Datetime.now(),
+        })
+        attachment = self.env["ir.attachment"].create({
+            "name": "coi.pdf",
+            "raw": data,
+            "mimetype": "application/pdf",
+            "res_model": "prema.owner.operator.coi.version",
+            "res_id": version.id,
+            "public": False,
+        })
+        version.write({
+            "attachment_id": attachment.id,
+            "sha256": "a" * 64,
+        })
+        return version
+
+    def test_coi_version_is_private_inline_and_downloadable(self):
+        version = self._coi_version()
+        self.assertFalse(version.attachment_id.public)
+        self.authenticate(self.reviewer.login, "Reviewer#123")
+        response = self.url_open(
+            "/owner_operator/coi_version/%d" % version.id)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers.get("Content-Type"),
+                         "application/pdf")
+        self.assertIn("inline", response.headers.get("Content-Disposition"))
+        self.assertTrue(response.content.startswith(b"%PDF"))
+        download = self.url_open(
+            "/owner_operator/coi_version/%d?download=1" % version.id)
+        self.assertIn("attachment",
+                      download.headers.get("Content-Disposition"))
+        self.authenticate(self.outsider.login, "Outsider#123")
+        denied = self.url_open(
+            "/owner_operator/coi_version/%d" % version.id)
+        self.assertEqual(denied.status_code, 403)
+        self.assertNotIn(b"%PDF", denied.content)

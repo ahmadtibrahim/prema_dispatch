@@ -64,7 +64,14 @@ class OwnerOperatorVerification(models.Model):
     references_header = fields.Text(string="References")
     received_date = fields.Datetime(string="Received")
     raw_headers = fields.Text(string="Original headers")
+    authentication_headers = fields.Text(
+        string="Authentication headers",
+        help="SPF/DKIM/authentication headers when the mail gateway exposes "
+             "them; otherwise the original message remains in the chatter.")
     body = fields.Html(string="Email body")
+    coi_version_ids = fields.One2many(
+        "prema.owner.operator.coi.version", "verification_id",
+        string="COI versions", readonly=True)
 
     attachment_count = fields.Integer(compute="_compute_attachment_count")
     certificate_attachment_id = fields.Many2one(
@@ -107,6 +114,8 @@ class OwnerOperatorVerification(models.Model):
             "references_header": msg_dict.get("references"),
             "received_date": msg_dict.get("date") or fields.Datetime.now(),
             "raw_headers": self._header_block(msg_dict),
+            "authentication_headers": msg_dict.get("authentication_headers")
+            or "",
             "body": msg_dict.get("body"),
         }
         if isinstance(custom_values, dict):
@@ -254,14 +263,14 @@ class OwnerOperatorVerification(models.Model):
         if not certificates:
             self.write({"state": "no_certificate", "match_reason": _(
                 "Matched to %(app)s but the email has no PDF/image "
-                "certificate attachment. Nothing was attached and the "
-                "application did not advance.") % {"app": app.name}})
+                "certificate attachment. No COI version was stored.")
+                % {"app": app.name}})
+            app._set_verification_review([_("No COI attachment was received.")])
             self._post_to_application(
                 app, msg_dict,
                 _("Verification email received without a certificate "
-                  "attachment. No checklist change was made."))
-            self._schedule_application_activity(
-                app, _("Verification email has no certificate"))
+                  "attachment. The application stays in Authority & "
+                  "Insurance Review with REVIEW status."))
             return self
 
         applicant_emails = {
@@ -269,58 +278,106 @@ class OwnerOperatorVerification(models.Model):
             (app.partner_id.email or "").strip().lower(),
         } - {""}
         if sender in applicant_emails:
-            self.write({"state": "applicant_forwarded", "match_reason": _(
-                "Matched to %(app)s but the sender is the applicant. An "
-                "applicant-forwarded copy is not insurer-direct receipt and "
-                "did not advance the application.")
-                % {"app": app.name}})
+            versions, duplicates = self._store_versions(
+                app, certificates, msg_dict,
+                source="applicant_forwarded", is_direct=False)
+            app._set_verification_review([_(
+                "Applicant forwarded the COI themselves; an insurer/broker-"
+                "direct certificate is required.")])
+            self.write({
+                "state": "applicant_forwarded",
+                "match_reason": _(
+                    "Matched to %(app)s but the sender is the applicant. "
+                    "Stored as a non-current applicant-forwarded version; "
+                    "REVIEW required. %(versions)s version(s), %(dupes)s "
+                    "duplicate(s).") % {
+                        "app": app.name,
+                        "versions": len(versions),
+                        "dupes": duplicates,
+                    },
+            })
             self._post_to_application(
                 app, msg_dict,
-                _("Applicant-forwarded certificate kept for manual triage. "
-                  "It was NOT recorded as insurer-direct receipt."))
-            self._schedule_application_activity(
-                app, _("Applicant-forwarded COI needs review"))
+                _("Applicant-forwarded certificate stored for review. It is "
+                  "NOT insurer-direct receipt and the applicant was not "
+                  "verified."))
             return self
 
         domain = sender.split("@")[-1] if "@" in sender else sender
         if domain and domain in self._trusted_domains():
-            self._attach_certificate(app, certificates, msg_dict)
+            versions, duplicates = self._store_versions(
+                app, certificates, msg_dict,
+                source="insurer", is_direct=True)
             self.write({
-                "state": "matched",
+                "state": "duplicate"
+                if versions and duplicates == len(versions) else "matched",
                 "match_reason": _(
-                    "Matched to %(app)s and the sender domain %(domain)s is "
-                    "trusted. Certificate stored as Received. The applicant "
-                    "remains in Authority & Insurance Review; a reviewer must "
-                    "check the insurer, policy dates and coverage and move it "
-                    "to Contract Proposal manually.")
-                % {"app": app.name, "domain": domain},
+                    "Matched to %(app)s; trusted sender domain %(domain)s. "
+                    "Stored %(versions)s current/insurer-direct version(s), "
+                    "%(dupes)s duplicate(s). Verification is asynchronous; "
+                    "the applicant remains in Authority & Insurance Review "
+                    "until the deterministic checks pass or a reviewer acts.")
+                % {
+                    "app": app.name,
+                    "domain": domain,
+                    "versions": len(versions),
+                    "dupes": duplicates,
+                },
             })
             self._post_to_application(
                 app, msg_dict,
-                _("Insurer-direct certificate received from %s. Stored as "
-                  "Received. The applicant remains in Authority & Insurance "
-                  "Review pending reviewer verification of the insurer, "
-                  "policy dates and coverage.") % sender)
-            self._schedule_application_activity(
-                app, _("Verify insurer-direct COI"))
+                _("Insurer-direct certificate received from %s and stored "
+                  "privately. Verification is pending; no stage was changed "
+                  "by the email.") % sender)
             return self
 
+        versions, duplicates = self._store_versions(
+            app, certificates, msg_dict,
+            source="unknown", is_direct=False)
+        app._set_verification_review([_(
+            "Unknown or untrusted sender; the certificate is stored for "
+            "manual review.")])
         self.write({
             "state": "matched",
             "match_reason": _(
-                "Matched to %(app)s but the sender domain %(domain)s is not "
-                "trusted. The certificate was kept in this queue for manual "
-                "triage and the application did not advance.")
-            % {"app": app.name, "domain": domain or "?"},
+                "Matched to %(app)s but sender domain %(domain)s is not "
+                "trusted. Stored as a non-current version for manual review; "
+                "%(versions)s version(s), %(dupes)s duplicate(s).") % {
+                    "app": app.name,
+                    "domain": domain or "?",
+                    "versions": len(versions),
+                    "dupes": duplicates,
+                },
         })
         self._post_to_application(
             app, msg_dict,
             _("Verification email matched but its source is not trusted. "
-              "The certificate is in the verification queue for manual "
-              "triage; it was NOT recorded as insurer-direct receipt."))
-        self._schedule_application_activity(
-            app, _("Verification email needs source review"))
+              "The certificate is stored for manual review; the applicant "
+              "was not verified."))
         return self
+
+    def _store_versions(self, app, certificates, msg_dict, source,
+                        is_direct):
+        """Store every certificate attachment as an immutable COI version."""
+        self.ensure_one()
+        COI = self.env["prema.owner.operator.coi.version"].sudo()
+        sender = self.sender_email or self._sender_address(msg_dict)
+        received = self.received_date or fields.Datetime.now()
+        message_id = self.message_id or msg_dict.get("message_id")
+        versions = COI
+        duplicates = 0
+        for attachment in certificates:
+            payload = self._attachment_payload(attachment)
+            if not payload:
+                continue
+            filename = attachment[0] or "coi"
+            version, duplicate = COI._create_version(
+                app, payload, filename, self._mimetype_for(filename),
+                sender, received, message_id,
+                verification=self, source=source, is_direct=is_direct)
+            versions |= version
+            duplicates += 1 if duplicate else 0
+        return versions, duplicates
 
     # ------------------------------------------------------------------
     # attachment / stage actions
@@ -344,38 +401,6 @@ class OwnerOperatorVerification(models.Model):
         if lower.endswith(".webp"):
             return "image/webp"
         return "image/jpeg"
-
-    def _attach_certificate(self, app, certificates, msg_dict):
-        doc = app.document_ids.filtered(
-            lambda d: d.document_type == "coi_insurer")[:1]
-        if not doc:
-            doc = self.env["prema.owner.operator.document"].sudo().create({
-                "application_id": app.id,
-                "document_type": "coi_insurer",
-                "source": "insurer",
-            })
-        for attachment in certificates:
-            filename = attachment[0] or "certificate"
-            payload = self._attachment_payload(attachment)
-            if not payload:
-                continue
-            att = self.env["ir.attachment"].sudo().create({
-                "name": filename,
-                "raw": payload,
-                "mimetype": self._mimetype_for(filename),
-                "res_model": "prema.owner.operator.document",
-                "res_id": doc.id,
-                "public": False,
-            })
-            doc.sudo().write({
-                "attachment_id": att.id,
-                "status": "received",
-                "source": "insurer",
-                "received_on": fields.Datetime.now(),
-                "notes": _("Received by verification email %s")
-                % (msg_dict.get("message_id") or ""),
-            })
-        return doc
 
     def _post_to_application(self, app, msg_dict, reason):
         body = (
@@ -465,36 +490,67 @@ class OwnerOperatorVerification(models.Model):
                 return attachment
         return self.env["ir.attachment"]
 
-    def action_manual_attach(self):
+    def action_match_to_application(self):
+        """Link an unmatched/ambiguous email to the reviewer-selected applicant.
+
+        The certificate is stored as a non-current manual version and the card
+        moves to REVIEW. Nothing is verified or advanced automatically.
+        """
         for record in self:
             app = record.matched_application_id
             if not app:
                 raise UserError(_(
                     "Choose the application this certificate belongs to."))
-            attachment = record._first_certificate_attachment()
-            if not attachment:
+            if record.certificate_attachment_id:
+                attachments = record.certificate_attachment_id
+            else:
+                attachments = record.message_ids.attachment_ids.filtered(
+                    lambda a: (a.name or "").lower().endswith(
+                        CERT_EXTENSIONS) and a.raw)
+            certificates = [
+                (a.name or "coi", a.raw, {}) for a in attachments if a.raw]
+            if not certificates:
                 raise UserError(_(
                     "This email has no PDF/image certificate attachment."))
-            content = attachment.raw
-            if not content:
-                raise UserError(_("The certificate attachment is empty."))
-            certificates = [(attachment.name, content, {})]
-            record._attach_certificate(app, certificates, {
-                "message_id": record.message_id,
-            })
+            record._store_versions(
+                app, certificates, {
+                    "message_id": record.message_id,
+                    "email_from": record.sender_email,
+                    "date": record.received_date,
+                }, source="manual", is_direct=False)
+            reason = _(
+                "COI matched manually from the verification queue by %s; "
+                "reviewer verification is required.") % self.env.user.name
+            app._set_verification_review([reason])
             record.write({
                 "state": "manual",
-                "match_reason": _(
-                    "Certificate manually attached to %(app)s by %(user)s. "
-                    "The applicant remains in Authority & Insurance Review; "
-                    "move it to Contract Proposal after checking the insurer, "
-                    "policy dates and coverage.") % {
-                        "app": app.name,
-                        "user": self.env.user.name,
-                    },
+                "match_reason": reason,
             })
+            record._post_to_application(app, {
+                "email_from": record.sender_email,
+                "to": record.to_headers,
+                "subject": record.subject,
+                "message_id": record.message_id,
+                "body": record.body,
+                "attachments": certificates,
+            }, reason)
             app.message_post(
-                body=_("Certificate attached from verification queue by %s.")
-                % self.env.user.name,
-                subtype_xmlid="mail.mt_note")
+                body=reason, subtype_xmlid="mail.mt_note")
         return True
+
+    def action_manual_attach(self):
+        return self.action_match_to_application()
+
+    def message_update(self, msg_dict, update_vals=None):
+        """Replies to the original COI email stay linked to the same applicant."""
+        res = super().message_update(msg_dict, update_vals)
+        for record in self:
+            app = record.matched_application_id
+            if not app:
+                continue
+            record._post_to_application(app, msg_dict, _(
+                "Reply to the original COI email received. The applicant "
+                "remains in Authority & Insurance Review for review."))
+            app._set_verification_review([_(
+                "A reply to the COI email was received; review the thread.")])
+        return res
