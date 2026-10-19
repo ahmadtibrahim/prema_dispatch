@@ -302,7 +302,8 @@ class TestFleetHandoff(OwnerOperatorCase):
         self.assertEqual(vehicle.x_max_pallets, 13)
         self.assertEqual(vehicle.x_cargo_box_length_ft, 26)
         self.assertEqual(vehicle.oo_cargo_width_in, 100)
-        self.assertEqual(vehicle.x_box_interior_height_ft, 96)
+        self.assertEqual(vehicle.x_box_interior_height_ft, 8.0)
+        self.assertEqual(vehicle.oo_cargo_height_in, 96)
         self.assertEqual(vehicle.x_door_clearance_in, 87)
         self.assertEqual(vehicle.model_year, "2013")
 
@@ -350,6 +351,7 @@ class TestFleetHandoff(OwnerOperatorCase):
         doc.write({"attachment_id": attachment.id, "status": "verified"})
         vehicle = app.action_approve()
         self.assertTrue(vehicle.image_1920)
+        self.assertTrue(vehicle.image_128)
         image_before = vehicle.image_1920
 
         doc.write({"status": "pending", "attachment_id": False})

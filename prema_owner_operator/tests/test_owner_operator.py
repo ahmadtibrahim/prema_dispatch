@@ -441,7 +441,8 @@ class TestMapping(OwnerOperatorCase):
         app.write({"box_height_ft": 8.0})
         self._complete(app)
         vehicle = app.action_approve()
-        self.assertAlmostEqual(vehicle.x_box_interior_height_ft, 96.0, places=2)
+        self.assertAlmostEqual(vehicle.x_box_interior_height_ft, 8.0, places=2)
+        self.assertAlmostEqual(vehicle.oo_cargo_height_in, 96.0, places=2)
 
     def test_home_base_and_unit_number_reach_the_vehicle(self):
         applicant = self._applicant("home@test.invalid")
@@ -793,7 +794,8 @@ class TestStructuredSubmission(OwnerOperatorCase):
         self._complete(app)
         vehicle = app.action_approve()
         self.assertEqual(vehicle.application_id, app)
-        self.assertEqual(vehicle.x_box_interior_height_ft, 96.0)  # inches
+        self.assertEqual(vehicle.x_box_interior_height_ft, 8.0)    # feet
+        self.assertEqual(vehicle.oo_cargo_height_in, 96.0)         # inches
         self.assertEqual(vehicle.x_door_clearance_in, 87.0)       # inches
         self.assertEqual(vehicle.x_cargo_box_length_ft, 26.0)     # feet
         self.assertEqual(vehicle.x_current_odometer_km, 350000.0)  # km

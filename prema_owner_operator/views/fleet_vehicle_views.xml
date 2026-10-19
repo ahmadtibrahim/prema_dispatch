@@ -100,6 +100,7 @@
                         <field name="oo_plate_province" readonly="1"/>
                         <field name="oo_cargo_body_type" readonly="1"/>
                         <field name="oo_cargo_width_in" readonly="1"/>
+                        <field name="oo_cargo_height_in" readonly="1"/>
                         <field name="oo_reefer_temperature_range" readonly="1"/>
                     </group>
                     <group string="Home base (nearby-load source)">

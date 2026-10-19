@@ -2188,6 +2188,9 @@ class OwnerOperatorApplication(models.Model):
         category = self._vehicle_category()
         code = self._home_province_code()
         home_label = ", ".join(p for p in (self.home_city, code) if p) or False
+        # Legacy records may carry the height in the feet field only.
+        cargo_height_in = self.cargo_height_in or (
+            self.box_height_ft * 12.0 if self.box_height_ft else 0.0)
         vals = {
             "model_id": model.id,
             "name": "%s — %s" % (
@@ -2222,8 +2225,11 @@ class OwnerOperatorApplication(models.Model):
             "payload_capacity_lbs": self.payload_lbs or 0.0,
             "x_max_pallets": self.pallet_capacity or 0,
             "x_cargo_box_length_ft": self.box_length_ft or 0.0,
-            # despite the _ft name, this field stores INCHES
-            "x_box_interior_height_ft": self.cargo_height_in or 0.0,
+            # The native field is declared in FEET; the application collects
+            # inches. Convert at this boundary and keep the truthful inches in
+            # oo_cargo_height_in.
+            "x_box_interior_height_ft": cargo_height_in / 12.0,
+            "oo_cargo_height_in": cargo_height_in,
             "x_overall_length_ft": self.overall_length_ft or 0.0,
             "x_vehicle_height_ft": self.vehicle_height_ft or 0.0,
             "x_door_clearance_in": self.door_clearance_in or 0.0,
@@ -2252,7 +2258,8 @@ class OwnerOperatorApplication(models.Model):
                     "x_box_interior_height_ft", "x_overall_length_ft",
                     "x_vehicle_height_ft", "x_door_clearance_in",
                     "x_dock_height_in", "oo_cargo_body_type",
-                    "oo_cargo_width_in", "oo_reefer_temperature_range",
+                    "oo_cargo_width_in", "oo_cargo_height_in",
+                    "oo_reefer_temperature_range",
                     "x_studio_dock_height"):
                 vals.pop(field, None)
             vals.update({"x_reefer": False, "x_liftgate": False})
@@ -2338,7 +2345,10 @@ class OwnerOperatorApplication(models.Model):
         payload = self._front_photo_payload()
         if not payload:
             return False
-        vehicle.write({"image_1920": base64.b64encode(payload)})
+        encoded = base64.b64encode(payload)
+        # The form widget reads image_128; image_1920 alone does not always
+        # regenerate the smaller variants on a scripted write.
+        vehicle.write({"image_1920": encoded, "image_128": encoded})
         return True
 
     def _signed_agreement_document(self):

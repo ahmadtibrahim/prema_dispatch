@@ -71,8 +71,6 @@ class OwnerOperatorController(http.Controller):
             "prema_owner_operator.group_owner_operator",
             "hr_recruitment.group_hr_recruitment_manager",
             "fleet.fleet_group_manager",
-            "documents.group_documents_manager",
-            "documents.group_documents_user",
         )
         if not any(user.has_group(group) for group in allowed):
             raise AccessError(_("Not available to this user."))

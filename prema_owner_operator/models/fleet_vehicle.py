@@ -59,6 +59,7 @@ class FleetVehicle(models.Model):
         ("both", "Reefer and dry capable"),
         ("other", "Other / not applicable"),
     ], string="Cargo body type")
+    oo_cargo_height_in = fields.Float(string="Cargo interior height (in)")
     oo_cargo_width_in = fields.Float(string="Cargo interior width (in)")
     oo_reefer_temperature_range = fields.Char(
         string="Reefer temperature capability")
