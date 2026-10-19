@@ -18,8 +18,7 @@ from ..application_mapping import (
 
 # Ordered so the checklist reads the way the process runs.
 DOCUMENT_TYPES = [
-    ("cvor", "CVOR / provincial certificate"),
-    ("coi_applicant", "Certificate of insurance (applicant copy)"),
+    ("cvor", "CVOR / provincial certificate"),    ("coi_applicant", "Certificate of insurance (applicant copy)"),
     ("coi_insurer", "Certificate of insurance (from insurer)"),
     ("business_registration", "Corporate / business registration"),
     ("vehicle_registration", "Vehicle registration / inspection"),
@@ -32,6 +31,23 @@ DOCUMENT_TYPES = [
     ("licence_back", "Driver licence — back"),
     ("signed_agreement", "Signed agreement / NDA"),
     ("other", "Other document"),
+]
+
+# Exactly the 13 Canadian province/territory choices, alphabetically.
+PROVINCE_CHOICES = [
+    ("AB", "Alberta"),
+    ("BC", "British Columbia"),
+    ("MB", "Manitoba"),
+    ("NB", "New Brunswick"),
+    ("NL", "Newfoundland and Labrador"),
+    ("NS", "Nova Scotia"),
+    ("NT", "Northwest Territories"),
+    ("NU", "Nunavut"),
+    ("ON", "Ontario"),
+    ("PE", "Prince Edward Island"),
+    ("QC", "Quebec"),
+    ("SK", "Saskatchewan"),
+    ("YT", "Yukon"),
 ]
 
 # Which stage a document becomes mandatory at. "initial" is required for the
@@ -145,6 +161,7 @@ EQUIPMENT_RAW_MAP = {
 EQUIPMENT_LABELS = {
     "cargo_body_type": "Cargo body type",
     "payload_lbs": "Legal payload",
+    "gvwr_lbs": "GVWR",
     "pallet_capacity": "Pallet capacity",
     "box_length_ft": "Cargo interior length",
     "cargo_width_in": "Cargo interior width",
@@ -159,29 +176,40 @@ EQUIPMENT_LABELS = {
     "reefer_temperature_range": "Reefer temperature range",
     "trailer_type": "Trailer type",
     "trailer_length_ft": "Trailer length",
+    "trailer_year": "Trailer model year",
+    "trailer_unit": "Trailer unit / identification",
 }
 
 # The ONLY fields the public form may write. Workflow, approval, signature,
 # verification, Fleet and operator links are deliberately absent.
 SUBMISSION_FIELDS = {
     "contact_name", "email", "phone", "business_name", "business_structure",
-    "home_city", "home_province", "commercial_driving_experience",
-    "licence_class", "licence_jurisdiction", "owner_operator_experience",
+    "home_city", "home_province", "home_province_code", "home_city_place_id",
+    "home_latitude", "home_longitude", "home_location_verified",
+    "home_location_review", "home_location_review_reason",
+    "commercial_driving_experience",
+    "licence_class", "licence_jurisdiction", "licence_province",
+    "owner_operator_experience",
     "licence_suspension", "recent_collisions", "recent_convictions",
     "tdg_training", "recent_driving_work", "vehicle_type", "equipment_model",
+    "truck_make", "truck_model", "gvwr_lbs",
     "truck_year", "unit_number", "vehicle_ownership", "transmission",
     "odometer_km", "truck_plate_jurisdiction", "license_plate",
-    "plate_jurisdiction", "cargo_body_type", "trailer_ownership",
-    "trailer_type", "trailer_length_ft", "trailer_unit", "payload_lbs",
+    "plate_jurisdiction", "plate_province", "cargo_body_type",
+    "trailer_ownership",
+    "trailer_type", "trailer_length_ft", "trailer_year", "trailer_unit",
+    "payload_lbs",
     "pallet_capacity", "box_length_ft", "cargo_width_in", "cargo_height_in",
     "door_width_in", "door_clearance_in", "liftgate",
     "liftgate_capacity_lb", "liftgate_platform_length_in",
     "liftgate_platform_width_in", "dock_height_capable", "air_ride",
-    "reefer_temperature_range", "cvor_number", "preferred_service_area",
+    "reefer_applicable", "reefer_temperature_range", "cvor_number",
+    "preferred_service_area",
     "available_start_date", "work_preference", "preferred_service_area_codes",
     "work_preference_codes", "whatsapp_consent", "application_declaration",
     "equipment_provided", "load_notification_channel",
     "load_notification_email", "whatsapp_number",
+    "use_contact_phone_for_whatsapp",
     "whatsapp_consent_granted", "whatsapp_consent_text",
     "whatsapp_consent_version", "whatsapp_consent_at",
     "load_notification_opt_out", "load_notification_opt_out_at",
@@ -336,6 +364,25 @@ class OwnerOperatorApplication(models.Model):
         help="Province or territory only, paired with the home city where the "
              "truck normally parks or returns between jobs. No street "
              "address is collected here.")
+    home_province_code = fields.Selection(
+        PROVINCE_CHOICES, string="Home province code")
+    home_city_place_id = fields.Char(
+        string="Home city Place ID", copy=False,
+        help="Google Places ID for the selected Canadian city.")
+    home_latitude = fields.Float(
+        string="Home latitude", digits=(10, 7), copy=False)
+    home_longitude = fields.Float(
+        string="Home longitude", digits=(10, 7), copy=False)
+    home_location_verified = fields.Boolean(
+        string="City verified", copy=False,
+        help="True only when a Google Places city selection was resolved to "
+             "Canadian coordinates on the server.")
+    home_location_review = fields.Boolean(
+        string="Location needs review", copy=False,
+        help="Set when the applicant had to enter the city manually because "
+             "Google was unavailable or the place could not be verified.")
+    home_location_review_reason = fields.Char(
+        string="Location review reason", copy=False)
     service_province_ids = fields.Many2many(
         "res.country.state", "prema_owner_operator_service_province_rel",
         "application_id", "state_id", string="Provinces / territories served",
@@ -438,25 +485,37 @@ class OwnerOperatorApplication(models.Model):
     vehicle_type = fields.Selection([
         ("cargo_van", "Cargo Van"),
         ("straight", "Straight Truck"),
-        ("tractor", "Tractor / Power Unit"),
+        ("tractor", "Tractor Truck"),
+        ("semi", "Semi-Truck"),
     ], string="Vehicle type")
+    truck_make = fields.Char(
+        string="Make",
+        help="Separate from Model for new records; equipment_model keeps the "
+             "legacy combined value for old records and Fleet matching.")
+    truck_model = fields.Char(string="Model")
     truck_year = fields.Char(
         string="Model year",
         help="Stored as the website sends it, including “2000 or earlier”. "
              "Never cast into a numeric year.")
     vehicle_ownership = fields.Selection([
-        ("own", "Own"), ("lease", "Lease"), ("financed", "Financed")],
+        ("own", "Owned"), ("lease", "Leased"), ("financed", "Financed")],
         string="Own / lease / financed")
     transmission = fields.Selection([
         ("automatic", "Automatic"),
-        ("manual", "Manual / standard"),
-        ("automated_manual", "Automated manual")],
+        ("automated_manual", "Automated Manual"),
+        ("manual", "Manual"),
+        ("other", "Other")],
         string="Transmission")
     odometer_km = fields.Float(string="Odometer (km)")
+    gvwr_lbs = fields.Float(string="GVWR (lb)")
     truck_plate_jurisdiction = fields.Char(
         string="Plate and province / territory",
         help="The combined value the applicant typed. license_plate and "
              "plate_jurisdiction hold the best-effort split.")
+    plate_province = fields.Selection(
+        PROVINCE_CHOICES, string="Plate province / territory")
+    licence_province = fields.Selection(
+        PROVINCE_CHOICES, string="Licence province / territory")
     cargo_body_type = fields.Selection([
         ("dry", "Dry freight"),
         ("reefer", "Refrigerated / reefer"),
@@ -466,23 +525,29 @@ class OwnerOperatorApplication(models.Model):
     cargo_width_in = fields.Float(string="Cargo interior width (in)")
     cargo_height_in = fields.Float(string="Cargo interior height (in)")
     liftgate = fields.Selection([
-        ("yes", "Yes"), ("no", "No")], string="Liftgate")
+        ("yes", "Yes"), ("no", "No")], string="Liftgate equipped?")
     liftgate_capacity_lb = fields.Float(string="Liftgate capacity (lb)")
     dock_height_capable = fields.Selection([
         ("yes", "Yes"), ("no", "No")], string="Dock-height capable")
     air_ride = fields.Selection([
         ("yes", "Yes"), ("no", "No")], string="Air-ride suspension")
+    reefer_applicable = fields.Selection([
+        ("yes", "Yes"),
+        ("no", "No"),
+        ("not_applicable", "Not applicable")],
+        string="Reefer applicable", default="not_applicable")
     reefer_temperature_range = fields.Char(
         string="Reefer temperature range")
     trailer_ownership = fields.Selection([
         ("own", "Own / leased trailer"),
-        ("power_only", "Power-only service")],
+        ("power_only", "Tractor only")],
         string="Trailer ownership")
     trailer_type = fields.Selection([
         ("dry", "Dry Van"), ("reefer", "Reefer"),
         ("flatbed", "Flatbed"), ("other", "Other")],
         string="Trailer type")
     trailer_length_ft = fields.Float(string="Trailer length (ft)")
+    trailer_year = fields.Char(string="Trailer model year")
     trailer_unit = fields.Char(string="Trailer unit / identification")
 
     # ── authority (conditional in the form) ─────────────────────────
@@ -538,10 +603,16 @@ class OwnerOperatorApplication(models.Model):
     load_notification_channel = fields.Selection([
         ("whatsapp", "WhatsApp"),
         ("email", "Email"),
+        ("both", "WhatsApp and email"),
+        ("none", "Do not send load opportunities"),
     ], string="Load-notification channel", tracking=True)
     load_notification_email = fields.Char(
         string="Load-notification email", tracking=True,
         help="Stored separately from the application email.")
+    use_contact_phone_for_whatsapp = fields.Boolean(
+        string="WhatsApp number is the contact phone", tracking=True,
+        help="When set, whatsapp_number mirrors the normalized contact phone. "
+             "It is never inferred without this explicit choice.")
     whatsapp_number = fields.Char(
         string="WhatsApp number", tracking=True,
         help="Normalised E.164 number, stored separately from the contact "
@@ -688,12 +759,11 @@ class OwnerOperatorApplication(models.Model):
         return ", ".join(labels.get(t, t) for t in types)
 
     @api.depends("vehicle_type", "trailer_ownership", "trailer_type",
-                 "trailer_length_ft", "cargo_body_type", "payload_lbs",
-                 "pallet_capacity", "box_length_ft", "cargo_width_in",
-                 "cargo_height_in", "door_width_in", "door_clearance_in",
-                 "liftgate", "liftgate_capacity_lb",
-                 "liftgate_platform_length_in", "liftgate_platform_width_in",
-                 "dock_height_capable", "has_reefer",
+                 "trailer_length_ft", "trailer_year", "cargo_body_type",
+                 "payload_lbs", "pallet_capacity", "box_length_ft",
+                 "cargo_width_in", "cargo_height_in", "door_width_in",
+                 "door_clearance_in", "liftgate", "liftgate_capacity_lb",
+                 "reefer_applicable", "gvwr_lbs",
                  "reefer_temperature_range", "equipment_provided",
                  "equipment_data_confirmed")
     def _compute_equipment(self):
@@ -720,20 +790,20 @@ class OwnerOperatorApplication(models.Model):
                 need("cargo_height_in")
                 need("door_width_in")
                 need("door_clearance_in")
-                need("dock_height_capable")
                 need("liftgate")
                 if app.liftgate == "yes":
                     need("liftgate_capacity_lb")
-                    need("liftgate_platform_length_in")
-                    need("liftgate_platform_width_in")
-                if app.cargo_body_type in ("reefer", "both") \
-                        or app.has_reefer:
+                if app.cargo_body_type == "reefer":
                     need("reefer_temperature_range")
             elif vehicle == "tractor":
-                if app.trailer_ownership == "own":
-                    # These are the specs of the actual supplied trailer.
-                    need("trailer_type")
-                    need("trailer_length_ft")
+                # Tractor only: no trailer, cargo body, capacity or reefer.
+                pass
+            elif vehicle == "semi":
+                need("trailer_type")
+                need("trailer_length_ft")
+                need("trailer_year")
+                need("trailer_unit")
+                if app.trailer_type in ("dry", "reefer"):
                     need("cargo_body_type")
                     need("payload_lbs")
                     need("pallet_capacity")
@@ -742,21 +812,15 @@ class OwnerOperatorApplication(models.Model):
                     need("cargo_height_in")
                     need("door_width_in")
                     need("door_clearance_in")
-                    need("dock_height_capable")
                     need("liftgate")
                     if app.liftgate == "yes":
                         need("liftgate_capacity_lb")
-                        need("liftgate_platform_length_in")
-                        need("liftgate_platform_width_in")
-                    if app.cargo_body_type in ("reefer", "both") \
-                            or app.has_reefer:
+                    if app.trailer_type == "reefer":
                         need("reefer_temperature_range")
-                elif app.trailer_ownership == "power_only":
-                    # The assigned trailer supplies capacity. Never demand
-                    # cargo numbers from the power unit.
-                    pass
-                else:
-                    missing.append(EQUIPMENT_LABELS["trailer_type"])
+                elif app.trailer_type == "flatbed":
+                    need("payload_lbs")
+                    need("box_length_ft")
+                    need("cargo_width_in")
             else:
                 missing.append(_("Vehicle type"))
             app.equipment_missing = ", ".join(missing) or False
@@ -908,8 +972,6 @@ class OwnerOperatorApplication(models.Model):
         self.ensure_one()
         vals = dict(vals)
         supplied_type = vals.get("vehicle_type") or self.vehicle_type
-        supplied_trailer = vals.get("trailer_ownership") \
-            or self.trailer_ownership
         cargo_fields = (
             "cargo_body_type", "payload_lbs", "pallet_capacity",
             "box_length_ft", "cargo_width_in", "cargo_height_in",
@@ -918,16 +980,43 @@ class OwnerOperatorApplication(models.Model):
             "liftgate_platform_width_in", "dock_height_capable",
             "reefer_temperature_range",
         )
-        if supplied_type == "tractor" and supplied_trailer == "power_only":
-            # A power-only unit has no cargo body of its own. The assigned
-            # trailer supplies capacity; never store it on the tractor.
-            for field in cargo_fields:
-                vals.pop(field, None)
+        trailer_fields = (
+            "trailer_ownership", "trailer_type", "trailer_length_ft",
+            "trailer_year", "trailer_unit",
+        )
+        if supplied_type == "tractor":
+            # Tractor only: no trailer, cargo body, capacity or reefer.
+            for field in cargo_fields + trailer_fields:
+                vals[field] = False
+            vals["trailer_ownership"] = "power_only"
+            vals["reefer_applicable"] = "not_applicable"
+        elif supplied_type == "semi":
+            vals["trailer_ownership"] = "own"
+            trailer_kind = vals.get("trailer_type") or self.trailer_type
+            if trailer_kind in ("dry", "reefer"):
+                vals["cargo_body_type"] = (
+                    "reefer" if trailer_kind == "reefer" else "dry")
+                vals["reefer_applicable"] = (
+                    "yes" if trailer_kind == "reefer" else "no")
+            elif trailer_kind == "flatbed":
+                for field in ("cargo_body_type", "pallet_capacity",
+                              "cargo_height_in", "door_width_in",
+                              "door_clearance_in",
+                              "reefer_temperature_range"):
+                    vals[field] = False
+                vals["reefer_applicable"] = "not_applicable"
+            else:
+                for field in cargo_fields:
+                    vals[field] = False
+                vals["reefer_applicable"] = "not_applicable"
         elif supplied_type in ("cargo_van", "straight"):
-            for field in (
-                    "trailer_ownership", "trailer_type",
-                    "trailer_length_ft", "trailer_unit"):
-                vals.pop(field, None)
+            for field in trailer_fields:
+                vals[field] = False
+            cargo_kind = vals.get("cargo_body_type") or self.cargo_body_type
+            vals["reefer_applicable"] = (
+                "yes" if cargo_kind == "reefer" else "not_applicable")
+            if cargo_kind != "reefer":
+                vals["reefer_temperature_range"] = False
         write_vals = {}
 
         def put(field, value):
@@ -952,6 +1041,21 @@ class OwnerOperatorApplication(models.Model):
                 put("license_plate", plate_no[:32])
             if jurisdiction and "plate_jurisdiction" not in write_vals:
                 put("plate_jurisdiction", jurisdiction[:64])
+
+        make = write_vals.get("truck_make") or self.truck_make
+        model = write_vals.get("truck_model") or self.truck_model
+        if make or model:
+            put("equipment_model",
+                ("%s %s" % (make or "", model or "")).strip())
+        plate_no = write_vals.get("license_plate") or self.license_plate
+        plate_code = write_vals.get("plate_province") or self.plate_province
+        if plate_no and plate_code:
+            put("truck_plate_jurisdiction", "%s / %s" % (
+                plate_no, dict(PROVINCE_CHOICES).get(plate_code, plate_code)))
+        if vals.get("use_contact_phone_for_whatsapp"):
+            phone = write_vals.get("phone") or self.phone
+            if phone:
+                put("whatsapp_number", phone)
 
         codes = vals.get("service_province_codes") or []
         if codes:
@@ -1011,8 +1115,12 @@ class OwnerOperatorApplication(models.Model):
         liftgate = write_vals.get("liftgate", self.liftgate)
         air_ride = write_vals.get("air_ride", self.air_ride)
         if vehicle == "tractor":
-            put("has_reefer", trailer == "reefer")
+            put("has_reefer", False)
             put("has_liftgate", False)
+            put("equipment_type", "other")
+        elif vehicle == "semi":
+            put("has_reefer", trailer == "reefer")
+            put("has_liftgate", liftgate == "yes")
             put("equipment_type", {
                 "dry": "dry_van", "reefer": "reefer",
                 "flatbed": "flatbed"}.get(trailer, "other"))
@@ -2022,7 +2130,9 @@ class OwnerOperatorApplication(models.Model):
             # model_year lives on the shared model; never overwrite a value.
             model.write({"model_year": int(year)})
         transmission = {
-            "automatic": "automatic", "manual": "manual",
+            "automatic": "automatic",
+            "automated_manual": "automatic",
+            "manual": "manual",
         }.get(self.transmission)
         # x_box_interior_height_ft stores INCHES despite its _ft name; the
         # application now collects inches directly. The legacy feet field is
@@ -2057,6 +2167,11 @@ class OwnerOperatorApplication(models.Model):
         }
         if transmission:
             vehicle_vals["transmission"] = transmission
+        if "x_gvwr_lbs" in self.env["fleet.vehicle"]._fields:
+            vehicle_vals["x_gvwr_lbs"] = self.gvwr_lbs or 0.0
+        if "x_studio_gvwr_lbs" in self.env["fleet.vehicle"]._fields \
+                and not vehicle_vals.get("x_gvwr_lbs"):
+            vehicle_vals["x_studio_gvwr_lbs"] = self.gvwr_lbs or 0.0
         if "x_studio_dock_height" in self.env["fleet.vehicle"]._fields:
             vehicle_vals["x_studio_dock_height"] = (
                 self.dock_height_capable == "yes")

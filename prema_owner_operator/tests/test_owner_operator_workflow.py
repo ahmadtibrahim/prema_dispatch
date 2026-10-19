@@ -196,6 +196,13 @@ class TestInboundVerification(OwnerOperatorCase):
         self.env["ir.config_parameter"].sudo().set_param(
             "prema_owner_operator.trusted_insurer_domains",
             "insurer.test,broker.test")
+        # This class asserts the RECEIVED/review path. Leaving the numeric
+        # thresholds at whatever an earlier test configured makes the
+        # activity expectation order-dependent.
+        for key in ("coi_min_auto_liability", "coi_min_cargo",
+                    "coi_min_ai_confidence"):
+            self.env["ir.config_parameter"].sudo().set_param(
+                "prema_owner_operator." + key, 0)
         self.authority = self.env["hr.recruitment.stage"].search(
             [("name", "=", "Authority & Insurance Review"),
              ("job_ids", "in", self.job.id)], limit=1)
@@ -548,12 +555,15 @@ class TestNotificationAndMultiSelect(OwnerOperatorCase):
             "RecentCollisions": "None",
             "RecentConvictions": "None",
             "VehicleType": "straight",
-            "TruckMakeModel": "Freightliner M2",
+            "TruckMake": "Freightliner",
+            "TruckModel": "M2",
             "TruckYear": "2013",
             "VehicleOwnership": "Own",
             "Transmission": "Automatic",
             "OdometerKm": "100000",
-            "TruckPlateJurisdiction": "N 1 / Ontario",
+            "TruckPlate": "N 1",
+            "TruckPlateProvince": "ON",
+            "GVWRLb": "26000",
             "CargoBodyType": "dry",
             "LegalPayloadLb": "10000",
             "PalletCapacity": "12",
@@ -565,8 +575,7 @@ class TestNotificationAndMultiSelect(OwnerOperatorCase):
             "Liftgate": "no",
             "DockHeightCapable": "yes",
             "AirRide": "yes",
-            "PreferredAreaTorontoGTA": "1",
-            "PreferredAreaQuebec": "1",
+            "ServiceProvinceON": "Ontario",
             "WorkPreferenceLocal": "1",
             "WorkPreferenceRegional": "1",
             "LoadNotificationChannel": "whatsapp",
@@ -608,8 +617,7 @@ class TestNotificationAndMultiSelect(OwnerOperatorCase):
         self.assertFalse(errors)
         app = self.Application._create_from_public(vals)
         self.assertEqual(
-            set(app.preferred_service_area_ids.mapped("code")),
-            {"toronto_gta", "quebec"})
+            set(app.service_province_ids.mapped("code")), {"ON"})
         self.assertEqual(
             set(app.work_preference_ids.mapped("code")),
             {"local", "regional"})

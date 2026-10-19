@@ -34,11 +34,19 @@
                             <field name="oo_business_structure" readonly="1"/>
                             <field name="oo_home_city" readonly="1"/>
                             <field name="oo_home_province" readonly="1"/>
+                            <field name="oo_home_province_code" readonly="1"/>
+                            <field name="oo_home_location_verified" readonly="1"/>
+                            <field name="oo_home_location_review" readonly="1"/>
+                            <field name="oo_home_location_review_reason" readonly="1"/>
+                            <field name="oo_home_city_place_id" readonly="1"/>
+                            <field name="oo_home_latitude" readonly="1"/>
+                            <field name="oo_home_longitude" readonly="1"/>
                             <field name="oo_service_provinces" readonly="1"/>
                         </group>
                         <group string="Licence &amp; experience">
                             <field name="oo_licence_class" readonly="1"/>
                             <field name="oo_licence_jurisdiction" readonly="1"/>
+                            <field name="oo_licence_province" readonly="1"/>
                             <field name="oo_licence_expiry" readonly="1"/>
                             <field name="oo_licence_suspension" readonly="1"/>
                             <field name="oo_commercial_driving_experience" readonly="1"/>
@@ -59,13 +67,19 @@
                     <group>
                         <group>
                             <field name="oo_vehicle_type" readonly="1"/>
-                            <field name="oo_equipment_model" readonly="1"/>
+                            <field name="oo_truck_make" readonly="1"/>
+                            <field name="oo_truck_model" readonly="1"/>
+                            <field name="oo_equipment_model" readonly="1"
+                                   invisible="oo_truck_make and oo_truck_model"/>
                             <field name="oo_truck_year" readonly="1"/>
                             <field name="oo_unit_number" readonly="1"/>
                             <field name="oo_vehicle_ownership" readonly="1"/>
                             <field name="oo_transmission" readonly="1"/>
                             <field name="oo_odometer_km" readonly="1"/>
-                            <field name="oo_truck_plate_jurisdiction" readonly="1"/>
+                            <field name="oo_gvwr_lbs" readonly="1"/>
+                            <field name="oo_truck_plate_jurisdiction" readonly="1"
+                                   invisible="oo_plate_province"/>
+                            <field name="oo_plate_province" readonly="1"/>
                         </group>
                         <group string="Cargo body / trailer specifications">
                             <field name="oo_cargo_body_type" readonly="1"/>
@@ -82,12 +96,14 @@
                             <field name="oo_liftgate_platform_width_in" readonly="1"/>
                             <field name="oo_dock_height_capable" readonly="1"/>
                             <field name="oo_air_ride" readonly="1"/>
+                            <field name="oo_reefer_applicable" readonly="1"/>
                             <field name="oo_reefer_temperature_range" readonly="1"/>
                         </group>
                     </group>
-                    <group string="Trailer (tractor / power unit)">
+                    <group string="Trailer (Semi-Truck)">
                         <field name="oo_trailer_ownership" readonly="1"/>
                         <field name="oo_trailer_type" readonly="1"/>
+                        <field name="oo_trailer_year" readonly="1"/>
                         <field name="oo_trailer_length_ft" readonly="1"/>
                         <field name="oo_trailer_unit" readonly="1"/>
                     </group>
@@ -114,6 +130,7 @@
                             <field name="oo_load_notification_channel" readonly="1"/>
                             <field name="oo_load_notification_email" readonly="1"/>
                             <field name="oo_whatsapp_number" readonly="1"/>
+                            <field name="oo_use_contact_phone_for_whatsapp" readonly="1"/>
                             <field name="oo_whatsapp_consent_granted" readonly="1"/>
                             <field name="oo_whatsapp_consent_at" readonly="1"/>
                             <field name="oo_whatsapp_consent_version" readonly="1"/>
@@ -143,6 +160,8 @@
                         <field name="oo_equipment_complete" readonly="1"/>
                         <field name="oo_equipment_missing" readonly="1"/>
                         <field name="oo_missing_verification" readonly="1"/>
+                        <field name="oo_home_location_review" readonly="1"/>
+                        <field name="oo_home_location_review_reason" readonly="1"/>
                         <field name="oo_home_base_tag_issue" readonly="1"/>
                     </group>
                     <group string="Insurance verification">

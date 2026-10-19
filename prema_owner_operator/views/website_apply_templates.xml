@@ -2,9 +2,8 @@
 <odoo>
     <!-- Standalone page: no website navigation and no footer. This is an
          application reached directly from Indeed, not a browsing
-         destination. The field names are the LIVE website names (view
-         5600), so the same answers and the saved "Other Information" notes
-         map without translation loss. -->
+         destination. Legacy field names from view 5600 are still accepted
+         by the mapping layer, but this form posts the current names. -->
     <template id="apply_form" name="Owner-Operator Application">
         <html t-att-data-website-id="request.website.id"
               t-att-data-main-object="repr(job) if job else None">
@@ -23,6 +22,16 @@
                             Canada-only opportunities. Independent operators
                             offering their own equipment.
                         </p>
+                        <ol class="o_oo_progress" id="oo_progress"
+                            aria-label="Application progress">
+                            <li data-step="1" class="active"><span>1</span>Applicant</li>
+                            <li data-step="2"><span>2</span>Business</li>
+                            <li data-step="3"><span>3</span>Qualifications</li>
+                            <li data-step="4"><span>4</span>Vehicle</li>
+                            <li data-step="5"><span>5</span>Authority</li>
+                            <li data-step="6"><span>6</span>Documents</li>
+                            <li data-step="7"><span>7</span>Preferences</li>
+                        </ol>
                     </header>
 
                     <div t-if="errors" class="o_oo_apply_errors" role="alert">
@@ -38,35 +47,54 @@
                           class="o_oo_apply_form" id="oo_apply_form">
                         <input type="hidden" name="csrf_token" t-att-value="request.csrf_token()"/>
 
-                        <fieldset>
-                            <legend>Your details</legend>
-                            <div class="o_oo_row">
-                                <label>Your name <span class="o_oo_req">*</span>
+                        <!-- 1. Applicant & contact -->
+                        <section class="o_oo_step active" data-step="1">
+                            <h2 class="o_oo_card_title">Applicant &amp; contact</h2>
+                            <div class="o_oo_grid">
+                                <label class="o_oo_field o_oo_span2">Full legal name <span class="o_oo_req">*</span>
                                     <input type="text" name="partner_name" required="required"
-                                           maxlength="120" t-att-value="post.get('partner_name', '')"/></label>
-                                <label>Your email <span class="o_oo_req">*</span>
+                                           maxlength="120" autocomplete="name"
+                                           t-att-value="post.get('partner_name', '')"/>
+                                    <span class="o_oo_hint">Enter your name exactly as it appears on your driver’s licence, including middle names or initials.</span></label>
+                                <label class="o_oo_field">Email <span class="o_oo_req">*</span>
                                     <input type="email" name="email_from" required="required"
-                                           maxlength="160" t-att-value="post.get('email_from', '')"/></label>
+                                           maxlength="160" autocomplete="email"
+                                           t-att-value="post.get('email_from', '')"/></label>
+                                <label class="o_oo_field">Contact phone number <span class="o_oo_req">*</span>
+                                    <input type="tel" name="partner_phone" id="oo_partner_phone"
+                                           required="required" maxlength="40"
+                                           inputmode="tel" autocomplete="tel"
+                                           placeholder="+1-416-555-3510"
+                                           onblur="ooFormatPhone(this);"
+                                           t-att-value="post.get('partner_phone', '')"/></label>
                             </div>
-                            <div class="o_oo_row">
-                                <label>Your phone number <span class="o_oo_req">*</span>
-                                    <input type="tel" name="partner_phone" required="required"
-                                           maxlength="40" t-att-value="post.get('partner_phone', '')"/></label>
-                            </div>
-                        </fieldset>
+                            <label class="o_oo_check o_oo_span2">
+                                <input type="checkbox" name="UseContactPhoneForWhatsApp"
+                                       id="oo_use_contact_phone" value="1"
+                                       t-att-checked="bool(post.get('UseContactPhoneForWhatsApp'))"
+                                       onchange="ooSyncWhatsApp();"/>
+                                My WhatsApp number is the same as my contact phone number
+                            </label>
+                            <p class="o_oo_hint" id="oo_whatsapp_status">Using contact phone</p>
+                            <label class="o_oo_field" id="oo_custom_whatsapp_wrap">
+                                WhatsApp number
+                                <input type="tel" name="WhatsAppNumber" id="oo_WhatsAppNumber"
+                                       inputmode="tel" maxlength="40"
+                                       placeholder="+1-416-555-3510"
+                                       onblur="ooFormatPhone(this);"
+                                       t-att-value="post.get('WhatsAppNumber', '')"/>
+                                <span class="o_oo_hint">Only needed when it differs from your contact phone.</span>
+                            </label>
+                        </section>
 
-                        <fieldset>
-                            <legend>1. Business &amp; home base</legend>
-                            <p class="o_oo_hint">Enter the city and province
-                                where your truck normally parks or returns
-                                between jobs. We use this home base to identify
-                                nearby load opportunities. No street address is
-                                required at this stage.</p>
-                            <div class="o_oo_row">
-                                <label>Legal business / owner name <span class="o_oo_req">*</span>
+                        <!-- 2. Business & truck home base -->
+                        <section class="o_oo_step" data-step="2">
+                            <h2 class="o_oo_card_title">Business &amp; truck home base</h2>
+                            <div class="o_oo_grid">
+                                <label class="o_oo_field">Legal business / owner name <span class="o_oo_req">*</span>
                                     <input type="text" name="LegalBusinessName" required="required"
                                            maxlength="200" t-att-value="post.get('LegalBusinessName', '')"/></label>
-                                <label>Business structure <span class="o_oo_req">*</span>
+                                <label class="o_oo_field">Business structure <span class="o_oo_req">*</span>
                                     <select name="BusinessStructure" required="required">
                                         <option value="">Please select</option>
                                         <option t-foreach="[('sole','Sole proprietor'),('corporation','Corporation'),('partnership','Partnership')]"
@@ -75,25 +103,40 @@
                                                 t-esc="opt[1]"/>
                                     </select></label>
                             </div>
-                            <div class="o_oo_row">
-                                <label>Truck home city <span class="o_oo_req">*</span>
-                                    <input type="text" name="HomeCity" required="required"
-                                           maxlength="120" t-att-value="post.get('HomeCity', '')"/></label>
-                                <label>Home province / territory <span class="o_oo_req">*</span>
-                                    <select name="HomeProvince" required="required">
+                            <div class="o_oo_grid">
+                                <label class="o_oo_field o_oo_span2">Truck home city <span class="o_oo_req">*</span>
+                                    <input type="text" name="HomeCity" id="oo_HomeCity"
+                                           required="required" maxlength="120"
+                                           autocomplete="off"
+                                           placeholder="Start typing a Canadian city"
+                                           t-att-value="post.get('HomeCity', '')"/>
+                                    <div id="oo_city_results" class="o_oo_city_results" hidden="hidden"></div>
+                                    <span class="o_oo_hint">Select the Canadian city where this truck normally parks and returns between loads. We use it to find nearby freight opportunities. A street address is not required.</span>
+                                    <span id="oo_city_verified" class="o_oo_verified" hidden="hidden">✓ Verified city</span></label>
+                                <label class="o_oo_field">Home province / territory <span class="o_oo_req">*</span>
+                                    <select name="HomeProvince" id="oo_HomeProvince" required="required">
                                         <option value="">Please select</option>
-                                        <option t-foreach="[('ON','Ontario'),('QC','Quebec'),('AB','Alberta'),('BC','British Columbia'),('MB','Manitoba'),('NB','New Brunswick'),('NL','Newfoundland and Labrador'),('NS','Nova Scotia'),('NT','Northwest Territories'),('NU','Nunavut'),('PE','Prince Edward Island'),('SK','Saskatchewan'),('YT','Yukon'),('other','Other — explain in notes')]"
-                                                t-as="opt" t-att-value="opt[0]"
-                                                t-att-selected="post.get('HomeProvince') == opt[0]"
-                                                t-esc="opt[1]"/>
+                                        <option t-foreach="province_choices" t-as="prov"
+                                                t-att-value="prov[0]"
+                                                t-att-selected="post.get('HomeProvince') in (prov[0], prov[1])"
+                                                t-esc="prov[1]"/>
                                     </select></label>
                             </div>
-                        </fieldset>
+                            <input type="hidden" name="HomeCityPlaceId" id="oo_HomeCityPlaceId"
+                                   t-att-value="post.get('HomeCityPlaceId', '')"/>
+                            <input type="hidden" name="HomeCityLat" id="oo_HomeCityLat"
+                                   t-att-value="post.get('HomeCityLat', '')"/>
+                            <input type="hidden" name="HomeCityLng" id="oo_HomeCityLng"
+                                   t-att-value="post.get('HomeCityLng', '')"/>
+                            <input type="hidden" name="HomeCityVerified" id="oo_HomeCityVerified"
+                                   t-att-value="post.get('HomeCityVerified', '')"/>
+                        </section>
 
-                        <fieldset>
-                            <legend>2. Driving experience</legend>
-                            <div class="o_oo_row">
-                                <label>Commercial driving experience <span class="o_oo_req">*</span>
+                        <!-- 3. Driver qualifications -->
+                        <section class="o_oo_step" data-step="3">
+                            <h2 class="o_oo_card_title">Driver qualifications</h2>
+                            <div class="o_oo_grid">
+                                <label class="o_oo_field">Commercial driving experience <span class="o_oo_req">*</span>
                                     <select name="CommercialDrivingYears" required="required">
                                         <option value="">Please select</option>
                                         <option t-foreach="['Less than 1 year','1–2 years','3–5 years','6–10 years','11–15 years','16+ years']"
@@ -101,20 +144,7 @@
                                                 t-att-selected="post.get('CommercialDrivingYears') == opt"
                                                 t-esc="opt"/>
                                     </select></label>
-                                <label>Driver licence class <span class="o_oo_req">*</span>
-                                    <select name="DriverLicenceClass" required="required">
-                                        <option value="">Please select</option>
-                                        <option t-foreach="[('AZ','AZ / Class 1'),('DZ','DZ / Class 3'),('G','G / Class 5'),('other','Other — explain in notes')]"
-                                                t-as="opt" t-att-value="opt[0]"
-                                                t-att-selected="post.get('DriverLicenceClass') == opt[0]"
-                                                t-esc="opt[1]"/>
-                                    </select></label>
-                            </div>
-                            <div class="o_oo_row">
-                                <label>Licence issuing province / territory <span class="o_oo_req">*</span>
-                                    <input type="text" name="LicenceJurisdiction" required="required"
-                                           maxlength="80" t-att-value="post.get('LicenceJurisdiction', '')"/></label>
-                                <label>Owner-operator experience
+                                <label class="o_oo_field">Owner-operator experience
                                     <select name="OwnerOperatorYears">
                                         <option value="">Please select</option>
                                         <option t-foreach="['New owner-operator','Less than 1 year','1–2 years','3–5 years','6–10 years','11–15 years','16+ years']"
@@ -122,31 +152,43 @@
                                                 t-att-selected="post.get('OwnerOperatorYears') == opt"
                                                 t-esc="opt"/>
                                     </select></label>
-                            </div>
-                            <div class="o_oo_row">
-                                <label>Licence ever suspended / revoked? <span class="o_oo_req">*</span>
+                                <label class="o_oo_field">Driver licence class <span class="o_oo_req">*</span>
+                                    <select name="DriverLicenceClass" required="required">
+                                        <option value="">Please select</option>
+                                        <option t-foreach="[('AZ','AZ / Class 1'),('DZ','DZ / Class 3'),('G','G / Class 5'),('other','Other — explain in notes')]"
+                                                t-as="opt" t-att-value="opt[0]"
+                                                t-att-selected="post.get('DriverLicenceClass') == opt[0]"
+                                                t-esc="opt[1]"/>
+                                    </select></label>
+                                <label class="o_oo_field">Licence issuing province / territory <span class="o_oo_req">*</span>
+                                    <select name="LicenceJurisdiction" required="required">
+                                        <option value="">Please select</option>
+                                        <option t-foreach="province_choices" t-as="prov"
+                                                t-att-value="prov[0]"
+                                                t-att-selected="post.get('LicenceJurisdiction') in (prov[0], prov[1])"
+                                                t-esc="prov[1]"/>
+                                    </select></label>
+                                <label class="o_oo_field">Licence ever suspended / revoked? <span class="o_oo_req">*</span>
                                     <select name="LicenceSuspension" required="required">
                                         <option value="">Please select</option>
                                         <option value="No" t-att-selected="post.get('LicenceSuspension') == 'No'">No</option>
                                         <option value="Yes" t-att-selected="post.get('LicenceSuspension') == 'Yes'">Yes — explain in notes</option>
                                     </select></label>
-                                <label>Collisions in the past 3 years <span class="o_oo_req">*</span>
+                                <label class="o_oo_field">Collisions in the past 3 years <span class="o_oo_req">*</span>
                                     <select name="RecentCollisions" required="required">
                                         <option value="">Please select</option>
                                         <option t-foreach="['None','1','2','3+']" t-as="opt"
                                                 t-att-value="opt" t-att-selected="post.get('RecentCollisions') == opt"
                                                 t-esc="opt"/>
                                     </select></label>
-                            </div>
-                            <div class="o_oo_row">
-                                <label>Driving convictions in the past 3 years <span class="o_oo_req">*</span>
+                                <label class="o_oo_field">Driving convictions in the past 3 years <span class="o_oo_req">*</span>
                                     <select name="RecentConvictions" required="required">
                                         <option value="">Please select</option>
                                         <option t-foreach="['None','1','2','3+']" t-as="opt"
                                                 t-att-value="opt" t-att-selected="post.get('RecentConvictions') == opt"
                                                 t-esc="opt"/>
                                     </select></label>
-                                <label>Current dangerous goods training
+                                <label class="o_oo_field">Current dangerous goods training
                                     <select name="TDGTraining">
                                         <option value="">Please select</option>
                                         <option value="Yes" t-att-selected="post.get('TDGTraining') == 'Yes'">Yes — current certificate</option>
@@ -154,269 +196,245 @@
                                         <option value="Expired" t-att-selected="post.get('TDGTraining') == 'Expired'">Expired / renewal needed</option>
                                     </select></label>
                             </div>
-                            <label>Recent driving work / client history (optional)
+                            <label class="o_oo_field o_oo_span2">Recent driving work / client history (optional)
                                 <input type="text" name="RecentDrivingWork" maxlength="255"
                                        placeholder="Most recent company/client, dates and equipment operated"
                                        t-att-value="post.get('RecentDrivingWork', '')"/></label>
-                            <p class="o_oo_hint">Driver licence copies and expiry are requested privately at Initial Qualification. Do not upload licence copies in the initial application.</p>
-                        </fieldset>
+                            <p class="o_oo_hint">Driver licence images are uploaded securely in the Documents section.</p>
+                        </section>
 
-                        <fieldset>
-                            <legend>3. Your vehicle</legend>
-                            <div class="o_oo_row">
-                                <label>Vehicle type <span class="o_oo_req">*</span>
+                        <!-- 4. Vehicle & equipment -->
+                        <section class="o_oo_step" data-step="4">
+                            <h2 class="o_oo_card_title">Vehicle &amp; equipment</h2>
+                            <div class="o_oo_grid">
+                                <label class="o_oo_field">Vehicle type <span class="o_oo_req">*</span>
                                     <select name="VehicleType" id="oo_VehicleType" required="required"
-                                            onchange="ooSyncVehicle(this.value);">
+                                            onchange="ooSyncVehicle();">
                                         <option value="">Please select</option>
                                         <option value="cargo_van" t-att-selected="post.get('VehicleType') == 'cargo_van'">Cargo Van</option>
                                         <option value="straight" t-att-selected="post.get('VehicleType') == 'straight'">Straight Truck</option>
-                                        <option value="tractor" t-att-selected="post.get('VehicleType') == 'tractor'">Tractor / Power Unit</option>
+                                        <option value="tractor" t-att-selected="post.get('VehicleType') == 'tractor'">Tractor Truck</option>
+                                        <option value="semi" t-att-selected="post.get('VehicleType') == 'semi'">Semi-Truck</option>
                                     </select></label>
-                                <label>Truck make and model <span class="o_oo_req">*</span>
-                                    <input type="text" name="TruckMakeModel" required="required"
-                                           maxlength="120" t-att-value="post.get('TruckMakeModel', '')"/></label>
-                            </div>
-                            <div class="o_oo_row">
-                                <label>Model year
-                                    <select name="TruckYear">
+                                <label class="o_oo_field">Make <span class="o_oo_req">*</span>
+                                    <input type="text" name="TruckMake" required="required"
+                                           maxlength="80" placeholder="e.g. Freightliner"
+                                           t-att-value="post.get('TruckMake', '')"/></label>
+                                <label class="o_oo_field">Model <span class="o_oo_req">*</span>
+                                    <input type="text" name="TruckModel" required="required"
+                                           maxlength="80" placeholder="e.g. M2 106"
+                                           t-att-value="post.get('TruckModel', '')"/></label>
+                                <label class="o_oo_field">Model year <span class="o_oo_req">*</span>
+                                    <select name="TruckYear" required="required">
                                         <option value="">Please select</option>
                                         <option t-foreach="['2027','2026','2025','2024','2023','2022','2021','2020','2019','2018','2017','2016','2015','2014','2013','2012','2011','2010','2009','2008','2007','2006','2005','2004','2003','2002','2001','2000 or earlier']"
                                                 t-as="opt" t-att-value="opt"
                                                 t-att-selected="post.get('TruckYear') == opt"
                                                 t-esc="opt"/>
                                     </select></label>
-                                <label>Unit number
+                                <label class="o_oo_field">Unit number (optional)
                                     <input type="text" name="UnitNumber" maxlength="40"
                                            t-att-value="post.get('UnitNumber', '')"/></label>
-                            </div>
-                            <div class="o_oo_row">
-                                <label>Do you own or lease this vehicle? <span class="o_oo_req">*</span>
+                                <label class="o_oo_field">Ownership <span class="o_oo_req">*</span>
                                     <select name="VehicleOwnership" required="required">
                                         <option value="">Please select</option>
-                                        <option value="Own" t-att-selected="post.get('VehicleOwnership') == 'Own'">Own</option>
-                                        <option value="Lease" t-att-selected="post.get('VehicleOwnership') == 'Lease'">Lease</option>
+                                        <option value="Own" t-att-selected="post.get('VehicleOwnership') in ('Own','Owned')">Owned</option>
                                         <option value="Financed" t-att-selected="post.get('VehicleOwnership') == 'Financed'">Financed</option>
+                                        <option value="Lease" t-att-selected="post.get('VehicleOwnership') in ('Lease','Leased')">Leased</option>
                                     </select></label>
-                                <label>Transmission
-                                    <select name="Transmission">
+                                <label class="o_oo_field">Transmission <span class="o_oo_req">*</span>
+                                    <select name="Transmission" required="required">
                                         <option value="">Please select</option>
                                         <option value="Automatic" t-att-selected="post.get('Transmission') == 'Automatic'">Automatic</option>
-                                        <option value="Manual" t-att-selected="post.get('Transmission') == 'Manual'">Manual / standard</option>
-                                        <option value="Automated manual" t-att-selected="post.get('Transmission') == 'Automated manual'">Automated manual</option>
+                                        <option value="Automated Manual" t-att-selected="post.get('Transmission') in ('Automated Manual','Automated manual')">Automated Manual</option>
+                                        <option value="Manual" t-att-selected="post.get('Transmission') in ('Manual','Manual / standard')">Manual</option>
+                                        <option value="Other" t-att-selected="post.get('Transmission') == 'Other'">Other</option>
                                     </select></label>
-                            </div>
-                            <div class="o_oo_row">
-                                <label>Current odometer reading (km) <span class="o_oo_req">*</span>
-                                    <input type="number" name="OdometerKm" required="required"
-                                           min="0" max="9999999" step="1" placeholder="e.g. 350000"
-                                           t-att-value="post.get('OdometerKm', '')"/></label>
-                                <label>Licence plate and province / territory <span class="o_oo_req">*</span>
-                                    <input type="text" name="TruckPlateJurisdiction" required="required"
-                                           maxlength="80" placeholder="e.g. ABC 123 / Ontario"
-                                           t-att-value="post.get('TruckPlateJurisdiction', '')"/></label>
+                                <label class="o_oo_field">Current odometer <span class="o_oo_req">*</span>
+                                    <span class="o_oo_input_unit">
+                                        <input type="text" name="OdometerKm" id="oo_OdometerKm"
+                                               required="required" inputmode="numeric"
+                                               data-group="1" maxlength="9" placeholder="530,000"
+                                               oninput="ooGroup(this, 1000000);"
+                                               t-att-value="post.get('OdometerKm', '')"/>
+                                        <span>km</span>
+                                    </span></label>
+                                <label class="o_oo_field">Licence plate <span class="o_oo_req">*</span>
+                                    <input type="text" name="TruckPlate" id="oo_TruckPlate"
+                                           required="required" maxlength="20"
+                                           placeholder="ABC 123"
+                                           oninput="this.value=this.value.toUpperCase().trim();"
+                                           t-att-value="post.get('TruckPlate', '')"/></label>
+                                <label class="o_oo_field">Plate province / territory <span class="o_oo_req">*</span>
+                                    <select name="TruckPlateProvince" required="required">
+                                        <option value="">Please select</option>
+                                        <option t-foreach="province_choices" t-as="prov"
+                                                t-att-value="prov[0]"
+                                                t-att-selected="post.get('TruckPlateProvince') in (prov[0], prov[1])"
+                                                t-esc="prov[1]"/>
+                                    </select></label>
+                                <label class="o_oo_field">GVWR <span class="o_oo_req">*</span>
+                                    <span class="o_oo_input_unit">
+                                        <input type="text" name="GVWRLb" id="oo_GVWRLb"
+                                               required="required" inputmode="numeric"
+                                               data-group="1" maxlength="9" placeholder="26,000"
+                                               oninput="ooGroup(this, 200000);"
+                                               t-att-value="post.get('GVWRLb', '')"/>
+                                        <span>lb</span>
+                                    </span></label>
                             </div>
 
-                            <div class="oo-cargo-field">
-                                <p class="o_oo_hint" id="oo-cargo-note">Enter the
-                                    cargo specifications of the truck. For a
-                                    tractor with your own/leased trailer, enter
-                                    the trailer’s specifications here. For
-                                    power-only work, leave these blank — the
-                                    assigned trailer supplies them.</p>
-                                <div class="o_oo_row">
-                                    <label>Cargo body type (van / straight truck / owned trailer) <span class="o_oo_req">*</span>
-                                        <select name="CargoBodyType" required="required">
+                            <div id="oo_tractor_note" class="o_oo_note" hidden="hidden">
+                                Tractor only — no trailer is included with this application.
+                            </div>
+
+                            <div id="oo_semi_trailer" hidden="hidden">
+                                <h3 class="o_oo_subhead">Trailer supplied with the tractor</h3>
+                                <div class="o_oo_grid">
+                                    <label class="o_oo_field">Trailer type <span class="o_oo_req">*</span>
+                                        <select name="TrailerType" id="oo_TrailerType"
+                                                onchange="ooSyncTrailer();">
+                                            <option value="">Please select</option>
+                                            <option value="dry" t-att-selected="post.get('TrailerType') == 'dry'">Dry Van</option>
+                                            <option value="reefer" t-att-selected="post.get('TrailerType') == 'reefer'">Reefer</option>
+                                            <option value="flatbed" t-att-selected="post.get('TrailerType') == 'flatbed'">Flatbed</option>
+                                            <option value="other" t-att-selected="post.get('TrailerType') == 'other'">Other — explain in notes</option>
+                                        </select></label>
+                                    <label class="o_oo_field">Trailer model year <span class="o_oo_req">*</span>
+                                        <select name="TrailerYear" id="oo_TrailerYear">
+                                            <option value="">Please select</option>
+                                            <option t-foreach="['2027','2026','2025','2024','2023','2022','2021','2020','2019','2018','2017','2016','2015','2014','2013','2012','2011','2010','2009','2008','2007','2006','2005','2004','2003','2002','2001','2000 or earlier']"
+                                                    t-as="opt" t-att-value="opt"
+                                                    t-att-selected="post.get('TrailerYear') == opt"
+                                                    t-esc="opt"/>
+                                        </select></label>
+                                    <label class="o_oo_field">Trailer unit / identification <span class="o_oo_req">*</span>
+                                        <input type="text" name="TrailerUnit" id="oo_TrailerUnit"
+                                               maxlength="60" t-att-value="post.get('TrailerUnit', '')"/></label>
+                                    <label class="o_oo_field">Trailer length
+                                        <span class="o_oo_input_unit">
+                                            <input type="text" name="TrailerLengthFt" id="oo_TrailerLengthFt"
+                                                   inputmode="decimal" maxlength="6" placeholder="53"
+                                                   t-att-value="post.get('TrailerLengthFt', '')"/>
+                                            <span>ft</span>
+                                        </span></label>
+                                </div>
+                            </div>
+
+                            <div id="oo_cargo_block" hidden="hidden">
+                                <h3 class="o_oo_subhead">Cargo body / trailer capacity</h3>
+                                <div class="o_oo_grid">
+                                    <label class="o_oo_field" id="oo_cargo_body_wrap">Cargo body type <span class="o_oo_req">*</span>
+                                        <select name="CargoBodyType" id="oo_CargoBodyType"
+                                                onchange="ooSyncReefer();">
                                             <option value="">Please select</option>
                                             <option value="dry" t-att-selected="post.get('CargoBodyType') == 'dry'">Dry freight</option>
                                             <option value="reefer" t-att-selected="post.get('CargoBodyType') == 'reefer'">Refrigerated / reefer</option>
                                             <option value="both" t-att-selected="post.get('CargoBodyType') == 'both'">Reefer and dry capable</option>
                                             <option value="other" t-att-selected="post.get('CargoBodyType') == 'other'">Other / not applicable</option>
                                         </select></label>
-                                    <label>Legal cargo payload (lb) <span class="o_oo_req">*</span>
-                                        <input type="number" name="LegalPayloadLb" min="0" max="150000"
-                                               required="required"
-                                               t-att-value="post.get('LegalPayloadLb', '')"/></label>
-                                </div>
-                                <div class="o_oo_row">
-                                    <label>Pallet capacity <span class="o_oo_req">*</span>
-                                        <input type="number" name="PalletCapacity" min="0" max="60" step="1"
-                                               required="required"
+                                    <label class="o_oo_field" id="oo_payload_wrap">Legal cargo payload <span class="o_oo_req">*</span>
+                                        <span class="o_oo_input_unit">
+                                            <input type="text" name="LegalPayloadLb" id="oo_LegalPayloadLb"
+                                                   inputmode="numeric" data-group="1" maxlength="9"
+                                                   placeholder="12,000"
+                                                   oninput="ooGroup(this, 150000);"
+                                                   t-att-value="post.get('LegalPayloadLb', '')"/>
+                                            <span>lb</span>
+                                        </span></label>
+                                    <label class="o_oo_field" id="oo_pallet_wrap">Pallet capacity <span class="o_oo_req">*</span>
+                                        <input type="text" name="PalletCapacity" id="oo_PalletCapacity"
+                                               inputmode="numeric" maxlength="3"
                                                t-att-value="post.get('PalletCapacity', '')"/></label>
-                                    <label>Cargo interior length (ft) <span class="o_oo_req">*</span>
-                                        <input type="number" name="CargoLengthFt" min="0" max="60" step="0.1"
-                                               required="required"
-                                               t-att-value="post.get('CargoLengthFt', '')"/></label>
-                                </div>
-                                <div class="o_oo_row">
-                                    <label>Cargo interior width (in) <span class="o_oo_req">*</span>
-                                        <input type="number" name="CargoWidthIn" min="0" max="120" step="0.1"
-                                               required="required"
-                                               t-att-value="post.get('CargoWidthIn', '')"/></label>
-                                    <label>Cargo interior height (in) <span class="o_oo_req">*</span>
-                                        <input type="number" name="CargoHeightIn" min="0" max="150" step="0.1"
-                                               required="required"
-                                               t-att-value="post.get('CargoHeightIn', '')"/></label>
-                                </div>
-                                <div class="o_oo_row">
-                                    <label>Rear door opening width (in) <span class="o_oo_req">*</span>
-                                        <input type="number" name="DoorWidthIn" min="0" max="150" step="0.1"
-                                               required="required"
-                                               t-att-value="post.get('DoorWidthIn', '')"/></label>
-                                    <label>Rear door opening height (in) <span class="o_oo_req">*</span>
-                                        <input type="number" name="DoorHeightIn" min="0" max="150" step="0.1"
-                                               required="required"
-                                               t-att-value="post.get('DoorHeightIn', '')"/></label>
-                                </div>
-                                <div class="o_oo_row">
-                                    <label>Liftgate <span class="o_oo_req">*</span>
-                                        <select name="Liftgate" required="required">
+                                    <label class="o_oo_field" id="oo_length_wrap">Cargo interior length <span class="o_oo_req">*</span>
+                                        <span class="o_oo_input_unit">
+                                            <input type="text" name="CargoLengthFt" id="oo_CargoLengthFt"
+                                                   inputmode="decimal" maxlength="6"
+                                                   t-att-value="post.get('CargoLengthFt', '')"/>
+                                            <span>ft</span>
+                                        </span></label>
+                                    <label class="o_oo_field" id="oo_width_wrap">Cargo interior width <span class="o_oo_req">*</span>
+                                        <span class="o_oo_input_unit">
+                                            <input type="text" name="CargoWidthIn" id="oo_CargoWidthIn"
+                                                   inputmode="decimal" maxlength="6"
+                                                   t-att-value="post.get('CargoWidthIn', '')"/>
+                                            <span>in</span>
+                                        </span></label>
+                                    <label class="o_oo_field" id="oo_height_wrap">Cargo interior height <span class="o_oo_req">*</span>
+                                        <span class="o_oo_input_unit">
+                                            <input type="text" name="CargoHeightIn" id="oo_CargoHeightIn"
+                                                   inputmode="decimal" maxlength="6"
+                                                   t-att-value="post.get('CargoHeightIn', '')"/>
+                                            <span>in</span>
+                                        </span></label>
+                                    <label class="o_oo_field" id="oo_door_width_wrap">Rear door opening width <span class="o_oo_req">*</span>
+                                        <span class="o_oo_input_unit">
+                                            <input type="text" name="DoorWidthIn" id="oo_DoorWidthIn"
+                                                   inputmode="decimal" maxlength="6"
+                                                   t-att-value="post.get('DoorWidthIn', '')"/>
+                                            <span>in</span>
+                                        </span></label>
+                                    <label class="o_oo_field" id="oo_door_height_wrap">Rear door opening height <span class="o_oo_req">*</span>
+                                        <span class="o_oo_input_unit">
+                                            <input type="text" name="DoorHeightIn" id="oo_DoorHeightIn"
+                                                   inputmode="decimal" maxlength="6"
+                                                   t-att-value="post.get('DoorHeightIn', '')"/>
+                                            <span>in</span>
+                                        </span></label>
+                                    <label class="o_oo_field" id="oo_liftgate_wrap">Liftgate equipped? <span class="o_oo_req">*</span>
+                                        <select name="Liftgate" id="oo_Liftgate" onchange="ooSyncLiftgate();">
                                             <option value="">Please select</option>
                                             <option value="yes" t-att-selected="post.get('Liftgate') == 'yes'">Yes</option>
                                             <option value="no" t-att-selected="post.get('Liftgate') == 'no'">No</option>
                                         </select></label>
-                                    <label>Liftgate capacity (lb), if equipped
-                                        <input type="number" name="LiftgateCapacityLb" min="0" max="20000"
-                                               t-att-value="post.get('LiftgateCapacityLb', '')"/></label>
-                                </div>
-                                <div class="o_oo_row">
-                                    <label>Liftgate usable platform length (in), if equipped
-                                        <input type="number" name="LiftgatePlatformLengthIn" min="0" max="150" step="0.1"
-                                               t-att-value="post.get('LiftgatePlatformLengthIn', '')"/></label>
-                                    <label>Liftgate usable platform width (in), if equipped
-                                        <input type="number" name="LiftgatePlatformWidthIn" min="0" max="150" step="0.1"
-                                               t-att-value="post.get('LiftgatePlatformWidthIn', '')"/></label>
-                                </div>
-                                <div class="o_oo_row">
-                                    <label>Dock-height capable
-                                        <select name="DockHeightCapable">
-                                            <option value="">Please select</option>
-                                            <option value="yes" t-att-selected="post.get('DockHeightCapable') == 'yes'">Yes</option>
-                                            <option value="no" t-att-selected="post.get('DockHeightCapable') == 'no'">No</option>
-                                        </select></label>
-                                    <label>Reefer temperature range, if equipped
-                                        <input type="text" name="ReeferTemperatureRange" maxlength="80"
+                                    <label class="o_oo_field" id="oo_liftgate_capacity_wrap">Liftgate capacity
+                                        <span class="o_oo_input_unit">
+                                            <input type="text" name="LiftgateCapacityLb" id="oo_LiftgateCapacityLb"
+                                                   inputmode="numeric" maxlength="7"
+                                                   t-att-value="post.get('LiftgateCapacityLb', '')"/>
+                                            <span>lb</span>
+                                        </span></label>
+                                    <label class="o_oo_field" id="oo_reefer_wrap">Reefer temperature capability
+                                        <input type="text" name="ReeferTemperatureRange" id="oo_ReeferTemperatureRange"
+                                               maxlength="80" placeholder="e.g. -20 to 4 °C"
                                                t-att-value="post.get('ReeferTemperatureRange', '')"/></label>
                                 </div>
                             </div>
 
-                            <div id="oo-trailer-group" hidden="hidden">
-                                <div class="o_oo_row">
-                                    <label>Do you have your own trailer? <span class="o_oo_req">*</span>
-                                        <select name="TrailerOwnership" id="oo_TrailerOwnership" disabled="disabled"
-                                                onchange="ooSyncTrailer(this.value);">
-                                            <option value="">Please select</option>
-                                            <option value="own" t-att-selected="post.get('TrailerOwnership') == 'own'">Yes — my own / leased trailer</option>
-                                            <option value="power_only" t-att-selected="post.get('TrailerOwnership') == 'power_only'">No — power-only work</option>
-                                        </select></label>
-                                </div>
-                                <div id="oo-trailer-details" hidden="hidden">
-                                    <div class="o_oo_row">
-                                        <label>Trailer type <span class="o_oo_req">*</span>
-                                            <select name="TrailerType" id="oo_TrailerType" disabled="disabled">
-                                                <option value="">Please select</option>
-                                                <option value="dry" t-att-selected="post.get('TrailerType') == 'dry'">Dry Van</option>
-                                                <option value="reefer" t-att-selected="post.get('TrailerType') == 'reefer'">Reefer</option>
-                                                <option value="flatbed" t-att-selected="post.get('TrailerType') == 'flatbed'">Flatbed</option>
-                                                <option value="other" t-att-selected="post.get('TrailerType') == 'other'">Other — explain in notes</option>
-                                            </select></label>
-                                        <label>Trailer length (ft)
-                                            <input type="number" name="TrailerLengthFt" min="1" max="60" step="0.5"
-                                                   disabled="disabled" t-att-value="post.get('TrailerLengthFt', '')"/></label>
-                                    </div>
-                                    <div class="o_oo_row">
-                                        <label>Trailer unit / identification
-                                            <input type="text" name="TrailerUnit" disabled="disabled"
-                                                   maxlength="60" t-att-value="post.get('TrailerUnit', '')"/></label>
-                                    </div>
-                                </div>
-                            </div>
-
-                            <div class="o_oo_row">
-                                <label>Air ride suspension
+                            <div class="o_oo_grid">
+                                <label class="o_oo_field">Air ride suspension
                                     <select name="AirRide">
                                         <option value="">Please select</option>
                                         <option value="yes" t-att-selected="post.get('AirRide') == 'yes'">Yes</option>
                                         <option value="no" t-att-selected="post.get('AirRide') == 'no'">No</option>
                                     </select></label>
                             </div>
-                        </fieldset>
+                        </section>
 
-                        <fieldset>
-                            <legend>4. Authority &amp; insurance</legend>
-                            <p class="o_oo_hint">Authority lookup is not connected yet. All credentials require manual review.</p>
-                            <div class="o_oo_row">
-                                <label>Ontario CVOR number, if applicable
-                                    <input type="text" name="CVORNumber" inputmode="numeric" maxlength="11"
-                                           placeholder="123-456-789" pattern="[0-9]{3}-[0-9]{3}-[0-9]{3}"
-                                           title="Enter your 9-digit CVOR number, for example 123-456-789."
-                                           oninput="ooFormatCvor(this);"
-                                           t-att-value="post.get('CVORNumber', '')"/>
-                                    <span class="o_oo_hint">Enter your 9-digit Ontario CVOR number. Hyphens are added automatically. Leave blank if not applicable.</span></label>
-                            </div>
+                        <!-- 5. Authority, insurance & operating area -->
+                        <section class="o_oo_step" data-step="5">
+                            <h2 class="o_oo_card_title">Authority, insurance &amp; operating area</h2>
+                            <label class="o_oo_field">Ontario CVOR number, if applicable
+                                <input type="text" name="CVORNumber" inputmode="numeric" maxlength="11"
+                                       placeholder="123-456-789" pattern="[0-9]{3}-[0-9]{3}-[0-9]{3}"
+                                       title="Enter your 9-digit CVOR number, for example 123-456-789."
+                                       oninput="ooFormatCvor(this);"
+                                       t-att-value="post.get('CVORNumber', '')"/>
+                                <span class="o_oo_hint">Enter your 9-digit Ontario CVOR number. Hyphens are added automatically. Leave blank if not applicable. Formatting is not authority verification.</span></label>
                             <p class="o_oo_hint"><strong>Where in Canada will you operate?</strong> Select all provinces / territories you are willing to serve.</p>
+                            <div class="o_oo_chips" id="oo_service_chips" aria-live="polite"></div>
                             <div class="o_oo_checks">
-                                <label class="o_oo_check" t-foreach="[('ON','Ontario'),('QC','Quebec'),('AB','Alberta'),('BC','British Columbia'),('MB','Manitoba'),('NB','New Brunswick'),('NL','Newfoundland and Labrador'),('NS','Nova Scotia'),('PE','Prince Edward Island'),('SK','Saskatchewan'),('NT','Northwest Territories'),('NU','Nunavut'),('YT','Yukon')]"
-                                       t-as="prov">
-                                    <input type="checkbox" t-att-name="'ServiceProvince' + prov[0]"
+                                <label class="o_oo_check" t-foreach="province_choices" t-as="prov">
+                                    <input type="checkbox" class="oo-service-province"
+                                           t-att-name="'ServiceProvince' + prov[0]"
                                            t-att-value="prov[1]"
-                                           t-att-checked="bool(post.get('ServiceProvince' + prov[0]))"/>
+                                           t-att-data-code="prov[0]"
+                                           t-att-checked="bool(post.get('ServiceProvince' + prov[0]))"
+                                           onchange="ooSyncServiceChips();"/>
                                     <span t-esc="prov[1]"/>
                                 </label>
                             </div>
-                        </fieldset>
-
-                        <fieldset>
-                            <legend>5. Documents &amp; truck photos</legend>
-                            <p class="o_oo_hint">Upload PDF, JPG or PNG. Applicant COI is preliminary; an insurer-direct COI is requested at qualification. Corporate documents apply to incorporated businesses.</p>
-                            <div class="o_oo_row">
-                                <label>CVOR / provincial certificate
-                                    <input type="file" name="CVORCertificate" accept=".pdf,.jpg,.jpeg,.png"/></label>
-                                <label>Current Certificate of Insurance
-                                    <input type="file" name="InsuranceCertificate" accept=".pdf,.jpg,.jpeg,.png"/></label>
-                            </div>
-                            <div class="o_oo_row">
-                                <label>Business / corporate registration
-                                    <input type="file" name="BusinessRegistration" accept=".pdf,.jpg,.jpeg,.png"/></label>
-                                <label>Vehicle registration / inspection
-                                    <input type="file" name="VehicleRegistrationInspection" accept=".pdf,.jpg,.jpeg,.png"/></label>
-                            </div>
-                            <div class="o_oo_row">
-                                <label>Truck front photo
-                                    <input type="file" name="TruckFront" accept=".jpg,.jpeg,.png"/></label>
-                                <label>Truck rear photo
-                                    <input type="file" name="TruckRear" accept=".jpg,.jpeg,.png"/></label>
-                            </div>
-                            <div class="o_oo_row">
-                                <label>Driver-side photo
-                                    <input type="file" name="TruckDriverSide" accept=".jpg,.jpeg,.png"/></label>
-                                <label>Passenger-side photo
-                                    <input type="file" name="TruckPassengerSide" accept=".jpg,.jpeg,.png"/></label>
-                            </div>
-                            <div class="o_oo_row">
-                                <label>Cargo interior / trailer photo
-                                    <input type="file" name="CargoInterior" accept=".jpg,.jpeg,.png"/></label>
-                            </div>
-                            <p class="o_oo_hint">PDF, JPG, PNG or WEBP · 10 MB max each. Files are stored privately.</p>
-                        </fieldset>
-
-                        <fieldset>
-                            <legend>6. Availability &amp; preferences</legend>
-                            <p class="o_oo_hint"><strong>Preferred service areas</strong> — select all that apply.</p>
-                            <div class="o_oo_checks">
-                                <label class="o_oo_check" t-foreach="[('PreferredAreaTorontoGTA','Toronto / GTA'),('PreferredAreaOntarioWide','Ontario wide'),('PreferredAreaQuebec','Quebec'),('PreferredAreaOntarioQuebec','Ontario and Quebec'),('PreferredAreaCanadaWide','Canada wide'),('PreferredAreaSelectedProvinces','Selected provinces')]"
-                                       t-as="area">
-                                    <input type="checkbox" t-att-name="area[0]"
-                                           value="1"
-                                           t-att-checked="bool(post.get(area[0]))"/>
-                                    <span t-esc="area[1]"/>
-                                </label>
-                            </div>
-                            <div class="o_oo_row">
-                                <label>Available start date
-                                    <input type="date" name="AvailabilityDate"
-                                           t-att-value="post.get('AvailabilityDate', '')"/></label>
-                            </div>
-                            <p class="o_oo_hint"><strong>Work preference</strong> — select all that apply.</p>
+                            <p class="o_oo_hint"><strong>Work preference — select all that apply</strong></p>
                             <div class="o_oo_checks">
                                 <label class="o_oo_check" t-foreach="[('WorkPreferenceLocal','Local'),('WorkPreferenceRegional','Regional'),('WorkPreferenceLonghaul','Long haul'),('WorkPreferenceFlexible','Flexible')]"
                                        t-as="pref">
@@ -426,57 +444,80 @@
                                     <span t-esc="pref[1]"/>
                                 </label>
                             </div>
-                            <div class="o_oo_row">
-                                <label>How should we send load quote requests? <span class="o_oo_req">*</span>
-                                    <select name="LoadNotificationChannel" id="oo_LoadNotificationChannel"
-                                            required="required"
-                                            onchange="ooSyncNotification(this.value);">
-                                        <option value="">Please select</option>
-                                        <option value="whatsapp" t-att-selected="post.get('LoadNotificationChannel') == 'whatsapp'">WhatsApp</option>
-                                        <option value="email" t-att-selected="post.get('LoadNotificationChannel') == 'email'">Email</option>
-                                    </select></label>
-                                <label class="o_oo_check">
-                                    <input type="checkbox" name="LoadNotificationOptOut" value="1"
-                                           t-att-checked="bool(post.get('LoadNotificationOptOut'))"/>
-                                    Do not send me load-notification messages.
-                                </label>
+                            <label class="o_oo_field">Available start date
+                                <input type="date" name="AvailabilityDate"
+                                       t-att-value="post.get('AvailabilityDate', '')"/></label>
+                        </section>
+
+                        <!-- 6. Documents & truck photos -->
+                        <section class="o_oo_step" data-step="6">
+                            <h2 class="o_oo_card_title">Documents &amp; truck photos</h2>
+                            <p class="o_oo_hint">Upload clear, readable images. All documents are stored privately and are visible only to authorized PremaFirm onboarding staff.</p>
+                            <div class="o_oo_grid">
+                                <label class="o_oo_field">Driver’s licence — front <span class="o_oo_req">*</span>
+                                    <input type="file" name="DriverLicenceFront" required="required"
+                                           accept=".pdf,.jpg,.jpeg,.png,.webp"/></label>
+                                <label class="o_oo_field">Driver’s licence — back <span class="o_oo_req">*</span>
+                                    <input type="file" name="DriverLicenceBack" required="required"
+                                           accept=".pdf,.jpg,.jpeg,.png,.webp"/></label>
+                                <label class="o_oo_field">CVOR / provincial certificate
+                                    <input type="file" name="CVORCertificate" accept=".pdf,.jpg,.jpeg,.png,.webp"/></label>
+                                <label class="o_oo_field">Current Certificate of Insurance
+                                    <input type="file" name="InsuranceCertificate" accept=".pdf,.jpg,.jpeg,.png,.webp"/></label>
+                                <label class="o_oo_field">Business / corporate registration
+                                    <input type="file" name="BusinessRegistration" accept=".pdf,.jpg,.jpeg,.png,.webp"/></label>
+                                <label class="o_oo_field">Vehicle registration / inspection
+                                    <input type="file" name="VehicleRegistrationInspection" accept=".pdf,.jpg,.jpeg,.png,.webp"/></label>
+                                <label class="o_oo_field">Truck front photo
+                                    <input type="file" name="TruckFront" accept=".jpg,.jpeg,.png,.webp"/></label>
+                                <label class="o_oo_field">Truck rear photo
+                                    <input type="file" name="TruckRear" accept=".jpg,.jpeg,.png,.webp"/></label>
+                                <label class="o_oo_field">Driver-side photo
+                                    <input type="file" name="TruckDriverSide" accept=".jpg,.jpeg,.png,.webp"/></label>
+                                <label class="o_oo_field">Passenger-side photo
+                                    <input type="file" name="TruckPassengerSide" accept=".jpg,.jpeg,.png,.webp"/></label>
+                                <label class="o_oo_field">Cargo interior / trailer photo
+                                    <input type="file" name="CargoInterior" accept=".jpg,.jpeg,.png,.webp"/></label>
                             </div>
-                            <div id="oo-notify-whatsapp" hidden="hidden">
-                                <div class="o_oo_row">
-                                    <label>WhatsApp number including country code <span class="o_oo_req">*</span>
-                                        <input type="tel" name="WhatsAppNumber" id="oo_WhatsAppNumber"
-                                               placeholder="+1 416 555 0199"
-                                               t-att-value="post.get('WhatsAppNumber', '')"/></label>
-                                    <label class="o_oo_check">
-                                        <input type="checkbox" name="UseContactPhoneForWhatsApp" value="1"
-                                               t-att-checked="bool(post.get('UseContactPhoneForWhatsApp'))"
-                                               onchange="ooSyncNotification(document.getElementById('oo_LoadNotificationChannel').value);"/>
-                                        Use my contact phone number
-                                    </label>
-                                </div>
+                            <p class="o_oo_hint">PDF, JPG, PNG or WEBP · 10 MB maximum each.</p>
+                        </section>
+
+                        <!-- 7. Work preferences & consent -->
+                        <section class="o_oo_step" data-step="7">
+                            <h2 class="o_oo_card_title">Work preferences &amp; consent</h2>
+                            <label class="o_oo_field">How should we send load opportunities? <span class="o_oo_req">*</span>
+                                <select name="LoadNotificationChannel" id="oo_LoadNotificationChannel"
+                                        required="required" onchange="ooSyncNotification();">
+                                    <option value="">Please select</option>
+                                    <option value="whatsapp" t-att-selected="post.get('LoadNotificationChannel') == 'whatsapp'">WhatsApp</option>
+                                    <option value="email" t-att-selected="post.get('LoadNotificationChannel') == 'email'">Email</option>
+                                    <option value="both" t-att-selected="post.get('LoadNotificationChannel') == 'both'">WhatsApp and email</option>
+                                    <option value="none" t-att-selected="post.get('LoadNotificationChannel') == 'none'">Do not send load opportunities</option>
+                                </select></label>
+                            <div id="oo_whatsapp_consent_wrap" hidden="hidden">
                                 <label class="o_oo_check">
-                                    <input type="checkbox" name="WhatsAppConsentGranted" id="oo_WhatsAppConsentGranted"
-                                           value="1"
+                                    <input type="checkbox" name="WhatsAppConsentGranted"
+                                           id="oo_WhatsAppConsentGranted" value="1"
                                            t-att-checked="bool(post.get('WhatsAppConsentGranted'))"/>
                                     I agree to receive load quote requests and load offers by WhatsApp at the number I provided. I may change this preference or opt out at any time. <span class="o_oo_req">*</span>
                                 </label>
                             </div>
-                            <div id="oo-notify-email" hidden="hidden">
-                                <div class="o_oo_row">
-                                    <label>Load-notification email <span class="o_oo_req">*</span>
-                                        <input type="email" name="LoadNotificationEmail" id="oo_LoadNotificationEmail"
-                                               maxlength="160"
-                                               t-att-value="post.get('LoadNotificationEmail', '')"/></label>
-                                    <label class="o_oo_check">
-                                        <input type="checkbox" name="UseApplicationEmailForNotifications" value="1"
-                                               t-att-checked="bool(post.get('UseApplicationEmailForNotifications'))"
-                                               onchange="ooSyncNotification(document.getElementById('oo_LoadNotificationChannel').value);"/>
-                                        Use my application email
-                                    </label>
-                                </div>
+                            <div id="oo_email_notify_wrap" hidden="hidden">
+                                <label class="o_oo_check">
+                                    <input type="checkbox" name="UseApplicationEmailForNotifications"
+                                           id="oo_use_app_email" value="1"
+                                           t-att-checked="bool(post.get('UseApplicationEmailForNotifications', '1'))"
+                                           onchange="ooSyncNotification();"/>
+                                    Use my application email
+                                </label>
+                                <label class="o_oo_field">Use a different load-notification email
+                                    <input type="email" name="LoadNotificationEmail"
+                                           id="oo_LoadNotificationEmail" maxlength="160"
+                                           t-att-value="post.get('LoadNotificationEmail', '')"/></label>
                             </div>
-                            <label>Additional information / equipment notes
-                                <textarea name="applicant_notes" rows="4"
+                            <p class="o_oo_summary" id="oo_notify_summary">Notifications: not selected</p>
+                            <label class="o_oo_field">Additional information / equipment notes
+                                <textarea name="applicant_notes" rows="3"
                                           placeholder="Tell us about your equipment, availability or questions."
                                           t-esc="post.get('applicant_notes', '')"/></label>
                             <label class="o_oo_check">
@@ -485,106 +526,370 @@
                                        t-att-checked="bool(post.get('ApplicationDeclaration'))"/>
                                 I confirm this is my application and the information is accurate. I have read the privacy notice. <span class="o_oo_req">*</span>
                             </label>
-                        </fieldset>
+                        </section>
 
-                        <button type="submit" class="o_oo_submit">Submit Application</button>
-                        <p class="o_oo_hint">
+                        <div class="o_oo_nav">
+                            <button type="button" class="o_oo_back" id="oo_back" hidden="hidden">Back</button>
+                            <button type="button" class="o_oo_next" id="oo_next">Continue</button>
+                            <button type="submit" class="o_oo_submit" id="oo_submit" hidden="hidden">Submit Application</button>
+                        </div>
+                        <p class="o_oo_hint o_oo_footer_note">
                             Your documents are stored privately and are visible
                             only to the PremaFirm onboarding team.
                         </p>
                     </form>
                 </main>
                 <script><![CDATA[
-                    function ooFormatCvor(input) {
-                        var digits = input.value.replace(/[^0-9]/g, "").slice(0, 9);
-                        input.value = (digits.match(/.{1,3}/g) || []).join("-");
-                    }
-                    function ooSyncCargo() {
+                    (function () {
+                        var form = document.getElementById("oo_apply_form");
+                        if (!form) { return; }
+                        var steps = Array.prototype.slice.call(
+                            form.querySelectorAll(".o_oo_step"));
+                        var progress = Array.prototype.slice.call(
+                            document.querySelectorAll("#oo_progress li"));
+                        var back = document.getElementById("oo_back");
+                        var next = document.getElementById("oo_next");
+                        var submit = document.getElementById("oo_submit");
+                        var current = 1;
+
+                        function show(step) {
+                            current = Math.min(Math.max(step, 1), steps.length);
+                            steps.forEach(function (el) {
+                                el.classList.toggle(
+                                    "active",
+                                    parseInt(el.dataset.step, 10) === current);
+                            });
+                            progress.forEach(function (el) {
+                                var n = parseInt(el.dataset.step, 10);
+                                el.classList.toggle("active", n === current);
+                                el.classList.toggle("done", n < current);
+                            });
+                            back.hidden = current === 1;
+                            next.hidden = current === steps.length;
+                            submit.hidden = current !== steps.length;
+                            window.scrollTo({top: 0, behavior: "smooth"});
+                        }
+
+                        function stepValid() {
+                            var section = steps[current - 1];
+                            var fields = section.querySelectorAll(
+                                "input, select, textarea");
+                            for (var i = 0; i < fields.length; i++) {
+                                var el = fields[i];
+                                if (el.disabled || el.type === "hidden") { continue; }
+                                if (!el.checkValidity()) {
+                                    el.reportValidity();
+                                    return false;
+                                }
+                            }
+                            return true;
+                        }
+
+                        next.addEventListener("click", function () {
+                            if (stepValid()) { show(current + 1); }
+                        });
+                        back.addEventListener("click", function () {
+                            show(current - 1);
+                        });
+                        form.addEventListener("submit", function (ev) {
+                            if (!form.checkValidity()) {
+                                ev.preventDefault();
+                                var bad = form.querySelector(":invalid");
+                                if (bad) { bad.reportValidity(); }
+                            }
+                        });
+
+                        // ── formatting helpers ──────────────────────
+                        window.ooFormatCvor = function (input) {
+                            var digits = input.value.replace(/[^0-9]/g, "").slice(0, 9);
+                            input.value = (digits.match(/.{1,3}/g) || []).join("-");
+                        };
+                        window.ooFormatPhone = function (input) {
+                            var d = input.value.replace(/\D/g, "");
+                            if (d.length === 11 && d.charAt(0) === "1") {
+                                d = d.slice(1);
+                            }
+                            if (d.length === 10) {
+                                input.value = "+1-" + d.slice(0, 3) + "-" +
+                                    d.slice(3, 6) + "-" + d.slice(6);
+                            }
+                        };
+                        window.ooGroup = function (input, max) {
+                            var digits = input.value.replace(/[^0-9]/g, "");
+                            if (max && digits && parseInt(digits, 10) > max) {
+                                digits = String(max);
+                            }
+                            input.value = digits.replace(
+                                /\B(?=(\d{3})+(?!\d))/g, ",");
+                        };
+
+                        // ── WhatsApp ────────────────────────────────
+                        var usePhone = document.getElementById("oo_use_contact_phone");
+                        var customWa = document.getElementById("oo_custom_whatsapp_wrap");
+                        var waInput = document.getElementById("oo_WhatsAppNumber");
+                        var phoneInput = document.getElementById("oo_partner_phone");
+                        var waStatus = document.getElementById("oo_whatsapp_status");
+                        window.ooSyncWhatsApp = function () {
+                            var same = usePhone && usePhone.checked;
+                            if (customWa) { customWa.hidden = same; }
+                            if (waInput) {
+                                waInput.disabled = same;
+                                waInput.required = !same &&
+                                    (document.getElementById(
+                                        "oo_LoadNotificationChannel").value === "whatsapp" ||
+                                     document.getElementById(
+                                        "oo_LoadNotificationChannel").value === "both");
+                            }
+                            if (waStatus) { waStatus.hidden = !same; }
+                        };
+                        if (phoneInput) {
+                            phoneInput.addEventListener("input", function () {
+                                if (usePhone && usePhone.checked) {
+                                    waInput.value = phoneInput.value;
+                                }
+                            });
+                        }
+
+                        // ── vehicle conditionals ────────────────────
                         var vehicle = document.getElementById("oo_VehicleType");
-                        var own = document.getElementById("oo_TrailerOwnership");
-                        var tractor = vehicle && vehicle.value === "tractor";
-                        var showCargo = !tractor || (own && own.value === "own");
-                        document.querySelectorAll(".oo-cargo-field").forEach(function (group) {
-                            group.hidden = !showCargo;
-                            group.querySelectorAll("input,select").forEach(function (el) {
-                                el.disabled = !showCargo;
+                        var cargoBlock = document.getElementById("oo_cargo_block");
+                        var trailerBlock = document.getElementById("oo_semi_trailer");
+                        var tractorNote = document.getElementById("oo_tractor_note");
+                        var trailerType = document.getElementById("oo_TrailerType");
+
+                        function setVisible(el, visible) {
+                            if (!el) { return; }
+                            el.hidden = !visible;
+                            el.querySelectorAll("input, select, textarea")
+                                .forEach(function (field) {
+                                    field.disabled = !visible;
+                                    if (!visible) {
+                                        if (field.type === "checkbox") {
+                                            field.checked = false;
+                                        } else {
+                                            field.value = "";
+                                        }
+                                    }
+                                });
+                        }
+                        function setFieldVisible(id, visible) {
+                            var el = document.getElementById(id);
+                            if (!el) { return; }
+                            el.hidden = !visible;
+                            el.querySelectorAll("input, select, textarea")
+                                .forEach(function (field) {
+                                    field.disabled = !visible;
+                                });
+                        }
+
+                        window.ooSyncReefer = function () {
+                            var v = vehicle.value;
+                            var body = document.getElementById("oo_CargoBodyType").value;
+                            var ttype = trailerType.value;
+                            var reefer = (v === "cargo_van" || v === "straight")
+                                ? body === "reefer" : (v === "semi" && ttype === "reefer");
+                            setFieldVisible("oo_reefer_wrap", reefer);
+                        };
+                        window.ooSyncLiftgate = function () {
+                            var lg = document.getElementById("oo_Liftgate");
+                            setFieldVisible("oo_liftgate_capacity_wrap",
+                                            lg && lg.value === "yes");
+                        };
+                        window.ooSyncTrailer = function () {
+                            var t = trailerType.value;
+                            var v = vehicle.value;
+                            var cargoVisible = v === "semi" &&
+                                (t === "dry" || t === "reefer" || t === "flatbed");
+                            setVisible(cargoBlock, cargoVisible ||
+                                       v === "cargo_van" || v === "straight");
+                            setFieldVisible("oo_cargo_body_wrap",
+                                            v === "cargo_van" || v === "straight");
+                            var full = v === "cargo_van" || v === "straight" ||
+                                (v === "semi" && (t === "dry" || t === "reefer"));
+                            var flat = v === "semi" && t === "flatbed";
+                            setFieldVisible("oo_payload_wrap", full || flat);
+                            setFieldVisible("oo_pallet_wrap", full);
+                            setFieldVisible("oo_length_wrap", full || flat);
+                            setFieldVisible("oo_width_wrap", full || flat);
+                            setFieldVisible("oo_height_wrap", full);
+                            setFieldVisible("oo_door_width_wrap", full);
+                            setFieldVisible("oo_door_height_wrap", full);
+                            setFieldVisible("oo_liftgate_wrap", full);
+                            setFieldVisible("oo_liftgate_capacity_wrap",
+                                            full && document.getElementById(
+                                                "oo_Liftgate").value === "yes");
+                            var body = document.getElementById("oo_CargoBodyType");
+                            if (v === "semi" && (t === "dry" || t === "reefer")) {
+                                body.value = t === "reefer" ? "reefer" : "dry";
+                            }
+                            ooSyncReefer();
+                        };
+                        window.ooSyncVehicle = function () {
+                            var v = vehicle.value;
+                            var van = v === "cargo_van" || v === "straight";
+                            var semi = v === "semi";
+                            var tractor = v === "tractor";
+                            if (tractorNote) { tractorNote.hidden = !tractor; }
+                            setVisible(trailerBlock, semi);
+                            setFieldVisible("oo_cargo_body_wrap", van);
+                            setVisible(cargoBlock, van || semi);
+                            if (semi) {
+                                ["oo_TrailerType", "oo_TrailerYear",
+                                 "oo_TrailerUnit", "oo_TrailerLengthFt"]
+                                    .forEach(function (id) {
+                                        var el = document.getElementById(id);
+                                        if (el) { el.required = true; }
+                                    });
+                            } else {
+                                ["oo_TrailerType", "oo_TrailerYear",
+                                 "oo_TrailerUnit", "oo_TrailerLengthFt"]
+                                    .forEach(function (id) {
+                                        var el = document.getElementById(id);
+                                        if (el) { el.required = false; }
+                                    });
+                            }
+                            ooSyncTrailer();
+                        };
+
+                        // ── operating-area chips ────────────────────
+                        window.ooSyncServiceChips = function () {
+                            var box = document.getElementById("oo_service_chips");
+                            if (!box) { return; }
+                            box.innerHTML = "";
+                            form.querySelectorAll(".oo-service-province:checked")
+                                .forEach(function (cb) {
+                                    var chip = document.createElement("span");
+                                    chip.className = "o_oo_chip";
+                                    chip.textContent = cb.dataset.code;
+                                    var x = document.createElement("button");
+                                    x.type = "button";
+                                    x.setAttribute("aria-label", "Remove " +
+                                                   cb.value);
+                                    x.textContent = "×";
+                                    x.addEventListener("click", function () {
+                                        cb.checked = false;
+                                        ooSyncServiceChips();
+                                    });
+                                    chip.appendChild(x);
+                                    box.appendChild(chip);
+                                });
+                        };
+
+                        // ── notification summary ────────────────────
+                        window.ooSyncNotification = function () {
+                            var channel = document.getElementById(
+                                "oo_LoadNotificationChannel").value;
+                            var wa = channel === "whatsapp" || channel === "both";
+                            var em = channel === "email" || channel === "both";
+                            var consent = document.getElementById(
+                                "oo_whatsapp_consent_wrap");
+                            var email = document.getElementById("oo_email_notify_wrap");
+                            if (consent) { consent.hidden = !wa; }
+                            if (email) { email.hidden = !em; }
+                            var consentBox = document.getElementById(
+                                "oo_WhatsAppConsentGranted");
+                            if (consentBox) { consentBox.required = wa; }
+                            var useApp = document.getElementById("oo_use_app_email");
+                            var emailField = document.getElementById(
+                                "oo_LoadNotificationEmail");
+                            if (emailField) {
+                                emailField.disabled = !em ||
+                                    (useApp && useApp.checked);
+                                emailField.required = em &&
+                                    !(useApp && useApp.checked);
+                            }
+                            ooSyncWhatsApp();
+                            var summary = document.getElementById("oo_notify_summary");
+                            if (!summary) { return; }
+                            var text = "Notifications: ";
+                            if (channel === "none") {
+                                text += "no load opportunities will be sent.";
+                            } else if (channel === "whatsapp") {
+                                text += "WhatsApp at " + (waInput.value || "the contact phone") + ".";
+                            } else if (channel === "email") {
+                                text += "email at " + (useApp && useApp.checked ?
+                                    "the application address" : "the address you enter") + ".";
+                            } else if (channel === "both") {
+                                text += "WhatsApp and email.";
+                            } else {
+                                text += "not selected.";
+                            }
+                            summary.textContent = text;
+                        };
+
+                        // ── Google city autocomplete ────────────────
+                        var city = document.getElementById("oo_HomeCity");
+                        var results = document.getElementById("oo_city_results");
+                        var timer = null;
+                        function clearSelection() {
+                            ["oo_HomeCityPlaceId", "oo_HomeCityLat",
+                             "oo_HomeCityLng", "oo_HomeCityVerified"]
+                                .forEach(function (id) {
+                                    var el = document.getElementById(id);
+                                    if (el) { el.value = ""; }
+                                });
+                            var badge = document.getElementById("oo_city_verified");
+                            if (badge) { badge.hidden = true; }
+                        }
+                        function chooseCity(item) {
+                            city.value = item.city;
+                            document.getElementById("oo_HomeProvince").value =
+                                item.province_code;
+                            document.getElementById("oo_HomeCityPlaceId").value =
+                                item.place_id;
+                            document.getElementById("oo_HomeCityLat").value =
+                                item.latitude;
+                            document.getElementById("oo_HomeCityLng").value =
+                                item.longitude;
+                            document.getElementById("oo_HomeCityVerified").value = "1";
+                            var badge = document.getElementById("oo_city_verified");
+                            if (badge) { badge.hidden = false; }
+                            results.hidden = true;
+                            results.innerHTML = "";
+                        }
+                        if (city) {
+                            city.addEventListener("input", function () {
+                                clearSelection();
+                                clearTimeout(timer);
+                                var q = city.value.trim();
+                                if (q.length < 2) {
+                                    results.hidden = true;
+                                    return;
+                                }
+                                timer = setTimeout(function () {
+                                    fetch("/owner-operator/places/cities?q=" +
+                                          encodeURIComponent(q))
+                                        .then(function (r) { return r.json(); })
+                                        .then(function (items) {
+                                            results.innerHTML = "";
+                                            (items || []).forEach(function (it) {
+                                                var b = document.createElement("button");
+                                                b.type = "button";
+                                                b.className = "o_oo_city_item";
+                                                b.textContent = it.label;
+                                                b.addEventListener("click",
+                                                    function () { chooseCity(it); });
+                                                results.appendChild(b);
+                                            });
+                                            results.hidden =
+                                                !results.children.length;
+                                        })
+                                        .catch(function () {
+                                            results.hidden = true;
+                                        });
+                                }, 250);
                             });
-                        });
-                        var note = document.getElementById("oo-cargo-note");
-                        if (note) {
-                            note.textContent = tractor
-                                ? "Enter the specifications of your actual trailer. For power-only work, leave these blank — the assigned trailer supplies them."
-                                : "Enter the cargo specifications of the truck. Do not estimate them from a nominal truck length.";
                         }
-                    }
-                    function ooSyncVehicle(value) {
-                        var tractor = value === "tractor";
-                        var trailer = document.getElementById("oo-trailer-group");
-                        if (trailer) {
-                            trailer.hidden = !tractor;
-                            trailer.querySelectorAll("select,input").forEach(function (el) {
-                                el.disabled = !tractor;
-                            });
-                            var own = document.getElementById("oo_TrailerOwnership");
-                            if (own) { own.required = tractor; }
-                        }
-                        var details = document.getElementById("oo-trailer-details");
-                        if (details) {
-                            details.hidden = true;
-                            details.querySelectorAll("select,input").forEach(function (el) {
-                                el.disabled = true;
-                            });
-                        }
-                        ooSyncCargo();
-                    }
-                    function ooSyncTrailer(value) {
-                        var details = document.getElementById("oo-trailer-details");
-                        if (!details) { return; }
-                        var own = value === "own";
-                        details.hidden = !own;
-                        details.querySelectorAll("select,input").forEach(function (el) {
-                            el.disabled = !own;
-                        });
-                        var type = document.getElementById("oo_TrailerType");
-                        if (type) { type.required = own; }
-                        ooSyncCargo();
-                    }
-                    function ooSyncNotification(value) {
-                        var wa = document.getElementById("oo-notify-whatsapp");
-                        var em = document.getElementById("oo-notify-email");
-                        var whatsapp = value === "whatsapp";
-                        var email = value === "email";
-                        if (wa) {
-                            wa.hidden = !whatsapp;
-                            wa.querySelectorAll("input").forEach(function (el) {
-                                el.disabled = !whatsapp;
-                            });
-                        }
-                        if (em) {
-                            em.hidden = !email;
-                            em.querySelectorAll("input").forEach(function (el) {
-                                el.disabled = !email;
-                            });
-                        }
-                        var usePhone = document.querySelector(
-                            "input[name=UseContactPhoneForWhatsApp]");
-                        var useEmail = document.querySelector(
-                            "input[name=UseApplicationEmailForNotifications]");
-                        var number = document.getElementById("oo_WhatsAppNumber");
-                        var consent = document.getElementById("oo_WhatsAppConsentGranted");
-                        var emailField = document.getElementById("oo_LoadNotificationEmail");
-                        if (number) {
-                            number.required = whatsapp && !(usePhone && usePhone.checked);
-                        }
-                        if (consent) { consent.required = whatsapp; }
-                        if (emailField) {
-                            emailField.required = email && !(useEmail && useEmail.checked);
-                        }
-                    }
-                    ooSyncVehicle(document.getElementById("oo_VehicleType").value);
-                    var own = document.getElementById("oo_TrailerOwnership");
-                    if (own && own.value) { ooSyncTrailer(own.value); }
-                    ooSyncNotification(document.getElementById("oo_LoadNotificationChannel").value);
+
+                        // initial state
+                        show(1);
+                        ooSyncVehicle();
+                        ooSyncNotification();
+                        ooSyncWhatsApp();
+                        ooSyncLiftgate();
+                        ooSyncServiceChips();
+                        ooSyncReefer();
+                    })();
                 ]]></script>
             </body>
         </html>

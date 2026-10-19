@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """One mapping for the public owner-operator form.
 
-The live website form (website 22, view 5600) posts these names. They are
-kept verbatim so an existing page and a saved "Other Information" note can be
-replayed without translation loss. Everything that is not in this file is
-ignored by the public intake.
+The public form posts the names below. Legacy website names (view 5600) are
+still accepted so a saved "Other Information" note and an in-flight page can
+be replayed without translation loss. Everything not listed here is ignored
+by the public intake.
 """
 import html
 import re
@@ -26,6 +26,23 @@ PROVINCES = {
     "SK": "Saskatchewan",
     "YT": "Yukon",
 }
+
+# Exactly the 13 choices, alphabetically, for licence/plate dropdowns.
+PROVINCE_CHOICES = [
+    ("AB", "Alberta"),
+    ("BC", "British Columbia"),
+    ("MB", "Manitoba"),
+    ("NB", "New Brunswick"),
+    ("NL", "Newfoundland and Labrador"),
+    ("NS", "Nova Scotia"),
+    ("NT", "Northwest Territories"),
+    ("NU", "Nunavut"),
+    ("ON", "Ontario"),
+    ("PE", "Prince Edward Island"),
+    ("QC", "Quebec"),
+    ("SK", "Saskatchewan"),
+    ("YT", "Yukon"),
+]
 
 BUSINESS_STRUCTURES = {
     "sole": "Sole proprietor",
@@ -57,15 +74,17 @@ TDG = {"yes": "Yes", "no": "No", "expired": "Expired / renewal needed"}
 VEHICLE_TYPES = {
     "cargo_van": "Cargo Van",
     "straight": "Straight Truck",
-    "tractor": "Tractor / Power Unit",
+    "tractor": "Tractor Truck",
+    "semi": "Semi-Truck",
 }
 
-OWNERSHIPS = {"own": "Own", "lease": "Lease", "financed": "Financed"}
+OWNERSHIPS = {"own": "Owned", "lease": "Leased", "financed": "Financed"}
 
 TRANSMISSIONS = {
     "automatic": "Automatic",
-    "manual": "Manual / standard",
-    "automated_manual": "Automated manual",
+    "automated_manual": "Automated Manual",
+    "manual": "Manual",
+    "other": "Other",
 }
 
 CARGO_BODIES = {
@@ -77,7 +96,7 @@ CARGO_BODIES = {
 
 TRAILER_OWNERSHIPS = {
     "own": "Own / leased trailer",
-    "power_only": "Power-only",
+    "power_only": "Tractor only",
 }
 
 TRAILER_TYPES = {
@@ -87,6 +106,16 @@ TRAILER_TYPES = {
     "other": "Other",
 }
 
+NOTIFICATION_CHANNELS = {
+    "whatsapp": "WhatsApp",
+    "email": "Email",
+    "both": "WhatsApp and email",
+    "none": "Do not send load opportunities",
+}
+
+# Legacy service-area constants remain for old notes and backfill only; the
+# new form has ONE operating-area control (Canadian provinces) and work
+# preferences below it.
 SERVICE_AREAS = {
     "Toronto / GTA": "Toronto / GTA local",
     "Ontario wide": "Ontario wide",
@@ -131,6 +160,7 @@ WORK_PREFERENCE_RAW = {
 EQUIPMENT_RAW_MAP = {
     "CargoBodyType": "cargo_body_type",
     "LegalPayloadLb": "payload_lbs",
+    "GVWRLb": "gvwr_lbs",
     "PalletCapacity": "pallet_capacity",
     "CargoLengthFt": "box_length_ft",
     "CargoWidthIn": "cargo_width_in",
@@ -139,12 +169,11 @@ EQUIPMENT_RAW_MAP = {
     "DoorHeightIn": "door_clearance_in",
     "Liftgate": "liftgate",
     "LiftgateCapacityLb": "liftgate_capacity_lb",
-    "LiftgatePlatformLengthIn": "liftgate_platform_length_in",
-    "LiftgatePlatformWidthIn": "liftgate_platform_width_in",
-    "DockHeightCapable": "dock_height_capable",
     "ReeferTemperatureRange": "reefer_temperature_range",
     "TrailerType": "trailer_type",
     "TrailerLengthFt": "trailer_length_ft",
+    "TrailerYear": "trailer_year",
+    "TrailerUnit": "trailer_unit",
 }
 
 WHATSAPP_CONSENT_TEXT = (
@@ -158,8 +187,8 @@ try:
 except ImportError:  # pragma: no cover — phone_validation is installed
     phonenumbers = None
 
-# Raw website name -> internal application field. None means "handled
-# separately" (provinces and uploads).
+# Raw form name -> internal application field. Names are the current public
+# form names first; legacy names remain below for old posts/notes.
 FIELD_MAP = {
     "partner_name": "contact_name",
     "email_from": "email",
@@ -168,9 +197,13 @@ FIELD_MAP = {
     "BusinessStructure": "business_structure",
     "HomeCity": "home_city",
     "HomeProvince": "home_province",
+    "HomeCityPlaceId": "home_city_place_id",
+    "HomeCityLat": "home_latitude",
+    "HomeCityLng": "home_longitude",
+    "HomeCityVerified": "home_location_verified",
     "CommercialDrivingYears": "commercial_driving_experience",
     "DriverLicenceClass": "licence_class",
-    "LicenceJurisdiction": "licence_jurisdiction",
+    "LicenceJurisdiction": "licence_province",
     "OwnerOperatorYears": "owner_operator_experience",
     "LicenceSuspension": "licence_suspension",
     "RecentCollisions": "recent_collisions",
@@ -178,17 +211,23 @@ FIELD_MAP = {
     "TDGTraining": "tdg_training",
     "RecentDrivingWork": "recent_driving_work",
     "VehicleType": "vehicle_type",
+    "TruckMake": "truck_make",
+    "TruckModel": "truck_model",
     "TruckMakeModel": "equipment_model",
     "TruckYear": "truck_year",
     "UnitNumber": "unit_number",
     "VehicleOwnership": "vehicle_ownership",
     "Transmission": "transmission",
     "OdometerKm": "odometer_km",
+    "TruckPlate": "license_plate",
+    "TruckPlateProvince": "plate_province",
     "TruckPlateJurisdiction": "truck_plate_jurisdiction",
+    "GVWRLb": "gvwr_lbs",
     "CargoBodyType": "cargo_body_type",
     "TrailerOwnership": "trailer_ownership",
     "TrailerType": "trailer_type",
     "TrailerLengthFt": "trailer_length_ft",
+    "TrailerYear": "trailer_year",
     "TrailerUnit": "trailer_unit",
     "LegalPayloadLb": "payload_lbs",
     "PalletCapacity": "pallet_capacity",
@@ -211,6 +250,7 @@ FIELD_MAP = {
     "LoadNotificationChannel": "load_notification_channel",
     "WhatsAppNumber": "whatsapp_number",
     "LoadNotificationEmail": "load_notification_email",
+    "UseContactPhoneForWhatsApp": "use_contact_phone_for_whatsapp",
     "WhatsAppConsentGranted": "whatsapp_consent_granted",
     "WhatsAppConsent": "whatsapp_consent",
     "ApplicationDeclaration": "application_declaration",
@@ -219,6 +259,8 @@ FIELD_MAP = {
 
 # Website file input -> checklist document type.
 UPLOAD_MAP = {
+    "DriverLicenceFront": "licence_front",
+    "DriverLicenceBack": "licence_back",
     "CVORCertificate": "cvor",
     "InsuranceCertificate": "coi_applicant",
     "BusinessRegistration": "business_registration",
@@ -235,24 +277,23 @@ REQUIRED_RAW = (
     "LegalBusinessName", "BusinessStructure", "HomeCity", "HomeProvince",
     "CommercialDrivingYears", "DriverLicenceClass", "LicenceJurisdiction",
     "LicenceSuspension", "RecentCollisions", "RecentConvictions",
-    "VehicleType", "TruckMakeModel", "VehicleOwnership", "OdometerKm",
-    "TruckPlateJurisdiction", "LoadNotificationChannel",
-    "ApplicationDeclaration",
+    "VehicleType",
 )
 
 # Internal fields that every direct _create_from_public caller must supply.
+# Legacy direct callers may still send equipment_model in place of Make/Model.
 REQUIRED_INTERNAL = (
     "contact_name", "email", "phone", "business_name", "business_structure",
     "home_city", "home_province", "commercial_driving_experience",
     "licence_class", "licence_jurisdiction", "licence_suspension",
     "recent_collisions", "recent_convictions", "vehicle_type",
-    "equipment_model", "vehicle_ownership", "odometer_km",
-    "truck_plate_jurisdiction", "application_declaration",
+    "vehicle_ownership", "odometer_km", "application_declaration",
 )
 
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 YEAR_RE = re.compile(r"^(19|20)\d{2}$")
 PLATE_SPLIT_RE = re.compile(r"\s*[/,]\s*")
+NUMBER_CLEAN_RE = re.compile(r"[^0-9.]")
 
 
 def _text(value):
@@ -261,12 +302,7 @@ def _text(value):
 
 
 def normalize_phone(value, region="CA"):
-    """Return an E.164 number, or False when it is not a usable number.
-
-    A WhatsApp number is stored separately from the contact phone and is
-    never inferred from it unless the applicant explicitly ticks “use my
-    contact phone number”.
-    """
+    """Return an E.164 number, or False when it is not a usable number."""
     value = _text(value)
     if not value:
         return False
@@ -283,9 +319,11 @@ def normalize_phone(value, region="CA"):
         return False
 
 
-def _choice(value, allowed, label, errors):
+def _choice(value, allowed, label, errors, required=False):
     value = _text(value)
     if not value:
+        if required:
+            errors.append("Choose a valid %s." % label)
         return False
     if isinstance(allowed, dict):
         if value not in allowed:
@@ -300,13 +338,14 @@ def _choice(value, allowed, label, errors):
 
 def _number(value, label, errors, minimum=0.0, maximum=None,
             integer=False, required=False):
-    value = _text(value)
-    if not value:
+    raw = _text(value).replace(",", "").replace(" ", "")
+    raw = re.sub(r"(?i)(km|lb|lbs|kg)$", "", raw).strip()
+    if not raw:
         if required:
             errors.append("Please provide %s." % label)
         return False
     try:
-        number = float(value)
+        number = float(raw)
     except (TypeError, ValueError):
         errors.append("%s must be a number." % label)
         return False
@@ -330,7 +369,7 @@ def format_cvor(value):
 
 
 def split_plate_jurisdiction(value):
-    """Split the combined website field without inventing a jurisdiction."""
+    """Split a legacy combined plate value without inventing a jurisdiction."""
     raw = _text(value)
     if not raw:
         return False, False
@@ -355,8 +394,32 @@ def _parse_date(value, label, errors):
         return False
 
 
+def _province_code(value, label, errors, required=False):
+    raw = _text(value)
+    if not raw:
+        if required:
+            errors.append("Choose a valid %s." % label)
+        return False
+    upper = raw.upper()
+    if upper in PROVINCES:
+        return upper
+    # Accept a full province name for legacy posts.
+    for code, name in PROVINCES.items():
+        if raw.lower() == name.lower():
+            return code
+    errors.append("Choose a valid %s." % label)
+    return False
+
+
+def _equipment_provided(post):
+    return {
+        field: True for raw, field in EQUIPMENT_RAW_MAP.items()
+        if _text(post.get(raw))
+    }
+
+
 def normalise_public(post, strict=True):
-    """Map the website's names to application fields.
+    """Map the public form's names to application fields.
 
     Returns ``(vals, errors)``. In strict mode every required field is
     enforced. In non-strict mode (the audit backfill) a missing or malformed
@@ -376,25 +439,68 @@ def normalise_public(post, strict=True):
 
     put("partner_name", "contact_name", _text(post.get("partner_name")))
     put("email_from", "email", _text(post.get("email_from")).lower())
-    put("partner_phone", "phone", _text(post.get("partner_phone")))
+    phone = normalize_phone(_text(post.get("partner_phone")))
+    if phone:
+        vals["phone"] = phone
+    elif strict:
+        errors.append(
+            "Provide a valid contact phone number, including area code.")
     put("LegalBusinessName", "business_name",
         _text(post.get("LegalBusinessName")))
     put("BusinessStructure", "business_structure",
         _choice(post.get("BusinessStructure"), set(BUSINESS_STRUCTURES),
                 "business structure", errors))
+
+    # ── truck home base ─────────────────────────────────────────────
     put("HomeCity", "home_city", _text(post.get("HomeCity")))
-    home_province = _choice(
-        post.get("HomeProvince"), set(PROVINCES) | {"other"},
-        "home province", errors)
-    put("HomeProvince", "home_province", home_province)
+    home_code = _province_code(
+        post.get("HomeProvince"), "home province or territory", errors,
+        required=False)
+    if home_code:
+        vals["home_province"] = PROVINCES[home_code]
+        vals["home_province_code"] = home_code
+    place_id = _text(post.get("HomeCityPlaceId"))
+    verified = _truthy(post.get("HomeCityVerified"))
+    if place_id:
+        try:
+            lat = float(_text(post.get("HomeCityLat")))
+            lng = float(_text(post.get("HomeCityLng")))
+        except (TypeError, ValueError):
+            lat = lng = None
+        if lat is not None and lng is not None \
+                and -90 <= lat <= 90 and -180 <= lng <= 180 \
+                and not (lat == 0.0 and lng == 0.0):
+            vals.update({
+                "home_city_place_id": place_id,
+                "home_latitude": lat,
+                "home_longitude": lng,
+                "home_location_verified": bool(verified),
+                "home_location_review": not verified,
+            })
+            if not verified:
+                vals["home_location_review_reason"] = (
+                    "City selection was not verified by Google.")
+        else:
+            vals["home_location_review"] = True
+            vals["home_location_review_reason"] = (
+                "City coordinates could not be verified.")
+    else:
+        vals["home_location_review"] = True
+        vals["home_location_review_reason"] = (
+            "Location not verified — entered manually.")
+
     put("CommercialDrivingYears", "commercial_driving_experience",
         _choice(post.get("CommercialDrivingYears"), set(EXPERIENCE_RANGES),
                 "commercial driving experience", errors))
     put("DriverLicenceClass", "licence_class",
         _choice(post.get("DriverLicenceClass"), LICENCE_CLASSES,
                 "licence class", errors))
-    put("LicenceJurisdiction", "licence_jurisdiction",
-        _text(post.get("LicenceJurisdiction")))
+    licence_code = _province_code(
+        post.get("LicenceJurisdiction"), "licence issuing province or territory",
+        errors, required=strict)
+    if licence_code:
+        vals["licence_province"] = licence_code
+        vals["licence_jurisdiction"] = PROVINCES[licence_code]
     put("OwnerOperatorYears", "owner_operator_experience",
         _choice(post.get("OwnerOperatorYears"), set(OWNER_OPERATOR_RANGES),
                 "owner-operator experience", errors))
@@ -416,11 +522,22 @@ def normalise_public(post, strict=True):
     put("RecentDrivingWork", "recent_driving_work",
         _text(post.get("RecentDrivingWork")))
 
+    # ── vehicle ─────────────────────────────────────────────────────
     vehicle_type = _choice(post.get("VehicleType"), set(VEHICLE_TYPES),
                            "vehicle type", errors)
     put("VehicleType", "vehicle_type", vehicle_type)
-    put("TruckMakeModel", "equipment_model",
-        _text(post.get("TruckMakeModel")))
+    make = _text(post.get("TruckMake"))
+    model = _text(post.get("TruckModel"))
+    legacy_model = _text(post.get("TruckMakeModel"))
+    if make:
+        vals["truck_make"] = make
+    if model:
+        vals["truck_model"] = model
+    if make or model:
+        vals["equipment_model"] = ("%s %s" % (make, model)).strip()
+    elif legacy_model:
+        vals["equipment_model"] = legacy_model
+        vals["truck_make"] = legacy_model
     truck_year = _text(post.get("TruckYear"))
     if truck_year and truck_year != "2000 or earlier" \
             and not YEAR_RE.match(truck_year):
@@ -430,78 +547,57 @@ def normalise_public(post, strict=True):
     put("UnitNumber", "unit_number", _text(post.get("UnitNumber")))
     put("VehicleOwnership", "vehicle_ownership",
         _choice(post.get("VehicleOwnership"),
-                {"Own": "own", "Lease": "lease", "Financed": "financed"},
+                {"Own": "own", "Lease": "lease", "Financed": "financed",
+                 "Owned": "own", "Leased": "lease"},
                 "ownership answer", errors))
     put("Transmission", "transmission",
         _choice(post.get("Transmission"),
                 {"Automatic": "automatic", "Manual": "manual",
-                 "Automated manual": "automated_manual"},
+                 "Automated manual": "automated_manual",
+                 "Automated Manual": "automated_manual",
+                 "Other": "other"},
                 "transmission", errors))
     put("OdometerKm", "odometer_km",
         _number(post.get("OdometerKm"), "odometer", errors,
-                minimum=0, maximum=9999999, integer=True,
+                minimum=0, maximum=1000000, integer=True,
                 required=strict))
-    plate = _text(post.get("TruckPlateJurisdiction"))
+    plate = _text(post.get("TruckPlate")).upper()
     if plate:
-        vals["truck_plate_jurisdiction"] = plate
-        plate_no, jurisdiction = split_plate_jurisdiction(plate)
+        vals["license_plate"] = plate[:32]
+    plate_code = _province_code(
+        post.get("TruckPlateProvince"), "plate province or territory", errors,
+        required=strict)
+    if plate_code:
+        vals["plate_province"] = plate_code
+    if plate and plate_code:
+        vals["truck_plate_jurisdiction"] = "%s / %s" % (
+            plate, PROVINCES[plate_code])
+    legacy_plate = _text(post.get("TruckPlateJurisdiction"))
+    if legacy_plate and not plate:
+        vals["truck_plate_jurisdiction"] = legacy_plate
+        plate_no, jurisdiction = split_plate_jurisdiction(legacy_plate)
         if plate_no:
             vals["license_plate"] = plate_no[:32]
         if jurisdiction:
             vals["plate_jurisdiction"] = jurisdiction[:64]
+    put("GVWRLb", "gvwr_lbs",
+        _number(post.get("GVWRLb"), "GVWR", errors,
+                minimum=0, maximum=200000, integer=True, required=strict))
 
-    trailer_own = None
-    if vehicle_type == "tractor":
-        trailer_own = _choice(post.get("TrailerOwnership"),
-                              {"own": "own", "power_only": "power_only"},
-                              "trailer ownership", errors)
-        put("TrailerOwnership", "trailer_ownership", trailer_own)
-        put("TrailerType", "trailer_type",
-            _choice(post.get("TrailerType"), set(TRAILER_TYPES),
-                    "trailer type", errors))
-        put("TrailerLengthFt", "trailer_length_ft",
-            _number(post.get("TrailerLengthFt"), "trailer length", errors,
-                    minimum=0, maximum=60))
-        put("TrailerUnit", "trailer_unit", _text(post.get("TrailerUnit")))
-        if strict and trailer_own == "own" \
-                and not _text(post.get("TrailerType")):
-            errors.append("Choose the trailer type.")
-        if strict and not trailer_own:
-            errors.append("Choose whether you have your own trailer.")
-
-    cargo_applicable = vehicle_type in ("cargo_van", "straight") or (
-        vehicle_type == "tractor" and trailer_own == "own")
-    if cargo_applicable:
-        put("CargoBodyType", "cargo_body_type",
-            _choice(post.get("CargoBodyType"), set(CARGO_BODIES),
-                    "cargo body type", errors))
-        put("LegalPayloadLb", "payload_lbs",
-            _number(post.get("LegalPayloadLb"), "legal payload", errors,
-                    minimum=0, maximum=150000))
-        put("PalletCapacity", "pallet_capacity",
-            _number(post.get("PalletCapacity"), "pallet capacity", errors,
-                    minimum=0, maximum=60, integer=True))
-        put("CargoLengthFt", "box_length_ft",
-            _number(post.get("CargoLengthFt"), "cargo length", errors,
-                    minimum=0, maximum=60))
-        put("CargoWidthIn", "cargo_width_in",
-            _number(post.get("CargoWidthIn"), "cargo width", errors,
-                    minimum=0, maximum=120))
-        put("CargoHeightIn", "cargo_height_in",
-            _number(post.get("CargoHeightIn"), "cargo height", errors,
-                    minimum=0, maximum=150))
-        put("DoorWidthIn", "door_width_in",
-            _number(post.get("DoorWidthIn"), "door opening width", errors,
-                    minimum=0, maximum=150))
-        put("DoorHeightIn", "door_clearance_in",
-            _number(post.get("DoorHeightIn"), "door opening height", errors,
-                    minimum=0, maximum=150))
-        put("Liftgate", "liftgate",
-            _choice(post.get("Liftgate"), {"yes": "yes", "no": "no"},
-                    "liftgate answer", errors))
+    liftgate = _choice(post.get("Liftgate"), {"yes": "yes", "no": "no"},
+                       "liftgate answer", errors)
+    put("Liftgate", "liftgate", liftgate)
+    if liftgate == "yes":
         put("LiftgateCapacityLb", "liftgate_capacity_lb",
             _number(post.get("LiftgateCapacityLb"), "liftgate capacity",
-                    errors, minimum=0, maximum=20000))
+                    errors, minimum=0, maximum=20000, integer=True,
+                    required=strict))
+    put("AirRide", "air_ride",
+        _choice(post.get("AirRide"), {"yes": "yes", "no": "no"},
+                "air-ride answer", errors))
+    # Legacy-only fields: the current form does not ask them, but an older
+    # post or a saved note must not lose the historical answer.
+    if vehicle_type != "tractor":
         put("LiftgatePlatformLengthIn", "liftgate_platform_length_in",
             _number(post.get("LiftgatePlatformLengthIn"),
                     "liftgate platform length", errors,
@@ -514,11 +610,115 @@ def normalise_public(post, strict=True):
             _choice(post.get("DockHeightCapable"),
                     {"yes": "yes", "no": "no"},
                     "dock-height answer", errors))
-        put("ReeferTemperatureRange", "reefer_temperature_range",
-            _text(post.get("ReeferTemperatureRange")))
-    put("AirRide", "air_ride",
-        _choice(post.get("AirRide"), {"yes": "yes", "no": "no"},
-                "air-ride answer", errors))
+
+    def cargo_fields(required):
+        put("CargoBodyType", "cargo_body_type",
+            _choice(post.get("CargoBodyType"), set(CARGO_BODIES),
+                    "cargo body type", errors))
+        put("LegalPayloadLb", "payload_lbs",
+            _number(post.get("LegalPayloadLb"), "legal payload", errors,
+                    minimum=0, maximum=150000, integer=True,
+                    required=required))
+        put("PalletCapacity", "pallet_capacity",
+            _number(post.get("PalletCapacity"), "pallet capacity", errors,
+                    minimum=0, maximum=60, integer=True, required=required))
+        put("CargoLengthFt", "box_length_ft",
+            _number(post.get("CargoLengthFt"), "cargo length", errors,
+                    minimum=0, maximum=60, required=required))
+        put("CargoWidthIn", "cargo_width_in",
+            _number(post.get("CargoWidthIn"), "cargo width", errors,
+                    minimum=0, maximum=120, required=required))
+        put("CargoHeightIn", "cargo_height_in",
+            _number(post.get("CargoHeightIn"), "cargo height", errors,
+                    minimum=0, maximum=150, required=required))
+        put("DoorWidthIn", "door_width_in",
+            _number(post.get("DoorWidthIn"), "rear door width", errors,
+                    minimum=0, maximum=150, required=required))
+        put("DoorHeightIn", "door_clearance_in",
+            _number(post.get("DoorHeightIn"), "rear door height", errors,
+                    minimum=0, maximum=150, required=required))
+
+    def reefer_fields(applicable):
+        if applicable:
+            put("ReeferTemperatureRange", "reefer_temperature_range",
+                _text(post.get("ReeferTemperatureRange")))
+            vals["reefer_applicable"] = "yes"
+        else:
+            vals["reefer_applicable"] = "not_applicable"
+
+    if vehicle_type in ("cargo_van", "straight"):
+        cargo_fields(required=strict)
+        body = vals.get("cargo_body_type")
+        reefer_fields(body == "reefer")
+        if body != "reefer":
+            vals.pop("reefer_temperature_range", None)
+    elif vehicle_type == "tractor":
+        # Tractor only: never store trailer, cargo, capacity or reefer.
+        vals["trailer_ownership"] = "power_only"
+        vals["reefer_applicable"] = "not_applicable"
+        for field in (
+                "cargo_body_type", "payload_lbs", "pallet_capacity",
+                "box_length_ft", "cargo_width_in", "cargo_height_in",
+                "door_width_in", "door_clearance_in", "liftgate",
+                "liftgate_capacity_lb", "reefer_temperature_range",
+                "liftgate_platform_length_in", "liftgate_platform_width_in",
+                "dock_height_capable",
+                "trailer_type", "trailer_length_ft", "trailer_year",
+                "trailer_unit"):
+            vals.pop(field, None)
+    elif vehicle_type == "semi":
+        vals["trailer_ownership"] = "own"
+        put("TrailerType", "trailer_type",
+            _choice(post.get("TrailerType"), set(TRAILER_TYPES),
+                    "trailer type", errors))
+        put("TrailerLengthFt", "trailer_length_ft",
+            _number(post.get("TrailerLengthFt"), "trailer length", errors,
+                    minimum=0, maximum=60, required=strict))
+        trailer_year = _text(post.get("TrailerYear"))
+        if trailer_year and trailer_year != "2000 or earlier" \
+                and not YEAR_RE.match(trailer_year):
+            errors.append("Choose a valid trailer model year.")
+        elif trailer_year:
+            vals["trailer_year"] = trailer_year
+        elif strict:
+            errors.append("Choose the trailer model year.")
+        put("TrailerUnit", "trailer_unit", _text(post.get("TrailerUnit")))
+        if strict and not vals.get("trailer_unit"):
+            errors.append("Provide the trailer unit / identification.")
+        trailer_kind = vals.get("trailer_type")
+        if trailer_kind in ("dry", "reefer"):
+            cargo_fields(required=strict)
+            vals["cargo_body_type"] = (
+                "reefer" if trailer_kind == "reefer" else "dry")
+            reefer_fields(trailer_kind == "reefer")
+        elif trailer_kind == "flatbed":
+            put("LegalPayloadLb", "payload_lbs",
+                _number(post.get("LegalPayloadLb"), "legal payload", errors,
+                        minimum=0, maximum=150000, integer=True,
+                        required=strict))
+            put("CargoLengthFt", "box_length_ft",
+                _number(post.get("CargoLengthFt"), "cargo length", errors,
+                        minimum=0, maximum=60, required=strict))
+            put("CargoWidthIn", "cargo_width_in",
+                _number(post.get("CargoWidthIn"), "cargo width", errors,
+                        minimum=0, maximum=120, required=strict))
+            vals["reefer_applicable"] = "not_applicable"
+            for field in ("cargo_body_type", "pallet_capacity",
+                          "cargo_height_in", "door_width_in",
+                          "door_clearance_in", "reefer_temperature_range",
+                          "liftgate", "liftgate_capacity_lb"):
+                vals.pop(field, None)
+        else:
+            vals["reefer_applicable"] = "not_applicable"
+            for field in (
+                    "cargo_body_type", "payload_lbs", "pallet_capacity",
+                    "box_length_ft", "cargo_width_in", "cargo_height_in",
+                    "door_width_in", "door_clearance_in", "liftgate",
+                    "liftgate_capacity_lb", "reefer_temperature_range"):
+                vals.pop(field, None)
+        # Tractor-only fields are never submitted by the public form.
+        vals.pop("trailer_ownership", None)
+        vals["trailer_ownership"] = "own"
 
     try:
         cvor = format_cvor(_text(post.get("CVORNumber")))
@@ -527,70 +727,62 @@ def normalise_public(post, strict=True):
     except ValueError as exc:
         errors.append(str(exc))
 
+    # ── operating area and work preferences (each exactly once) ─────
     service_codes = [
         code for code in PROVINCES
         if _text(post.get("ServiceProvince%s" % code))
     ]
     if service_codes:
         vals["service_province_codes"] = service_codes
-
-    area_codes = [
-        code for raw, code in SERVICE_AREA_RAW.items()
-        if _truthy(post.get(raw))
-    ]
-    if not area_codes:
-        legacy_area = _choice(
-            post.get("PreferredLanes"), set(SERVICE_AREAS),
-            "preferred service area", errors)
-        if legacy_area:
-            area_codes = [SERVICE_AREA_CODES[legacy_area]]
-    if area_codes:
-        vals["preferred_service_area_codes"] = area_codes
-        first_label = next(
-            (label for label, code in SERVICE_AREA_CODES.items()
-             if code == area_codes[0]), None)
-        if first_label:
-            vals["preferred_service_area"] = first_label
     elif strict:
-        errors.append("Select at least one preferred service area.")
-    if strict and "selected_provinces" in area_codes and not service_codes:
-        errors.append(
-            "Select at least one province or territory you will serve.")
-    put("AvailabilityDate", "available_start_date",
-        _parse_date(post.get("AvailabilityDate"), "available start date",
-                    errors))
+        errors.append("Select at least one province or territory you will serve.")
+
+    # Legacy note/older-page value: keep the historical single answer for
+    # backfill, but the current form has no preferred-service-area control.
+    legacy_area = _choice(
+        post.get("PreferredLanes"), set(SERVICE_AREAS),
+        "preferred service area", errors)
+    if legacy_area:
+        vals["preferred_service_area"] = legacy_area
+        vals["preferred_service_area_codes"] = [
+            SERVICE_AREA_CODES[legacy_area]]
 
     pref_codes = [
         code for raw, code in WORK_PREFERENCE_RAW.items()
         if _truthy(post.get(raw))
     ]
-    if not pref_codes:
-        legacy_pref = _choice(
-            post.get("WorkPreference"), set(WORK_PREFERENCES),
-            "work preference", errors)
-        if legacy_pref:
-            pref_codes = [legacy_pref]
     if pref_codes:
         vals["work_preference_codes"] = pref_codes
         vals["work_preference"] = pref_codes[0]
     elif strict:
         errors.append("Select at least one work preference.")
 
+    put("AvailabilityDate", "available_start_date",
+        _parse_date(post.get("AvailabilityDate"), "available start date",
+                    errors))
+
+    # ── load notifications ──────────────────────────────────────────
     channel = _choice(
-        post.get("LoadNotificationChannel"), {"whatsapp", "email"},
-        "load-notification channel", errors)
+        post.get("LoadNotificationChannel"),
+        {"whatsapp", "email", "both", "none"},
+        "load-notification channel", errors, required=strict)
     if channel:
         vals["load_notification_channel"] = channel
-        if channel == "whatsapp":
+        wants_whatsapp = channel in ("whatsapp", "both")
+        wants_email = channel in ("email", "both")
+        if wants_whatsapp:
             consent = _truthy(post.get("WhatsAppConsentGranted"))
             if strict and not consent:
                 errors.append(
-                    "Please agree to WhatsApp load notifications, or choose "
-                    "email.")
+                    "Please agree to WhatsApp load notifications.")
             use_phone = _truthy(post.get("UseContactPhoneForWhatsApp"))
-            raw_number = _text(post.get("partner_phone")) if use_phone \
-                else _text(post.get("WhatsAppNumber"))
-            number = normalize_phone(raw_number)
+            if use_phone:
+                number = vals.get("phone")
+                vals["use_contact_phone_for_whatsapp"] = True
+            else:
+                number = normalize_phone(
+                    _text(post.get("WhatsAppNumber")))
+                vals["use_contact_phone_for_whatsapp"] = False
             if strict and not number:
                 errors.append(
                     "Provide a valid WhatsApp number including country code.")
@@ -602,26 +794,32 @@ def normalise_public(post, strict=True):
                 vals["whatsapp_consent_at"] = datetime.now()
                 vals["whatsapp_consent"] = "yes"
         else:
-            use_app = _truthy(
+            vals["whatsapp_consent"] = "no"
+            vals["whatsapp_consent_granted"] = False
+            if not wants_email:
+                vals["whatsapp_number"] = False
+        if wants_email:
+            use_app_email = _truthy(
                 post.get("UseApplicationEmailForNotifications"))
-            raw_email = vals.get("email") if use_app \
-                else _text(post.get("LoadNotificationEmail")).lower()
-            if raw_email and EMAIL_RE.match(raw_email):
-                vals["load_notification_email"] = raw_email
-                vals["whatsapp_consent"] = "no"
-            elif strict:
-                errors.append(
-                    "Provide a valid load-notification email address.")
+            if use_app_email or not _text(post.get("LoadNotificationEmail")):
+                vals["load_notification_email"] = vals.get("email")
+            else:
+                raw_email = _text(post.get("LoadNotificationEmail")).lower()
+                if EMAIL_RE.match(raw_email):
+                    vals["load_notification_email"] = raw_email
+                elif strict:
+                    errors.append(
+                        "Provide a valid load-notification email address.")
+        else:
+            vals["load_notification_email"] = False
     elif strict:
         errors.append("Choose how you want to receive load notifications.")
+
     if _truthy(post.get("LoadNotificationOptOut")):
         vals["load_notification_opt_out"] = True
         vals["load_notification_opt_out_at"] = datetime.now()
 
-    provided = {}
-    for raw, field in EQUIPMENT_RAW_MAP.items():
-        if _text(post.get(raw)):
-            provided[field] = True
+    provided = _equipment_provided(post)
     if provided:
         vals["equipment_provided"] = provided
     if _truthy(post.get("ApplicationDeclaration")):
@@ -636,19 +834,29 @@ def normalise_public(post, strict=True):
     email = vals.get("email")
     if email and not EMAIL_RE.match(email):
         errors.append("That email address does not look valid.")
-    phone = vals.get("phone")
-    if phone and len(re.sub(r"[^0-9]", "", phone)) < 7:
-        errors.append("Please provide a complete phone number.")
-
     if strict:
         if not vals.get("home_city"):
             errors.append("Please provide your truck home city.")
         if not vals.get("home_province"):
             errors.append("Please provide your home province or territory.")
         if not vals.get("contact_name"):
-            errors.append("Please give your full name.")
+            errors.append("Please give your full legal name.")
         if not vals.get("email"):
             errors.append("Please give your email address.")
+        if not vals.get("truck_make") and not vals.get("equipment_model"):
+            errors.append("Please provide the vehicle make.")
+        if not vals.get("truck_model"):
+            errors.append("Please provide the vehicle model.")
+        if not vals.get("truck_year"):
+            errors.append("Choose the model year.")
+        if not vals.get("transmission"):
+            errors.append("Choose the transmission.")
+        if not vals.get("license_plate"):
+            errors.append("Please provide the licence plate.")
+        if not vals.get("plate_province"):
+            errors.append("Choose the plate province or territory.")
+        if not vals.get("gvwr_lbs"):
+            errors.append("Please provide the GVWR.")
     return vals, errors
 
 
@@ -660,8 +868,6 @@ def parse_other_information(body):
     """
     if not body:
         return {}
-    # The chatter stores the body HTML-escaped (e.g. &lt;p&gt;), so decode
-    # first and only then strip the tags.
     text = re.sub(r"<[^>]+>", "\n", html.unescape(body))
     if "Other Information:" not in text:
         return {}

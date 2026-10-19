@@ -711,57 +711,30 @@ class TestStructuredSubmission(OwnerOperatorCase):
         # the intake collects no VIN
         self.assertFalse(app.vin)
 
-    def test_tractor_keeps_owned_trailer_specs_but_power_only_drops_them(self):
-        owned = self.Application._create_from_public(self._public_vals(
+    def test_tractor_is_power_only_and_drops_trailer_and_reefer_specs(self):
+        app = self.Application._create_from_public(self._public_vals(
             vehicle_type="tractor", trailer_ownership="own",
             trailer_type="reefer", trailer_length_ft=53,
             trailer_unit="TR-9", cargo_body_type="dry",
             payload_lbs=99999, pallet_capacity=30, box_length_ft=53,
             cargo_width_in=120, cargo_height_in=120, door_width_in=96,
             door_clearance_in=120, liftgate="yes",
-            liftgate_capacity_lb=5000, liftgate_platform_length_in=72,
-            liftgate_platform_width_in=40, dock_height_capable="yes",
+            liftgate_capacity_lb=5000,
             reefer_temperature_range="frozen"))
-        self.assertEqual(owned.vehicle_type, "tractor")
-        self.assertEqual(owned.trailer_ownership, "own")
-        self.assertEqual(owned.trailer_type, "reefer")
-        self.assertEqual(owned.trailer_length_ft, 53)
-        self.assertEqual(owned.trailer_unit, "TR-9")
-        # An owned trailer's specifications are kept on the application.
-        self.assertEqual(owned.cargo_body_type, "dry")
-        self.assertEqual(owned.payload_lbs, 99999)
-        self.assertEqual(owned.pallet_capacity, 30)
-        self.assertEqual(owned.box_length_ft, 53)
-        self.assertEqual(owned.cargo_width_in, 120)
-        self.assertEqual(owned.cargo_height_in, 120)
-        self.assertEqual(owned.door_width_in, 96)
-        self.assertEqual(owned.door_clearance_in, 120)
-        self.assertEqual(owned.liftgate, "yes")
-        self.assertEqual(owned.liftgate_capacity_lb, 5000)
-        self.assertEqual(owned.liftgate_platform_length_in, 72)
-        self.assertEqual(owned.liftgate_platform_width_in, 40)
-        self.assertEqual(owned.dock_height_capable, "yes")
-        self.assertEqual(owned.reefer_temperature_range, "frozen")
-        self.assertTrue(owned.has_reefer)       # from the trailer
-        self.assertFalse(owned.has_liftgate)    # not a power-unit attribute
-        self.assertEqual(owned.equipment_type, "reefer")
-
-        power_only = self.Application._create_from_public(self._public_vals(
-            email="poweronly@test.invalid", vehicle_type="tractor",
-            trailer_ownership="power_only", cargo_body_type="dry",
-            payload_lbs=99999, pallet_capacity=30, box_length_ft=53,
-            cargo_width_in=120, cargo_height_in=120, door_width_in=96,
-            door_clearance_in=120, liftgate="yes",
-            liftgate_capacity_lb=5000, liftgate_platform_length_in=72,
-            liftgate_platform_width_in=40, dock_height_capable="yes",
-            reefer_temperature_range="frozen"))
-        for field in ("cargo_body_type", "payload_lbs", "pallet_capacity",
-                      "box_length_ft", "cargo_width_in", "cargo_height_in",
-                      "door_width_in", "door_clearance_in", "liftgate",
-                      "liftgate_capacity_lb", "liftgate_platform_length_in",
-                      "liftgate_platform_width_in", "dock_height_capable",
-                      "reefer_temperature_range"):
-            self.assertFalse(power_only[field], field)
+        self.assertEqual(app.vehicle_type, "tractor")
+        self.assertEqual(app.trailer_ownership, "power_only")
+        self.assertEqual(app.reefer_applicable, "not_applicable")
+        # Tractor only: nothing trailer/cargo/reefer is stored.
+        for field in ("trailer_type", "trailer_length_ft", "trailer_unit",
+                      "trailer_year", "cargo_body_type", "payload_lbs",
+                      "pallet_capacity", "box_length_ft", "cargo_width_in",
+                      "cargo_height_in", "door_width_in",
+                      "door_clearance_in", "liftgate",
+                      "liftgate_capacity_lb", "reefer_temperature_range"):
+            self.assertFalse(app[field], field)
+        self.assertFalse(app.has_reefer)
+        self.assertFalse(app.has_liftgate)
+        self.assertEqual(app.equipment_type, "other")
 
     def test_cargo_van_and_straight_branches(self):
         van = self.Application._create_from_public(self._public_vals(
@@ -882,7 +855,8 @@ class TestBackfill(OwnerOperatorCase):
                          "DEMO ONLY — Sample Owner Operator")
         self.assertEqual(app.business_structure, "sole")
         self.assertTrue(app.is_sole_proprietor)
-        self.assertEqual(app.home_province, "ON")
+        self.assertEqual(app.home_province, "Ontario")
+        self.assertEqual(app.home_province_code, "ON")
         self.assertEqual(app.vehicle_type, "straight")
         self.assertEqual(app.odometer_km, 350000)
         self.assertEqual(app.box_length_ft, 26)
@@ -1038,13 +1012,16 @@ class TestPublicRoutes(HttpCase):
             "RecentConvictions": "None",
             "TDGTraining": "No",
             "VehicleType": "straight",
-            "TruckMakeModel": "Freightliner M2 106",
+            "TruckMake": "Freightliner",
+            "TruckModel": "M2 106",
             "TruckYear": "2013",
             "UnitNumber": "621",
             "VehicleOwnership": "Own",
             "Transmission": "Automatic",
-            "OdometerKm": "350000",
-            "TruckPlateJurisdiction": "DEMO 621 / Ontario",
+            "OdometerKm": "350,000",
+            "TruckPlate": "DEMO 621",
+            "TruckPlateProvince": "ON",
+            "GVWRLb": "26,000",
             "CargoBodyType": "reefer",
             "LegalPayloadLb": "13000",
             "PalletCapacity": "13",
@@ -1075,16 +1052,26 @@ class TestPublicRoutes(HttpCase):
         response = self.url_open("/owner-operator/apply")
         self.assertEqual(response.status_code, 200)
         self.assertIn("LegalBusinessName", response.text)
-        self.assertIn("TruckPlateJurisdiction", response.text)
+        self.assertIn('name="TruckMake"', response.text)
+        self.assertIn('name="TruckModel"', response.text)
+        self.assertIn('name="TruckPlate"', response.text)
+        self.assertIn('name="TruckPlateProvince"', response.text)
+        self.assertIn('name="GVWRLb"', response.text)
         self.assertIn("ServiceProvinceON", response.text)
         self.assertIn("DoorWidthIn", response.text)
-        self.assertIn("LiftgatePlatformLengthIn", response.text)
-        self.assertIn("PreferredAreaOntarioWide", response.text)
+        self.assertIn('name="DriverLicenceFront"', response.text)
+        self.assertIn('name="DriverLicenceBack"', response.text)
         self.assertIn("WorkPreferenceLocal", response.text)
         self.assertIn("LoadNotificationChannel", response.text)
         self.assertIn("WhatsAppNumber", response.text)
         self.assertNotIn('name="InsuranceAgent"', response.text)
         self.assertNotIn('name="InsuranceAgentEmail"', response.text)
+        self.assertNotIn("LiftgatePlatformLengthIn", response.text)
+        self.assertNotIn("LiftgatePlatformWidthIn", response.text)
+        self.assertNotIn("DockHeightCapable", response.text)
+        self.assertNotIn("PreferredAreaOntarioWide", response.text)
+        self.assertNotIn("TruckPlateJurisdiction", response.text)
+        self.assertNotIn("TruckMakeModel", response.text)
         self.assertIn("csrf_token", response.text)
         # The backend website preview needs the website metadata to name the
         # main object; without it its systray raises on this page.
