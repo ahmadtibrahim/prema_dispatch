@@ -241,6 +241,35 @@
                                     <field name="insurance_agent_email" widget="email" readonly="1"/>
                                     <field name="authority_state"/>
                                 </group>
+                                <group string="Driver licence verification (reviewer)">
+                                    <field name="licence_class"/>
+                                    <field name="licence_province"/>
+                                    <field name="licence_jurisdiction" readonly="1"/>
+                                    <field name="licence_number"
+                                           placeholder="Enter from the uploaded licence"/>
+                                    <field name="licence_expiry"/>
+                                    <field name="licence_verification_status"
+                                           widget="badge"
+                                           decoration-success="licence_verification_status == 'verified'"
+                                           decoration-secondary="licence_verification_status != 'verified'"/>
+                                    <field name="licence_verified_on" readonly="1"/>
+                                    <field name="licence_verified_by" readonly="1"/>
+                                    <button name="action_verify_licence" type="object"
+                                            string="Verify driver licence"
+                                            class="btn-link"
+                                            invisible="licence_verification_status == 'verified'"/>
+                                    <button name="action_reset_licence_verification"
+                                            type="object"
+                                            string="Reset verification"
+                                            class="btn-link"
+                                            invisible="licence_verification_status != 'verified'"/>
+                                </group>
+                                <group string="Approval links">
+                                    <field name="driver_partner_id" readonly="1"/>
+                                    <field name="documents_folder_id" readonly="1"/>
+                                    <field name="generated_tag_ids"
+                                           widget="many2many_tags" readonly="1"/>
+                                </group>
                             </group>
                             <group string="Insurance verification">
                                 <group>

@@ -67,9 +67,14 @@ class OwnerOperatorController(http.Controller):
     # ------------------------------------------------------------------
     def _require_reviewer(self):
         user = http.request.env.user
-        if not (user.has_group("prema_owner_operator.group_owner_operator")
-                or user.has_group(
-                    "hr_recruitment.group_hr_recruitment_manager")):
+        allowed = (
+            "prema_owner_operator.group_owner_operator",
+            "hr_recruitment.group_hr_recruitment_manager",
+            "fleet.fleet_group_manager",
+            "documents.group_documents_manager",
+            "documents.group_documents_user",
+        )
+        if not any(user.has_group(group) for group in allowed):
             raise AccessError(_("Not available to this user."))
         return user
 
@@ -347,6 +352,34 @@ class OwnerOperatorController(http.Controller):
         filename = attachment.name or "document"
         # Only PDFs and images are shown inline; anything else is offered as
         # a download even if the caller omits ?download=1.
+        previewable = (attachment.mimetype or "").startswith(
+            ("application/pdf", "image/"))
+        wants_download = str(download).lower() not in ("", "0", "false", "none")
+        disposition = "inline" if previewable and not wants_download \
+            else "attachment"
+        return http.request.make_response(attachment.raw or b"", headers=[
+            ("Content-Type", attachment.mimetype or "application/octet-stream"),
+            ("Content-Disposition", "%s; filename=\"%s\"" % (
+                disposition, filename.replace('"', ""))),
+            ("X-Content-Type-Options", "nosniff"),
+            ("Cache-Control", "private, no-store"),
+        ])
+
+    @http.route("/owner_operator/documents/<int:document_id>", type="http",
+                auth="user", website=False, csrf=False, sitemap=False)
+    def owner_operator_document(self, document_id, download=0, **kw):
+        """Private delivery for an approval-created Documents record."""
+        self._require_reviewer()
+        document = http.request.env["documents.document"].browse(document_id)
+        if not document.exists() or not document.attachment_id \
+                or not document.oo_application_id:
+            raise NotFound()
+        try:
+            document.check_access("read")
+        except AccessError:
+            raise NotFound()
+        attachment = document.attachment_id.sudo()
+        filename = attachment.name or "document"
         previewable = (attachment.mimetype or "").startswith(
             ("application/pdf", "image/"))
         wants_download = str(download).lower() not in ("", "0", "false", "none")

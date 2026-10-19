@@ -7,14 +7,15 @@ by email address and nothing is matched by number plate: an existing partner
 or vehicle is only ever linked through an id stored on this record, and a VIN
 that already belongs to someone else stops the approval for manual review.
 """
+import base64
 import re
 
 from odoo import _, api, fields, models
 from odoo.exceptions import AccessError, UserError, ValidationError
 
 from ..application_mapping import (
-    PROVINCES, REQUIRED_INTERNAL, normalise_public,
-    parse_other_information, split_plate_jurisdiction)
+    CARGO_BODIES, PROVINCES, REQUIRED_INTERNAL, TRAILER_TYPES, VEHICLE_TYPES,
+    normalise_public, parse_other_information, split_plate_jurisdiction)
 
 # Ordered so the checklist reads the way the process runs.
 DOCUMENT_TYPES = [
@@ -336,6 +337,31 @@ class OwnerOperatorApplication(models.Model):
         "fleet.vehicle", string="Equipment", index=True, ondelete="restrict",
         help="Set ONCE at approval. Its presence is what makes re-approval "
              "idempotent — a second approval returns this same vehicle.")
+    driver_partner_id = fields.Many2one(
+        "res.partner", string="Driver contact", index=True,
+        ondelete="restrict", copy=False,
+        help="The separate INDIVIDUAL driver contact created at approval. "
+             "Never the business partner and never matched by name/email.")
+    generated_tag_ids = fields.Many2many(
+        "fleet.vehicle.tag", "prema_oo_app_generated_tag_rel",
+        "application_id", "tag_id", string="Generated Fleet tags", copy=False,
+        help="Only the tags this module generated. Manual Fleet tags are "
+             "never removed.")
+    documents_folder_id = fields.Many2one(
+        "documents.document", string="Private documents folder",
+        ondelete="set null", copy=False)
+    licence_number = fields.Char(
+        string="Driver licence number (reviewer)",
+        help="Entered and verified by a reviewer; never inferred from an "
+             "image.")
+    licence_verification_status = fields.Selection([
+        ("not_verified", "Not verified"),
+        ("verified", "Verified"),
+    ], default="not_verified", required=True, copy=False,
+        string="Licence verification")
+    licence_verified_on = fields.Datetime(readonly=True, copy=False)
+    licence_verified_by = fields.Many2one(
+        "res.users", readonly=True, copy=False)
 
     # ── contact / business ──────────────────────────────────────────
     contact_name = fields.Char(string="Full name")
@@ -1476,6 +1502,39 @@ class OwnerOperatorApplication(models.Model):
                 subtype_xmlid="mail.mt_note")
         return True
 
+    def action_verify_licence(self):
+        """Reviewer confirms licence number + expiry from the uploaded images.
+
+        Nothing is inferred from an image; both values must be entered.
+        """
+        self.ensure_one()
+        if not self._is_verification_reviewer():
+            raise AccessError(_("Not available to this user."))
+        if not (self.licence_number or "").strip():
+            raise UserError(_("Enter the driver licence number first."))
+        if not self.licence_expiry:
+            raise UserError(_("Enter the licence expiry date first."))
+        self.write({
+            "licence_verification_status": "verified",
+            "licence_verified_on": fields.Datetime.now(),
+            "licence_verified_by": self.env.user.id,
+        })
+        self.message_post(
+            body=_("Driver licence verified by %s.") % self.env.user.name,
+            subtype_xmlid="mail.mt_note")
+        return True
+
+    def action_reset_licence_verification(self):
+        self.ensure_one()
+        if not self._is_verification_reviewer():
+            raise AccessError(_("Not available to this user."))
+        self.write({
+            "licence_verification_status": "not_verified",
+            "licence_verified_on": False,
+            "licence_verified_by": False,
+        })
+        return True
+
     def _require_verification_reason(self):
         self.ensure_one()
         reason = (self.verification_review_reason or "").strip()
@@ -1997,6 +2056,375 @@ class OwnerOperatorApplication(models.Model):
             return False
         return True
 
+    # ------------------------------------------------------------------
+    # approval → driver contact → documents → Fleet
+    # ------------------------------------------------------------------
+    CATEGORY_BY_TYPE = {
+        "cargo_van": "Cargo Van",
+        "straight": "Straight Truck",
+        "tractor": "Tractor Truck",
+        "semi": "Semi-Truck",
+    }
+    DRIVER_DOC_TYPES = ("licence_front", "licence_back", "signed_agreement")
+
+    def _home_province_code(self):
+        self.ensure_one()
+        if self.home_province_code:
+            return self.home_province_code
+        raw = (self.home_province or "").strip()
+        if raw.upper() in PROVINCES:
+            return raw.upper()
+        for code, name in PROVINCES.items():
+            if raw.lower() == name.lower():
+                return code
+        return False
+
+    def _canadian_state(self):
+        self.ensure_one()
+        code = self._home_province_code()
+        if not code:
+            return self.env["res.country.state"]
+        return self.env["res.country.state"].sudo().search([
+            ("country_id.code", "=", "CA"),
+            ("code", "=", code),
+        ], limit=1)
+
+    def _driver_partner_vals(self):
+        self.ensure_one()
+        state = self._canadian_state()
+        country = self.env["res.country"].sudo().search(
+            [("code", "=", "CA")], limit=1)
+        phone = self.phone or False
+        mobile = self.whatsapp_number or (
+            phone if self.use_contact_phone_for_whatsapp else False)
+        vals = {
+            "name": self.contact_name or self.business_name or self.name,
+            "is_company": False,
+            "type": "contact",
+            "parent_id": self.partner_id.id or False,
+            "ref": self.name,
+            "email": self.email or False,
+            "phone": phone,
+            "mobile": mobile,
+            "function": _("Driver"),
+            "city": self.home_city or False,
+            "state_id": state.id if state else False,
+            "country_id": country.id if country else False,
+            "oo_is_driver": True,
+            "oo_application_id": self.id,
+        }
+        # Licence details only once a reviewer has actually verified them.
+        if self.licence_verification_status == "verified":
+            vals.update({
+                "oo_licence_class": self.licence_class or False,
+                "oo_licence_province": self.licence_province
+                or self._home_province_code(),
+                "oo_licence_expiry": self.licence_expiry or False,
+                "oo_licence_number": self.licence_number or False,
+                "oo_licence_verified": True,
+                "oo_licence_verified_on":
+                    self.licence_verified_on or fields.Datetime.now(),
+                "oo_licence_verified_by":
+                    self.licence_verified_by.id or self.env.user.id,
+            })
+        return vals
+
+    def _ensure_driver_partner(self):
+        """Create or update the SEPARATE individual driver contact."""
+        self.ensure_one()
+        driver = self.driver_partner_id.exists()
+        if not driver:
+            driver = self.env["res.partner"].sudo().search([
+                ("oo_application_id", "=", self.id),
+                ("oo_is_driver", "=", True),
+            ], limit=1)
+        if not driver:
+            driver = self.env["res.partner"].sudo().search([
+                ("ref", "=", self.name),
+                ("oo_is_driver", "=", True),
+            ], limit=1)
+        vals = self._driver_partner_vals()
+        if driver:
+            driver.write(vals)
+        else:
+            driver = self.env["res.partner"].sudo().create(vals)
+        self.driver_partner_id = driver.id
+        return driver
+
+    def _documents_folder(self):
+        self.ensure_one()
+        if self.documents_folder_id:
+            return self.documents_folder_id
+        Documents = self.env["documents.document"].sudo()
+        parent = Documents.search([
+            ("type", "=", "folder"),
+            ("name", "=", "Fleet"),
+            ("folder_id", "=", False),
+        ], limit=1)
+        folder = Documents.create({
+            "name": _("Owner-Operator %s") % self.name,
+            "type": "folder",
+            "folder_id": parent.id or False,
+            "owner_id": self.env.user.id,
+            "access_internal": "view",
+            "access_via_link": "none",
+            "oo_application_id": self.id,
+        })
+        self.documents_folder_id = folder.id
+        return folder
+
+    def _vehicle_category(self):
+        self.ensure_one()
+        name = self.CATEGORY_BY_TYPE.get(
+            self.vehicle_type, "Owner-operator equipment")
+        Category = self.env["fleet.vehicle.model.category"].sudo()
+        return Category.search([("name", "=", name)], limit=1) \
+            or Category.create({"name": name})
+
+    def _vehicle_vals(self, driver, update=False):
+        """The single source → Fleet mapping table (see FLEET_FIELD_MAP)."""
+        self.ensure_one()
+        model = self._resolve_vehicle_model()
+        category = self._vehicle_category()
+        code = self._home_province_code()
+        home_label = ", ".join(p for p in (self.home_city, code) if p) or False
+        vals = {
+            "model_id": model.id,
+            "name": "%s — %s" % (
+                self.equipment_model or _("Owner-operator equipment"),
+                self.license_plate or self.unit_number or self.name),
+            "category_id": category.id,
+            "driver_id": driver.id,
+            "x_current_driver_contact_id": driver.id,
+            "operator_id": self.operator_id.id,
+            "application_id": self.id,
+            "company_id": self.company_id.id,
+            "license_plate": (self.license_plate or "").upper() or False,
+            "vin_sn": self.vin or False,
+            "model_year": self.truck_year or False,
+            "oo_plate_province": self.plate_province or False,
+            "oo_vehicle_type": self.vehicle_type or False,
+            "oo_home_province_code": code or False,
+            "oo_home_place_id": self.home_city_place_id or False,
+            "home_city": self.home_city or False,
+            "home_province": self.home_province or False,
+            "home_latitude": self.home_latitude or False,
+            "home_longitude": self.home_longitude or False,
+            "home_location": home_label,
+            "x_home_base_address": home_label,
+            "x_home_base_lat": self.home_latitude or False,
+            "x_home_base_lng": self.home_longitude or False,
+            "x_air_ride": self.has_air_ride,
+            "x_current_odometer_km": self.odometer_km or 0.0,
+            "x_gvwr_lbs": self.gvwr_lbs or 0.0,
+            "x_studio_gvwr_lbs": int(self.gvwr_lbs or 0),
+            "x_max_payload_lbs": self.payload_lbs or 0.0,
+            "payload_capacity_lbs": self.payload_lbs or 0.0,
+            "x_max_pallets": self.pallet_capacity or 0,
+            "x_cargo_box_length_ft": self.box_length_ft or 0.0,
+            # despite the _ft name, this field stores INCHES
+            "x_box_interior_height_ft": self.cargo_height_in or 0.0,
+            "x_overall_length_ft": self.overall_length_ft or 0.0,
+            "x_vehicle_height_ft": self.vehicle_height_ft or 0.0,
+            "x_door_clearance_in": self.door_clearance_in or 0.0,
+            "x_dock_height_in": self.dock_height_in or 0.0,
+            "oo_cargo_body_type": self.cargo_body_type or False,
+            "oo_cargo_width_in": self.cargo_width_in or 0.0,
+            "oo_reefer_temperature_range":
+                self.reefer_temperature_range or False,
+            "x_reefer": self.has_reefer,
+            "x_liftgate": self.has_liftgate,
+        }
+        if self.dock_height_capable:
+            vals["x_studio_dock_height"] = self.dock_height_capable == "yes"
+        transmission = {
+            "automatic": "automatic",
+            "automated_manual": "automatic",
+            "manual": "manual",
+        }.get(self.transmission)
+        if transmission:
+            vals["transmission"] = transmission
+        if self.vehicle_type == "tractor":
+            # Tractor only: no trailer, cargo body, capacity or reefer.
+            for field in (
+                    "x_max_pallets", "x_max_payload_lbs",
+                    "payload_capacity_lbs", "x_cargo_box_length_ft",
+                    "x_box_interior_height_ft", "x_overall_length_ft",
+                    "x_vehicle_height_ft", "x_door_clearance_in",
+                    "x_dock_height_in", "oo_cargo_body_type",
+                    "oo_cargo_width_in", "oo_reefer_temperature_range",
+                    "x_studio_dock_height"):
+                vals.pop(field, None)
+            vals.update({"x_reefer": False, "x_liftgate": False})
+        elif self.vehicle_type == "semi":
+            vals.update({
+                "oo_trailer_type": self.trailer_type or False,
+                "oo_trailer_year": self.trailer_year or False,
+                "oo_trailer_unit": self.trailer_unit or False,
+                "oo_trailer_length_ft": self.trailer_length_ft or 0.0,
+                "x_reefer": self.trailer_type == "reefer",
+            })
+        else:
+            for field in ("oo_trailer_type", "oo_trailer_year",
+                          "oo_trailer_unit", "oo_trailer_length_ft"):
+                vals.pop(field, None)
+        if not update:
+            ready = self.env["fleet.vehicle.state"].sudo().search(
+                [("name", "=", "Ready")], limit=1)
+            vals["state_id"] = ready.id or False
+            vals["x_operational_logistics"] = True
+        return vals
+
+    def _generated_tag_names(self):
+        self.ensure_one()
+        labels = dict(VEHICLE_TYPES)
+        names = ["Type: %s" % labels.get(self.vehicle_type, self.vehicle_type)]
+        if self.cargo_body_type:
+            names.append("Body: %s" % dict(CARGO_BODIES).get(
+                self.cargo_body_type, self.cargo_body_type))
+        if self.box_length_ft:
+            names.append("Length: %g ft" % self.box_length_ft)
+        if self.home_city:
+            names.append("Home: %s" % self.home_city)
+        code = self._home_province_code()
+        if code:
+            names.append("Province: %s" % code)
+        if self.vehicle_type == "semi" and self.trailer_type:
+            names.append("Trailer: %s" % dict(TRAILER_TYPES).get(
+                self.trailer_type, self.trailer_type))
+        if self.has_reefer:
+            names.append("Reefer: Yes")
+        if self.has_liftgate:
+            names.append("Liftgate: Yes")
+        if self.has_air_ride:
+            names.append("Air Ride: Yes")
+        if self.gvwr_lbs:
+            names.append("GVWR: %s lb" % format(int(self.gvwr_lbs), ","))
+        return names
+
+    def _apply_generated_tags(self, vehicle):
+        """Repeat-safe tags. Only this module's tags are ever removed."""
+        self.ensure_one()
+        Tag = self.env["fleet.vehicle.tag"].sudo()
+        desired = Tag
+        for name in self._generated_tag_names():
+            tag = Tag.search([("name", "=", name)], limit=1) \
+                or Tag.create({"name": name})
+            desired |= tag
+        manual = vehicle.tag_ids - self.generated_tag_ids
+        generated = desired - manual
+        vehicle.write({"tag_ids": [(6, 0, (manual | generated).ids)]})
+        self.generated_tag_ids = [(6, 0, generated.ids)]
+
+    def _front_photo_payload(self):
+        self.ensure_one()
+        doc = self.document_ids.filtered(
+            lambda d: d.document_type == "photo_front"
+            and d.attachment_id)[:1]
+        if not doc:
+            return None
+        payload = doc.attachment_id.raw or b""
+        if not payload or len(payload) > 5 * 1024 * 1024:
+            return None
+        if payload.startswith(b"\xff\xd8\xff") \
+                or payload.startswith(b"\x89PNG\r\n\x1a\n") \
+                or (payload[:4] == b"RIFF" and payload[8:12] == b"WEBP"):
+            return payload
+        return None
+
+    def _apply_front_photo(self, vehicle):
+        if vehicle.image_1920:
+            return False
+        payload = self._front_photo_payload()
+        if not payload:
+            return False
+        vehicle.write({"image_1920": base64.b64encode(payload)})
+        return True
+
+    def _signed_agreement_document(self):
+        self.ensure_one()
+        doc = self.document_ids.filtered(
+            lambda d: d.document_type == "signed_agreement"
+            and d.attachment_id)[:1]
+        request = self.sign_request_id
+        if not doc or not self.contract_signed_on or not request:
+            return self.env["prema.owner.operator.document"]
+        if request.state != "signed":
+            return self.env["prema.owner.operator.document"]
+        if not all(item.state == "completed"
+                   for item in request.request_item_ids):
+            return self.env["prema.owner.operator.document"]
+        return doc
+
+    def _ensure_document(self, folder, role, partner, target_model, target_id,
+                         source_doc=None, coi_version=None):
+        self.ensure_one()
+        attachment = (coi_version.attachment_id if coi_version
+                      else source_doc.attachment_id)
+        domain = [
+            ("oo_application_id", "=", self.id),
+            ("oo_role", "=", role),
+        ]
+        if coi_version:
+            domain.append(("oo_coi_version_id", "=", coi_version.id))
+        else:
+            domain.append(("oo_source_document_id", "=", source_doc.id))
+        existing = self.env["documents.document"].sudo().search(
+            domain, limit=1)
+        if existing:
+            existing.write({
+                "res_model": target_model,
+                "res_id": target_id,
+                "partner_id": partner.id or False,
+            })
+            return existing
+        copy = self.env["ir.attachment"].sudo().create({
+            "name": attachment.name or "document",
+            "raw": attachment.raw or b"",
+            "mimetype": attachment.mimetype,
+            "public": False,
+        })
+        return self.env["documents.document"].sudo().create({
+            "name": attachment.name or _("Document"),
+            "type": "binary",
+            "attachment_id": copy.id,
+            "folder_id": folder.id,
+            "owner_id": self.env.user.id,
+            "partner_id": partner.id or False,
+            "res_model": target_model,
+            "res_id": target_id,
+            "company_id": self.company_id.id,
+            "access_internal": "view",
+            "access_via_link": "none",
+            "oo_application_id": self.id,
+            "oo_role": role,
+            "oo_source_document_id": source_doc.id if source_doc else False,
+            "oo_coi_version_id": coi_version.id if coi_version else False,
+            "oo_source_attachment_id": attachment.id,
+            "oo_source_checksum": attachment.checksum or False,
+        })
+
+    def _ensure_approval_documents(self, driver, vehicle):
+        self.ensure_one()
+        folder = self._documents_folder()
+        signed = self._signed_agreement_document()
+        for doc in self.document_ids.filtered(lambda d: d.attachment_id):
+            if doc.document_type == "coi_insurer" and self.coi_version_ids:
+                continue
+            self._ensure_document(
+                folder, "vehicle", self.partner_id, "fleet.vehicle",
+                vehicle.id, doc)
+            if (doc.document_type in ("licence_front", "licence_back")
+                    or (signed and doc == signed)):
+                self._ensure_document(
+                    folder, "driver", driver, "res.partner", driver.id, doc)
+        for version in self.coi_version_ids.filtered(
+                lambda v: v.attachment_id):
+            self._ensure_document(
+                folder, "vehicle", self.partner_id, "fleet.vehicle",
+                vehicle.id, coi_version=version)
+        return True
+
     def _resolve_vehicle_model(self):
         """fleet.vehicle.model_id is mandatory, so the applicant's stated
         make/model becomes a catalogue entry if the fleet has never seen it.
@@ -2087,6 +2515,12 @@ class OwnerOperatorApplication(models.Model):
         """
         self.ensure_one()
         if self.fleet_vehicle_id:
+            driver = self._ensure_driver_partner()
+            vehicle = self.fleet_vehicle_id
+            vehicle.write(self._vehicle_vals(driver, update=True))
+            self._apply_generated_tags(vehicle)
+            self._apply_front_photo(vehicle)
+            self._ensure_approval_documents(driver, vehicle)
             approved = self._stage_by_name(STAGE_APPROVED)
             if approved and self.hr_applicant_id \
                     and self.hr_applicant_id.stage_id.id != approved.id:
@@ -2094,7 +2528,7 @@ class OwnerOperatorApplication(models.Model):
                     owner_operator_skip_stage_hook=True).write(
                         {"stage_id": approved.id})
                 self._sync_state(approved)
-            return self.fleet_vehicle_id
+            return vehicle
         if not self.can_approve:
             raise UserError(_(
                 "This application cannot be approved yet — missing documents, "
@@ -2121,79 +2555,17 @@ class OwnerOperatorApplication(models.Model):
                 operator.write(updates)
         self.partner_id.sudo().write({"supplier_rank": 1})
 
-        ready = self.env["fleet.vehicle.state"].sudo().search(
-            [("name", "=", "Ready")], limit=1)
-        model = self._resolve_vehicle_model()
-        year = (self.truck_year or "").strip()
-        if year.isdigit() and "model_year" in model._fields \
-                and not model.model_year:
-            # model_year lives on the shared model; never overwrite a value.
-            model.write({"model_year": int(year)})
-        transmission = {
-            "automatic": "automatic",
-            "automated_manual": "automatic",
-            "manual": "manual",
-        }.get(self.transmission)
-        # x_box_interior_height_ft stores INCHES despite its _ft name; the
-        # application now collects inches directly. The legacy feet field is
-        # only converted for older records.
-        interior_height = self.cargo_height_in or (
-            self.box_height_ft * 12.0 if self.box_height_ft else 0.0)
-        vehicle_vals = {
-            "model_id": model.id,
-            "application_id": self.id,
-            "operator_id": operator.id,
-            "company_id": self.company_id.id,
-            "license_plate": self.license_plate,
-            "vin_sn": self.vin or False,
-            "home_city": self.home_city,
-            "home_province": self.home_province,
-            "driver_id": self.partner_id.id,
-            "x_operational_logistics": True,
-            "x_reefer": self.has_reefer,
-            "x_liftgate": self.has_liftgate,
-            "x_air_ride": self.has_air_ride,
-            "x_max_pallets": self.pallet_capacity or 0,
-            # Cargo payload — never GVWR.
-            "x_max_payload_lbs": self.payload_lbs or 0.0,
-            "x_cargo_box_length_ft": self.box_length_ft or 0.0,
-            "x_box_interior_height_ft": interior_height,
-            "x_overall_length_ft": self.overall_length_ft or 0.0,
-            "x_vehicle_height_ft": self.vehicle_height_ft or 0.0,
-            "x_door_clearance_in": self.door_clearance_in or 0.0,
-            "x_dock_height_in": self.dock_height_in or 0.0,
-            "x_current_odometer_km": self.odometer_km or 0.0,
-            "state_id": ready.id or False,
-        }
-        if transmission:
-            vehicle_vals["transmission"] = transmission
-        if "x_gvwr_lbs" in self.env["fleet.vehicle"]._fields:
-            vehicle_vals["x_gvwr_lbs"] = self.gvwr_lbs or 0.0
-        if "x_studio_gvwr_lbs" in self.env["fleet.vehicle"]._fields \
-                and not vehicle_vals.get("x_gvwr_lbs"):
-            vehicle_vals["x_studio_gvwr_lbs"] = self.gvwr_lbs or 0.0
-        if "x_studio_dock_height" in self.env["fleet.vehicle"]._fields:
-            vehicle_vals["x_studio_dock_height"] = (
-                self.dock_height_capable == "yes")
-        if self.vehicle_type == "tractor":
-            # A power unit is not a cargo body. Trailer specifications stay on
-            # the application/trailer; never copy them onto the tractor.
-            for field in (
-                    "x_max_pallets", "x_max_payload_lbs",
-                    "x_cargo_box_length_ft", "x_box_interior_height_ft",
-                    "x_door_clearance_in", "x_dock_height_in",
-                    "x_studio_dock_height"):
-                vehicle_vals.pop(field, None)
-            vehicle_vals.update({
-                "x_reefer": self.trailer_type == "reefer",
-                "x_liftgate": False,
-            })
+        driver = self._ensure_driver_partner()
+        vehicle_vals = self._vehicle_vals(driver)
         vehicle = self.env["fleet.vehicle"].sudo().create(vehicle_vals)
         # Unit number: reuse the Studio field the fleet already uses; never
         # create a second column for the same thing.
         if self.unit_number and "x_studio_unit_number" in self.env[
                 "fleet.vehicle"]._fields:
             vehicle.write({"x_studio_unit_number": self.unit_number})
+        self._apply_front_photo(vehicle)
+        self._apply_generated_tags(vehicle)
+        self._ensure_approval_documents(driver, vehicle)
         self.write({"fleet_vehicle_id": vehicle.id,
                     "approved_on": fields.Datetime.now(),
                     "approved_by": self.env.user.id,

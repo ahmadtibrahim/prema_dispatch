@@ -8,7 +8,8 @@
         <field name="inherit_id" ref="fleet.fleet_vehicle_view_form"/>
         <field name="arch" type="xml">
             <xpath expr="//notebook" position="inside">
-                <page string="Availability" name="owner_operator">
+                <page string="Availability" name="owner_operator"
+                      invisible="operator_id">
                     <button name="action_open_source_application" type="object"
                             string="Open source application"
                             class="btn-secondary mb-2"
@@ -28,6 +29,110 @@
                             string="Clear issue and return to Ready"
                             class="btn-secondary" invisible="not issue_blocking"/>
                 </page>
+            </xpath>
+
+            <!-- Operator-linked vehicles only: hide tabs that do not apply.
+                 Company trucks keep the exact current form. -->
+            <xpath expr="//page[@name='truck_costing']" position="attributes">
+                <attribute name="invisible">operator_id</attribute>
+            </xpath>
+            <xpath expr="//page[@name='daily_odometer_log']" position="attributes">
+                <attribute name="invisible">operator_id</attribute>
+            </xpath>
+            <xpath expr="//page[@name='geotab_eld']" position="attributes">
+                <attribute name="invisible">operator_id</attribute>
+            </xpath>
+            <xpath expr="//page[@name='page_tax_info']" position="attributes">
+                <attribute name="invisible">operator_id</attribute>
+            </xpath>
+
+            <!-- The one pallet-layout section that stays visible is
+                 "Pallet Layout Modes" (pallet_layout_ids). Hide the dispatch
+                 "Pallet Layout Capacity" duplicate for operator trucks only;
+                 the fields and calculations are untouched. -->
+            <xpath expr="//page[@name='truck_config']//field[@name='driver_home_to_hub_minutes']/ancestor::group/following-sibling::separator[1]"
+                   position="attributes">
+                <attribute name="invisible">operator_id</attribute>
+            </xpath>
+            <xpath expr="//page[@name='truck_config']//field[@name='default_pallet_layout']"
+                   position="attributes">
+                <attribute name="invisible">operator_id</attribute>
+            </xpath>
+            <xpath expr="//page[@name='truck_config']//field[@name='straight_pallet_capacity']"
+                   position="attributes">
+                <attribute name="invisible">operator_id</attribute>
+            </xpath>
+            <xpath expr="//page[@name='truck_config']//field[@name='pin_wheel_pallet_capacity']"
+                   position="attributes">
+                <attribute name="invisible">operator_id</attribute>
+            </xpath>
+            <xpath expr="//page[@name='truck_config']//field[@name='turned_pallet_capacity']"
+                   position="attributes">
+                <attribute name="invisible">operator_id</attribute>
+            </xpath>
+            <xpath expr="//page[@name='truck_config']//field[@name='layout_configuration_verified']"
+                   position="attributes">
+                <attribute name="invisible">operator_id</attribute>
+            </xpath>
+            <xpath expr="//page[@name='truck_config']//field[@name='layout_verified_by']"
+                   position="attributes">
+                <attribute name="invisible">operator_id</attribute>
+            </xpath>
+            <xpath expr="//page[@name='truck_config']//field[@name='layout_verified_at']"
+                   position="attributes">
+                <attribute name="invisible">operator_id</attribute>
+            </xpath>
+            <xpath expr="//page[@name='truck_config']//field[@name='layout_verification_notes']"
+                   position="attributes">
+                <attribute name="invisible">operator_id</attribute>
+            </xpath>
+            <xpath expr="//page[@name='truck_config']//button[@name='action_verify_pallet_layout_configuration']"
+                   position="attributes">
+                <attribute name="invisible">operator_id</attribute>
+            </xpath>
+
+            <!-- Concise operator section inside the EXISTING Truck Config tab. -->
+            <xpath expr="//page[@name='truck_config']" position="inside">
+                <group string="Owner-Operator Details" invisible="not operator_id">
+                    <group>
+                        <field name="oo_vehicle_type" readonly="1"/>
+                        <field name="category_id" readonly="1"/>
+                        <field name="oo_plate_province" readonly="1"/>
+                        <field name="oo_cargo_body_type" readonly="1"/>
+                        <field name="oo_cargo_width_in" readonly="1"/>
+                        <field name="oo_reefer_temperature_range" readonly="1"/>
+                    </group>
+                    <group string="Home base (nearby-load source)">
+                        <field name="home_city" readonly="1"/>
+                        <field name="home_province" readonly="1"/>
+                        <field name="oo_home_province_code" readonly="1"/>
+                        <field name="home_latitude" readonly="1"/>
+                        <field name="home_longitude" readonly="1"/>
+                        <field name="oo_home_place_id" readonly="1"/>
+                    </group>
+                </group>
+                <group string="Trailer Details"
+                       invisible="not operator_id or oo_vehicle_type != 'semi'">
+                    <group>
+                        <field name="oo_trailer_type" readonly="1"/>
+                        <field name="oo_trailer_year" readonly="1"/>
+                        <field name="oo_trailer_unit" readonly="1"/>
+                        <field name="oo_trailer_length_ft" readonly="1"/>
+                    </group>
+                </group>
+                <group string="Owner-Operator Status" invisible="not operator_id">
+                    <group>
+                        <field name="state_id" readonly="1"/>
+                        <field name="is_dispatch_available" readonly="1"/>
+                        <field name="operator_compliance_ok" readonly="1"/>
+                    </group>
+                    <group>
+                        <field name="issue_blocking" readonly="1"/>
+                        <field name="issue_reason" readonly="1"/>
+                        <field name="operator_id" readonly="1"/>
+                        <field name="application_id" readonly="1"/>
+                    </group>
+                </group>
             </xpath>
         </field>
     </record>
