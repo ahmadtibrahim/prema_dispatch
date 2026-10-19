@@ -6,6 +6,8 @@ emailed CV (which threads into the standard applicant) still gets a checklist
 and an acknowledgement. Creation is idempotent: an applicant that already has
 an application is never given a second one.
 """
+import re
+
 from odoo import _, api, fields, models
 
 
@@ -129,6 +131,57 @@ class HrApplicant(models.Model):
     oo_operator_id = fields.Many2one("prema.owner.operator", related="owner_operator_application_id.operator_id", readonly=True)
     oo_fleet_vehicle_id = fields.Many2one("fleet.vehicle", related="owner_operator_application_id.fleet_vehicle_id", readonly=True)
     oo_approved_on = fields.Datetime(related="owner_operator_application_id.approved_on", readonly=True)
+
+    @api.model
+    def _owner_operator_group_job_id(self, domain):
+        """The job selected by the current kanban action/context, if it is ours.
+
+        Odoo's stock group expansion returns every stage with no job link in
+        addition to the selected job's stages. That is correct for shared
+        stages, but it leaves legacy columns on the owner-operator board. We
+        identify the selected job from the action context (or the explicit
+        job_id domain) and compare it with the configured owner job.
+        """
+        values = []
+
+        def collect(value):
+            if isinstance(value, (list, tuple, set)):
+                for item in value:
+                    collect(item)
+            elif isinstance(value, str):
+                values.extend(int(x) for x in re.findall(r"\d+", value))
+            elif isinstance(value, int):
+                values.append(value)
+
+        ctx = self.env.context
+        collect(ctx.get("default_job_id"))
+        collect(ctx.get("search_default_job_id"))
+        if ctx.get("active_model") == "hr.job":
+            collect(ctx.get("active_id"))
+        for term in domain or []:
+            if len(term) >= 3 and term[0] == "job_id" \
+                    and term[1] in ("=", "in"):
+                collect(term[2])
+
+        owner = self.env["ir.config_parameter"].sudo().get_param(
+            "prema_owner_operator.job_id") or 5
+        try:
+            owner = int(owner)
+        except (TypeError, ValueError):
+            owner = 5
+        return owner if owner in values else False
+
+    @api.model
+    def _read_group_stage_ids(self, stages, domain):
+        """Keep the owner-operator board to the stages actually linked to its job.
+
+        Every other recruitment job keeps Odoo's normal group expansion.
+        """
+        job_id = self._owner_operator_group_job_id(domain)
+        if job_id:
+            return self.env["hr.recruitment.stage"].search(
+                [("job_ids", "in", job_id)], order="sequence,id")
+        return super()._read_group_stage_ids(stages, domain)
 
     @api.depends("owner_operator_application_id.service_province_ids")
     def _compute_oo_service_provinces(self):

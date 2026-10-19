@@ -607,6 +607,82 @@ class TestNotificationAndMultiSelect(OwnerOperatorCase):
 
 
 @tagged("post_install", "-at_install")
+class TestKanbanStageExpansion(OwnerOperatorCase):
+    """The server-side kanban expansion, not a CSS/JS/filter workaround."""
+
+    FIVE = ["New", "Authority & Insurance Review", "Contract Proposal",
+            "Contract Signed", "Approved — Ready for Dispatch"]
+
+    def _all_stages(self):
+        return self.env["hr.recruitment.stage"].search([])
+
+    def _expected(self):
+        return self.env["hr.recruitment.stage"].search(
+            [("job_ids", "in", self.job.id)], order="sequence,id")
+
+    def test_owner_board_expands_only_the_five_linked_stages(self):
+        expanded = self.env["hr.applicant"].with_context(
+            default_job_id=self.job.id)._read_group_stage_ids(
+                self._all_stages(), [])
+        self.assertEqual(expanded.ids, self._expected().ids)
+        self.assertEqual(len(expanded), 5)
+        self.assertEqual(expanded.mapped("name"), self.FIVE)
+        self.assertEqual(len(set(expanded.ids)), 5)
+        self.assertEqual(expanded.mapped("name").count("Contract Proposal"), 1)
+        self.assertEqual(expanded.mapped("name").count("Contract Signed"), 1)
+        for legacy in ("Equipment Verification", "Initial Qualification",
+                       "Final Review", "First Interview", "Second Interview"):
+            self.assertNotIn(legacy, expanded.mapped("name"))
+
+    def test_owner_board_expands_from_the_explicit_job_domain(self):
+        expanded = self.env["hr.applicant"]._read_group_stage_ids(
+            self._all_stages(), [("job_id", "=", self.job.id)])
+        self.assertEqual(expanded.ids, self._expected().ids)
+        self.assertEqual(expanded.mapped("name"), self.FIVE)
+
+    def test_another_recruitment_job_keeps_normal_expansion(self):
+        other = self.env["hr.job"].create({
+            "name": "Other kanban job %s" % uuid.uuid4().hex[:6],
+            "is_published": True,
+        })
+        other_stage = self.env["hr.recruitment.stage"].create({
+            "name": "Other job stage",
+            "sequence": 1,
+        })
+        other_stage.write({"job_ids": [(4, other.id)]})
+        expanded = self.env["hr.applicant"].with_context(
+            default_job_id=other.id)._read_group_stage_ids(
+                self._all_stages(), [])
+        self.assertIn(other_stage, expanded)
+        global_stage = self.env["hr.recruitment.stage"].search(
+            [("job_ids", "=", False)], limit=1)
+        if global_stage:
+            self.assertIn(global_stage, expanded)
+        self.assertNotEqual(expanded.mapped("name"), self.FIVE)
+
+    def test_expansion_fix_preserves_applicants_and_has_no_side_effects(self):
+        from odoo.addons.prema_owner_operator.hooks import ensure_pipeline
+        applicants = self.env["hr.applicant"].search(
+            [("job_id", "=", self.job.id)])
+        before_stages = {a.id: a.stage_id.id for a in applicants}
+        mail_before = self.env["mail.mail"].search_count([])
+        operators_before = self.env["prema.owner.operator"].search_count([])
+        fleet_before = self.env["fleet.vehicle"].search_count(
+            [("operator_id", "!=", False)])
+        ensure_pipeline(self.env)
+        for applicant in applicants:
+            self.assertEqual(applicant.stage_id.id, before_stages[applicant.id])
+        self.assertEqual(self.env["mail.mail"].search_count([]), mail_before)
+        self.assertEqual(
+            self.env["prema.owner.operator"].search_count([]),
+            operators_before)
+        self.assertEqual(
+            self.env["fleet.vehicle"].search_count(
+                [("operator_id", "!=", False)]),
+            fleet_before)
+
+
+@tagged("post_install", "-at_install")
 class TestComplianceReviewOperability(OwnerOperatorCase):
 
     def test_prepare_profile_verify_coi_and_approve(self):
