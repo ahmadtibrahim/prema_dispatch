@@ -71,6 +71,9 @@ COLLISIONS = {"none": "None", "1": "1", "2": "2", "3+": "3 or more"}
 
 TDG = {"yes": "Yes", "no": "No", "expired": "Expired / renewal needed"}
 
+TDG_STATUS = {"current": "current", "expired": "expired", "none": "none"}
+TDG_LEGACY_STATUS = {"Yes": "current", "No": "none", "Expired": "expired"}
+
 VEHICLE_TYPES = {
     "cargo_van": "Cargo Van",
     "straight": "Straight Truck",
@@ -209,6 +212,8 @@ FIELD_MAP = {
     "RecentCollisions": "recent_collisions",
     "RecentConvictions": "recent_convictions",
     "TDGTraining": "tdg_training",
+    "TDGStatus": "tdg_status",
+    "TDGSpecialTraining": "tdg_special_training",
     "RecentDrivingWork": "recent_driving_work",
     "VehicleType": "vehicle_type",
     "TruckMake": "truck_make",
@@ -515,10 +520,26 @@ def normalise_public(post, strict=True):
         _choice(post.get("RecentConvictions"),
                 {"None": "none", "1": "1", "2": "2", "3+": "3+"},
                 "conviction answer", errors))
-    put("TDGTraining", "tdg_training",
-        _choice(post.get("TDGTraining"),
-                {"Yes": "yes", "No": "no", "Expired": "expired"},
-                "dangerous goods answer", errors))
+    tdg_status = _choice(
+        post.get("TDGStatus"), set(TDG_STATUS), "TDG training status", errors)
+    if not tdg_status:
+        tdg_status = _choice(
+            post.get("TDGTraining"), TDG_LEGACY_STATUS,
+            "dangerous goods answer", errors)
+    if tdg_status:
+        vals["tdg_status"] = tdg_status
+        put("TDGTraining", "tdg_training", {
+            "current": "yes", "expired": "expired", "none": "no",
+        }.get(tdg_status))
+        if tdg_status == "current":
+            classes = [
+                str(code) for code in range(1, 10)
+                if _truthy(post.get("TDGClass%s" % code))
+            ]
+            if classes and not _truthy(post.get("TDGClassesNone")):
+                vals["tdg_class_codes"] = classes
+            put("TDGSpecialTraining", "tdg_special_training",
+                _text(post.get("TDGSpecialTraining")))
     put("RecentDrivingWork", "recent_driving_work",
         _text(post.get("RecentDrivingWork")))
 

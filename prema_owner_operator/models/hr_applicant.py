@@ -40,6 +40,16 @@ class HrApplicant(models.Model):
     oo_commercial_driving_experience = fields.Selection(related="owner_operator_application_id.commercial_driving_experience", readonly=True)
     oo_owner_operator_experience = fields.Selection(related="owner_operator_application_id.owner_operator_experience", readonly=True)
     oo_tdg_training = fields.Selection(related="owner_operator_application_id.tdg_training", readonly=True)
+    oo_tdg_status = fields.Selection(
+        related="owner_operator_application_id.tdg_status", readonly=True)
+    oo_tdg_class_ids = fields.Many2many(
+        related="owner_operator_application_id.tdg_class_ids", readonly=True)
+    oo_tdg_special_training = fields.Text(
+        related="owner_operator_application_id.tdg_special_training",
+        readonly=True)
+    oo_tdg_certificate_result = fields.Selection(
+        related="owner_operator_application_id.tdg_certificate_result",
+        readonly=True)
     oo_recent_collisions = fields.Selection(related="owner_operator_application_id.recent_collisions", readonly=True)
     oo_recent_convictions = fields.Selection(related="owner_operator_application_id.recent_convictions", readonly=True)
     oo_recent_driving_work = fields.Text(related="owner_operator_application_id.recent_driving_work", readonly=True)
@@ -170,6 +180,12 @@ class HrApplicant(models.Model):
     oo_additional_notes = fields.Html(related="owner_operator_application_id.additional_notes", readonly=True)
     oo_cvor_number = fields.Char(related="owner_operator_application_id.cvor_number", readonly=True)
     oo_cvor_verification_status = fields.Selection(related="owner_operator_application_id.cvor_verification_status", readonly=True)
+    oo_cvor_extraction_status = fields.Selection(
+        related="owner_operator_application_id.cvor_extraction_status",
+        readonly=True)
+    oo_cvor_proposed_number = fields.Char(
+        related="owner_operator_application_id.cvor_proposed_number",
+        readonly=True)
     oo_insurance_agent_name = fields.Char(related="owner_operator_application_id.insurance_agent_name", readonly=True)
     oo_insurance_agent_email = fields.Char(related="owner_operator_application_id.insurance_agent_email", readonly=True)
     oo_licence_current = fields.Boolean(related="owner_operator_application_id.licence_current", readonly=True)

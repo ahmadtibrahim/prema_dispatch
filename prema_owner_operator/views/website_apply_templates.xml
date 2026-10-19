@@ -188,13 +188,47 @@
                                                 t-att-value="opt" t-att-selected="post.get('RecentConvictions') == opt"
                                                 t-esc="opt"/>
                                     </select></label>
-                                <label class="o_oo_field">Current dangerous goods training
-                                    <select name="TDGTraining">
+                            </div>
+                            <div class="o_oo_span2 o_oo_tdg" id="oo_tdg">
+                                <h3 class="o_oo_subhead">Transportation of Dangerous Goods (TDG)</h3>
+                                <p class="o_oo_hint">Canadian TDG road training under Transport Canada Part 6 — not a U.S. HAZMAT endorsement and not WHMIS. A certificate documents the classes and activities the holder is trained for, not a blanket approval for every class; road certificates generally expire after three years. Certificate copies and expiry details are requested during verification, not in this step.</p>
+                                <label class="o_oo_field">TDG training status <span class="o_oo_req">*</span>
+                                    <select name="TDGStatus" id="oo_TDGStatus" required="required"
+                                            onchange="ooSyncTdg();">
                                         <option value="">Please select</option>
-                                        <option value="Yes" t-att-selected="post.get('TDGTraining') == 'Yes'">Yes — current certificate</option>
-                                        <option value="No" t-att-selected="post.get('TDGTraining') == 'No'">No</option>
-                                        <option value="Expired" t-att-selected="post.get('TDGTraining') == 'Expired'">Expired / renewal needed</option>
+                                        <option value="current" t-att-selected="post.get('TDGStatus') == 'current' or post.get('TDGTraining') == 'Yes'">Current Canadian TDG road training certificate</option>
+                                        <option value="expired" t-att-selected="post.get('TDGStatus') == 'expired' or post.get('TDGTraining') == 'Expired'">Expired / renewal needed</option>
+                                        <option value="none" t-att-selected="post.get('TDGStatus') == 'none' or post.get('TDGTraining') == 'No'">No TDG training</option>
                                     </select></label>
+                                <div id="oo_tdg_details" hidden="hidden">
+                                    <p class="o_oo_hint"><strong>Classes covered by your certificate and actual work</strong> — select all that apply, or clear all for None.</p>
+                                    <div class="o_oo_checks">
+                                        <label class="o_oo_check" t-foreach="tdg_classes" t-as="tdg">
+                                            <input type="checkbox" t-att-name="'TDGClass' + tdg.code"
+                                                   t-att-value="tdg.code"
+                                                   t-att-title="tdg.name"
+                                                   t-att-checked="bool(post.get('TDGClass' + tdg.code))"/>
+                                            <span t-esc="'Class ' + tdg.code"/>
+                                        </label>
+                                    </div>
+                                    <label class="o_oo_check">
+                                        <input type="checkbox" name="TDGClassesNone" value="1"
+                                               t-att-checked="bool(post.get('TDGClassesNone'))"
+                                               onchange="ooSyncTdgNone();"/>
+                                        None of these TDG classes
+                                    </label>
+                                    <details class="o_oo_tdg_help">
+                                        <summary>What do the classes mean?</summary>
+                                        <ul>
+                                            <li t-foreach="tdg_classes" t-as="tdg" t-esc="tdg.name"/>
+                                        </ul>
+                                    </details>
+                                    <label class="o_oo_field">Special TDG training / experience (optional)
+                                        <input type="text" name="TDGSpecialTraining"
+                                               maxlength="200"
+                                               placeholder="Only if the certificate covers it, e.g. bulk/tank transport or spill response"
+                                               t-att-value="post.get('TDGSpecialTraining', '')"/></label>
+                                </div>
                             </div>
                             <label class="o_oo_field o_oo_span2">Recent driving work / client history (optional)
                                 <input type="text" name="RecentDrivingWork" maxlength="255"
@@ -414,39 +448,51 @@
                         <!-- 5. Authority, insurance & operating area -->
                         <section class="o_oo_step" data-step="5">
                             <h2 class="o_oo_card_title">Authority, insurance &amp; operating area</h2>
-                            <label class="o_oo_field">Ontario CVOR number, if applicable
-                                <input type="text" name="CVORNumber" inputmode="numeric" maxlength="11"
-                                       placeholder="123-456-789" pattern="[0-9]{3}-[0-9]{3}-[0-9]{3}"
-                                       title="Enter your 9-digit CVOR number, for example 123-456-789."
-                                       oninput="ooFormatCvor(this);"
-                                       t-att-value="post.get('CVORNumber', '')"/>
-                                <span class="o_oo_hint">Enter your 9-digit Ontario CVOR number. Hyphens are added automatically. Leave blank if not applicable. Formatting is not authority verification.</span></label>
-                            <p class="o_oo_hint"><strong>Where in Canada will you operate?</strong> Select all provinces / territories you are willing to serve.</p>
-                            <div class="o_oo_chips" id="oo_service_chips" aria-live="polite"></div>
-                            <div class="o_oo_checks">
-                                <label class="o_oo_check" t-foreach="province_choices" t-as="prov">
-                                    <input type="checkbox" class="oo-service-province"
-                                           t-att-name="'ServiceProvince' + prov[0]"
-                                           t-att-value="prov[1]"
-                                           t-att-data-code="prov[0]"
-                                           t-att-checked="bool(post.get('ServiceProvince' + prov[0]))"
-                                           onchange="ooSyncServiceChips();"/>
-                                    <span t-esc="prov[1]"/>
+                            <div class="o_oo_subcard">
+                                <h3 class="o_oo_subhead">Operating authority</h3>
+                                <label class="o_oo_field">Ontario CVOR number, if applicable
+                                    <input type="text" name="CVORNumber" inputmode="numeric" maxlength="11"
+                                           placeholder="123-456-789" pattern="[0-9]{3}-[0-9]{3}-[0-9]{3}"
+                                           title="Enter your 9-digit CVOR number, for example 123-456-789."
+                                           oninput="ooFormatCvor(this);"
+                                           t-att-value="post.get('CVORNumber', '')"/>
+                                    <span class="o_oo_hint">Enter your 9-digit Ontario CVOR number. Hyphens are added automatically. Leave blank if not applicable. Formatting is not authority verification.</span>
                                 </label>
+                                <p class="o_oo_hint">Upload your CVOR / provincial certificate in the Documents section so the reviewer can confirm the number.</p>
                             </div>
-                            <p class="o_oo_hint"><strong>Work preference — select all that apply</strong></p>
-                            <div class="o_oo_checks">
-                                <label class="o_oo_check" t-foreach="[('WorkPreferenceLocal','Local'),('WorkPreferenceRegional','Regional'),('WorkPreferenceLonghaul','Long haul'),('WorkPreferenceFlexible','Flexible')]"
-                                       t-as="pref">
-                                    <input type="checkbox" t-att-name="pref[0]"
-                                           value="1"
-                                           t-att-checked="bool(post.get(pref[0]))"/>
-                                    <span t-esc="pref[1]"/>
-                                </label>
+                            <div class="o_oo_subcard">
+                                <h3 class="o_oo_subhead">Where you operate</h3>
+                                <p class="o_oo_hint">Select all Canadian provinces / territories you are willing to serve.</p>
+                                <div class="o_oo_chips" id="oo_service_chips" aria-live="polite"></div>
+                                <div class="o_oo_checks">
+                                    <label class="o_oo_check" t-foreach="province_choices" t-as="prov">
+                                        <input type="checkbox" class="oo-service-province"
+                                               t-att-name="'ServiceProvince' + prov[0]"
+                                               t-att-value="prov[1]"
+                                               t-att-data-code="prov[0]"
+                                               t-att-checked="bool(post.get('ServiceProvince' + prov[0]))"
+                                               onchange="ooSyncServiceChips();"/>
+                                        <span t-esc="prov[1]"/>
+                                    </label>
+                                </div>
                             </div>
-                            <label class="o_oo_field">Available start date
-                                <input type="date" name="AvailabilityDate"
-                                       t-att-value="post.get('AvailabilityDate', '')"/></label>
+                            <div class="o_oo_subcard">
+                                <h3 class="o_oo_subhead">Availability</h3>
+                                <p class="o_oo_hint"><strong>Work preference — select all that apply</strong></p>
+                                <div class="o_oo_checks">
+                                    <label class="o_oo_check" t-foreach="[('WorkPreferenceLocal','Local'),('WorkPreferenceRegional','Regional'),('WorkPreferenceLonghaul','Long haul'),('WorkPreferenceFlexible','Flexible')]"
+                                           t-as="pref">
+                                        <input type="checkbox" t-att-name="pref[0]"
+                                               value="1"
+                                               t-att-checked="bool(post.get(pref[0]))"/>
+                                        <span t-esc="pref[1]"/>
+                                    </label>
+                                </div>
+                                <label class="o_oo_field">Available start date
+                                    <input type="date" name="AvailabilityDate"
+                                           t-att-value="post.get('AvailabilityDate', '')"/></label>
+                            </div>
+                            <p class="o_oo_hint o_oo_span2">Insurance: after you reach Authority &amp; Insurance Review, your insurer or broker sends the Certificate of Insurance directly to PremaFirm. You do not need to provide an insurance-agent email here.</p>
                         </section>
 
                         <!-- 6. Documents & truck photos -->
@@ -881,6 +927,36 @@
                             });
                         }
 
+                        // ── TDG disclosure ─────────────────────────
+                        window.ooSyncTdg = function () {
+                            var status = document.getElementById("oo_TDGStatus");
+                            var box = document.getElementById("oo_tdg_details");
+                            var current = status && status.value === "current";
+                            if (box) {
+                                box.hidden = !current;
+                                box.querySelectorAll("input, select")
+                                    .forEach(function (el) {
+                                        el.disabled = !current;
+                                        if (!current) {
+                                            if (el.type === "checkbox") {
+                                                el.checked = false;
+                                            } else {
+                                                el.value = "";
+                                            }
+                                        }
+                                    });
+                            }
+                        };
+                        window.ooSyncTdgNone = function () {
+                            var none = document.querySelector(
+                                "input[name=TDGClassesNone]");
+                            if (none && none.checked) {
+                                document.querySelectorAll(
+                                    "input[name^=TDGClass]:not([name=TDGClassesNone])")
+                                    .forEach(function (el) { el.checked = false; });
+                            }
+                        };
+
                         // initial state
                         show(1);
                         ooSyncVehicle();
@@ -889,6 +965,7 @@
                         ooSyncLiftgate();
                         ooSyncServiceChips();
                         ooSyncReefer();
+                        ooSyncTdg();
                     })();
                 ]]></script>
             </body>

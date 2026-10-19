@@ -159,7 +159,10 @@ class OwnerOperatorController(http.Controller):
         and the job's own /jobs/apply/<job> page."""
         values = {"errors": [], "post": post, "job": job,
                   "provinces": PROVINCES,
-                  "province_choices": PROVINCE_CHOICES}
+                  "province_choices": PROVINCE_CHOICES,
+                  "tdg_classes": http.request.env[
+                      "prema.owner.operator.tdg.class"].sudo().search(
+                          [("active", "=", True)], order="sequence, id")}
         if http.request.httprequest.method == "GET" or not post:
             return http.request.render(
                 "prema_owner_operator.apply_form", values)
@@ -300,6 +303,11 @@ class OwnerOperatorController(http.Controller):
             "source": "applicant",
             "received_on": http.request.env["prema.owner.operator.document"]._fields["received_on"].now(),
         })
+        if doc_type == "cvor":
+            try:
+                app.sudo().action_extract_cvor()
+            except Exception:  # noqa: BLE001 — extraction never loses the file
+                _logger.warning("CVOR extraction failed", exc_info=True)
         return doc
 
     # ------------------------------------------------------------------
