@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="group_owner_operator" model="res.groups">
+        <field name="name">Owner-Operator Onboarding</field>
+        <field name="category_id" ref="base.module_category_logistics"/>
+        <field name="implied_ids" eval="[(4, ref('base.group_user'))]"/>
+        <field name="comment">Reviews owner-operator applications and their
+            private documents. Applicants themselves never get this group —
+            they submit through the public form.</field>
+    </record>
+
+    <!-- Applications are visible to the onboarding group, per company. -->
+    <record id="rule_application_company" model="ir.rule">
+        <field name="name">Owner-operator applications: company</field>
+        <field name="model_id" ref="model_prema_owner_operator_application"/>
+        <field name="global" eval="True"/>
+        <field name="domain_force">[('company_id','in',company_ids)]</field>
+    </record>
+
+    <!-- A portal user (if one is ever enabled) sees only their own record. -->
+    <record id="rule_application_portal" model="ir.rule">
+        <field name="name">Owner-operator applications: portal own only</field>
+        <field name="model_id" ref="model_prema_owner_operator_application"/>
+        <field name="groups" eval="[(4, ref('base.group_portal'))]"/>
+        <field name="domain_force">[('partner_id','=',user.partner_id.id)]</field>
+        <field name="perm_read" eval="True"/>
+        <field name="perm_write" eval="False"/>
+        <field name="perm_create" eval="False"/>
+        <field name="perm_unlink" eval="False"/>
+    </record>
+
+    <record id="rule_document_company" model="ir.rule">
+        <field name="name">Owner-operator documents: company</field>
+        <field name="model_id" ref="model_prema_owner_operator_document"/>
+        <field name="global" eval="True"/>
+        <field name="domain_force">[('company_id','in',company_ids)]</field>
+    </record>
+    <record id="rule_document_portal" model="ir.rule">
+        <field name="name">Owner-operator documents: portal own only</field>
+        <field name="model_id" ref="model_prema_owner_operator_document"/>
+        <field name="groups" eval="[(4, ref('base.group_portal'))]"/>
+        <field name="domain_force">[('application_id.partner_id','=',user.partner_id.id)]</field>
+        <field name="perm_write" eval="False"/>
+        <field name="perm_create" eval="False"/>
+        <field name="perm_unlink" eval="False"/>
+    </record>
+
+    <record id="rule_operator_company" model="ir.rule">
+        <field name="name">Owner-operator profiles: company</field>
+        <field name="model_id" ref="model_prema_owner_operator"/>
+        <field name="global" eval="True"/>
+        <field name="domain_force">[('company_id','in',company_ids)]</field>
+    </record>
+
+    <record id="rule_verification_company" model="ir.rule">
+        <field name="name">Verification emails: company</field>
+        <field name="model_id" ref="model_prema_owner_operator_verification"/>
+        <field name="global" eval="True"/>
+        <field name="domain_force">[('company_id','in',company_ids)]</field>
+    </record>
+</odoo>

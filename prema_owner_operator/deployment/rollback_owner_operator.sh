@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# Roll back prema_owner_operator: CODE + DATABASE + FILESTORE together.
+# Uninstalling the module alone is NOT a rollback (it leaves the fleet columns
+# and the stage link behind, and drops the application data).
+set -euo pipefail
+BK=${1:?usage: $0 <backup-dir>}
+DB=${DB:-Prod-db}
+# The odoo18 service runs with HOME=/opt/odoo, so its data_dir is
+# /opt/odoo/.local/share/Odoo — NOT /root/.local/share/Odoo.
+FILESTORE=${FILESTORE:-/opt/odoo/.local/share/Odoo/filestore/$DB}
+CODE_DIR=${CODE_DIR:-/opt/odoo/releases/prema_dispatch}
+MODULE_ADDONS_DIR=${MODULE_ADDONS_DIR:-/opt/odoo/releases/prema_owner_operator}
+
+[ -n "${SKIP_RESTART:-}" ] || systemctl stop "${SERVICE:-odoo18}"
+
+# The addon lives OUTSIDE the prema_dispatch git worktree. Move it aside
+# before restoring the code tree so a rollback removes it from the addons
+# path, while keeping the files for audit.
+if [ -d "$MODULE_ADDONS_DIR" ]; then
+  mv "$MODULE_ADDONS_DIR" "$BK/module_removed_$(date +%Y%m%d_%H%M%S)"
+fi
+
+echo "== code =="
+if [ -f "$BK/code.tgz" ]; then
+  # Exact pre-deployment tree, including uncommitted live changes.
+  tar tzf "$BK/code.tgz" > /dev/null
+  rm -rf "$CODE_DIR"
+  tar xzf "$BK/code.tgz" -C "$(dirname "$CODE_DIR")"
+  chown -R odoo18:odoo18 "$CODE_DIR" 2>/dev/null || true
+else
+  git -C "$CODE_DIR" checkout "$(cat "$BK/code_rev.txt")"
+fi
+
+echo "== database =="
+sudo -u postgres dropdb --if-exists "$DB"
+sudo -u postgres createdb -O odoo18 "$DB"
+sudo -u postgres pg_restore -d "$DB" --no-owner --no-privileges --role=odoo18 "$BK/db.dump"
+
+echo "== filestore =="
+rm -rf "$FILESTORE"
+tar xzf "$BK/filestore.tgz" -C "$(dirname "$FILESTORE")"
+chown -R odoo18:odoo18 "$FILESTORE" 2>/dev/null || true
+LEGACY_FILESTORE=${LEGACY_FILESTORE:-/root/.local/share/Odoo/filestore/$DB}
+if [ -f "$BK/filestore_root_extra.tgz" ]; then
+  rm -rf "$LEGACY_FILESTORE"
+  tar xzf "$BK/filestore_root_extra.tgz" -C "$(dirname "$LEGACY_FILESTORE")"
+  chown -R odoo18:odoo18 "$LEGACY_FILESTORE" 2>/dev/null || true
+fi
+
+[ -n "${SKIP_RESTART:-}" ] || systemctl start "${SERVICE:-odoo18}"
+echo "Rolled back. Restore backup dir: $BK"

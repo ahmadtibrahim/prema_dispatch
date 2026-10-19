@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="res_config_settings_view_form_owner_operator" model="ir.ui.view">
+        <field name="name">res.config.settings.form.owner.operator</field>
+        <field name="model">res.config.settings</field>
+        <field name="inherit_id" ref="base_setup.res_config_settings_view_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//form" position="inside">
+                <app string="Owner-Operators" name="prema_owner_operator"
+                     groups="prema_owner_operator.group_owner_operator,base.group_system">
+                    <block title="Insurance review" name="oo_insurance_review">
+                        <setting id="oo_coi_review_thresholds"
+                                 string="Coverage review thresholds"
+                                 help="Shown to reviewers only. Receipt of a certificate never auto-approves coverage.">
+                            <field name="oo_coi_min_auto_liability"/>
+                            <field name="oo_coi_min_cargo"/>
+                        </setting>
+                        <setting id="oo_trusted_insurer_domains"
+                                 string="Trusted insurer / broker domains"
+                                 help="Only a matched email from one of these sender domains may attach a certificate to the insurer-direct checklist item automatically. The applicant remains in Authority &amp; Insurance Review; a reviewer moves it after checking the insurer, policy dates and coverage. Leave empty for manual triage of every certificate.">
+                            <field name="oo_trusted_insurer_domains"
+                                   placeholder="broker.example.com, insurer.example.com"/>
+                        </setting>
+                        <setting id="oo_verification_reviewer"
+                                 string="Verification reviewer"
+                                 help="Receives the review activity for inbound verification mail. Defaults to the job recruiter.">
+                            <field name="oo_verification_reviewer_id"/>
+                        </setting>
+                        <setting id="oo_whatsapp_consent_version"
+                                 string="WhatsApp consent version"
+                                 help="Stored with every affirmative WhatsApp consent.">
+                            <field name="oo_whatsapp_consent_version"/>
+                        </setting>
+                    </block>
+                </app>
+            </xpath>
+        </field>
+    </record>
+
+    <record id="action_owner_operator_settings" model="ir.actions.act_window">
+        <field name="name">Settings</field>
+        <field name="res_model">res.config.settings</field>
+        <field name="view_mode">form</field>
+        <field name="target">inline</field>
+        <field name="context">{'module': 'prema_owner_operator'}</field>
+    </record>
+
+    <menuitem id="menu_owner_operator_settings" name="Settings"
+              parent="menu_owner_operator_root"
+              action="action_owner_operator_settings" sequence="90"
+              groups="base.group_system"/>
+</odoo>
