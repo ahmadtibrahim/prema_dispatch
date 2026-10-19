@@ -188,6 +188,11 @@ class TestTDGAndCVOR(OwnerOperatorCase):
         app.hr_applicant_id.with_context(
             owner_operator_skip_stage_hook=True).write({"stage_id": stage.id})
         count_before = self.env["mail.mail"].search_count([])
+        template = self.env.ref(
+            "prema_owner_operator.mail_template_coi_request")
+        self.assertFalse(template.partner_to)
+        self.assertEqual(template.email_from,
+                         "PremaFirm Inc. <info@premafirm.com>")
         app._send_coi_request()
         mails = self.env["mail.mail"].search([
             ("model", "=", "prema.owner.operator.application"),
