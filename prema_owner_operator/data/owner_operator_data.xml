@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data noupdate="1">
+        <!-- Which hr.job this workflow owns. The post-init hook sets this to
+             the real id; the record documents the default. -->
+        <record id="param_job_id" model="ir.config_parameter">
+            <field name="key">prema_owner_operator.job_id</field>
+            <field name="value">5</field>
+        </record>
+        <!-- Agreement template for Odoo Sign. EMPTY ON PURPOSE: contract
+             sending and final approval stay blocked until the approved
+             template is uploaded, activated and referenced here. -->
+        <record id="param_agreement_template" model="ir.config_parameter">
+            <field name="key">prema_owner_operator.agreement_template_id</field>
+            <field name="value"></field>
+        </record>
+    </data>
+
+    <record id="ir_cron_refresh_availability" model="ir.cron">
+        <field name="name">Owner-operator: refresh truck availability</field>
+        <field name="model_id" ref="fleet.model_fleet_vehicle"/>
+        <field name="state">code</field>
+        <field name="code">model._cron_refresh_availability()</field>
+        <field name="interval_number">1</field>
+        <field name="interval_type">days</field>
+        <field name="active" eval="True"/>
+    </record>
+
+    <record id="ir_cron_sync_signatures" model="ir.cron">
+        <field name="name">Owner-operator: sync signatures</field>
+        <field name="model_id" ref="model_prema_owner_operator_application"/>
+        <field name="state">code</field>
+        <field name="code">model._cron_sync_signatures()</field>
+        <field name="interval_number">15</field>
+        <field name="interval_type">minutes</field>
+        <field name="active" eval="True"/>
+    </record>
+</odoo>

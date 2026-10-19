@@ -1,0 +1,1780 @@
+# -*- coding: utf-8 -*-
+"""prema.owner.operator.document + .application.
+
+The application is the ONE structured record for a candidate, and every
+document, signature and approval hangs off it explicitly. Nothing is matched
+by email address and nothing is matched by number plate: an existing partner
+or vehicle is only ever linked through an id stored on this record, and a VIN
+that already belongs to someone else stops the approval for manual review.
+"""
+import re
+
+from odoo import _, api, fields, models
+from odoo.exceptions import AccessError, UserError, ValidationError
+
+from ..application_mapping import (
+    PROVINCES, REQUIRED_INTERNAL, normalise_public,
+    parse_other_information, split_plate_jurisdiction)
+
+# Ordered so the checklist reads the way the process runs.
+DOCUMENT_TYPES = [
+    ("cvor", "CVOR / provincial certificate"),
+    ("coi_applicant", "Certificate of insurance (applicant copy)"),
+    ("coi_insurer", "Certificate of insurance (from insurer)"),
+    ("business_registration", "Corporate / business registration"),
+    ("vehicle_registration", "Vehicle registration / inspection"),
+    ("photo_front", "Truck photo — front"),
+    ("photo_rear", "Truck photo — rear"),
+    ("photo_left", "Truck photo — left side"),
+    ("photo_right", "Truck photo — right side"),
+    ("photo_cargo_interior", "Truck photo — cargo interior"),
+    ("licence_front", "Driver licence — front"),
+    ("licence_back", "Driver licence — back"),
+    ("signed_agreement", "Signed agreement / NDA"),
+    ("other", "Other document"),
+]
+
+# Which stage a document becomes mandatory at. "initial" is required for the
+# application to be complete at all; the others gate a stage transition.
+DOCUMENT_STAGE = {
+    "cvor": "initial",
+    "coi_applicant": "initial",
+    "business_registration": "initial",
+    "vehicle_registration": "initial",
+    "photo_front": "initial",
+    "photo_rear": "initial",
+    "photo_left": "initial",
+    "photo_right": "initial",
+    "photo_cargo_interior": "initial",
+    "licence_front": "qualification",
+    "licence_back": "qualification",
+    "coi_insurer": "qualification",
+    "signed_agreement": "contract",
+}
+
+SOURCE = [
+    ("applicant", "Applicant upload"),
+    ("insurer", "Received from insurer"),
+    ("private", "Collected privately (dispatcher)"),
+]
+
+STATUS = [
+    ("pending", "Requested"),
+    ("received", "Received"),
+    ("verified", "Verified"),
+    ("rejected", "Rejected"),
+]
+
+APPLICATION_STATE = [
+    ("submitted", "Submitted"),
+    ("qualifying", "Qualifying"),
+    ("authority_review", "Authority & insurance review"),
+    ("contract", "Contract proposal"),
+    ("signed", "Contract signed"),
+    ("approved", "Approved — handed to Fleet"),
+    ("rejected", "Rejected"),
+]
+
+# The owner-operator pipeline for job 5, in order. Names are the stable key;
+# sequences are assigned by the migration/hook. The removed stages keep their
+# records and any history, but job 5 is unlinked from them.
+STAGE_NEW = "New"
+STAGE_AUTHORITY = "Authority & Insurance Review"
+STAGE_CONTRACT = "Contract Proposal"
+STAGE_SIGNED = "Contract Signed"
+STAGE_APPROVED = "Approved — Ready for Dispatch"
+PIPELINE = [
+    STAGE_NEW,
+    STAGE_AUTHORITY,
+    STAGE_CONTRACT,
+    STAGE_SIGNED,
+    STAGE_APPROVED,
+]
+REMOVED_FROM_JOB5 = [
+    "Equipment Verification",
+    "Initial Qualification",
+    "Final Review",
+    "First Interview",
+    "Second Interview",
+]
+
+# The exact certificate-holder wording the applicant forwards to the broker.
+CERTIFICATE_HOLDER = (
+    "PremaFirm Inc.\n"
+    "994 Westport Cres, Unit 7A\n"
+    "Mississauga, ON L5T 1G1\n"
+    "Canada"
+)
+
+WHATSAPP_CONSENT_TEXT = (
+    "I agree to receive load quote requests and load offers by WhatsApp at "
+    "the number I provided. I may change this preference or opt out at any "
+    "time."
+)
+
+# Raw public-form keys -> structured equipment fields. A key is "provided"
+# when the submitted string is non-empty, even when it is exactly "0".
+EQUIPMENT_RAW_MAP = {
+    "CargoBodyType": "cargo_body_type",
+    "LegalPayloadLb": "payload_lbs",
+    "PalletCapacity": "pallet_capacity",
+    "CargoLengthFt": "box_length_ft",
+    "CargoWidthIn": "cargo_width_in",
+    "CargoHeightIn": "cargo_height_in",
+    "DoorWidthIn": "door_width_in",
+    "DoorHeightIn": "door_clearance_in",
+    "Liftgate": "liftgate",
+    "LiftgateCapacityLb": "liftgate_capacity_lb",
+    "LiftgatePlatformLengthIn": "liftgate_platform_length_in",
+    "LiftgatePlatformWidthIn": "liftgate_platform_width_in",
+    "DockHeightCapable": "dock_height_capable",
+    "ReeferTemperatureRange": "reefer_temperature_range",
+    "TrailerType": "trailer_type",
+    "TrailerLengthFt": "trailer_length_ft",
+}
+
+EQUIPMENT_LABELS = {
+    "cargo_body_type": "Cargo body type",
+    "payload_lbs": "Legal payload",
+    "pallet_capacity": "Pallet capacity",
+    "box_length_ft": "Cargo interior length",
+    "cargo_width_in": "Cargo interior width",
+    "cargo_height_in": "Cargo interior height",
+    "door_width_in": "Rear door opening width",
+    "door_clearance_in": "Rear door opening height",
+    "liftgate": "Liftgate",
+    "liftgate_capacity_lb": "Liftgate capacity",
+    "liftgate_platform_length_in": "Liftgate platform length",
+    "liftgate_platform_width_in": "Liftgate platform width",
+    "dock_height_capable": "Dock-height capability",
+    "reefer_temperature_range": "Reefer temperature range",
+    "trailer_type": "Trailer type",
+    "trailer_length_ft": "Trailer length",
+}
+
+# The ONLY fields the public form may write. Workflow, approval, signature,
+# verification, Fleet and operator links are deliberately absent.
+SUBMISSION_FIELDS = {
+    "contact_name", "email", "phone", "business_name", "business_structure",
+    "home_city", "home_province", "commercial_driving_experience",
+    "licence_class", "licence_jurisdiction", "owner_operator_experience",
+    "licence_suspension", "recent_collisions", "recent_convictions",
+    "tdg_training", "recent_driving_work", "vehicle_type", "equipment_model",
+    "truck_year", "unit_number", "vehicle_ownership", "transmission",
+    "odometer_km", "truck_plate_jurisdiction", "license_plate",
+    "plate_jurisdiction", "cargo_body_type", "trailer_ownership",
+    "trailer_type", "trailer_length_ft", "trailer_unit", "payload_lbs",
+    "pallet_capacity", "box_length_ft", "cargo_width_in", "cargo_height_in",
+    "door_width_in", "door_clearance_in", "liftgate",
+    "liftgate_capacity_lb", "liftgate_platform_length_in",
+    "liftgate_platform_width_in", "dock_height_capable", "air_ride",
+    "reefer_temperature_range", "cvor_number", "preferred_service_area",
+    "available_start_date", "work_preference", "preferred_service_area_codes",
+    "work_preference_codes", "whatsapp_consent", "application_declaration",
+    "equipment_provided", "load_notification_channel",
+    "load_notification_email", "whatsapp_number",
+    "whatsapp_consent_granted", "whatsapp_consent_text",
+    "whatsapp_consent_version", "whatsapp_consent_at",
+    "load_notification_opt_out", "load_notification_opt_out_at",
+}
+
+
+def _normalise_vin(value):
+    """VINs differ only in separators and case; the DATA does not."""
+    return re.sub(r"[^A-Z0-9]", "", (value or "").upper()) or False
+
+
+class OwnerOperatorDocument(models.Model):
+    _name = "prema.owner.operator.document"
+    _description = "Owner-Operator Application Document"
+    _order = "application_id, document_type, id"
+
+    application_id = fields.Many2one(
+        "prema.owner.operator.application", required=True, index=True,
+        ondelete="cascade")
+    operator_id = fields.Many2one(related="application_id.operator_id",
+                                  store=True, index=True)
+    company_id = fields.Many2one(related="application_id.company_id",
+                                 store=True, index=True)
+    document_type = fields.Selection(DOCUMENT_TYPES, required=True)
+    name = fields.Char(compute="_compute_name", store=True)
+    required_stage = fields.Selection(
+        [("initial", "Initial upload"),
+         ("qualification", "Initial Qualification"),
+         ("contract", "Contract")],
+        compute="_compute_required_stage", store=True)
+
+    attachment_id = fields.Many2one(
+        "ir.attachment", string="File", ondelete="restrict",
+        help="Stored privately: the attachment is bound to this record and "
+             "served only by the module's scoped route — never through a "
+             "public /web/content URL.")
+    file_name = fields.Char(related="attachment_id.name")
+    mimetype = fields.Char(related="attachment_id.mimetype")
+    can_preview = fields.Boolean(
+        string="View", compute="_compute_can_preview",
+        help="True only while a file is attached; drives the row/detail "
+             "preview button. Requested documents without a file show none.")
+
+    source = fields.Selection(SOURCE, default="applicant", required=True)
+    status = fields.Selection(STATUS, default="pending", required=True)
+    requested_on = fields.Datetime(default=fields.Datetime.now)
+    received_on = fields.Datetime()
+    verified_by = fields.Many2one("res.users")
+    verified_on = fields.Datetime()
+    notes = fields.Text()
+
+    # insurer-direct COI metadata — captured from the certificate itself
+    insurer_name = fields.Char(string="Insurer on certificate")
+    policy_number = fields.Char(string="Policy number")
+    expiry_date = fields.Date(string="Coverage expires")
+
+    _sql_constraints = [
+        ("document_unique",
+         "UNIQUE(application_id, document_type)",
+         "This document is already tracked on the application."),
+    ]
+
+    @api.depends("document_type")
+    def _compute_name(self):
+        labels = dict(DOCUMENT_TYPES)
+        for doc in self:
+            doc.name = labels.get(doc.document_type, doc.document_type or "")
+
+    @api.depends("document_type")
+    def _compute_required_stage(self):
+        for doc in self:
+            doc.required_stage = DOCUMENT_STAGE.get(doc.document_type, "initial")
+
+    @api.depends("attachment_id")
+    def _compute_can_preview(self):
+        for doc in self:
+            doc.can_preview = bool(doc.attachment_id)
+
+    @api.constrains("attachment_id", "status")
+    def _check_file_present(self):
+        for doc in self:
+            if doc.status in ("received", "verified") and not doc.attachment_id:
+                raise ValidationError(_(
+                    "“%s” is marked received but has no file.") % doc.name)
+
+    def action_verify(self):
+        self.write({"status": "verified",
+                    "verified_by": self.env.user.id,
+                    "verified_on": fields.Datetime.now()})
+        return True
+
+    def action_reject(self):
+        self.write({"status": "rejected"})
+        return True
+
+
+class OwnerOperatorApplication(models.Model):
+    _name = "prema.owner.operator.application"
+    _description = "Owner-Operator Application"
+    _order = "create_date desc, id desc"
+    _inherit = ["mail.thread", "mail.activity.mixin"]
+
+    name = fields.Char(default=lambda self: _("New"), readonly=True, copy=False)
+    company_id = fields.Many2one(
+        "res.company", required=True, index=True,
+        default=lambda self: self.env.company)
+
+    # ── canonical links (explicit, never inferred) ──────────────────
+    hr_applicant_id = fields.Many2one(
+        "hr.applicant", string="Job application", ondelete="restrict",
+        index=True,
+        help="The recruitment record and email thread. The owner-operator "
+             "workflow advances THIS record's stage.")
+    job_id = fields.Many2one(related="hr_applicant_id.job_id", store=True)
+    partner_id = fields.Many2one(
+        "res.partner", string="Applicant contact", ondelete="restrict",
+        index=True,
+        help="The exact partner created for/linked to this application. It is "
+             "NEVER re-matched to an existing partner by email address.")
+    operator_id = fields.Many2one(
+        "prema.owner.operator", string="Operator profile", index=True,
+        ondelete="restrict")
+    fleet_vehicle_id = fields.Many2one(
+        "fleet.vehicle", string="Equipment", index=True, ondelete="restrict",
+        help="Set ONCE at approval. Its presence is what makes re-approval "
+             "idempotent — a second approval returns this same vehicle.")
+
+    # ── contact / business ──────────────────────────────────────────
+    contact_name = fields.Char(string="Full name")
+    email = fields.Char()
+    phone = fields.Char()
+    business_name = fields.Char(string="Legal business / owner name")
+    business_number = fields.Char(string="Business / registration no.")
+    business_structure = fields.Selection([
+        ("sole", "Sole proprietor"),
+        ("corporation", "Corporation"),
+        ("partnership", "Partnership"),
+    ], string="Business structure")
+    is_sole_proprietor = fields.Boolean(
+        string="Sole proprietor",
+        help="Kept in step with Business structure; drives the conditional "
+             "document set.")
+
+    # ── home base: CITY + PROVINCE only, by design ──────────────────
+    home_city = fields.Char(
+        string="Home city",
+        help="City where the truck normally parks or returns between jobs. "
+             "Used to identify nearby load opportunities; no street address "
+             "is collected at this stage.")
+    home_province = fields.Char(
+        string="Home province",
+        help="Province or territory only, paired with the home city where the "
+             "truck normally parks or returns between jobs. No street "
+             "address is collected here.")
+    service_province_ids = fields.Many2many(
+        "res.country.state", "prema_owner_operator_service_province_rel",
+        "application_id", "state_id", string="Provinces / territories served",
+        domain=[("country_id.code", "=", "CA")],
+        help="Multiple Canadian provinces/territories selected on the form.")
+    preferred_service_area_ids = fields.Many2many(
+        "prema.owner.operator.service.area",
+        "prema_oo_app_service_area_rel", "application_id", "area_id",
+        string="Preferred service areas",
+        help="Multiple choices. The legacy single-value field below is kept "
+             "only for historical records and older consumers.")
+    work_preference_ids = fields.Many2many(
+        "prema.owner.operator.work.preference",
+        "prema_oo_app_work_pref_rel", "application_id", "preference_id",
+        string="Work preferences",
+        help="Multiple choices. The legacy single-value field below is kept "
+             "only for historical records and older consumers.")
+
+    # ── equipment ───────────────────────────────────────────────────
+    equipment_type = fields.Selection([
+        ("dry_van", "Dry van"),
+        ("reefer", "Reefer"),
+        ("flatbed", "Flatbed"),
+        ("step_deck", "Step deck"),
+        ("straight_truck", "Straight truck"),
+        ("other", "Other"),
+    ], string="Equipment type")
+    equipment_model = fields.Char(string="Make / model")
+    vin = fields.Char(string="VIN", index=True)
+    unit_number = fields.Char(string="Unit number")
+    license_plate = fields.Char(string="Plate")
+    plate_jurisdiction = fields.Char(string="Plate jurisdiction")
+
+    # Units are part of the label on purpose — see the unit audit in the
+    # master log: the legacy x_* fields mix ft and inches under *_ft names.
+    payload_lbs = fields.Float(string="Legal payload (lbs)")
+    pallet_capacity = fields.Integer(string="Pallet capacity")
+    box_length_ft = fields.Float(string="Cargo box length (ft)")
+    box_height_ft = fields.Float(string="Cargo box interior height (ft)")
+    overall_length_ft = fields.Float(string="Overall length (ft)")
+    vehicle_height_ft = fields.Float(string="Vehicle height (ft)")
+    door_width_in = fields.Float(string="Rear door opening width (in)")
+    door_clearance_in = fields.Float(string="Rear door opening height (in)")
+    liftgate_platform_length_in = fields.Float(
+        string="Liftgate usable platform length (in)")
+    liftgate_platform_width_in = fields.Float(
+        string="Liftgate usable platform width (in)")
+    dock_height_in = fields.Float(string="Dock height (in)")
+    gvwr_lbs = fields.Float(string="GVWR (lbs)")
+    equipment_provided = fields.Json(
+        string="Submitted equipment answers", default=dict, copy=True,
+        help="Which equipment answers the applicant actually supplied, "
+             "including an explicit zero. Distinguishes NOT PROVIDED from 0.")
+    equipment_data_confirmed = fields.Boolean(
+        string="Equipment data reviewed",
+        help="Set by a reviewer when a deliberate zero is valid for a field "
+             "that the completeness gate would otherwise treat as missing.")
+    equipment_missing = fields.Text(
+        string="Missing dispatch-critical equipment", compute="_compute_equipment")
+    equipment_complete = fields.Boolean(
+        string="Dispatch equipment complete", compute="_compute_equipment")
+    has_reefer = fields.Boolean(string="Reefer")
+    has_liftgate = fields.Boolean(string="Liftgate")
+    has_air_ride = fields.Boolean(string="Air-ride suspension")
+
+    # ── the live website's structured answers ───────────────────────
+    commercial_driving_experience = fields.Selection([
+        ("Less than 1 year", "Less than 1 year"),
+        ("1–2 years", "1–2 years"),
+        ("3–5 years", "3–5 years"),
+        ("6–10 years", "6–10 years"),
+        ("11–15 years", "11–15 years"),
+        ("16+ years", "16+ years"),
+    ], string="Commercial driving experience")
+    owner_operator_experience = fields.Selection([
+        ("New owner-operator", "New owner-operator"),
+        ("Less than 1 year", "Less than 1 year"),
+        ("1–2 years", "1–2 years"),
+        ("3–5 years", "3–5 years"),
+        ("6–10 years", "6–10 years"),
+        ("11–15 years", "11–15 years"),
+        ("16+ years", "16+ years"),
+    ], string="Owner-operator experience")
+    licence_suspension = fields.Selection([
+        ("no", "No"), ("yes", "Yes")],
+        string="Licence ever suspended / revoked")
+    recent_collisions = fields.Selection([
+        ("none", "None"), ("1", "1"), ("2", "2"), ("3+", "3 or more")],
+        string="Collisions in the past 3 years")
+    recent_convictions = fields.Selection([
+        ("none", "None"), ("1", "1"), ("2", "2"), ("3+", "3 or more")],
+        string="Driving convictions in the past 3 years")
+    tdg_training = fields.Selection([
+        ("yes", "Current certificate"),
+        ("no", "No"),
+        ("expired", "Expired / renewal needed")],
+        string="Dangerous goods training")
+    recent_driving_work = fields.Text(string="Recent driving work / clients")
+
+    vehicle_type = fields.Selection([
+        ("cargo_van", "Cargo Van"),
+        ("straight", "Straight Truck"),
+        ("tractor", "Tractor / Power Unit"),
+    ], string="Vehicle type")
+    truck_year = fields.Char(
+        string="Model year",
+        help="Stored as the website sends it, including “2000 or earlier”. "
+             "Never cast into a numeric year.")
+    vehicle_ownership = fields.Selection([
+        ("own", "Own"), ("lease", "Lease"), ("financed", "Financed")],
+        string="Own / lease / financed")
+    transmission = fields.Selection([
+        ("automatic", "Automatic"),
+        ("manual", "Manual / standard"),
+        ("automated_manual", "Automated manual")],
+        string="Transmission")
+    odometer_km = fields.Float(string="Odometer (km)")
+    truck_plate_jurisdiction = fields.Char(
+        string="Plate and province / territory",
+        help="The combined value the applicant typed. license_plate and "
+             "plate_jurisdiction hold the best-effort split.")
+    cargo_body_type = fields.Selection([
+        ("dry", "Dry freight"),
+        ("reefer", "Refrigerated / reefer"),
+        ("both", "Reefer and dry capable"),
+        ("other", "Other / not applicable")],
+        string="Cargo body type")
+    cargo_width_in = fields.Float(string="Cargo interior width (in)")
+    cargo_height_in = fields.Float(string="Cargo interior height (in)")
+    liftgate = fields.Selection([
+        ("yes", "Yes"), ("no", "No")], string="Liftgate")
+    liftgate_capacity_lb = fields.Float(string="Liftgate capacity (lb)")
+    dock_height_capable = fields.Selection([
+        ("yes", "Yes"), ("no", "No")], string="Dock-height capable")
+    air_ride = fields.Selection([
+        ("yes", "Yes"), ("no", "No")], string="Air-ride suspension")
+    reefer_temperature_range = fields.Char(
+        string="Reefer temperature range")
+    trailer_ownership = fields.Selection([
+        ("own", "Own / leased trailer"),
+        ("power_only", "Power-only service")],
+        string="Trailer ownership")
+    trailer_type = fields.Selection([
+        ("dry", "Dry Van"), ("reefer", "Reefer"),
+        ("flatbed", "Flatbed"), ("other", "Other")],
+        string="Trailer type")
+    trailer_length_ft = fields.Float(string="Trailer length (ft)")
+    trailer_unit = fields.Char(string="Trailer unit / identification")
+
+    # ── authority (conditional in the form) ─────────────────────────
+    crosses_border = fields.Boolean(
+        string="Crosses the border (MC/USDOT required)")
+    mc_number = fields.Char(string="MC number")
+    usdot_number = fields.Char(string="USDOT number")
+    authority_state = fields.Selection([
+        ("not_provided", "Not provided"),
+        ("pending_manual", "Pending manual verification"),
+        ("verified", "Verified"),
+    ], default="not_provided", required=True,
+        help="MC/USDOT/CVOR lookup is deferred; the record shows PENDING "
+             "MANUAL verification until someone checks it.")
+    cvor_number = fields.Char(string="CVOR number")
+    cvor_verification_status = fields.Selection([
+        ("not_provided", "Not provided"),
+        ("pending", "Pending manual verification"),
+        ("verified", "Verified"),
+        ("rejected", "Rejected"),
+    ], default="not_provided", required=True,
+        help="Formatting the number is NOT authority verification.")
+    insurance_agent_name = fields.Char(string="Insurance agent / broker")
+    insurance_agent_email = fields.Char(string="Insurance agent email")
+
+    # ── driver licence (collected privately at Initial Qualification) ─
+    licence_class = fields.Char(string="Licence class")
+    licence_jurisdiction = fields.Char(string="Licence jurisdiction")
+    licence_expiry = fields.Date(string="Licence expiry")
+
+    # ── preferences ─────────────────────────────────────────────────
+    preferred_lanes = fields.Text(
+        string="Preferred lanes (legacy free text)",
+        help="Set from the structured service area for older consumers.")
+    preferred_service_area = fields.Selection([
+        ("Toronto / GTA", "Toronto / GTA local"),
+        ("Ontario wide", "Ontario wide"),
+        ("Quebec", "Quebec"),
+        ("Ontario and Quebec", "Ontario and Quebec"),
+        ("Canada wide", "Canada wide"),
+        ("Selected provinces", "Selected provinces / territories"),
+    ], string="Preferred service area")
+    available_start_date = fields.Date(string="Available start date")
+    work_preference = fields.Selection([
+        ("local", "Local"), ("regional", "Regional"),
+        ("longhaul", "Long haul"), ("flexible", "Flexible")],
+        string="Work preference")
+    whatsapp_consent = fields.Selection([
+        ("yes", "Yes"), ("no", "No")],
+        string="WhatsApp load notifications (legacy)",
+        help="Historical single answer. New records use the explicit "
+             "notification channel and consent fields below.")
+    load_notification_channel = fields.Selection([
+        ("whatsapp", "WhatsApp"),
+        ("email", "Email"),
+    ], string="Load-notification channel", tracking=True)
+    load_notification_email = fields.Char(
+        string="Load-notification email", tracking=True,
+        help="Stored separately from the application email.")
+    whatsapp_number = fields.Char(
+        string="WhatsApp number", tracking=True,
+        help="Normalised E.164 number, stored separately from the contact "
+             "phone. Never inferred from the phone number alone.")
+    whatsapp_consent_granted = fields.Boolean(
+        string="WhatsApp consent given", tracking=True)
+    whatsapp_consent_text = fields.Text(string="Consent wording")
+    whatsapp_consent_version = fields.Char(string="Consent version")
+    whatsapp_consent_at = fields.Datetime(string="Consent captured at")
+    load_notification_opt_out = fields.Boolean(
+        string="Opted out of load notifications", tracking=True)
+    load_notification_opt_out_at = fields.Datetime(string="Opted out at")
+    notification_preference_log_ids = fields.One2many(
+        "prema.owner.operator.notification.log", "application_id",
+        string="Notification preference changes")
+    application_declaration = fields.Boolean(
+        string="Application declaration signed")
+    availability = fields.Text(string="Availability (legacy free text)")
+    additional_notes = fields.Html(
+        related="hr_applicant_id.applicant_notes", readonly=True,
+        string="Additional information / equipment notes")
+
+    # ── workflow ────────────────────────────────────────────────────
+    state = fields.Selection(APPLICATION_STATE, default="submitted",
+                             required=True, index=True, tracking=True)
+    stage_id = fields.Many2one(related="hr_applicant_id.stage_id",
+                               string="Recruitment stage", store=True)
+    document_ids = fields.One2many(
+        "prema.owner.operator.document", "application_id", string="Documents")
+
+    sign_request_id = fields.Many2one("sign.request", string="Sign request",
+                                      ondelete="restrict", copy=False)
+    sign_template_id = fields.Many2one("sign.template", string="Agreement",
+                                       ondelete="restrict", copy=False)
+    contract_sent_on = fields.Datetime()
+    contract_signed_on = fields.Datetime()
+    contract_completed_on = fields.Datetime(
+        string="Sign request fully completed", readonly=True, copy=False)
+    setup_email_sent_at = fields.Datetime(readonly=True, copy=False)
+    setup_email_message_id = fields.Char(readonly=True, copy=False)
+    home_base_tag_issue = fields.Text(
+        string="Home-base tag issue", readonly=True, copy=False,
+        help="Set when city/province tags could not be applied. Correct the "
+             "structured home city/province; never invent a location.")
+
+    coi_request_sent_at = fields.Datetime(readonly=True, copy=False)
+    coi_request_sent_by = fields.Many2one(
+        "res.users", readonly=True, copy=False)
+    coi_request_message_id = fields.Char(readonly=True, copy=False)
+    coi_request_last_subject = fields.Char(readonly=True, copy=False)
+    coi_request_count = fields.Integer(
+        default=0, readonly=True, copy=False,
+        help="How many times the insurer-direct COI request was sent.")
+    coi_min_auto_liability = fields.Float(
+        string="Review threshold — auto liability",
+        compute="_compute_review_thresholds")
+    coi_min_cargo = fields.Float(
+        string="Review threshold — cargo",
+        compute="_compute_review_thresholds")
+
+    approved_on = fields.Datetime(readonly=True, copy=False)
+    approved_by = fields.Many2one("res.users", readonly=True, copy=False)
+
+    missing_initial = fields.Text(compute="_compute_missing")
+    missing_qualification = fields.Text(compute="_compute_missing")
+    missing_contract = fields.Text(compute="_compute_missing")
+    missing_verification = fields.Text(
+        string="Documents not yet reviewed",
+        compute="_compute_missing",
+        help="A file that was merely received is not a reviewed document. "
+             "Final approval needs every required document VERIFIED.")
+    licence_current = fields.Boolean(compute="_compute_missing")
+    can_approve = fields.Boolean(compute="_compute_missing")
+
+    # ------------------------------------------------------------------
+    # completion
+    # ------------------------------------------------------------------
+    def _required_types(self):
+        """The document types this application must have, by stage bucket.
+
+        Conditional rules live here, in one place, so the form and the
+        server-side gate can never disagree:
+          * a sole proprietor is not asked for corporate registration;
+          * a photo set is always required (front/rear/both sides/interior).
+        """
+        self.ensure_one()
+        initial = ["cvor", "coi_applicant", "photo_front", "photo_rear",
+                   "photo_left", "photo_right", "photo_cargo_interior"]
+        if not self.is_sole_proprietor:
+            initial.append("business_registration")
+        return {
+            "initial": initial,
+            "qualification": ["licence_front", "licence_back", "coi_insurer"],
+            "contract": ["signed_agreement"],
+        }
+
+    def _blocking(self, bucket):
+        self.ensure_one()
+        have = self.document_ids.filtered(
+            lambda d: d.status in ("received", "verified")).mapped(
+                "document_type")
+        return [t for t in self._required_types()[bucket] if t not in have]
+
+    def _verified_missing(self, bucket):
+        """Types that are present but not yet VERIFIED by a reviewer."""
+        self.ensure_one()
+        have = self.document_ids.filtered(
+            lambda d: d.status == "verified").mapped("document_type")
+        return [t for t in self._required_types()[bucket] if t not in have]
+
+    def _label(self, types):
+        labels = dict(DOCUMENT_TYPES)
+        return ", ".join(labels.get(t, t) for t in types)
+
+    @api.depends("vehicle_type", "trailer_ownership", "trailer_type",
+                 "trailer_length_ft", "cargo_body_type", "payload_lbs",
+                 "pallet_capacity", "box_length_ft", "cargo_width_in",
+                 "cargo_height_in", "door_width_in", "door_clearance_in",
+                 "liftgate", "liftgate_capacity_lb",
+                 "liftgate_platform_length_in", "liftgate_platform_width_in",
+                 "dock_height_capable", "has_reefer",
+                 "reefer_temperature_range", "equipment_provided",
+                 "equipment_data_confirmed")
+    def _compute_equipment(self):
+        for app in self:
+            missing = []
+            provided = app.equipment_provided or {}
+
+            def has(field):
+                if app.equipment_data_confirmed:
+                    return bool(app[field]) or field in provided
+                return bool(app[field]) or bool(provided.get(field))
+
+            def need(field):
+                if not has(field):
+                    missing.append(EQUIPMENT_LABELS[field])
+
+            vehicle = app.vehicle_type
+            if vehicle in ("cargo_van", "straight"):
+                need("cargo_body_type")
+                need("payload_lbs")
+                need("pallet_capacity")
+                need("box_length_ft")
+                need("cargo_width_in")
+                need("cargo_height_in")
+                need("door_width_in")
+                need("door_clearance_in")
+                need("dock_height_capable")
+                need("liftgate")
+                if app.liftgate == "yes":
+                    need("liftgate_capacity_lb")
+                    need("liftgate_platform_length_in")
+                    need("liftgate_platform_width_in")
+                if app.cargo_body_type in ("reefer", "both") \
+                        or app.has_reefer:
+                    need("reefer_temperature_range")
+            elif vehicle == "tractor":
+                if app.trailer_ownership == "own":
+                    # These are the specs of the actual supplied trailer.
+                    need("trailer_type")
+                    need("trailer_length_ft")
+                    need("cargo_body_type")
+                    need("payload_lbs")
+                    need("pallet_capacity")
+                    need("box_length_ft")
+                    need("cargo_width_in")
+                    need("cargo_height_in")
+                    need("door_width_in")
+                    need("door_clearance_in")
+                    need("dock_height_capable")
+                    need("liftgate")
+                    if app.liftgate == "yes":
+                        need("liftgate_capacity_lb")
+                        need("liftgate_platform_length_in")
+                        need("liftgate_platform_width_in")
+                    if app.cargo_body_type in ("reefer", "both") \
+                            or app.has_reefer:
+                        need("reefer_temperature_range")
+                elif app.trailer_ownership == "power_only":
+                    # The assigned trailer supplies capacity. Never demand
+                    # cargo numbers from the power unit.
+                    pass
+                else:
+                    missing.append(EQUIPMENT_LABELS["trailer_type"])
+            else:
+                missing.append(_("Vehicle type"))
+            app.equipment_missing = ", ".join(missing) or False
+            app.equipment_complete = not missing
+
+    def _compute_review_thresholds(self):
+        icp = self.env["ir.config_parameter"].sudo()
+        auto = icp.get_param(
+            "prema_owner_operator.coi_min_auto_liability") or 0.0
+        cargo = icp.get_param(
+            "prema_owner_operator.coi_min_cargo") or 0.0
+        for app in self:
+            app.coi_min_auto_liability = float(auto)
+            app.coi_min_cargo = float(cargo)
+
+    @api.depends("document_ids.status", "document_ids.document_type",
+                 "is_sole_proprietor", "operator_id.compliance_ok",
+                 "contract_signed_on", "fleet_vehicle_id",
+                 "licence_expiry", "licence_class", "equipment_complete")
+    def _compute_missing(self):
+        today = fields.Date.context_today(self)
+        for app in self:
+            ini = app._blocking("initial")
+            qual = app._blocking("qualification")
+            con = app._blocking("contract")
+            app.missing_initial = app._label(ini) or False
+            app.missing_qualification = app._label(qual) or False
+            app.missing_contract = app._label(con) or False
+            unverified = []
+            for bucket in ("initial", "qualification", "contract"):
+                for doc_type in app._verified_missing(bucket):
+                    if doc_type not in unverified:
+                        unverified.append(doc_type)
+            app.missing_verification = app._label(unverified) or False
+            app.licence_current = bool(
+                app.licence_class and app.licence_expiry
+                and app.licence_expiry >= today)
+            app.can_approve = bool(
+                not unverified and app.licence_current
+                and app.contract_signed_on
+                and app.equipment_complete
+                and app.operator_id and app.operator_id.compliance_ok
+                and not app.fleet_vehicle_id
+                and app.state not in ("rejected",))
+            # licence fields live on the application, not in the checklist
+            if app.licence_class and app.licence_expiry:
+                app.missing_qualification = app.missing_qualification or False
+            else:
+                extra = _("driver licence class and expiry")
+                app.missing_qualification = ", ".join(
+                    x for x in (app.missing_qualification, extra) if x)
+
+    # ------------------------------------------------------------------
+    # form submission (public)
+    # ------------------------------------------------------------------
+    @api.model
+    def _create_from_public(self, vals):
+        """Create application + applicant + checklist in ONE transaction.
+
+        The only supported entry point for a website submission. Access is
+        public by necessity, so only ``SUBMISSION_FIELDS`` are accepted and
+        every record is created after validation, never before.
+        """
+        data = {k: v for k, v in vals.items() if k in SUBMISSION_FIELDS}
+        notes = (vals.get("applicant_notes") or "").strip()
+        missing = [field for field in REQUIRED_INTERNAL
+                   if not data.get(field)]
+        if missing:
+            labels = [
+                self._fields[f].string for f in missing
+                if f in self._fields]
+            raise ValidationError(_(
+                "Please complete: %s.") % ", ".join(labels))
+        email = (data.get("email") or "").strip()
+        if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
+            raise ValidationError(
+                _("That email address does not look valid."))
+        cvor = (data.get("cvor_number") or "").strip()
+        if cvor and not re.match(r"^\d{3}-\d{3}-\d{3}$", cvor):
+            raise ValidationError(
+                _("CVOR must contain exactly 9 digits (###-###-###)."))
+        if not (data.get("home_city") or "").strip() \
+                or not (data.get("home_province") or "").strip():
+            raise ValidationError(
+                _("Please give your home city and province."))
+        job = self._public_job()
+        if not job:
+            raise ValidationError(
+                _("The owner-operator position is not open right now."))
+
+        # Odoo 18 requires a candidate on every applicant; the candidate owns
+        # the partner. We keep THAT partner explicitly rather than looking one
+        # up by email later.
+        candidate = self.env["hr.candidate"].sudo().create({
+            "partner_name": data["contact_name"],
+            "email_from": data["email"],
+            "company_id": job.company_id.id,
+        })
+        applicant = self.env["hr.applicant"].sudo().create({
+            "candidate_id": candidate.id,
+            "job_id": job.id,
+            "partner_name": data["contact_name"],
+            "email_from": data["email"],
+            "partner_phone": data.get("phone") or False,
+            "applicant_notes": notes or False,
+            "company_id": job.company_id.id,
+        })
+        # hr.applicant.create() already builds the onboarding record for the
+        # owner-operator job. REUSE it — creating another here would give the
+        # applicant two applications and break the reply/backfill guarantees.
+        app = (applicant.owner_operator_application_id
+               or applicant.owner_operator_application_ids[:1])
+        if not app:
+            app = self.sudo().create({
+                "hr_applicant_id": applicant.id,
+                "partner_id": applicant.partner_id.id or False,
+                "company_id": job.company_id.id,
+                "contact_name": data["contact_name"],
+                "email": data["email"],
+                "phone": data.get("phone") or False,
+            })
+        else:
+            app.sudo().write({
+                "partner_id":
+                    app.partner_id.id or applicant.partner_id.id or False,
+                "company_id": app.company_id.id or job.company_id.id,
+                "contact_name": app.contact_name or data["contact_name"],
+                "email": app.email or data["email"],
+                "phone": app.phone or data.get("phone") or False,
+            })
+        app.name = "OO-%06d" % app.id
+        app.apply_submission_data(vals)
+        app._ensure_checklist()
+        app.message_post(body=_("Application received from the website."),
+                         subtype_xmlid="mail.mt_note")
+        return app
+
+    def apply_submission_data(self, vals, only_empty=False):
+        """Write validated public answers, deriving the legacy roll-ups.
+
+        ``only_empty`` is the audit backfill mode: it never overwrites a value
+        a reviewer has already corrected.
+        """
+        self.ensure_one()
+        vals = dict(vals)
+        supplied_type = vals.get("vehicle_type") or self.vehicle_type
+        supplied_trailer = vals.get("trailer_ownership") \
+            or self.trailer_ownership
+        cargo_fields = (
+            "cargo_body_type", "payload_lbs", "pallet_capacity",
+            "box_length_ft", "cargo_width_in", "cargo_height_in",
+            "door_width_in", "door_clearance_in", "liftgate",
+            "liftgate_capacity_lb", "liftgate_platform_length_in",
+            "liftgate_platform_width_in", "dock_height_capable",
+            "reefer_temperature_range",
+        )
+        if supplied_type == "tractor" and supplied_trailer == "power_only":
+            # A power-only unit has no cargo body of its own. The assigned
+            # trailer supplies capacity; never store it on the tractor.
+            for field in cargo_fields:
+                vals.pop(field, None)
+        elif supplied_type in ("cargo_van", "straight"):
+            for field in (
+                    "trailer_ownership", "trailer_type",
+                    "trailer_length_ft", "trailer_unit"):
+                vals.pop(field, None)
+        write_vals = {}
+
+        def put(field, value):
+            if field not in self._fields:
+                return
+            if value is None or value == "":
+                return
+            if only_empty and self[field]:
+                return
+            if self[field] == value:
+                return
+            write_vals[field] = value
+
+        for key, value in vals.items():
+            if key in SUBMISSION_FIELDS:
+                put(key, value)
+
+        raw_plate = write_vals.get("truck_plate_jurisdiction")
+        if raw_plate:
+            plate_no, jurisdiction = split_plate_jurisdiction(raw_plate)
+            if plate_no and "license_plate" not in write_vals:
+                put("license_plate", plate_no[:32])
+            if jurisdiction and "plate_jurisdiction" not in write_vals:
+                put("plate_jurisdiction", jurisdiction[:64])
+
+        codes = vals.get("service_province_codes") or []
+        if codes:
+            states = self.env["res.country.state"].search([
+                ("country_id.code", "=", "CA"), ("code", "in", codes)])
+            if states and set(states.ids) != set(self.service_province_ids.ids):
+                write_vals["service_province_ids"] = [(6, 0, states.ids)]
+
+        area_codes = vals.get("preferred_service_area_codes") or []
+        if not area_codes and vals.get("preferred_service_area"):
+            legacy_label = vals["preferred_service_area"]
+            area = self.env["prema.owner.operator.service.area"].search(
+                [("name", "=", legacy_label)], limit=1)
+            if area:
+                area_codes = [area.code]
+        if area_codes:
+            areas = self.env["prema.owner.operator.service.area"].search(
+                [("code", "in", area_codes)])
+            if areas and (not only_empty
+                          or not self.preferred_service_area_ids):
+                write_vals["preferred_service_area_ids"] = [
+                    (6, 0, areas.ids)]
+                write_vals["preferred_service_area"] = \
+                    self._fields["preferred_service_area"].convert_to_cache(
+                        areas[0].name, self)
+                write_vals["preferred_lanes"] = ", ".join(areas.mapped("name"))
+
+        pref_codes = vals.get("work_preference_codes") or []
+        if not pref_codes and vals.get("work_preference"):
+            legacy_code = vals["work_preference"]
+            pref = self.env["prema.owner.operator.work.preference"].search(
+                [("code", "=", legacy_code)], limit=1)
+            if pref:
+                pref_codes = [pref.code]
+        if pref_codes:
+            prefs = self.env["prema.owner.operator.work.preference"].search(
+                [("code", "in", pref_codes)])
+            if prefs and (not only_empty or not self.work_preference_ids):
+                write_vals["work_preference_ids"] = [(6, 0, prefs.ids)]
+                write_vals["work_preference"] = self._fields[
+                    "work_preference"].convert_to_cache(
+                        prefs[0].code, self)
+
+        provided = dict(self.equipment_provided or {})
+        provided.update(vals.get("equipment_provided") or {})
+        if provided != (self.equipment_provided or {}):
+            write_vals["equipment_provided"] = provided
+
+        business = write_vals.get(
+            "business_structure", self.business_structure)
+        if business:
+            put("is_sole_proprietor", business == "sole")
+
+        vehicle = write_vals.get("vehicle_type", self.vehicle_type)
+        trailer = write_vals.get("trailer_type", self.trailer_type)
+        cargo = write_vals.get("cargo_body_type", self.cargo_body_type)
+        liftgate = write_vals.get("liftgate", self.liftgate)
+        air_ride = write_vals.get("air_ride", self.air_ride)
+        if vehicle == "tractor":
+            put("has_reefer", trailer == "reefer")
+            put("has_liftgate", False)
+            put("equipment_type", {
+                "dry": "dry_van", "reefer": "reefer",
+                "flatbed": "flatbed"}.get(trailer, "other"))
+        elif vehicle in ("cargo_van", "straight"):
+            put("has_reefer", cargo in ("reefer", "both"))
+            put("has_liftgate", liftgate == "yes")
+            put("equipment_type",
+                "straight_truck" if vehicle == "straight" else "other")
+        if air_ride:
+            put("has_air_ride", air_ride == "yes")
+
+        area = write_vals.get(
+            "preferred_service_area", self.preferred_service_area)
+        if area and not area_codes:
+            put("preferred_lanes", area)
+        start = write_vals.get(
+            "available_start_date", self.available_start_date)
+        if start:
+            put("availability",
+                start.isoformat() if hasattr(start, "isoformat") else str(start))
+        if "cvor_number" in write_vals \
+                and self.cvor_verification_status == "not_provided":
+            write_vals["cvor_verification_status"] = "pending"
+
+        if write_vals.get("whatsapp_consent_granted"):
+            write_vals["whatsapp_consent_version"] = (
+                self.env["ir.config_parameter"].sudo().get_param(
+                    "prema_owner_operator.whatsapp_consent_version") or "1")
+
+        if write_vals:
+            self.write(write_vals)
+        return bool(write_vals)
+
+    # ------------------------------------------------------------------
+    # notification preference audit
+    # ------------------------------------------------------------------
+    NOTIFICATION_FIELDS = {
+        "load_notification_channel", "load_notification_email",
+        "whatsapp_number", "whatsapp_consent_granted",
+        "whatsapp_consent_text", "whatsapp_consent_version",
+        "whatsapp_consent_at", "load_notification_opt_out",
+        "load_notification_opt_out_at",
+    }
+
+    def write(self, vals):
+        tracked = bool(self.NOTIFICATION_FIELDS & set(vals))
+        before = {}
+        if tracked:
+            before = {
+                app.id: {
+                    f: app[f] for f in self.NOTIFICATION_FIELDS
+                } for app in self
+            }
+        res = super().write(vals)
+        if tracked and not self.env.context.get("oo_skip_notification_log"):
+            for app in self:
+                app._log_notification_change(before.get(app.id, {}))
+        return res
+
+    def _log_notification_change(self, before):
+        self.ensure_one()
+        after = {f: self[f] for f in self.NOTIFICATION_FIELDS}
+        if before == after:
+            return
+        self.env["prema.owner.operator.notification.log"].sudo().create({
+            "application_id": self.id,
+            "user_id": self.env.user.id,
+            "channel": self.load_notification_channel,
+            "whatsapp_number": self.whatsapp_number,
+            "email": self.load_notification_email,
+            "consent_given": self.whatsapp_consent_granted,
+            "consent_text": self.whatsapp_consent_text,
+            "consent_version": self.whatsapp_consent_version,
+            "opt_out": self.load_notification_opt_out,
+            "note": _("Preference changed from public form or backend."),
+        })
+
+    # ------------------------------------------------------------------
+    # stage transitions and the insurer-direct COI request
+    # ------------------------------------------------------------------
+    def _stage_by_name(self, name):
+        self.ensure_one()
+        job = self.hr_applicant_id.job_id or self._public_job()
+        if not job:
+            return self.env["hr.recruitment.stage"]
+        return self.env["hr.recruitment.stage"].search(
+            [("name", "=", name), ("job_ids", "in", job.id)], limit=1)
+
+    def _on_stage_change(self, old_stage, new_stage):
+        """Called from hr.applicant.write after a deliberate stage move.
+
+        Entering Authority & Insurance Review sends the COI request. The later
+        stages are guarded here as well as in action_advance, so a direct
+        stage-bar move cannot skip the compliance review, signature or Fleet
+        activation. Automated/migration moves use the skip context.
+        """
+        self.ensure_one()
+        if self.env.context.get("owner_operator_skip_stage_hook"):
+            return False
+        if not new_stage:
+            return False
+        if old_stage and old_stage.id == new_stage.id:
+            return False
+        if new_stage.name == STAGE_AUTHORITY:
+            if self.coi_request_sent_at:
+                return False
+            self._send_coi_request()
+            return True
+        if new_stage.name in (STAGE_CONTRACT, STAGE_SIGNED):
+            self._guard_transition(new_stage)
+            return False
+        if new_stage.name == STAGE_APPROVED:
+            if not self.fleet_vehicle_id:
+                raise UserError(_(
+                    "Use “Approve → Fleet” to reach Approved — Ready for "
+                    "Dispatch. A stage move alone cannot activate equipment."))
+            self._guard_transition(new_stage)
+            return False
+        return False
+
+    def _send_coi_request(self):
+        self.ensure_one()
+        if not (self.business_name or "").strip():
+            raise UserError(_(
+                "The insured’s legal business name is missing; the COI "
+                "request cannot be sent."))
+        template = self.env.ref(
+            "prema_owner_operator.mail_template_coi_request",
+            raise_if_not_found=False)
+        if not template:
+            raise UserError(_("The COI request template is missing."))
+        mail_id = template.sudo().send_mail(self.id, force_send=False)
+        mail = self.env["mail.mail"].sudo().browse(mail_id)
+        self.sudo().write({
+            "coi_request_sent_at": fields.Datetime.now(),
+            "coi_request_sent_by": self.env.user.id,
+            "coi_request_message_id": mail.message_id or False,
+            "coi_request_last_subject": mail.subject,
+            "coi_request_count": (self.coi_request_count or 0) + 1,
+        })
+        self.message_post(
+            body=_(
+                "Insurer-direct COI request sent to %(email)s "
+                "(subject: %(subject)s).") % {
+                    "email": self.email or "",
+                    "subject": mail.subject or "",
+                },
+            subtype_xmlid="mail.mt_note")
+        return mail
+
+    def action_resend_coi_request(self):
+        self.ensure_one()
+        mail = self._send_coi_request()
+        self.message_post(
+            body=_("COI request deliberately re-sent by %s.")
+            % self.env.user.name,
+            subtype_xmlid="mail.mt_note")
+        return True
+
+    @api.model
+    def _backfill_from_other_information(self):
+        """Replay saved “Other Information” notes into structured fields.
+
+        Repeat-safe: only empty fields are filled, the original note is left
+        untouched, and no email, signature or Fleet record is created.
+        """
+        job = self._public_job()
+        if not job:
+            return 0
+        updated = 0
+        applicants = self.env["hr.applicant"].sudo().search(
+            [("job_id", "=", job.id)])
+        for applicant in applicants:
+            app = applicant.owner_operator_application_id
+            if not app:
+                app = applicant.owner_operator_application_ids[:1]
+            if not app:
+                app = applicant._ensure_owner_application()
+            if not app:
+                continue
+            raw = {}
+            for message in applicant.message_ids:
+                raw.update(parse_other_information(message.body or ""))
+            if not raw:
+                continue
+            vals, _errors = normalise_public(raw, strict=False)
+            if app.apply_submission_data(vals, only_empty=True):
+                updated += 1
+        return updated
+
+    @api.model
+    def _public_job(self):
+        job_id = self.env["ir.config_parameter"].sudo().get_param(
+            "prema_owner_operator.job_id")
+        job = self.env["hr.job"].sudo().browse(
+            int(job_id)).exists() if job_id else self.env["hr.job"]
+        if not job:
+            job = self.env["hr.job"].sudo().search(
+                [("id", "=", 5)], limit=1)
+        return job if job and job.is_published else self.env["hr.job"]
+
+    def _ensure_checklist(self):
+        """Create one row per required type, idempotently."""
+        self.ensure_one()
+        Document = self.env["prema.owner.operator.document"].sudo()
+        have = self.document_ids.mapped("document_type")
+        types = [t for bucket in self._required_types().values()
+                 for t in bucket]
+        for doc_type in types:
+            if doc_type in have:
+                continue
+            Document.create({
+                "application_id": self.id,
+                "document_type": doc_type,
+                "source": "insurer" if doc_type == "coi_insurer" else "applicant",
+                "status": "pending",
+            })
+        # A requirement that no longer applies (a sole proprietor switching
+        # away from corporate registration) loses its PENDING row only — a
+        # document already received is never discarded.
+        stale = self.document_ids.filtered(
+            lambda d: d.status == "pending" and d.document_type not in types)
+        stale.sudo().unlink()
+        return True
+
+    # ------------------------------------------------------------------
+    # stage flow
+    # ------------------------------------------------------------------
+    def _job_stages(self):
+        """Odoo 18 links stages to jobs from the STAGE side (stage.job_ids);
+        hr.job has no stage_ids field."""
+        self.ensure_one()
+        job = self.hr_applicant_id.job_id
+        if not job:
+            return self.env["hr.recruitment.stage"]
+        return self.env["hr.recruitment.stage"].search(
+            [("job_ids", "in", job.id)]).sorted(
+                key=lambda s: (s.sequence, s.id))
+
+    def _next_stage(self):
+        self.ensure_one()
+        current = self.hr_applicant_id.stage_id
+        for stage in self._job_stages():
+            if stage.sequence > current.sequence:
+                return stage
+        return self.env["hr.recruitment.stage"]
+
+    def _guard_transition(self, target):
+        """Refuse to advance while the target stage's requirements are unmet.
+
+        Stage NAMES are the stable key: the pipeline was renumbered when
+        Equipment Verification and Initial Qualification left job 5, so a
+        sequence-number gate would silently skip checks.
+        """
+        self.ensure_one()
+        name = target.name
+        problems = []
+        if name == STAGE_AUTHORITY:
+            if self._blocking("initial"):
+                problems.append(_("initial uploads: %s")
+                                % self._label(self._blocking("initial")))
+        if name in (STAGE_CONTRACT, STAGE_SIGNED, STAGE_APPROVED):
+            missing_initial = self._verified_missing("initial")
+            missing_qual = self._verified_missing("qualification")
+            if missing_initial:
+                problems.append(_("verified initial documents: %s")
+                                % self._label(missing_initial))
+            if missing_qual:
+                problems.append(_("verified qualification documents: %s")
+                                % self._label(missing_qual))
+            if not (self.licence_class and self.licence_expiry):
+                problems.append(_("driver licence class and expiry"))
+            if not self.licence_current:
+                problems.append(_(
+                    "a CURRENT driver licence (expiry has passed)"))
+            if not self.operator_id or not self.operator_id.compliance_ok:
+                problems.append(_(
+                    "a completed compliance review: operator authority "
+                    "verified and insurer-direct COI checked with coverage "
+                    "dates"))
+        if name in (STAGE_SIGNED, STAGE_APPROVED):
+            if self._blocking("contract") or not self.contract_signed_on:
+                problems.append(_("a completed signature"))
+        if name == STAGE_APPROVED:
+            unverified = []
+            for bucket in ("initial", "qualification", "contract"):
+                for doc_type in self._verified_missing(bucket):
+                    if doc_type not in unverified:
+                        unverified.append(doc_type)
+            if unverified:
+                problems.append(_("reviewed documents: %s")
+                                % self._label(unverified))
+            if not self._vin_clear():
+                problems.append(_("VIN conflict resolution"))
+            if not self.equipment_complete:
+                problems.append(_("dispatch-critical equipment data: %s")
+                                % (self.equipment_missing or ""))
+        if problems:
+            raise UserError(_(
+                "Cannot move to “%s” yet:\n• %s")
+                % (target.name, "\n• ".join(problems)))
+
+    def action_advance(self):
+        for app in self:
+            target = app._next_stage()
+            if not target:
+                raise UserError(_(
+                    "%s has no next stage: the job’s recruitment pipeline is "
+                    "not configured (or this is its last stage). Fix the job’s "
+                    "stages before advancing.") % app.name)
+            app._guard_transition(target)
+            if target.name == STAGE_APPROVED:
+                # Final activation is the Fleet hand-off, not a bare stage
+                # move. action_approve sets the stage itself.
+                app.action_approve()
+                continue
+            app.hr_applicant_id.sudo().write({"stage_id": target.id})
+            app._sync_state(target)
+        return True
+
+    def _sync_state(self, stage):
+        self.ensure_one()
+        mapping = {
+            STAGE_NEW: "submitted",
+            STAGE_AUTHORITY: "authority_review",
+            STAGE_CONTRACT: "contract",
+            STAGE_SIGNED: "signed",
+            STAGE_APPROVED: "approved",
+        }
+        state = mapping.get(stage.name)
+        if state is None:
+            seq = stage.sequence
+            state = "submitted"
+            if seq >= 1:
+                state = "qualifying"
+            if seq >= 2:
+                state = "contract"
+            if seq >= 3:
+                state = "signed"
+            if seq >= 4:
+                state = "approved"
+        self.write({"state": state})
+
+    # ------------------------------------------------------------------
+    # manual CVOR review (formatting is not verification)
+    # ------------------------------------------------------------------
+    def action_verify_cvor(self):
+        self.write({"cvor_verification_status": "verified"})
+        return True
+
+    def action_reject_cvor(self):
+        self.write({"cvor_verification_status": "rejected"})
+        return True
+
+    # ------------------------------------------------------------------
+    # contract (Odoo Sign) — blocked while no approved template exists
+    # ------------------------------------------------------------------
+    @api.model
+    def _agreement_template(self):
+        """The configured agreement template, ONLY if it is active.
+
+        Returns an empty recordset when nothing usable is configured — the
+        caller must then refuse to send. This module never activates an
+        unrelated template and never invents contract text.
+        """
+        icp = self.env["ir.config_parameter"].sudo()
+        tmpl_id = icp.get_param("prema_owner_operator.agreement_template_id")
+        tmpl = self.env["sign.template"].sudo().browse(
+            int(tmpl_id)).exists() if tmpl_id else self.env["sign.template"]
+        return tmpl if tmpl and tmpl.active else self.env["sign.template"]
+
+    def action_send_contract(self):
+        self.ensure_one()
+        if self.sign_request_id:
+            return self.sign_request_id
+        tmpl = self._agreement_template()
+        if not tmpl:
+            raise UserError(_(
+                "No approved owner-operator agreement/NDA template is "
+                "configured for Odoo Sign. Upload and activate the approved "
+                "template and set prema_owner_operator.agreement_template_id "
+                "— contract sending and final approval stay blocked until "
+                "then. No contract text is generated by this system."))
+        if not self.partner_id:
+            raise UserError(_("The application has no contact to sign."))
+        request = self.env["sign.request"].sudo().create({
+            "template_id": tmpl.id,
+            "reference": self.name,
+            "subject": _("Owner-Operator Agreement — %s") % self.name,
+            "request_item_ids": [(0, 0, {
+                "partner_id": self.partner_id.id,
+                "role_id": tmpl.sign_item_ids[:1].role_id.id,
+            })],
+        })
+        self.write({"sign_request_id": request.id,
+                    "sign_template_id": tmpl.id,
+                    "contract_sent_on": fields.Datetime.now()})
+        self.message_post(body=_("Agreement sent for signature."),
+                          subtype_xmlid="mail.mt_note")
+        return request
+
+    def _completed_signature_attachment(self):
+        """The genuine completed PDF, or an empty recordset."""
+        self.ensure_one()
+        request = self.sign_request_id
+        if not request:
+            return self.env["ir.attachment"]
+        attachment = request.completed_document_attachment_ids[:1]
+        if attachment:
+            return attachment
+        if request.completed_document:
+            return self.env["ir.attachment"].sudo().create({
+                "name": "%s-signed.pdf" % (self.name or "agreement"),
+                "datas": request.completed_document,
+                "mimetype": "application/pdf",
+                "res_model": "sign.request",
+                "res_id": request.id,
+            })
+        return self.env["ir.attachment"]
+
+    def _signature_is_genuine_and_complete(self):
+        self.ensure_one()
+        request = self.sign_request_id
+        if not request or request.state != "signed" or request.nb_wait:
+            return False
+        items = request.request_item_ids
+        if not items or any(item.state != "completed" for item in items):
+            return False
+        # The application's own contact must be one of the required signers.
+        if self.partner_id and self.partner_id not in items.partner_id:
+            return False
+        if not self._completed_signature_attachment():
+            return False
+        return True
+
+    def _move_to_signed_stage(self):
+        self.ensure_one()
+        signed = self._stage_by_name(STAGE_SIGNED)
+        applicant = self.hr_applicant_id
+        if not signed or not applicant:
+            return False
+        current = applicant.stage_id
+        if current and current.sequence >= signed.sequence:
+            return False
+        applicant.sudo().with_context(
+            owner_operator_skip_stage_hook=True).write(
+                {"stage_id": signed.id})
+        self._sync_state(signed)
+        return True
+
+    def _apply_home_base_tags(self):
+        """Append city + canonical province tags, preserving all others.
+
+        Structured home city/province remain the source of truth; tags are a
+        filter aid only and never a distance calculation.
+        """
+        self.ensure_one()
+        city = re.sub(r"\s+", " ", (self.home_city or "")).strip()
+        province = re.sub(r"\s+", " ", (self.home_province or "")).strip()
+        applicant = self.hr_applicant_id
+        if not applicant:
+            return False
+        if not city or not province:
+            issue = _(
+                "Home-base tags not applied: the structured home city and "
+                "province are incomplete. Correct them; do not invent a "
+                "location.")
+            self.write({"home_base_tag_issue": issue})
+            self.message_post(body=issue, subtype_xmlid="mail.mt_note")
+            return False
+        code = province.upper()
+        if code not in PROVINCES:
+            code = next(
+                (key for key, name in PROVINCES.items()
+                 if name.lower() == province.lower()), None)
+        if not code:
+            issue = _(
+                "Home-base tags not applied: “%s” is not a recognised "
+                "Canadian province or territory.") % province
+            self.write({"home_base_tag_issue": issue})
+            self.message_post(body=issue, subtype_xmlid="mail.mt_note")
+            return False
+        Category = self.env["hr.applicant.category"].sudo()
+
+        def tag_for(value):
+            found = Category.search([("name", "=ilike", value)], limit=1)
+            return found or Category.create({"name": value})
+
+        city_tag = tag_for(city.title())
+        province_tag = tag_for(code)
+        applicant.sudo().write({"categ_ids": [
+            (4, city_tag.id), (4, province_tag.id)]})
+        self.write({"home_base_tag_issue": False})
+        self.message_post(
+            body=_("Home-base tags applied: %(city)s, %(province)s.")
+            % {"city": city_tag.name, "province": province_tag.name},
+            subtype_xmlid="mail.mt_note")
+        return True
+
+    def _send_account_setup_email(self):
+        self.ensure_one()
+        if self.setup_email_sent_at:
+            return False
+        template = self.env.ref(
+            "prema_owner_operator.mail_template_account_setup",
+            raise_if_not_found=False)
+        if not template:
+            return False
+        mail_id = template.sudo().send_mail(self.id, force_send=False)
+        mail = self.env["mail.mail"].sudo().browse(mail_id)
+        self.write({
+            "setup_email_sent_at": fields.Datetime.now(),
+            "setup_email_message_id": mail.message_id or False,
+        })
+        self.message_post(
+            body=_("Account-setup acknowledgement sent."),
+            subtype_xmlid="mail.mt_note")
+        return True
+
+    @api.model
+    def _cron_sync_signatures(self):
+        """Advance genuine, fully-completed Sign requests exactly once.
+
+        Everything is verified from the Sign request itself: fully-signed
+        state, no waiting signer, every item completed, the application
+        contact among the required signers, and a completed PDF. Duplicate
+        completion events are absorbed by contract_signed_on.
+        """
+        for app in self.search([("sign_request_id", "!=", False),
+                                ("contract_signed_on", "=", False)]):
+            if not app._signature_is_genuine_and_complete():
+                continue
+            attachment = app._completed_signature_attachment()
+            now = fields.Datetime.now()
+            doc = app.document_ids.filtered(
+                lambda d: d.document_type == "signed_agreement")[:1]
+            if not doc:
+                doc = self.env["prema.owner.operator.document"].sudo().create({
+                    "application_id": app.id,
+                    "document_type": "signed_agreement",
+                    "source": "private",
+                })
+            if doc:
+                doc.sudo().write({
+                    "status": "received",
+                    "source": "private",
+                    "attachment_id": attachment.id,
+                    "received_on": now,
+                    "notes": _("Completed via Odoo Sign request %s.")
+                    % app.sign_request_id.id,
+                })
+            app.write({
+                "contract_signed_on": now,
+                "contract_completed_on": now,
+            })
+            app._move_to_signed_stage()
+            app._apply_home_base_tags()
+            app._send_account_setup_email()
+            app.message_post(
+                body=_("Odoo Sign request %s completed; signed PDF linked.")
+                % app.sign_request_id.id,
+                subtype_xmlid="mail.mt_note")
+        return True
+
+    # ------------------------------------------------------------------
+    # final approval → Fleet hand-off (idempotent, transactional)
+    # ------------------------------------------------------------------
+    def _vin_clear(self):
+        """True when no OTHER application owns this VIN and no existing
+        vehicle belongs to someone else.
+
+        The intake form deliberately collects no VIN, so an empty VIN is not
+        a conflict — there is simply nothing to match.
+        """
+        self.ensure_one()
+        vin = _normalise_vin(self.vin)
+        if not vin:
+            return True
+        Vehicle = self.env["fleet.vehicle"].sudo()
+        for vehicle in Vehicle.search([("vin_sn", "!=", False)]):
+            if _normalise_vin(vehicle.vin_sn) != vin:
+                continue
+            if self.fleet_vehicle_id and vehicle.id == self.fleet_vehicle_id.id:
+                return True
+            # an existing vehicle is a conflict unless it is already ours
+            if vehicle.operator_id and self.operator_id \
+                    and vehicle.operator_id.id == self.operator_id.id:
+                return True
+            return False
+        return True
+
+    def _resolve_vehicle_model(self):
+        """fleet.vehicle.model_id is mandatory, so the applicant's stated
+        make/model becomes a catalogue entry if the fleet has never seen it.
+        Nothing is guessed: the record is named exactly what they wrote."""
+        self.ensure_one()
+        Model = self.env["fleet.vehicle.model"].sudo()
+        name = (self.equipment_model or "").strip()
+        if not name:
+            name = "Owner-operator equipment"
+        model = Model.search([("name", "=", name)], limit=1)
+        if model:
+            return model
+        # brand_id is mandatory too: match the brand the applicant named, and
+        # only fall back to a neutral one when the text does not name a known
+        # brand.
+        Brand = self.env["fleet.vehicle.model.brand"].sudo()
+        brand = Brand
+        low = name.lower()
+        for candidate in Brand.search([]):
+            if candidate.name and candidate.name.lower() in low:
+                brand = candidate
+                break
+        if not brand:
+            brand = Brand.search([("name", "=", "Owner-operator")], limit=1)
+        if not brand:
+            brand = Brand.create({"name": "Owner-operator"})
+        return Model.create({"name": name, "brand_id": brand.id})
+
+    def _operator_vals(self):
+        self.ensure_one()
+        return {
+            "partner_id": self.partner_id.id,
+            "company_id": self.company_id.id,
+            "is_sole_proprietor": self.is_sole_proprietor,
+            "business_number": self.business_number,
+            "home_city": self.home_city,
+            "home_province": self.home_province,
+            "mc_number": self.mc_number,
+            "usdot_number": self.usdot_number,
+            "cvor_number": self.cvor_number,
+            "insurance_agent_name": self.insurance_agent_name,
+            "insurance_agent_email": self.insurance_agent_email,
+            "authority_state": self.authority_state,
+        }
+
+    def _open_operator(self, operator):
+        return {
+            "type": "ir.actions.act_window",
+            "name": _("Operator profile"),
+            "res_model": "prema.owner.operator",
+            "res_id": operator.id,
+            "view_mode": "form",
+            "target": "current",
+        }
+
+    def action_prepare_operator(self):
+        """Create/link the compliance profile WITHOUT approving dispatch.
+
+        The compliance review needs a place to verify authority and the
+        insurer-direct COI. Before this action the application's operator link
+        was read-only and the profile was only created by approval itself,
+        which left the approval gate unreachable. This creates or links the
+        profile and opens it; it does not verify anything, create a vehicle or
+        change the stage.
+        """
+        self.ensure_one()
+        if self.operator_id:
+            return self._open_operator(self.operator_id)
+        if not self.partner_id:
+            raise UserError(_("The application has no contact to link."))
+        Operator = self.env["prema.owner.operator"].sudo()
+        operator = Operator.search(
+            [("partner_id", "=", self.partner_id.id)], limit=1)
+        if not operator:
+            operator = Operator.create(self._operator_vals())
+        self.write({"operator_id": operator.id})
+        self.message_post(
+            body=_("Compliance profile created/linked for review."),
+            subtype_xmlid="mail.mt_note")
+        return self._open_operator(operator)
+
+    def action_approve(self):
+        """Create/link the operator profile and its fleet.vehicle.
+
+        Idempotent: a second call returns the SAME vehicle because the link
+        is stored on this application. A VIN/ownership conflict raises for
+        manual review instead of merging records.
+        """
+        self.ensure_one()
+        if self.fleet_vehicle_id:
+            approved = self._stage_by_name(STAGE_APPROVED)
+            if approved and self.hr_applicant_id \
+                    and self.hr_applicant_id.stage_id.id != approved.id:
+                self.hr_applicant_id.sudo().with_context(
+                    owner_operator_skip_stage_hook=True).write(
+                        {"stage_id": approved.id})
+                self._sync_state(approved)
+            return self.fleet_vehicle_id
+        if not self.can_approve:
+            raise UserError(_(
+                "This application cannot be approved yet — missing documents, "
+                "signature or compliance."))
+        if not self._vin_clear():
+            raise UserError(_(
+                "This VIN is already attached to other equipment or another "
+                "owner-operator. Resolve the conflict manually before "
+                "approval — the system will not merge vehicles."))
+
+        Operator = self.env["prema.owner.operator"].sudo()
+        operator = self.operator_id
+        if not operator:
+            operator = Operator.create(self._operator_vals())
+            self.operator_id = operator.id
+        else:
+            updates = {}
+            for field in ("cvor_number", "insurance_agent_name",
+                          "insurance_agent_email", "home_city",
+                          "home_province"):
+                if not operator[field] and self[field]:
+                    updates[field] = self[field]
+            if updates:
+                operator.write(updates)
+        self.partner_id.sudo().write({"supplier_rank": 1})
+
+        ready = self.env["fleet.vehicle.state"].sudo().search(
+            [("name", "=", "Ready")], limit=1)
+        model = self._resolve_vehicle_model()
+        year = (self.truck_year or "").strip()
+        if year.isdigit() and "model_year" in model._fields \
+                and not model.model_year:
+            # model_year lives on the shared model; never overwrite a value.
+            model.write({"model_year": int(year)})
+        transmission = {
+            "automatic": "automatic", "manual": "manual",
+        }.get(self.transmission)
+        # x_box_interior_height_ft stores INCHES despite its _ft name; the
+        # application now collects inches directly. The legacy feet field is
+        # only converted for older records.
+        interior_height = self.cargo_height_in or (
+            self.box_height_ft * 12.0 if self.box_height_ft else 0.0)
+        vehicle_vals = {
+            "model_id": model.id,
+            "application_id": self.id,
+            "operator_id": operator.id,
+            "company_id": self.company_id.id,
+            "license_plate": self.license_plate,
+            "vin_sn": self.vin or False,
+            "home_city": self.home_city,
+            "home_province": self.home_province,
+            "driver_id": self.partner_id.id,
+            "x_operational_logistics": True,
+            "x_reefer": self.has_reefer,
+            "x_liftgate": self.has_liftgate,
+            "x_air_ride": self.has_air_ride,
+            "x_max_pallets": self.pallet_capacity or 0,
+            # Cargo payload — never GVWR.
+            "x_max_payload_lbs": self.payload_lbs or 0.0,
+            "x_cargo_box_length_ft": self.box_length_ft or 0.0,
+            "x_box_interior_height_ft": interior_height,
+            "x_overall_length_ft": self.overall_length_ft or 0.0,
+            "x_vehicle_height_ft": self.vehicle_height_ft or 0.0,
+            "x_door_clearance_in": self.door_clearance_in or 0.0,
+            "x_dock_height_in": self.dock_height_in or 0.0,
+            "x_current_odometer_km": self.odometer_km or 0.0,
+            "state_id": ready.id or False,
+        }
+        if transmission:
+            vehicle_vals["transmission"] = transmission
+        if "x_studio_dock_height" in self.env["fleet.vehicle"]._fields:
+            vehicle_vals["x_studio_dock_height"] = (
+                self.dock_height_capable == "yes")
+        if self.vehicle_type == "tractor":
+            # A power unit is not a cargo body. Trailer specifications stay on
+            # the application/trailer; never copy them onto the tractor.
+            for field in (
+                    "x_max_pallets", "x_max_payload_lbs",
+                    "x_cargo_box_length_ft", "x_box_interior_height_ft",
+                    "x_door_clearance_in", "x_dock_height_in",
+                    "x_studio_dock_height"):
+                vehicle_vals.pop(field, None)
+            vehicle_vals.update({
+                "x_reefer": self.trailer_type == "reefer",
+                "x_liftgate": False,
+            })
+        vehicle = self.env["fleet.vehicle"].sudo().create(vehicle_vals)
+        # Unit number: reuse the Studio field the fleet already uses; never
+        # create a second column for the same thing.
+        if self.unit_number and "x_studio_unit_number" in self.env[
+                "fleet.vehicle"]._fields:
+            vehicle.write({"x_studio_unit_number": self.unit_number})
+        self.write({"fleet_vehicle_id": vehicle.id,
+                    "approved_on": fields.Datetime.now(),
+                    "approved_by": self.env.user.id,
+                    "state": "approved"})
+        approved = self._stage_by_name(STAGE_APPROVED)
+        if approved and self.hr_applicant_id:
+            self.hr_applicant_id.sudo().with_context(
+                owner_operator_skip_stage_hook=True).write(
+                    {"stage_id": approved.id})
+            self._sync_state(approved)
+        self.message_post(
+            body=_("Approved — equipment %s handed to Fleet.")
+            % (vehicle.license_plate or vehicle.id),
+            subtype_xmlid="mail.mt_note")
+        return vehicle
+
+    # ------------------------------------------------------------------
+    # stage emails
+    # ------------------------------------------------------------------
+    def _send_stage_mail(self, stage):
+        self.ensure_one()
+        xmlid = self.env["ir.config_parameter"].sudo().get_param(
+            "prema_owner_operator.stage_mail_%s" % stage.sequence)
+        if not xmlid:
+            return False
+        tmpl = self.env.ref(xmlid, raise_if_not_found=False)
+        if tmpl:
+            tmpl.sudo().send_mail(self.id, force_send=False)
+        return True

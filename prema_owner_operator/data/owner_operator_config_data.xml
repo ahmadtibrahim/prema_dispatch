@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <data noupdate="1">
+        <!-- Display names match the legacy Selection labels so historical
+             single-value answers can be migrated without translation loss. -->
+        <record id="service_area_toronto_gta" model="prema.owner.operator.service.area">
+            <field name="name">Toronto / GTA</field>
+            <field name="code">toronto_gta</field>
+            <field name="sequence">10</field>
+        </record>
+        <record id="service_area_ontario_wide" model="prema.owner.operator.service.area">
+            <field name="name">Ontario wide</field>
+            <field name="code">ontario_wide</field>
+            <field name="sequence">20</field>
+        </record>
+        <record id="service_area_quebec" model="prema.owner.operator.service.area">
+            <field name="name">Quebec</field>
+            <field name="code">quebec</field>
+            <field name="sequence">30</field>
+        </record>
+        <record id="service_area_ontario_quebec" model="prema.owner.operator.service.area">
+            <field name="name">Ontario and Quebec</field>
+            <field name="code">ontario_quebec</field>
+            <field name="sequence">40</field>
+        </record>
+        <record id="service_area_canada_wide" model="prema.owner.operator.service.area">
+            <field name="name">Canada wide</field>
+            <field name="code">canada_wide</field>
+            <field name="sequence">50</field>
+        </record>
+        <record id="service_area_selected_provinces" model="prema.owner.operator.service.area">
+            <field name="name">Selected provinces</field>
+            <field name="code">selected_provinces</field>
+            <field name="sequence">60</field>
+        </record>
+
+        <record id="work_pref_local" model="prema.owner.operator.work.preference">
+            <field name="name">Local</field>
+            <field name="code">local</field>
+            <field name="sequence">10</field>
+        </record>
+        <record id="work_pref_regional" model="prema.owner.operator.work.preference">
+            <field name="name">Regional</field>
+            <field name="code">regional</field>
+            <field name="sequence">20</field>
+        </record>
+        <record id="work_pref_longhaul" model="prema.owner.operator.work.preference">
+            <field name="name">Long haul</field>
+            <field name="code">longhaul</field>
+            <field name="sequence">30</field>
+        </record>
+        <record id="work_pref_flexible" model="prema.owner.operator.work.preference">
+            <field name="name">Flexible</field>
+            <field name="code">flexible</field>
+            <field name="sequence">40</field>
+        </record>
+
+        <record id="param_coi_min_auto_liability" model="ir.config_parameter">
+            <field name="key">prema_owner_operator.coi_min_auto_liability</field>
+            <field name="value">0</field>
+        </record>
+        <record id="param_coi_min_cargo" model="ir.config_parameter">
+            <field name="key">prema_owner_operator.coi_min_cargo</field>
+            <field name="value">0</field>
+        </record>
+        <record id="param_trusted_insurer_domains" model="ir.config_parameter">
+            <field name="key">prema_owner_operator.trusted_insurer_domains</field>
+            <field name="value"></field>
+        </record>
+        <record id="param_verification_reviewer" model="ir.config_parameter">
+            <field name="key">prema_owner_operator.verification_reviewer_id</field>
+            <field name="value"></field>
+        </record>
+        <record id="param_whatsapp_consent_version" model="ir.config_parameter">
+            <field name="key">prema_owner_operator.whatsapp_consent_version</field>
+            <field name="value">1</field>
+        </record>
+    </data>
+</odoo>

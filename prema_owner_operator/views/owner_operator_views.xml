@@ -1,0 +1,124 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_owner_operator_form" model="ir.ui.view">
+        <field name="name">prema.owner.operator.form</field>
+        <field name="model">prema.owner.operator</field>
+        <field name="arch" type="xml">
+            <form string="Owner-Operator">
+                <header>
+                    <button name="action_mark_authority_verified" type="object"
+                            string="Authority verified" class="btn-primary"
+                            invisible="authority_state == 'verified'"/>
+                    <button name="action_mark_authority_rejected" type="object"
+                            string="Authority rejected"
+                            invisible="authority_state == 'rejected'"/>
+                    <field name="authority_state" widget="statusbar"
+                           statusbar_visible="pending_manual,verified"/>
+                </header>
+                <sheet>
+                    <div class="oe_title"><h1><field name="name"/></h1></div>
+                    <group>
+                        <group string="Identity">
+                            <field name="partner_id"/>
+                            <field name="company_id" groups="base.group_multi_company"/>
+                            <field name="is_sole_proprietor"/>
+                            <field name="business_number"/>
+                            <field name="home_city"/>
+                            <field name="home_province"/>
+                        </group>
+                        <group string="Compliance">
+                            <field name="compliance_ok"/>
+                            <field name="blocked_issue"/>
+                            <field name="authority_verified_on" readonly="1"/>
+                            <field name="authority_verified_by" readonly="1"/>
+                        </group>
+                    </group>
+                    <notebook>
+                        <page string="Carrier authority">
+                            <group>
+                                <field name="authority_jurisdiction"/>
+                                <field name="mc_number"/>
+                                <field name="usdot_number"/>
+                                <field name="cvor_number"/>
+                                <field name="authority_note"/>
+                            </group>
+                            <div class="text-muted">
+                                MC / USDOT / CVOR lookup is manual for now: the
+                                status stays “Pending manual verification”
+                                until someone checks it.
+                            </div>
+                        </page>
+                        <page string="Insurance">
+                            <group>
+                                <field name="insurer_name"/>
+                                <field name="policy_number"/>
+                                <field name="insurance_expiry"/>
+                                <field name="coi_verified_direct"/>
+                                <field name="coi_verified_on"/>
+                                <field name="coi_document_id"/>
+                                <button name="action_verify_coi_with_insurer"
+                                        type="object"
+                                        string="Verify COI with insurer"
+                                        class="btn-link"
+                                        invisible="coi_verified_direct or not coi_document_id"/>
+                            </group>
+                            <group string="Agent">
+                                <field name="insurance_agent_name"/>
+                                <field name="insurance_agent_email"/>
+                                <field name="insurance_agent_phone"/>
+                            </group>
+                        </page>
+                        <page string="Applications">
+                            <field name="application_ids">
+                                <list>
+                                    <field name="name"/>
+                                    <field name="contact_name"/>
+                                    <field name="state"/>
+                                    <field name="create_date"/>
+                                </list>
+                            </field>
+                        </page>
+                        <page string="Equipment">
+                            <field name="fleet_vehicle_ids">
+                                <list>
+                                    <field name="license_plate"/>
+                                    <field name="vin_sn"/>
+                                    <field name="state_id"/>
+                                    <field name="is_dispatch_available"/>
+                                </list>
+                            </field>
+                        </page>
+                    </notebook>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <record id="view_owner_operator_list" model="ir.ui.view">
+        <field name="name">prema.owner.operator.list</field>
+        <field name="model">prema.owner.operator</field>
+        <field name="arch" type="xml">
+            <list string="Owner-Operators">
+                <field name="name"/>
+                <field name="partner_id"/>
+                <field name="home_city"/>
+                <field name="home_province"/>
+                <field name="authority_state" widget="badge"/>
+                <field name="compliance_ok"/>
+                <field name="blocked_issue"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="action_owner_operator" model="ir.actions.act_window">
+        <field name="name">Owner-Operators</field>
+        <field name="res_model">prema.owner.operator</field>
+        <field name="view_mode">list,form</field>
+    </record>
+
+    <menuitem id="menu_owner_operator_root" name="Owner-Operators"
+              parent="fleet.menu_root" sequence="20"/>
+    <menuitem id="menu_owner_operator" name="Owner-Operators"
+              parent="menu_owner_operator_root" action="action_owner_operator"
+              sequence="10"/>
+</odoo>
