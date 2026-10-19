@@ -112,6 +112,15 @@ class HrApplicant(models.Model):
     oo_coi_request_count = fields.Integer(
         related="owner_operator_application_id.coi_request_count",
         readonly=True)
+    oo_verification_status = fields.Selection(
+        related="owner_operator_application_id.verification_status",
+        readonly=True)
+    oo_verification_reasons = fields.Text(
+        related="owner_operator_application_id.verification_reasons",
+        readonly=True)
+    oo_coi_email_count = fields.Integer(
+        related="owner_operator_application_id.coi_email_count",
+        readonly=True)
     oo_setup_email_sent_at = fields.Datetime(
         related="owner_operator_application_id.setup_email_sent_at",
         readonly=True)
@@ -296,6 +305,13 @@ class HrApplicant(models.Model):
             body=_("Application created from the recruitment record."),
             subtype_xmlid="mail.mt_note")
         return app
+
+    def action_open_coi_emails(self):
+        self.ensure_one()
+        app = self.owner_operator_application_id
+        if not app:
+            return False
+        return app.action_open_coi_emails()
 
     def action_open_owner_operator_application(self):
         self.ensure_one()

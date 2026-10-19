@@ -69,10 +69,17 @@ APPLICATION_STATE = [
     ("submitted", "Submitted"),
     ("qualifying", "Qualifying"),
     ("authority_review", "Authority & insurance review"),
+    ("verified", "Insurance verified"),
     ("contract", "Contract proposal"),
     ("signed", "Contract signed"),
     ("approved", "Approved — handed to Fleet"),
     ("rejected", "Rejected"),
+]
+
+VERIFICATION_STATUS = [
+    ("pending", "PENDING"),
+    ("review", "REVIEW"),
+    ("verified", "VERIFIED"),
 ]
 
 # The owner-operator pipeline for job 5, in order. Names are the stable key;
@@ -80,12 +87,14 @@ APPLICATION_STATE = [
 # records and any history, but job 5 is unlinked from them.
 STAGE_NEW = "New"
 STAGE_AUTHORITY = "Authority & Insurance Review"
+STAGE_VERIFIED = "Verified"
 STAGE_CONTRACT = "Contract Proposal"
 STAGE_SIGNED = "Contract Signed"
 STAGE_APPROVED = "Approved — Ready for Dispatch"
 PIPELINE = [
     STAGE_NEW,
     STAGE_AUTHORITY,
+    STAGE_VERIFIED,
     STAGE_CONTRACT,
     STAGE_SIGNED,
     STAGE_APPROVED,
@@ -555,6 +564,37 @@ class OwnerOperatorApplication(models.Model):
         related="hr_applicant_id.applicant_notes", readonly=True,
         string="Additional information / equipment notes")
 
+    # ── insurance verification (COI) ───────────────────────────────
+    verification_status = fields.Selection(
+        VERIFICATION_STATUS, default="pending", required=True, index=True,
+        tracking=True,
+        help="PENDING until the COI is processed, REVIEW when anything is "
+             "missing/uncertain, VERIFIED only after every check or a manual "
+             "reviewer approval.")
+    verification_reasons = fields.Text(
+        string="Verification review reasons", readonly=True, copy=False)
+    verification_date = fields.Datetime(readonly=True, copy=False)
+    verification_method = fields.Char(readonly=True, copy=False)
+    verification_confidence = fields.Float(readonly=True, copy=False)
+    verification_reviewer_id = fields.Many2one(
+        "res.users", string="Verification approved by", readonly=True,
+        copy=False)
+    verification_reviewed_on = fields.Datetime(readonly=True, copy=False)
+    verification_review_reason = fields.Text(
+        string="Reviewer reason",
+        help="Reviewer enters the reason before approving, rejecting or "
+             "requesting an updated COI. It is kept in the audit trail.")
+    coi_email_ids = fields.One2many(
+        "prema.owner.operator.verification", "matched_application_id",
+        string="COI emails", readonly=True)
+    coi_email_count = fields.Integer(compute="_compute_coi_email_count")
+    coi_version_ids = fields.One2many(
+        "prema.owner.operator.coi.version", "application_id",
+        string="COI versions", readonly=True)
+    coi_current_version_id = fields.Many2one(
+        "prema.owner.operator.coi.version", string="Current COI",
+        readonly=True, copy=False, ondelete="restrict")
+
     # ── workflow ────────────────────────────────────────────────────
     state = fields.Selection(APPLICATION_STATE, default="submitted",
                              required=True, index=True, tracking=True)
@@ -721,6 +761,11 @@ class OwnerOperatorApplication(models.Model):
                 missing.append(_("Vehicle type"))
             app.equipment_missing = ", ".join(missing) or False
             app.equipment_complete = not missing
+
+    @api.depends("coi_email_ids")
+    def _compute_coi_email_count(self):
+        for app in self:
+            app.coi_email_count = len(app.coi_email_ids)
 
     def _compute_review_thresholds(self):
         icp = self.env["ir.config_parameter"].sudo()
@@ -1076,6 +1121,13 @@ class OwnerOperatorApplication(models.Model):
                 return False
             self._send_coi_request()
             return True
+        if new_stage.name == STAGE_VERIFIED:
+            if self.verification_status != "verified":
+                raise UserError(_(
+                    "Insurance verification must be approved before moving "
+                    "this applicant to Verified."))
+            self._sync_state(new_stage)
+            return False
         if new_stage.name in (STAGE_CONTRACT, STAGE_SIGNED):
             self._guard_transition(new_stage)
             return False
@@ -1126,6 +1178,278 @@ class OwnerOperatorApplication(models.Model):
             % self.env.user.name,
             subtype_xmlid="mail.mt_note")
         return True
+
+    # ------------------------------------------------------------------
+    # insurance verification status / reviewer actions
+    # ------------------------------------------------------------------
+    def _is_verification_reviewer(self):
+        self.ensure_one()
+        user = self.env.user
+        return bool(
+            user.has_group("prema_owner_operator.group_owner_operator")
+            or user.has_group("hr_recruitment.group_hr_recruitment_manager"))
+
+    def _verification_review_user(self):
+        self.ensure_one()
+        icp = self.env["ir.config_parameter"].sudo()
+        raw = icp.get_param("prema_owner_operator.verification_reviewer_id")
+        if raw:
+            user = self.env["res.users"].browse(int(raw)).exists()
+            if user:
+                return user
+        if self.hr_applicant_id.user_id:
+            return self.hr_applicant_id.user_id
+        group = self.env.ref(
+            "prema_owner_operator.group_owner_operator",
+            raise_if_not_found=False)
+        if group and group.users[:1]:
+            return group.users[:1]
+        return self.env.ref("base.user_admin", raise_if_not_found=False)
+
+    def _ensure_verification_activity(self, reasons):
+        """One open reviewer activity per application, updated repeat-safely."""
+        self.ensure_one()
+        user = self._verification_review_user()
+        if not user:
+            return False
+        summary = _("COI verification review")
+        note = "\n".join(reasons) if isinstance(reasons, (list, tuple)) \
+            else (reasons or "")
+        Activity = self.env["mail.activity"].sudo()
+        activity = Activity.search([
+            ("res_model", "=", "prema.owner.operator.application"),
+            ("res_id", "=", self.id),
+            ("summary", "=", summary),
+        ], limit=1)
+        if activity:
+            activity.write({"note": note, "user_id": user.id})
+        else:
+            self.activity_schedule(
+                "mail.mail_activity_data_todo",
+                summary=summary, note=note, user_id=user.id)
+        return True
+
+    def _after_coi_version(self, version):
+        """Set the initial card state when a COI version is stored."""
+        self.ensure_one()
+        if not version.is_direct:
+            reason = {
+                "applicant_forwarded": _(
+                    "Applicant forwarded the COI themselves; an "
+                    "insurer/broker-direct certificate is required."),
+                "unknown": _(
+                    "Unknown or untrusted sender; manual review required."),
+                "manual": _(
+                    "Manually attached COI requires reviewer verification."),
+            }.get(version.source, _("COI requires manual review."))
+            self._set_verification_review([reason])
+            return True
+        cfg = version._config()
+        missing = []
+        if cfg["min_auto"] <= 0:
+            missing.append(_(
+                "Automobile liability coverage threshold is not configured."))
+        if cfg["min_cargo"] <= 0:
+            missing.append(_("Cargo coverage threshold is not configured."))
+        if cfg["min_conf"] <= 0:
+            missing.append(_("AI confidence threshold is not configured."))
+        if missing:
+            self._set_verification_review(missing)
+            return True
+        if self.verification_status != "verified":
+            self.write({
+                "verification_status": "pending",
+                "verification_reasons": False,
+            })
+        return True
+
+    def _set_verification_review(self, reasons, method=None, confidence=0.0):
+        self.ensure_one()
+        reasons = [r for r in reasons if r]
+        text = "\n".join(reasons)
+        previous = self.verification_status
+        vals = {
+            "verification_status": "review",
+            "verification_reasons": text or _("Verification requires review."),
+            "verification_method": method or self.verification_method or "ai",
+            "verification_confidence": confidence
+            or self.verification_confidence or 0.0,
+        }
+        self.write(vals)
+        self._ensure_verification_activity(reasons or [_("Manual review")])
+        if previous != "review":
+            self.message_post(
+                body=_("Insurance verification requires review:\n• %s")
+                % "\n• ".join(reasons or [_("Manual review")]),
+                subtype_xmlid="mail.mt_note")
+        return True
+
+    def _move_to_verified_stage(self):
+        self.ensure_one()
+        verified = self._stage_by_name(STAGE_VERIFIED)
+        applicant = self.hr_applicant_id
+        if not verified or not applicant:
+            return False
+        current = applicant.stage_id
+        if current and current.sequence >= verified.sequence:
+            return False
+        applicant.sudo().with_context(
+            owner_operator_skip_stage_hook=True).write(
+                {"stage_id": verified.id})
+        self._sync_state(verified)
+        return True
+
+    def _set_verification_verified(self, version, method="ai",
+                                   confidence=0.0, reason=None):
+        self.ensure_one()
+        if not version or not version.attachment_id:
+            raise UserError(_("There is no COI attachment to verify."))
+        already = (self.verification_status == "verified"
+                   and self.coi_current_version_id == version)
+        now = fields.Datetime.now()
+        vals = {
+            "verification_status": "verified",
+            "verification_reasons": False,
+            "verification_date": now,
+            "verification_method": method,
+            "verification_confidence": confidence or 0.0,
+            "coi_current_version_id": version.id,
+        }
+        if method == "manual":
+            vals.update({
+                "verification_reviewer_id": self.env.user.id,
+                "verification_reviewed_on": now,
+                "verification_review_reason": reason or "",
+            })
+        self.write(vals)
+        version.sudo().write({
+            "verification_status": "verified",
+            "verified_on": now,
+            "verified_by": self.env.user.id if method == "manual" else False,
+        })
+        doc = self.document_ids.filtered(
+            lambda d: d.document_type == "coi_insurer")[:1]
+        if not doc:
+            doc = self.env["prema.owner.operator.document"].sudo().create({
+                "application_id": self.id,
+                "document_type": "coi_insurer",
+                "source": "insurer",
+            })
+        doc.sudo().write({
+            "attachment_id": version.attachment_id.id,
+            "status": "verified",
+            "source": "insurer",
+            "received_on": doc.received_on or now,
+            "verified_on": now,
+            "verified_by": self.env.user.id if method == "manual" else False,
+            "notes": _("Verified %(method)s on %(date)s — COI version %(version)s")
+            % {
+                "method": method,
+                "date": now,
+                "version": version.id,
+            },
+        })
+        self._move_to_verified_stage()
+        self.env["mail.activity"].sudo().search([
+            ("res_model", "=", "prema.owner.operator.application"),
+            ("res_id", "=", self.id),
+            ("summary", "=", _("COI verification review")),
+        ]).unlink()
+        if not already:
+            self.message_post(
+                body=_(
+                    "Insurance verification passed (%(method)s). COI version "
+                    "%(version)s is current; policy %(policy)s, expiry %(expiry)s.") % {
+                        "method": method,
+                        "version": version.id,
+                        "policy": version.policy_number or _("n/a"),
+                        "expiry": version.expiry_date or _("n/a"),
+                    },
+                subtype_xmlid="mail.mt_note")
+        return True
+
+    def _require_verification_reason(self):
+        self.ensure_one()
+        reason = (self.verification_review_reason or "").strip()
+        if not reason:
+            raise UserError(_(
+                "Enter the reviewer reason before approving, rejecting or "
+                "requesting an updated COI."))
+        return reason
+
+    def action_approve_verification(self):
+        self.ensure_one()
+        if not self._is_verification_reviewer():
+            raise AccessError(_("Not available to this user."))
+        reason = self._require_verification_reason()
+        version = self.coi_current_version_id or \
+            self.coi_version_ids.filtered("attachment_id")[:1]
+        if not version:
+            raise UserError(_("There is no COI version to approve."))
+        self._set_verification_verified(
+            version, method="manual",
+            confidence=version.extraction_confidence or 0.0,
+            reason=reason)
+        return True
+
+    def action_reject_coi(self):
+        self.ensure_one()
+        if not self._is_verification_reviewer():
+            raise AccessError(_("Not available to this user."))
+        reason = self._require_verification_reason()
+        reasons = [
+            _("COI rejected by reviewer: %s") % reason,
+        ]
+        previous = self.verification_status
+        prior = (self.verification_reasons or "").strip()
+        text = "\n".join(x for x in (prior, *reasons) if x)
+        self.write({
+            "verification_status": "review",
+            "verification_reasons": text,
+            "verification_reviewer_id": self.env.user.id,
+            "verification_reviewed_on": fields.Datetime.now(),
+            "verification_review_reason": reason,
+        })
+        self._ensure_verification_activity(reasons)
+        if previous != "review":
+            self.message_post(
+                body=_("COI rejected by %(user)s: %(reason)s") % {
+                    "user": self.env.user.name, "reason": reason},
+                subtype_xmlid="mail.mt_note")
+        return True
+
+    def action_request_updated_coi(self):
+        self.ensure_one()
+        if not self._is_verification_reviewer():
+            raise AccessError(_("Not available to this user."))
+        reason = self._require_verification_reason()
+        self.action_resend_coi_request()
+        msg = _("Updated COI requested by %(user)s: %(reason)s") % {
+            "user": self.env.user.name, "reason": reason}
+        prior = (self.verification_reasons or "").strip()
+        self.write({
+            "verification_status": "review",
+            "verification_reasons": "\n".join(
+                x for x in (prior, msg) if x),
+            "verification_reviewer_id": self.env.user.id,
+            "verification_reviewed_on": fields.Datetime.now(),
+            "verification_review_reason": reason,
+        })
+        self._ensure_verification_activity([msg])
+        self.message_post(body=msg, subtype_xmlid="mail.mt_note")
+        return True
+
+    def action_open_coi_emails(self):
+        self.ensure_one()
+        return {
+            "type": "ir.actions.act_window",
+            "name": _("COI Emails — %s") % (self.name or ""),
+            "res_model": "prema.owner.operator.verification",
+            "view_mode": "list,form",
+            "domain": [("matched_application_id", "=", self.id)],
+            "context": {"default_matched_application_id": self.id},
+            "target": "current",
+        }
 
     @api.model
     def _backfill_from_other_information(self):
@@ -1229,6 +1553,9 @@ class OwnerOperatorApplication(models.Model):
             if self._blocking("initial"):
                 problems.append(_("initial uploads: %s")
                                 % self._label(self._blocking("initial")))
+        if name == STAGE_VERIFIED:
+            if self.verification_status != "verified":
+                problems.append(_("approved insurance verification"))
         if name in (STAGE_CONTRACT, STAGE_SIGNED, STAGE_APPROVED):
             missing_initial = self._verified_missing("initial")
             missing_qual = self._verified_missing("qualification")
@@ -1293,6 +1620,7 @@ class OwnerOperatorApplication(models.Model):
         mapping = {
             STAGE_NEW: "submitted",
             STAGE_AUTHORITY: "authority_review",
+            STAGE_VERIFIED: "verified",
             STAGE_CONTRACT: "contract",
             STAGE_SIGNED: "signed",
             STAGE_APPROVED: "approved",
@@ -1304,10 +1632,12 @@ class OwnerOperatorApplication(models.Model):
             if seq >= 1:
                 state = "qualifying"
             if seq >= 2:
-                state = "contract"
+                state = "verified"
             if seq >= 3:
-                state = "signed"
+                state = "contract"
             if seq >= 4:
+                state = "signed"
+            if seq >= 5:
                 state = "approved"
         self.write({"state": state})
 

@@ -17,6 +17,7 @@ NEW_STAGE_NAME = "New"
 PIPELINE = [
     NEW_STAGE_NAME,
     AUTHORITY_STAGE_NAME,
+    "Verified",
     "Contract Proposal",
     "Contract Signed",
     "Approved — Ready for Dispatch",
@@ -31,6 +32,7 @@ REMOVED_FROM_JOB5 = [
 STAGE_SLUGS = {
     "New": "new",
     "Authority & Insurance Review": "authority",
+    "Verified": "verified",
     "Contract Proposal": "contract",
     "Contract Signed": "signed",
     "Approved — Ready for Dispatch": "approved",

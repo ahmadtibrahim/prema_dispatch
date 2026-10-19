@@ -10,8 +10,20 @@
                             string="Advance stage" class="btn-primary"
                             invisible="state in ('approved','rejected')"/>
                     <button name="action_resend_coi_request" type="object"
-                            string="Resend COI request"
+                            string="Resend COI Instructions"
                             invisible="not coi_request_sent_at"/>
+                    <button name="action_approve_verification" type="object"
+                            string="Approve Verification" class="btn-success"
+                            invisible="verification_status == 'verified'"/>
+                    <button name="action_reject_coi" type="object"
+                            string="Reject COI"
+                            invisible="verification_status == 'verified'"/>
+                    <button name="action_request_updated_coi" type="object"
+                            string="Request Updated COI"
+                            invisible="verification_status == 'verified'"/>
+                    <button name="action_open_coi_emails" type="object"
+                            string="Insurance Email" icon="fa-envelope"
+                            invisible="not coi_email_count"/>
                     <button name="action_prepare_operator" type="object"
                             string="Operator profile"
                             invisible="operator_id"/>
@@ -21,7 +33,7 @@
                             string="Approve → Fleet" class="btn-success"
                             invisible="not can_approve"/>
                     <field name="state" widget="statusbar"
-                           statusbar_visible="submitted,qualifying,authority_review,contract,signed,approved"/>
+                           statusbar_visible="submitted,qualifying,authority_review,verified,contract,signed,approved"/>
                 </header>
                 <sheet>
                     <div class="oe_title"><h1><field name="name" readonly="1"/></h1></div>
@@ -211,6 +223,28 @@
                                     <field name="authority_state"/>
                                 </group>
                             </group>
+                            <group string="Insurance verification">
+                                <group>
+                                    <field name="verification_status" widget="badge"
+                                           decoration-success="verification_status == 'verified'"
+                                           decoration-danger="verification_status == 'review'"
+                                           decoration-secondary="verification_status == 'pending'"/>
+                                    <field name="verification_reasons" readonly="1"/>
+                                    <field name="verification_date" readonly="1"/>
+                                    <field name="verification_method" readonly="1"/>
+                                    <field name="verification_confidence" readonly="1"/>
+                                    <field name="verification_reviewer_id" readonly="1"/>
+                                    <field name="verification_reviewed_on" readonly="1"/>
+                                </group>
+                                <group>
+                                    <field name="verification_review_reason"
+                                           placeholder="Reason for approval / rejection / updated COI request"/>
+                                    <field name="coi_current_version_id" readonly="1"/>
+                                    <field name="coi_email_count" readonly="1"/>
+                                    <button name="action_open_coi_emails" type="object"
+                                            string="Insurance Email" class="btn-link"/>
+                                </group>
+                            </group>
                             <group string="Insurer-direct COI request">
                                 <group>
                                     <field name="coi_request_sent_at" readonly="1"/>
@@ -223,6 +257,38 @@
                                     <field name="coi_min_auto_liability" readonly="1"/>
                                     <field name="coi_min_cargo" readonly="1"/>
                                 </group>
+                            </group>
+                            <group string="COI versions (original documents)">
+                                <field name="coi_version_ids" readonly="1">
+                                    <list>
+                                        <field name="received_date"/>
+                                        <field name="is_current"/>
+                                        <field name="effective_date"/>
+                                        <field name="expiry_date"/>
+                                        <field name="insurer_name"/>
+                                        <field name="policy_number"/>
+                                        <field name="source"/>
+                                        <field name="extraction_state"/>
+                                        <field name="verification_status"/>
+                                        <field name="file_name"/>
+                                        <field name="mimetype" column_invisible="1"/>
+                                        <field name="can_preview"
+                                               widget="owner_operator_document_view"
+                                               options="{'route': 'coi_version'}"
+                                               readonly="1"/>
+                                    </list>
+                                </field>
+                            </group>
+                            <group string="COI emails">
+                                <field name="coi_email_ids" readonly="1">
+                                    <list>
+                                        <field name="received_date"/>
+                                        <field name="sender_email"/>
+                                        <field name="subject"/>
+                                        <field name="state" widget="badge"/>
+                                        <field name="match_reason"/>
+                                    </list>
+                                </field>
                             </group>
                             <field name="document_ids">
                                 <list editable="bottom">

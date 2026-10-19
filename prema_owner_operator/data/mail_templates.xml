@@ -71,41 +71,47 @@
         <record id="mail_template_coi_request" model="mail.template">
             <field name="name">Owner-Operator: Insurer-direct COI requested</field>
             <field name="model_id" ref="model_prema_owner_operator_application"/>
-            <field name="subject">Insurance verification required — {{ object.name }} — {{ object.business_name or object.contact_name }}</field>
+            <field name="subject">Action Required: Certificate of Insurance — {{ object.name }}</field>
             <field name="email_from">{{ (object.company_id.email or 'owneroperators@logistics.premafirm.com') }}</field>
             <field name="partner_to">{{ object.partner_id.id }}</field>
             <field name="body_html" type="html">
                 <div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#1b2330;line-height:1.5">
                     <p>Hello <t t-out="object.contact_name or ''"/>,</p>
-                    <p>Thank you for your owner-operator application
-                       <strong><t t-out="object.name"/></strong>. We have moved your
-                       application to <strong>Authority &amp; Insurance
-                       Review</strong>, so we now need a current Certificate of
-                       Insurance issued directly by your insurer or broker.</p>
-                    <p><strong>Please ask your insurance broker or insurer to issue a current Certificate of Insurance showing the following certificate holder:</strong></p>
+                    <p>Thank you for applying to work with PremaFirm Inc. as an
+                       owner-operator.</p>
+                    <p>The next step is insurance verification. Please contact
+                       your insurance company or licensed insurance broker and
+                       ask them to email a current Certificate of Insurance
+                       directly to:</p>
+                    <p><strong>verification@premafirm.com</strong></p>
+                    <p>The email subject must contain this reference:</p>
+                    <p><strong>[<t t-out="object.name"/>] — Certificate of
+                       Insurance — <t t-out="object.business_name or object.contact_name"/></strong></p>
+                    <p><strong>Certificate Holder:</strong></p>
                     <p style="margin-left:18px">
                         PremaFirm Inc.<br/>
                         994 Westport Cres, Unit 7A<br/>
                         Mississauga, ON L5T 1G1<br/>
                         Canada
                     </p>
-                    <p>Please have your broker or insurer email the certificate
-                       directly to <strong>verification@premafirm.com</strong>
-                       and include application reference
-                       <strong><t t-out="object.name"/></strong> in the subject.</p>
-                    <p>Please ask them to include the current automobile
-                       liability and cargo coverage details, policy numbers,
-                       effective and expiry dates, and the applicable coverage
-                       information.</p>
-                    <p>The insured business on the certificate is
-                       <strong><t t-out="object.business_name or object.contact_name"/></strong>.
-                       PremaFirm Inc. is the certificate holder. We are not
-                       requesting additional-insured status or any endorsement
-                       beyond the certificate itself.</p>
-                    <p>You are responsible for forwarding these instructions to
-                       your broker or insurer. We do not need your agent’s name
-                       or email address on the application.</p>
-                    <p>Thank you,<br/>PremaFirm Logistics</p>
+                    <p>The certificate should clearly show:</p>
+                    <ul>
+                        <li>Exact legal name of the insured business</li>
+                        <li>Insurance company</li>
+                        <li>Policy numbers</li>
+                        <li>Commercial automobile liability coverage</li>
+                        <li>Cargo coverage</li>
+                        <li>Policy effective and expiry dates</li>
+                        <li>Certificate holder information</li>
+                    </ul>
+                    <p>The certificate must be emailed directly by the insurance
+                       company or licensed insurance broker. An
+                       applicant-forwarded copy will require manual review.</p>
+                    <p>We will notify you after the certificate has been
+                       reviewed.</p>
+                    <p>PremaFirm Inc.<br/>
+                       Owner-Operator Verification Team<br/>
+                       verification@premafirm.com</p>
                 </div>
             </field>
             <field name="auto_delete" eval="False"/>

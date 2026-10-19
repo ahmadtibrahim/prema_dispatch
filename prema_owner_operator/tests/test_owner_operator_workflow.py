@@ -42,9 +42,15 @@ class TestPipeline(OwnerOperatorCase):
             [("job_ids", "in", self.job.id)], order="sequence,id")
         self.assertEqual(
             stages.mapped("name"),
-            ["New", "Authority & Insurance Review", "Contract Proposal",
-             "Contract Signed", "Approved — Ready for Dispatch"])
-        self.assertEqual([s.sequence for s in stages], [0, 1, 2, 3, 4])
+            ["New", "Authority & Insurance Review", "Verified",
+             "Contract Proposal", "Contract Signed",
+             "Approved — Ready for Dispatch"])
+        self.assertEqual([s.sequence for s in stages], [0, 1, 2, 3, 4, 5])
+        self.assertEqual(
+            self.env["hr.recruitment.stage"].search_count(
+                [("name", "=", "Verified"),
+                 ("job_ids", "in", self.job.id)]), 1,
+            "the manually created Verified stage must be reused, not duplicated")
         removed = self.env["hr.recruitment.stage"].search(
             [("name", "in", ["Equipment Verification",
                              "Initial Qualification", "Final Review",
@@ -116,7 +122,7 @@ class TestCOIRequestEmail(OwnerOperatorCase):
 
     def _coi_mails(self, app):
         return self.env["mail.mail"].search([
-            ("subject", "ilike", "Insurance verification required"),
+            ("subject", "ilike", "Action Required: Certificate of Insurance"),
             ("subject", "ilike", app.name),
         ])
 
@@ -136,7 +142,6 @@ class TestCOIRequestEmail(OwnerOperatorCase):
         self.assertIn("Canada", body)
         self.assertIn("Acme Transport Ltd", body)
         self.assertIn(app.name, body)
-        self.assertIn("Acme Transport Ltd", mail.subject)
         self.assertIn(app.name, mail.subject)
         self.assertIn(app.partner_id, mail.recipient_ids)
         self.assertEqual(app.partner_id.email, app.email)
@@ -210,7 +215,7 @@ class TestInboundVerification(OwnerOperatorCase):
              certificate=True, body="Please find the certificate attached."):
         msg = email.message.EmailMessage()
         msg["Subject"] = subject or (
-            "Insurance verification required — %s — %s"
+            "[%s] — Certificate of Insurance — %s"
             % (app.name, app.business_name))
         msg["From"] = sender
         msg["To"] = "verification@premafirm.com"
@@ -263,6 +268,12 @@ class TestInboundVerification(OwnerOperatorCase):
         self.assertEqual(len(app.activity_ids), 1,
                          "exactly one reviewer activity is required")
         self.assertTrue(queue.message_ids)
+        self.assertIn(queue, app.coi_email_ids,
+                      "the original email must be linked to the application")
+        action = app.action_open_coi_emails()
+        self.assertEqual(action["res_model"],
+                         "prema.owner.operator.verification")
+        self.assertEqual(action["domain"][0][2], app.id)
         # Repeat-safe: the duplicate Message-ID is ignored.
         activity_count = len(app.activity_ids)
         queue_count = self.env[
@@ -273,6 +284,25 @@ class TestInboundVerification(OwnerOperatorCase):
             self.env["prema.owner.operator.verification"].search_count([]),
             queue_count)
         self.assertEqual(len(app.activity_ids), activity_count)
+
+    def test_reply_threads_to_the_same_applicant(self):
+        app = self._app("reply")
+        queue = self._process(self._raw(app))
+        applicants_before = self.env["hr.applicant"].search_count([])
+        app.invalidate_recordset()
+        messages_before = len(app.message_ids)
+        reply = self._raw(
+            app, message_id="<reply-%s@test.invalid>" % uuid.uuid4().hex,
+            references=queue.message_id, certificate=False,
+            body="A reply in the same thread.")
+        self.env["mail.thread"].message_process(
+            "prema.owner.operator.verification", reply)
+        self.assertEqual(self.env["hr.applicant"].search_count([]),
+                         applicants_before, "a reply must not create an applicant")
+        self.assertEqual(queue.matched_application_id, app)
+        app.invalidate_recordset()
+        self.assertGreater(len(app.message_ids), messages_before,
+                           "the reply must be copied to the same applicant")
 
     def test_untrusted_match_stays_in_manual_review(self):
         self.env["ir.config_parameter"].sudo().set_param(
@@ -380,10 +410,13 @@ class TestInboundVerification(OwnerOperatorCase):
         self.assertEqual(queue.state, "matched")
         queue.write({"matched_application_id": app.id})
         queue.action_manual_attach()
-        doc = app.document_ids.filtered(
-            lambda d: d.document_type == "coi_insurer")
-        self.assertEqual(doc.status, "received")
-        self.assertTrue(doc.attachment_id)
+        version = queue.coi_version_ids[:1] or app.coi_version_ids[:1]
+        self.assertTrue(version, "the manual match must store a COI version")
+        self.assertTrue(version.attachment_id)
+        self.assertFalse(version.is_direct)
+        self.assertFalse(version.attachment_id.public)
+        app.invalidate_recordset()
+        self.assertEqual(app.verification_status, "review")
         self.assertEqual(app.hr_applicant_id.stage_id, self.authority,
                          "manual attach must not move the applicant")
 
@@ -610,8 +643,9 @@ class TestNotificationAndMultiSelect(OwnerOperatorCase):
 class TestKanbanStageExpansion(OwnerOperatorCase):
     """The server-side kanban expansion, not a CSS/JS/filter workaround."""
 
-    FIVE = ["New", "Authority & Insurance Review", "Contract Proposal",
-            "Contract Signed", "Approved — Ready for Dispatch"]
+    SIX = ["New", "Authority & Insurance Review", "Verified",
+           "Contract Proposal", "Contract Signed",
+           "Approved — Ready for Dispatch"]
 
     def _all_stages(self):
         return self.env["hr.recruitment.stage"].search([])
@@ -625,9 +659,9 @@ class TestKanbanStageExpansion(OwnerOperatorCase):
             default_job_id=self.job.id)._read_group_stage_ids(
                 self._all_stages(), [])
         self.assertEqual(expanded.ids, self._expected().ids)
-        self.assertEqual(len(expanded), 5)
-        self.assertEqual(expanded.mapped("name"), self.FIVE)
-        self.assertEqual(len(set(expanded.ids)), 5)
+        self.assertEqual(len(expanded), 6)
+        self.assertEqual(expanded.mapped("name"), self.SIX)
+        self.assertEqual(len(set(expanded.ids)), 6)
         self.assertEqual(expanded.mapped("name").count("Contract Proposal"), 1)
         self.assertEqual(expanded.mapped("name").count("Contract Signed"), 1)
         for legacy in ("Equipment Verification", "Initial Qualification",
@@ -638,7 +672,7 @@ class TestKanbanStageExpansion(OwnerOperatorCase):
         expanded = self.env["hr.applicant"]._read_group_stage_ids(
             self._all_stages(), [("job_id", "=", self.job.id)])
         self.assertEqual(expanded.ids, self._expected().ids)
-        self.assertEqual(expanded.mapped("name"), self.FIVE)
+        self.assertEqual(expanded.mapped("name"), self.SIX)
 
     def test_another_recruitment_job_keeps_normal_expansion(self):
         other = self.env["hr.job"].create({
@@ -658,7 +692,7 @@ class TestKanbanStageExpansion(OwnerOperatorCase):
             [("job_ids", "=", False)], limit=1)
         if global_stage:
             self.assertIn(global_stage, expanded)
-        self.assertNotEqual(expanded.mapped("name"), self.FIVE)
+        self.assertNotEqual(expanded.mapped("name"), self.SIX)
 
     def test_expansion_fix_preserves_applicants_and_has_no_side_effects(self):
         from odoo.addons.prema_owner_operator.hooks import ensure_pipeline

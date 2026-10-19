@@ -15,7 +15,10 @@ import { standardFieldProps } from "@web/views/fields/standard_field_props";
  */
 export class OwnerOperatorDocumentView extends Component {
     static template = "prema_owner_operator.OwnerOperatorDocumentView";
-    static props = { ...standardFieldProps };
+    static props = {
+        ...standardFieldProps,
+        route: { type: String, optional: true },
+    };
 
     setup() {
         this.fileViewer = useFileViewer();
@@ -50,7 +53,8 @@ export class OwnerOperatorDocumentView extends Component {
     }
 
     get fileRoute() {
-        return `/owner_operator/document/${this.documentId}`;
+        const route = this.props.route || "document";
+        return `/owner_operator/${route}/${this.documentId}`;
     }
 
     get fileSource() {
@@ -112,6 +116,16 @@ export const ownerOperatorDocumentView = {
     component: OwnerOperatorDocumentView,
     displayName: _t("Document preview"),
     supportedTypes: ["boolean"],
+    supportedOptions: [
+        {
+            label: _t("Private route name"),
+            name: "route",
+            type: "string",
+        },
+    ],
+    extractProps: (fieldInfo) => ({
+        route: (fieldInfo.options && fieldInfo.options.route) || "document",
+    }),
 };
 
 registry.category("fields").add(

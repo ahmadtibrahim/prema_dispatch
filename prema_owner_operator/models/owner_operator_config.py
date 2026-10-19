@@ -83,6 +83,19 @@ class ResConfigSettings(models.TransientModel):
         string="Minimum cargo coverage (CAD)",
         config_parameter="prema_owner_operator.coi_min_cargo",
         help="Editorial cargo coverage threshold for the reviewer.")
+    oo_coi_min_ai_confidence = fields.Float(
+        string="Minimum AI extraction confidence (0-1)",
+        config_parameter="prema_owner_operator.coi_min_ai_confidence",
+        help="Automatic verification stays disabled while this is 0. Each "
+             "required extracted value must reach this confidence.")
+    oo_coi_certificate_holder_name = fields.Char(
+        string="Certificate holder name",
+        config_parameter="prema_owner_operator.coi_certificate_holder_name",
+        default="PremaFirm Inc.")
+    oo_coi_certificate_holder_address = fields.Char(
+        string="Certificate holder address",
+        config_parameter="prema_owner_operator.coi_certificate_holder_address",
+        default="994 Westport Cres, Unit 7A, Mississauga, ON L5T 1G1, Canada")
     oo_trusted_insurer_domains = fields.Char(
         string="Trusted insurer/broker domains",
         config_parameter="prema_owner_operator.trusted_insurer_domains",
