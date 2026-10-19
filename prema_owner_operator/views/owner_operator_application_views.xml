@@ -67,11 +67,19 @@
                                     <field name="is_sole_proprietor"/>
                                     <field name="home_city"/>
                                     <field name="home_province"/>
+                                    <field name="home_province_code"/>
+                                    <field name="home_city_place_id"/>
+                                    <field name="home_latitude"/>
+                                    <field name="home_longitude"/>
+                                    <field name="home_location_verified"/>
+                                    <field name="home_location_review"/>
+                                    <field name="home_location_review_reason"/>
                                     <field name="service_province_ids" widget="many2many_tags"/>
                                 </group>
                                 <group string="Driver licence">
                                     <field name="licence_class"/>
                                     <field name="licence_jurisdiction"/>
+                                    <field name="licence_province"/>
                                     <field name="licence_expiry"/>
                                     <field name="licence_suspension"/>
                                 </group>
@@ -94,15 +102,22 @@
                             <group>
                                 <group string="Vehicle">
                                     <field name="vehicle_type"/>
-                                    <field name="equipment_model"/>
+                                    <field name="truck_make"/>
+                                    <field name="truck_model"/>
+                                    <field name="equipment_model"
+                                           invisible="truck_make and truck_model"/>
                                     <field name="truck_year"/>
                                     <field name="unit_number"/>
                                     <field name="vehicle_ownership"/>
                                     <field name="transmission"/>
                                     <field name="odometer_km"/>
-                                    <field name="truck_plate_jurisdiction"/>
+                                    <field name="gvwr_lbs"/>
+                                    <field name="truck_plate_jurisdiction"
+                                           invisible="license_plate and plate_province"/>
                                     <field name="license_plate"/>
-                                    <field name="plate_jurisdiction"/>
+                                    <field name="plate_jurisdiction"
+                                           invisible="plate_province"/>
+                                    <field name="plate_province"/>
                                 </group>
                                 <group string="Derived for Fleet">
                                     <field name="equipment_type" readonly="1"/>
@@ -129,18 +144,21 @@
                                     <field name="liftgate_platform_width_in"/>
                                     <field name="dock_height_capable"/>
                                     <field name="air_ride"/>
+                                    <field name="reefer_applicable"/>
                                     <field name="reefer_temperature_range"/>
                                 </group>
                             </group>
-                            <group string="Trailer (tractor / power unit)">
+                            <group string="Trailer (Semi-Truck)">
                                 <group>
                                     <field name="trailer_ownership"/>
                                     <field name="trailer_type"
-                                           invisible="vehicle_type != 'tractor'"/>
+                                           invisible="vehicle_type not in ('tractor', 'semi')"/>
+                                    <field name="trailer_year"
+                                           invisible="vehicle_type != 'semi'"/>
                                     <field name="trailer_length_ft"
-                                           invisible="vehicle_type != 'tractor'"/>
+                                           invisible="vehicle_type not in ('tractor', 'semi')"/>
                                     <field name="trailer_unit"
-                                           invisible="vehicle_type != 'tractor'"/>
+                                           invisible="vehicle_type not in ('tractor', 'semi')"/>
                                 </group>
                                 <group string="Dispatch completeness">
                                     <field name="equipment_complete" readonly="1"/>
@@ -174,6 +192,7 @@
                                     <field name="load_notification_channel"/>
                                     <field name="load_notification_email"/>
                                     <field name="whatsapp_number"/>
+                                    <field name="use_contact_phone_for_whatsapp"/>
                                     <field name="load_notification_opt_out"/>
                                     <field name="load_notification_opt_out_at" readonly="1"/>
                                 </group>
@@ -221,6 +240,35 @@
                                     <field name="insurance_agent_name" readonly="1"/>
                                     <field name="insurance_agent_email" widget="email" readonly="1"/>
                                     <field name="authority_state"/>
+                                </group>
+                                <group string="Driver licence verification (reviewer)">
+                                    <field name="licence_class"/>
+                                    <field name="licence_province"/>
+                                    <field name="licence_jurisdiction" readonly="1"/>
+                                    <field name="licence_number"
+                                           placeholder="Enter from the uploaded licence"/>
+                                    <field name="licence_expiry"/>
+                                    <field name="licence_verification_status"
+                                           widget="badge"
+                                           decoration-success="licence_verification_status == 'verified'"
+                                           decoration-secondary="licence_verification_status != 'verified'"/>
+                                    <field name="licence_verified_on" readonly="1"/>
+                                    <field name="licence_verified_by" readonly="1"/>
+                                    <button name="action_verify_licence" type="object"
+                                            string="Verify driver licence"
+                                            class="btn-link"
+                                            invisible="licence_verification_status == 'verified'"/>
+                                    <button name="action_reset_licence_verification"
+                                            type="object"
+                                            string="Reset verification"
+                                            class="btn-link"
+                                            invisible="licence_verification_status != 'verified'"/>
+                                </group>
+                                <group string="Approval links">
+                                    <field name="driver_partner_id" readonly="1"/>
+                                    <field name="documents_folder_id" readonly="1"/>
+                                    <field name="generated_tag_ids"
+                                           widget="many2many_tags" readonly="1"/>
                                 </group>
                             </group>
                             <group string="Insurance verification">

@@ -70,6 +70,45 @@ class HrApplicant(models.Model):
     oo_trailer_type = fields.Selection(related="owner_operator_application_id.trailer_type", readonly=True)
     oo_trailer_length_ft = fields.Float(related="owner_operator_application_id.trailer_length_ft", readonly=True)
     oo_trailer_unit = fields.Char(related="owner_operator_application_id.trailer_unit", readonly=True)
+    oo_truck_make = fields.Char(
+        related="owner_operator_application_id.truck_make", readonly=True)
+    oo_truck_model = fields.Char(
+        related="owner_operator_application_id.truck_model", readonly=True)
+    oo_plate_province = fields.Selection(
+        related="owner_operator_application_id.plate_province",
+        readonly=True)
+    oo_licence_province = fields.Selection(
+        related="owner_operator_application_id.licence_province",
+        readonly=True)
+    oo_gvwr_lbs = fields.Float(
+        related="owner_operator_application_id.gvwr_lbs", readonly=True)
+    oo_trailer_year = fields.Char(
+        related="owner_operator_application_id.trailer_year", readonly=True)
+    oo_reefer_applicable = fields.Selection(
+        related="owner_operator_application_id.reefer_applicable",
+        readonly=True)
+    oo_home_province_code = fields.Selection(
+        related="owner_operator_application_id.home_province_code",
+        readonly=True)
+    oo_home_city_place_id = fields.Char(
+        related="owner_operator_application_id.home_city_place_id",
+        readonly=True)
+    oo_home_latitude = fields.Float(
+        related="owner_operator_application_id.home_latitude", readonly=True)
+    oo_home_longitude = fields.Float(
+        related="owner_operator_application_id.home_longitude", readonly=True)
+    oo_home_location_verified = fields.Boolean(
+        related="owner_operator_application_id.home_location_verified",
+        readonly=True)
+    oo_home_location_review = fields.Boolean(
+        related="owner_operator_application_id.home_location_review",
+        readonly=True)
+    oo_home_location_review_reason = fields.Char(
+        related="owner_operator_application_id.home_location_review_reason",
+        readonly=True)
+    oo_use_contact_phone_for_whatsapp = fields.Boolean(
+        related="owner_operator_application_id.use_contact_phone_for_whatsapp",
+        readonly=True)
     oo_preferred_service_area = fields.Selection(related="owner_operator_application_id.preferred_service_area", readonly=True)
     oo_preferred_service_areas = fields.Many2many(
         related="owner_operator_application_id.preferred_service_area_ids",

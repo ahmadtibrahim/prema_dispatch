@@ -23,7 +23,14 @@ from odoo.addons.website_hr_recruitment.controllers.main import (
 from odoo.exceptions import AccessError, ValidationError
 from werkzeug.urls import url_quote
 
-from ..application_mapping import UPLOAD_MAP, normalise_public
+from ..application_mapping import (
+    PROVINCE_CHOICES, PROVINCES, UPLOAD_MAP, normalise_public)
+
+try:  # the canonical Places integration lives in Prema Dispatch
+    from odoo.addons.prema_logistics_booking.services.google_places_service \
+        import GooglePlacesService
+except ImportError:  # pragma: no cover — module not installed
+    GooglePlacesService = None
 
 _logger = logging.getLogger(__name__)
 
@@ -60,16 +67,21 @@ class OwnerOperatorController(http.Controller):
     # ------------------------------------------------------------------
     def _require_reviewer(self):
         user = http.request.env.user
-        if not (user.has_group("prema_owner_operator.group_owner_operator")
-                or user.has_group(
-                    "hr_recruitment.group_hr_recruitment_manager")):
+        allowed = (
+            "prema_owner_operator.group_owner_operator",
+            "hr_recruitment.group_hr_recruitment_manager",
+            "fleet.fleet_group_manager",
+        )
+        if not any(user.has_group(group) for group in allowed):
             raise AccessError(_("Not available to this user."))
         return user
 
-    def _throttled(self, key):
+    def _throttled(self, key, limit=None, window=None):
         now = time.time()
-        hits = [t for t in _HITS.get(key, []) if now - t < _WINDOW]
-        if len(hits) >= _LIMIT:
+        limit = _LIMIT if limit is None else limit
+        window = _WINDOW if window is None else window
+        hits = [t for t in _HITS.get(key, []) if now - t < window]
+        if len(hits) >= limit:
             _HITS[key] = hits
             return True
         hits.append(now)
@@ -80,18 +92,80 @@ class OwnerOperatorController(http.Controller):
         return (http.request.httprequest.headers.get("X-Forwarded-For")
                 or http.request.httprequest.remote_addr or "?").split(",")[0].strip()
 
+    def _resolve_home_city(self, vals, errors, env=None):
+        """Resolve the selected Google city server-side.
+
+        A Place ID is never trusted on its own: the canonical Places service
+        must return a Canadian city with a usable coordinate pair. When it
+        cannot, the manual city/province is kept and the application is
+        flagged for review instead of being lost.
+        """
+        env = env or http.request.env
+        place_id = vals.get("home_city_place_id")
+        if not place_id:
+            vals.setdefault("home_location_review", True)
+            vals.setdefault(
+                "home_location_review_reason",
+                "Location not verified — entered manually.")
+            return vals
+        resolved = None
+        if GooglePlacesService is not None:
+            try:
+                resolved = GooglePlacesService(
+                    env).resolve_place(place_id)
+            except Exception:  # noqa: BLE001 — never lose the application
+                _logger.warning(
+                    "owner-operator city resolution failed", exc_info=True)
+        if resolved and (resolved.get("country_code") or "").upper() == "CA" \
+                and resolved.get("city"):
+            code = (resolved.get("province_code") or "").upper()
+            vals.update({
+                "home_city": resolved["city"],
+                "home_city_place_id": resolved.get("place_id") or place_id,
+                "home_latitude": resolved["latitude"],
+                "home_longitude": resolved["longitude"],
+                "home_location_verified": True,
+                "home_location_review": False,
+                "home_location_review_reason": False,
+            })
+            if code in PROVINCES:
+                vals["home_province"] = PROVINCES[code]
+                vals["home_province_code"] = code
+        else:
+            vals.update({
+                "home_location_verified": False,
+                "home_location_review": True,
+                "home_location_review_reason": (
+                    "Google could not verify the selected Canadian city; "
+                    "manual review required."),
+            })
+        return vals
+
+    def _places_candidates(self, query, limit=8):
+        if GooglePlacesService is None:
+            return []
+        try:
+            return GooglePlacesService(
+                http.request.env).search_address_candidates(query, limit=limit)
+        except Exception:  # noqa: BLE001 — availability must not break the form
+            _logger.warning("owner-operator Places search failed", exc_info=True)
+            return []
+
     # ------------------------------------------------------------------
     # public form
     # ------------------------------------------------------------------
     def _apply_impl(self, job, post):
         """Shared implementation for both entry points: the dedicated route
         and the job's own /jobs/apply/<job> page."""
-        values = {"errors": [], "post": post, "job": job}
+        values = {"errors": [], "post": post, "job": job,
+                  "provinces": PROVINCES,
+                  "province_choices": PROVINCE_CHOICES}
         if http.request.httprequest.method == "GET" or not post:
             return http.request.render(
                 "prema_owner_operator.apply_form", values)
 
         vals, errors = normalise_public(post, strict=True)
+        vals = self._resolve_home_city(vals, errors)
 
         email = vals.get("email")
         if email:
@@ -148,6 +222,41 @@ class OwnerOperatorController(http.Controller):
         job = http.request.env["prema.owner.operator.application"].sudo(
         )._public_job()
         return self._apply_impl(job, post)
+
+    @http.route("/owner-operator/places/cities", type="http", auth="public",
+                website=True, csrf=False, sitemap=False)
+    def places_cities(self, q=None, **kw):
+        """Canadian city autocomplete backed by the shared Places service."""
+        query = (q or "").strip()
+        if len(query) < 2 or self._throttled(
+                "places:" + self._client_ip(), limit=60, window=60):
+            return http.request.make_json_response([])
+        out = []
+        seen = set()
+        for cand in self._places_candidates(query):
+            if (cand.get("country_code") or "").upper() != "CA":
+                continue
+            city = (cand.get("city") or "").strip()
+            code = (cand.get("province_code") or "").upper()
+            place_id = cand.get("place_id")
+            if not city or code not in PROVINCES or not place_id:
+                continue
+            key = (place_id, city, code)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append({
+                "place_id": place_id,
+                "city": city,
+                "province": PROVINCES[code],
+                "province_code": code,
+                "latitude": cand.get("latitude"),
+                "longitude": cand.get("longitude"),
+                "label": "%s, %s" % (city, code),
+            })
+            if len(out) >= 8:
+                break
+        return http.request.make_json_response(out)
 
     @http.route("/owner-operator/thanks", type="http", auth="public",
                 website=True, csrf=True, sitemap=False)
@@ -241,6 +350,34 @@ class OwnerOperatorController(http.Controller):
         filename = attachment.name or "document"
         # Only PDFs and images are shown inline; anything else is offered as
         # a download even if the caller omits ?download=1.
+        previewable = (attachment.mimetype or "").startswith(
+            ("application/pdf", "image/"))
+        wants_download = str(download).lower() not in ("", "0", "false", "none")
+        disposition = "inline" if previewable and not wants_download \
+            else "attachment"
+        return http.request.make_response(attachment.raw or b"", headers=[
+            ("Content-Type", attachment.mimetype or "application/octet-stream"),
+            ("Content-Disposition", "%s; filename=\"%s\"" % (
+                disposition, filename.replace('"', ""))),
+            ("X-Content-Type-Options", "nosniff"),
+            ("Cache-Control", "private, no-store"),
+        ])
+
+    @http.route("/owner_operator/documents/<int:document_id>", type="http",
+                auth="user", website=False, csrf=False, sitemap=False)
+    def owner_operator_document(self, document_id, download=0, **kw):
+        """Private delivery for an approval-created Documents record."""
+        self._require_reviewer()
+        document = http.request.env["documents.document"].browse(document_id)
+        if not document.exists() or not document.attachment_id \
+                or not document.oo_application_id:
+            raise NotFound()
+        try:
+            document.check_access("read")
+        except AccessError:
+            raise NotFound()
+        attachment = document.attachment_id.sudo()
+        filename = attachment.name or "document"
         previewable = (attachment.mimetype or "").startswith(
             ("application/pdf", "image/"))
         wants_download = str(download).lower() not in ("", "0", "false", "none")

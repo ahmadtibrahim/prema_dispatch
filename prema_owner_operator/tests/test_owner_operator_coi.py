@@ -116,11 +116,10 @@ class TestCOIVerification(OwnerOperatorCase):
         self.assertEqual(doc.status, "verified")
         version.invalidate_recordset()
         self.assertEqual(version.verification_status, "verified")
-        self.assertEqual(
-            self.env["prema.owner.operator"].search_count([]), 0)
+        self.assertFalse(app.operator_id)
         self.assertEqual(
             self.env["fleet.vehicle"].search_count(
-                [("operator_id", "!=", False)]), 0)
+                [("application_id", "=", app.id)]), 0)
         self.assertEqual(
             self.env["mail.mail"].search_count(
                 [("subject", "ilike", "Agreement for signature")]),

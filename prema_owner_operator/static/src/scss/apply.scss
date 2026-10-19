@@ -4,69 +4,234 @@
     color: #1b2330;
     font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
 
+    [hidden] { display: none !important; }
+
     .o_oo_apply_shell {
-        max-width: 860px;
+        max-width: 920px;
         margin: 0 auto;
         padding: 32px 20px 64px;
     }
     .o_oo_apply_head h1 { font-size: 30px; margin: 0 0 4px; }
-    .o_oo_apply_sub { color: #5a6779; font-size: 14px; margin: 0 0 24px; }
+    .o_oo_apply_sub { color: #5a6779; font-size: 14px; margin: 0 0 18px; }
+
+    /* seven-step progress */
+    .o_oo_progress {
+        list-style: none;
+        display: flex;
+        gap: 4px;
+        padding: 0;
+        margin: 0 0 18px;
+        counter-reset: step;
+    }
+    .o_oo_progress li {
+        flex: 1 1 0;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 4px;
+        font-size: 11px;
+        color: #7b8798;
+        text-align: center;
+        padding-top: 7px;
+        border-top: 3px solid #dce3ec;
+    }
+    .o_oo_progress li span {
+        width: 22px;
+        height: 22px;
+        border-radius: 50%;
+        background: #dce3ec;
+        color: #46536a;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-weight: 700;
+        font-size: 11px;
+    }
+    .o_oo_progress li.active { color: #1f3a5f; border-top-color: #1f3a5f; }
+    .o_oo_progress li.active span { background: #1f3a5f; color: #fff; }
+    .o_oo_progress li.done { color: #2e7d4f; border-top-color: #2e7d4f; }
+    .o_oo_progress li.done span { background: #2e7d4f; color: #fff; }
+
     .o_oo_apply_form {
         background: #fff;
         border: 1px solid #dfe4ec;
         border-radius: 10px;
-        padding: 20px 22px;
-        fieldset {
-            border: 0;
-            border-top: 1px solid #eef1f6;
-            padding: 18px 0 6px;
-            margin: 0;
-            &:first-of-type { border-top: 0; padding-top: 4px; }
-            legend {
-                font-size: 15px;
-                font-weight: 700;
-                padding: 0;
-                margin-bottom: 10px;
-                float: none;
-                width: auto;
-            }
-        }
-        .o_oo_row {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 14px;
-            margin-bottom: 10px;
-        }
-        label {
-            flex: 1 1 200px;
-            min-width: 0;
-            display: flex;
-            flex-direction: column;
-            gap: 4px;
-            font-size: 13px;
-            font-weight: 600;
-            color: #2a3446;
-            input, select, textarea {
-                font-weight: 400;
-                padding: 8px 10px;
-                border: 1px solid #ccd4df;
-                border-radius: 6px;
-                font-size: 14px;
-                width: 100%;
-            }
-            textarea { flex: 1 1 100%; }
-        }
-        .o_oo_checks, .o_oo_check {
-            flex-direction: row;
-            align-items: center;
-            gap: 8px;
-            font-weight: 400;
-            input { width: auto; }
-        }
-        .o_oo_checks { display: flex; flex-wrap: wrap; gap: 18px; }
-        .o_oo_hint { font-size: 12px; color: #6b7788; margin: 4px 0 10px; }
+        padding: 22px;
     }
+    .o_oo_step { display: none; }
+    .o_oo_step.active { display: block; }
+    .o_oo_card_title {
+        font-size: 18px;
+        margin: 0 0 14px;
+        padding-bottom: 8px;
+        border-bottom: 1px solid #eef1f6;
+    }
+    .o_oo_subhead {
+        font-size: 14px;
+        margin: 18px 0 8px;
+        color: #33415a;
+    }
+    .o_oo_grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 12px 16px;
+    }
+    .o_oo_span2 { grid-column: 1 / -1; }
+    .o_oo_field {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        font-size: 13px;
+        font-weight: 600;
+        color: #2a3446;
+    }
+    input, select, textarea {
+        font: inherit;
+        font-weight: 400;
+        padding: 10px 11px;
+        border: 1px solid #ccd4df;
+        border-radius: 6px;
+        font-size: 15px;
+        width: 100%;
+        box-sizing: border-box;
+        background: #fff;
+    }
+    textarea { min-height: 78px; resize: vertical; }
+    input:focus, select:focus, textarea:focus {
+        outline: 2px solid #7aa2d4;
+        outline-offset: 1px;
+    }
+    .o_oo_hint { font-size: 12px; color: #6b7788; font-weight: 400; margin: 2px 0; }
     .o_oo_req { color: #c0392b; font-weight: 700; }
+    .o_oo_note {
+        margin: 14px 0 0;
+        padding: 10px 12px;
+        background: #eef4fb;
+        border-left: 3px solid #1f3a5f;
+        border-radius: 4px;
+        font-size: 13px;
+        color: #33415a;
+    }
+    .o_oo_checks {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px 18px;
+        margin: 6px 0 12px;
+    }
+    .o_oo_check {
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        gap: 8px;
+        font-weight: 400;
+        font-size: 13.5px;
+    }
+    .o_oo_check input { width: auto; }
+    .o_oo_input_unit {
+        display: flex;
+        align-items: stretch;
+    }
+    .o_oo_input_unit input { border-radius: 6px 0 0 6px; }
+    .o_oo_input_unit > span {
+        display: inline-flex;
+        align-items: center;
+        padding: 0 10px;
+        background: #eef1f6;
+        border: 1px solid #ccd4df;
+        border-left: 0;
+        border-radius: 0 6px 6px 0;
+        color: #5a6779;
+        font-size: 13px;
+        font-weight: 600;
+        white-space: nowrap;
+    }
+    .o_oo_city_results {
+        border: 1px solid #ccd4df;
+        border-radius: 6px;
+        background: #fff;
+        box-shadow: 0 6px 18px #0001;
+        max-height: 220px;
+        overflow-y: auto;
+    }
+    .o_oo_city_item {
+        display: block;
+        width: 100%;
+        text-align: left;
+        padding: 10px 12px;
+        border: 0;
+        border-bottom: 1px solid #eef1f6;
+        background: #fff;
+        font-size: 14px;
+        cursor: pointer;
+    }
+    .o_oo_city_item:hover { background: #f2f6fb; }
+    .o_oo_verified {
+        display: inline-block;
+        margin-top: 4px;
+        padding: 2px 8px;
+        border-radius: 10px;
+        background: #e6f4ec;
+        color: #2e7d4f;
+        font-size: 12px;
+        font-weight: 600;
+    }
+    .o_oo_chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin: 4px 0 10px;
+    }
+    .o_oo_chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        padding: 3px 4px 3px 9px;
+        border-radius: 14px;
+        background: #e8eef7;
+        color: #1f3a5f;
+        font-size: 12px;
+        font-weight: 600;
+    }
+    .o_oo_chip button {
+        border: 0;
+        background: transparent;
+        color: #5a6779;
+        font-size: 15px;
+        line-height: 1;
+        padding: 2px 5px;
+        cursor: pointer;
+    }
+    .o_oo_summary {
+        margin: 8px 0 14px;
+        padding: 8px 11px;
+        background: #f2f6fb;
+        border-radius: 6px;
+        font-size: 13px;
+        color: #33415a;
+    }
+    .o_oo_nav {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        margin-top: 20px;
+        padding-top: 16px;
+        border-top: 1px solid #eef1f6;
+    }
+    .o_oo_nav button {
+        padding: 12px 22px;
+        border: 0;
+        border-radius: 8px;
+        font-size: 15px;
+        font-weight: 600;
+        cursor: pointer;
+        min-width: 120px;
+    }
+    .o_oo_back { background: #eef1f6; color: #2a3446; }
+    .o_oo_next, .o_oo_submit { background: #1f3a5f; color: #fff; }
+    .o_oo_next:hover, .o_oo_submit:hover { background: #162c49; }
+    .o_oo_footer_note { margin-top: 12px; text-align: center; }
+
     .o_oo_apply_errors {
         background: #fdf3f2;
         border: 1px solid #e6b0aa;
@@ -76,17 +241,29 @@
         color: #8e2f22;
         font-size: 13.5px;
     }
-    .o_oo_submit {
-        margin-top: 14px;
-        padding: 11px 22px;
-        border: 0;
-        border-radius: 8px;
-        background: #1f3a5f;
-        color: #fff;
-        font-size: 15px;
-        font-weight: 600;
-        cursor: pointer;
-        &:hover { background: #162c49; }
-    }
     .o_oo_apply_thanks { text-align: center; padding-top: 72px; }
+}
+
+/* Mobile: one column, large touch targets, no horizontal scrolling. */
+@media (max-width: 720px) {
+    .o_oo_apply .o_oo_apply_shell { padding: 20px 12px 48px; }
+    .o_oo_apply .o_oo_grid { grid-template-columns: 1fr; }
+    .o_oo_apply .o_oo_span2 { grid-column: auto; }
+    .o_oo_apply input,
+    .o_oo_apply select,
+    .o_oo_apply textarea { font-size: 16px; padding: 13px 12px; min-height: 48px; }
+    .o_oo_apply .o_oo_check { min-height: 44px; }
+    .o_oo_apply .o_oo_check input { width: 20px; height: 20px; }
+    .o_oo_apply .o_oo_nav button { min-height: 50px; flex: 1 1 0; }
+    .o_oo_apply .o_oo_progress {
+        overflow: visible;
+        flex-wrap: nowrap;
+    }
+    .o_oo_apply .o_oo_progress li {
+        min-width: 0;
+        flex: 1 1 0;
+        font-size: 0;
+    }
+    .o_oo_apply .o_oo_progress li span { font-size: 11px; }
+    .o_oo_apply .o_oo_progress li.active { font-size: 9px; }
 }

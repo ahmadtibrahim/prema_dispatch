@@ -17,6 +17,8 @@ COI lapsed overnight would keep being offered.
 from odoo import _, api, fields, models
 from odoo.exceptions import ValidationError
 
+from ..application_mapping import PROVINCE_CHOICES
+
 
 class FleetVehicle(models.Model):
     _inherit = "fleet.vehicle"
@@ -40,6 +42,50 @@ class FleetVehicle(models.Model):
         string="Operator home province",
         help="Province or territory paired with the home city. A parking "
              "city is not a live truck location.")
+    oo_home_province_code = fields.Selection(
+        PROVINCE_CHOICES, string="Operator home province code")
+    oo_home_place_id = fields.Char(string="Home city Place ID")
+    oo_vehicle_type = fields.Selection([
+        ("cargo_van", "Cargo Van"),
+        ("straight", "Straight Truck"),
+        ("tractor", "Tractor Truck"),
+        ("semi", "Semi-Truck"),
+    ], string="Owner-operator vehicle type")
+    oo_plate_province = fields.Selection(
+        PROVINCE_CHOICES, string="Plate province / territory")
+    oo_cargo_body_type = fields.Selection([
+        ("dry", "Dry freight"),
+        ("reefer", "Refrigerated / reefer"),
+        ("both", "Reefer and dry capable"),
+        ("other", "Other / not applicable"),
+    ], string="Cargo body type")
+    oo_cargo_height_in = fields.Float(string="Cargo interior height (in)")
+    oo_cargo_width_in = fields.Float(string="Cargo interior width (in)")
+    oo_reefer_temperature_range = fields.Char(
+        string="Reefer temperature capability")
+    oo_trailer_type = fields.Selection([
+        ("dry", "Dry Van"), ("reefer", "Reefer"),
+        ("flatbed", "Flatbed"), ("other", "Other"),
+    ], string="Trailer type")
+    oo_trailer_year = fields.Char(string="Trailer model year")
+    oo_trailer_unit = fields.Char(string="Trailer unit / identification")
+    oo_trailer_length_ft = fields.Float(string="Trailer length (ft)")
+    oo_document_ids = fields.Many2many(
+        "documents.document", string="Owner-operator documents",
+        compute="_compute_oo_document_ids")
+
+    @api.depends("operator_id")
+    def _compute_oo_document_ids(self):
+        Document = self.env["documents.document"].sudo()
+        for vehicle in self:
+            if not vehicle.operator_id:
+                vehicle.oo_document_ids = [(5, 0, 0)]
+                continue
+            vehicle.oo_document_ids = [(6, 0, Document.search([
+                ("res_model", "=", "fleet.vehicle"),
+                ("res_id", "=", vehicle.id),
+                ("oo_role", "=", "vehicle"),
+            ]).ids)]
     issue_reason = fields.Text(
         string="Issue reason",
         help="Why the truck is unavailable. Required while the fleet state is "

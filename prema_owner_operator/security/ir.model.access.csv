@@ -16,3 +16,6 @@ access_verification_mgr,verification email manager,model_prema_owner_operator_ve
 access_coi_version,coi version,model_prema_owner_operator_coi_version,prema_owner_operator.group_owner_operator,1,1,1,1
 access_coi_version_mgr,coi version manager,model_prema_owner_operator_coi_version,hr_recruitment.group_hr_recruitment_manager,1,1,0,0
 access_coi_version_officer,coi version officer,model_prema_owner_operator_coi_version,hr_recruitment.group_hr_recruitment_user,1,0,0,0
+access_documents_document_owner_operator,owner operator documents,documents.model_documents_document,prema_owner_operator.group_owner_operator,1,0,0,0
+access_documents_document_hr_mgr,owner operator documents hr manager,documents.model_documents_document,hr_recruitment.group_hr_recruitment_manager,1,0,0,0
+access_documents_document_fleet_mgr,owner operator documents fleet manager,documents.model_documents_document,fleet.fleet_group_manager,1,0,0,0

@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- Driver contact: the approval-created private documents. -->
+    <record id="view_partner_form_owner_operator_driver" model="ir.ui.view">
+        <field name="name">res.partner.form.owner_operator.driver</field>
+        <field name="model">res.partner</field>
+        <field name="inherit_id" ref="base.view_partner_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//notebook" position="inside">
+                <page string="Owner-Operator Documents" name="oo_documents"
+                      invisible="not oo_is_driver">
+                    <field name="oo_is_driver" invisible="1"/>
+                    <field name="oo_document_ids" readonly="1">
+                        <list create="0" delete="0">
+                            <field name="name"/>
+                            <field name="mimetype"/>
+                            <field name="create_date"/>
+                            <field name="oo_source_document_id"/>
+                            <field name="oo_coi_version_id"/>
+                            <button name="action_open_owner_operator_document"
+                                    type="object" string="View" icon="fa-eye"
+                                    class="btn-link"/>
+                        </list>
+                    </field>
+                </page>
+                <page string="Owner-Operator Licence" name="oo_driver_licence"
+                      invisible="not oo_is_driver">
+                    <field name="oo_is_driver" invisible="1"/>
+                    <group>
+                        <group>
+                            <field name="oo_application_id" readonly="1"/>
+                            <field name="oo_licence_class" readonly="1"/>
+                            <field name="oo_licence_province" readonly="1"/>
+                        </group>
+                        <group>
+                            <field name="oo_licence_number" readonly="1"/>
+                            <field name="oo_licence_expiry" readonly="1"/>
+                            <field name="oo_licence_verified" readonly="1"/>
+                            <field name="oo_licence_verified_on" readonly="1"/>
+                            <field name="oo_licence_verified_by" readonly="1"/>
+                        </group>
+                    </group>
+                </page>
+            </xpath>
+        </field>
+    </record>
+
+    <!-- Operator-linked Fleet vehicle: all approval documents. -->
+    <record id="view_fleet_vehicle_form_owner_operator_documents"
+            model="ir.ui.view">
+        <field name="name">fleet.vehicle.form.owner_operator.documents</field>
+        <field name="model">fleet.vehicle</field>
+        <field name="inherit_id" ref="fleet.fleet_vehicle_view_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//notebook" position="inside">
+                <page string="Documents" name="oo_vehicle_documents"
+                      invisible="not operator_id">
+                    <field name="operator_id" invisible="1"/>
+                    <field name="oo_document_ids" readonly="1">
+                        <list create="0" delete="0">
+                            <field name="name"/>
+                            <field name="mimetype"/>
+                            <field name="create_date"/>
+                            <field name="oo_source_document_id"/>
+                            <field name="oo_coi_version_id"/>
+                            <button name="action_open_owner_operator_document"
+                                    type="object" string="View" icon="fa-eye"
+                                    class="btn-link"/>
+                        </list>
+                    </field>
+                </page>
+            </xpath>
+        </field>
+    </record>
+</odoo>
