@@ -170,12 +170,14 @@
                     </p>
 
                     <group string="Needs upload">
-                        <field name="owner_operator_document_ids" readonly="1"
-                               nolabel="1"
-                               domain="[('required_stage', '!=', 'contract'),
-                                        ('document_type', 'not in', ('coi_applicant', 'coi_insurer')),
-                                        '|', ('attachment_id', '=', False),
-                                        ('status', '=', 'pending')]">
+                        <field name="oo_document_needs_upload_count" invisible="1"/>
+                        <div class="text-muted"
+                             invisible="oo_document_needs_upload_count">
+                            No documents need upload.
+                        </div>
+                        <field name="oo_document_needs_upload_ids" readonly="1"
+                               invisible="not oo_document_needs_upload_count"
+                               nolabel="1">
                             <list create="false" edit="false" delete="false"
                                   decoration-danger="status == 'rejected'">
                                 <field name="document_type"/>
@@ -191,10 +193,14 @@
                     </group>
 
                     <group string="Received — needs review">
-                        <field name="owner_operator_document_ids" readonly="1"
-                               nolabel="1"
-                               domain="[('attachment_id', '!=', False),
-                                        ('status', 'in', ('received', 'rejected'))]">
+                        <field name="oo_document_received_count" invisible="1"/>
+                        <div class="text-muted"
+                             invisible="oo_document_received_count">
+                            No received files are waiting for review.
+                        </div>
+                        <field name="oo_document_received_ids" readonly="1"
+                               invisible="not oo_document_received_count"
+                               nolabel="1">
                             <list create="false" edit="false" delete="false"
                                   decoration-danger="status == 'rejected'">
                                 <field name="document_type"/>
@@ -210,9 +216,14 @@
                     </group>
 
                     <group string="Verified">
-                        <field name="owner_operator_document_ids" readonly="1"
-                               nolabel="1"
-                               domain="[('status', '=', 'verified')]">
+                        <field name="oo_document_verified_count" invisible="1"/>
+                        <div class="text-muted"
+                             invisible="oo_document_verified_count">
+                            No documents verified yet.
+                        </div>
+                        <field name="oo_document_verified_ids" readonly="1"
+                               invisible="not oo_document_verified_count"
+                               nolabel="1">
                             <list create="false" edit="false" delete="false"
                                   decoration-success="status == 'verified'">
                                 <field name="document_type"/>
@@ -230,10 +241,14 @@
                     </group>
 
                     <group string="Required later (contract)">
-                        <field name="owner_operator_document_ids" readonly="1"
-                               nolabel="1"
-                               domain="[('required_stage', '=', 'contract'),
-                                        ('status', '=', 'pending')]">
+                        <field name="oo_document_later_count" invisible="1"/>
+                        <div class="text-muted"
+                             invisible="oo_document_later_count">
+                            Nothing is required at the contract stage yet.
+                        </div>
+                        <field name="oo_document_later_ids" readonly="1"
+                               invisible="not oo_document_later_count"
+                               nolabel="1">
                             <list create="false" edit="false" delete="false">
                                 <field name="document_type"/>
                                 <field name="status" widget="badge"/>
@@ -254,9 +269,14 @@
                     </div>
 
                     <group string="Applicant / forwarded COI copy">
-                        <field name="owner_operator_document_ids" readonly="1"
-                               nolabel="1"
-                               domain="[('document_type', '=', 'coi_applicant')]">
+                        <field name="oo_document_coi_applicant_count" invisible="1"/>
+                        <div class="text-muted"
+                             invisible="oo_document_coi_applicant_count">
+                            No applicant COI copy on file.
+                        </div>
+                        <field name="oo_document_coi_applicant_ids" readonly="1"
+                               invisible="not oo_document_coi_applicant_count"
+                               nolabel="1">
                             <list create="false" edit="false" delete="false">
                                 <field name="document_type"/>
                                 <field name="status" widget="badge"/>
@@ -271,9 +291,14 @@
                     </group>
 
                     <group string="Insurer-direct COI (requested)">
-                        <field name="owner_operator_document_ids" readonly="1"
-                               nolabel="1"
-                               domain="[('document_type', '=', 'coi_insurer')]">
+                        <field name="oo_document_coi_insurer_count" invisible="1"/>
+                        <div class="text-muted"
+                             invisible="oo_document_coi_insurer_count">
+                            No insurer-direct COI on file.
+                        </div>
+                        <field name="oo_document_coi_insurer_ids" readonly="1"
+                               invisible="not oo_document_coi_insurer_count"
+                               nolabel="1">
                             <list create="false" edit="false" delete="false">
                                 <field name="document_type"/>
                                 <field name="status" widget="badge"/>
@@ -288,7 +313,12 @@
                     </group>
 
                     <group string="Received COI versions (original files)">
-                        <field name="oo_coi_version_ids" readonly="1" nolabel="1">
+                        <field name="oo_coi_version_count" invisible="1"/>
+                        <div class="text-muted" invisible="oo_coi_version_count">
+                            No received COI versions yet.
+                        </div>
+                        <field name="oo_coi_version_ids" readonly="1"
+                               invisible="not oo_coi_version_count" nolabel="1">
                             <list create="false" edit="false" delete="false">
                                 <field name="received_date"/>
                                 <field name="is_current"/>

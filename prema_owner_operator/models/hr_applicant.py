@@ -23,6 +23,42 @@ class HrApplicant(models.Model):
     owner_operator_document_ids = fields.One2many(
         related="owner_operator_application_id.document_ids",
         string="Owner-operator documents", readonly=True)
+    oo_document_needs_upload_ids = fields.One2many(
+        related="owner_operator_application_id.document_needs_upload_ids",
+        readonly=True)
+    oo_document_received_ids = fields.One2many(
+        related="owner_operator_application_id.document_received_ids",
+        readonly=True)
+    oo_document_verified_ids = fields.One2many(
+        related="owner_operator_application_id.document_verified_ids",
+        readonly=True)
+    oo_document_later_ids = fields.One2many(
+        related="owner_operator_application_id.document_later_ids",
+        readonly=True)
+    oo_document_coi_applicant_ids = fields.One2many(
+        related="owner_operator_application_id.document_coi_applicant_ids",
+        readonly=True)
+    oo_document_coi_insurer_ids = fields.One2many(
+        related="owner_operator_application_id.document_coi_insurer_ids",
+        readonly=True)
+    oo_document_needs_upload_count = fields.Integer(
+        related="owner_operator_application_id.document_needs_upload_count",
+        readonly=True)
+    oo_document_received_count = fields.Integer(
+        related="owner_operator_application_id.document_received_count",
+        readonly=True)
+    oo_document_verified_count = fields.Integer(
+        related="owner_operator_application_id.document_verified_count",
+        readonly=True)
+    oo_document_later_count = fields.Integer(
+        related="owner_operator_application_id.document_later_count",
+        readonly=True)
+    oo_document_coi_applicant_count = fields.Integer(
+        related="owner_operator_application_id.document_coi_applicant_count",
+        readonly=True)
+    oo_document_coi_insurer_count = fields.Integer(
+        related="owner_operator_application_id.document_coi_insurer_count",
+        readonly=True)
     oo_service_provinces = fields.Char(
         string="Provinces / territories served",
         compute="_compute_oo_service_provinces")
@@ -175,6 +211,9 @@ class HrApplicant(models.Model):
         readonly=True)
     oo_coi_version_ids = fields.One2many(
         related="owner_operator_application_id.coi_version_ids", readonly=True)
+    oo_coi_version_count = fields.Integer(
+        related="owner_operator_application_id.coi_version_count",
+        readonly=True)
     oo_coi_email_ids = fields.One2many(
         related="owner_operator_application_id.coi_email_ids", readonly=True)
     oo_setup_email_sent_at = fields.Datetime(

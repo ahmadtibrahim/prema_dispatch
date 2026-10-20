@@ -785,6 +785,13 @@ class OwnerOperatorApplication(models.Model):
     coi_version_ids = fields.One2many(
         "prema.owner.operator.coi.version", "application_id",
         string="COI versions", readonly=True)
+    coi_version_count = fields.Integer(
+        compute="_compute_coi_version_count")
+
+    @api.depends("coi_version_ids")
+    def _compute_coi_version_count(self):
+        for app in self:
+            app.coi_version_count = len(app.coi_version_ids)
     coi_current_version_id = fields.Many2one(
         "prema.owner.operator.coi.version", string="Current COI",
         readonly=True, copy=False, ondelete="restrict")
@@ -796,6 +803,70 @@ class OwnerOperatorApplication(models.Model):
                                string="Recruitment stage", store=True)
     document_ids = fields.One2many(
         "prema.owner.operator.document", "application_id", string="Documents")
+    # The review workspace needs mutually exclusive groups. A view-level
+    # domain on a readonly related One2many is not enough (it does not filter
+    # the already-loaded rows consistently), so each group is computed here.
+    document_needs_upload_ids = fields.One2many(
+        "prema.owner.operator.document", compute="_compute_document_groups",
+        string="Documents needing upload")
+    document_received_ids = fields.One2many(
+        "prema.owner.operator.document", compute="_compute_document_groups",
+        string="Documents received, not reviewed")
+    document_verified_ids = fields.One2many(
+        "prema.owner.operator.document", compute="_compute_document_groups",
+        string="Verified documents")
+    document_later_ids = fields.One2many(
+        "prema.owner.operator.document", compute="_compute_document_groups",
+        string="Documents required later")
+    document_coi_applicant_ids = fields.One2many(
+        "prema.owner.operator.document", compute="_compute_document_groups",
+        string="Applicant COI copy")
+    document_coi_insurer_ids = fields.One2many(
+        "prema.owner.operator.document", compute="_compute_document_groups",
+        string="Insurer-direct COI")
+    document_needs_upload_count = fields.Integer(
+        compute="_compute_document_groups")
+    document_received_count = fields.Integer(
+        compute="_compute_document_groups")
+    document_verified_count = fields.Integer(
+        compute="_compute_document_groups")
+    document_later_count = fields.Integer(
+        compute="_compute_document_groups")
+    document_coi_applicant_count = fields.Integer(
+        compute="_compute_document_groups")
+    document_coi_insurer_count = fields.Integer(
+        compute="_compute_document_groups")
+
+    @api.depends(
+        "document_ids", "document_ids.status", "document_ids.attachment_id",
+        "document_ids.document_type", "document_ids.required_stage")
+    def _compute_document_groups(self):
+        for app in self:
+            docs = app.document_ids
+            coi_types = ("coi_applicant", "coi_insurer")
+            main = docs.filtered(lambda d: d.document_type not in coi_types)
+            app.document_needs_upload_ids = main.filtered(
+                lambda d: d.required_stage != "contract"
+                and (not d.attachment_id or d.status == "pending"))
+            app.document_received_ids = main.filtered(
+                lambda d: d.attachment_id
+                and d.status in ("received", "rejected"))
+            app.document_verified_ids = main.filtered(
+                lambda d: d.status == "verified")
+            app.document_later_ids = docs.filtered(
+                lambda d: d.required_stage == "contract"
+                and d.status == "pending")
+            app.document_coi_applicant_ids = docs.filtered(
+                lambda d: d.document_type == "coi_applicant")
+            app.document_coi_insurer_ids = docs.filtered(
+                lambda d: d.document_type == "coi_insurer")
+            app.document_needs_upload_count = len(app.document_needs_upload_ids)
+            app.document_received_count = len(app.document_received_ids)
+            app.document_verified_count = len(app.document_verified_ids)
+            app.document_later_count = len(app.document_later_ids)
+            app.document_coi_applicant_count = len(
+                app.document_coi_applicant_ids)
+            app.document_coi_insurer_count = len(app.document_coi_insurer_ids)
 
     sign_request_id = fields.Many2one("sign.request", string="Sign request",
                                       ondelete="restrict", copy=False)
@@ -849,7 +920,8 @@ class OwnerOperatorApplication(models.Model):
         "missing_qualification", "missing_verification", "missing_contract",
         "equipment_missing", "home_base_tag_issue", "licence_current",
         "can_approve", "operator_id", "sign_request_id", "contract_signed_on",
-        "fleet_vehicle_id")
+        "fleet_vehicle_id", "coi_version_ids",
+        "coi_version_ids.verification_status")
     def _compute_review_next_action(self):
         for app in self:
             app.review_next_action = app._review_next_action()
@@ -860,6 +932,12 @@ class OwnerOperatorApplication(models.Model):
             return _("Approved and handed to Fleet — no review action.")
         if self.state == "rejected":
             return _("Application rejected — no review action.")
+        # A received COI awaiting review is the immediate action; missing
+        # files are listed separately and must not hide it.
+        if self.verification_status == "review" or any(
+                version.verification_status == "review"
+                for version in self.coi_version_ids):
+            return _("Review the received COI and confirm the coverage.")
         if self.state in ("submitted", "qualifying"):
             if self.missing_initial:
                 return _("Collect the missing initial documents: %s") % \
