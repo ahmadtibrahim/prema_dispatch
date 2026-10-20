@@ -250,6 +250,14 @@
                                         <option value="tractor" t-att-selected="post.get('VehicleType') == 'tractor'">Tractor Truck</option>
                                         <option value="semi" t-att-selected="post.get('VehicleType') == 'semi'">Semi-Truck</option>
                                     </select></label>
+                                <label class="o_oo_field">Cab <span class="o_oo_req" id="oo_cab_req" hidden="hidden">*</span>
+                                    <select name="CabType" id="oo_CabType"
+                                            onchange="ooSyncCab();">
+                                        <option value="not_applicable" t-att-selected="post.get('CabType', 'not_applicable') == 'not_applicable'">Not Applicable</option>
+                                        <option value="day" t-att-selected="post.get('CabType') == 'day'">Day Cab</option>
+                                        <option value="night" t-att-selected="post.get('CabType') == 'night'">Night Cab</option>
+                                    </select>
+                                    <span class="o_oo_hint">Day Cab or Night Cab is required for Tractor Truck and Semi-Truck.</span></label>
                                 <label class="o_oo_field">Make <span class="o_oo_req">*</span>
                                     <input type="text" name="TruckMake" required="required"
                                            maxlength="80" placeholder="e.g. Freightliner"
@@ -567,7 +575,8 @@
                                           placeholder="Tell us about your equipment, availability or questions."
                                           t-esc="post.get('applicant_notes', '')"/></label>
                             <label class="o_oo_check">
-                                <input type="checkbox" name="ApplicationDeclaration" value="Confirmed"
+                                <input type="checkbox" name="ApplicationDeclaration"
+                                       id="oo_ApplicationDeclaration" value="Confirmed"
                                        required="required"
                                        t-att-checked="bool(post.get('ApplicationDeclaration'))"/>
                                 I confirm this is my application and the information is accurate. I have read the privacy notice. <span class="o_oo_req">*</span>
@@ -613,6 +622,16 @@
                             back.hidden = current === 1;
                             next.hidden = current === steps.length;
                             submit.hidden = current !== steps.length;
+                            // The Submit button replaces Continue in the
+                            // same position. Hold it briefly so a rapid
+                            // double click cannot submit step 7 before the
+                            // declaration checkbox is revealed to the user.
+                            submit.disabled = current === steps.length;
+                            if (current === steps.length) {
+                                setTimeout(function () {
+                                    submit.disabled = false;
+                                }, 500);
+                            }
                             window.scrollTo({top: 0, behavior: "smooth"});
                         }
 
@@ -632,17 +651,36 @@
                         }
 
                         next.addEventListener("click", function () {
-                            if (stepValid()) { show(current + 1); }
+                            if (next.disabled) { return; }
+                            if (stepValid()) {
+                                next.disabled = true;
+                                show(current + 1);
+                                setTimeout(function () {
+                                    next.disabled = false;
+                                }, 350);
+                            }
                         });
                         back.addEventListener("click", function () {
                             show(current - 1);
                         });
                         form.addEventListener("submit", function (ev) {
+                            var declaration = document.getElementById(
+                                "oo_ApplicationDeclaration");
+                            if (declaration && !declaration.checked) {
+                                ev.preventDefault();
+                                declaration.reportValidity();
+                                return;
+                            }
                             if (!form.checkValidity()) {
                                 ev.preventDefault();
                                 var bad = form.querySelector(":invalid");
                                 if (bad) { bad.reportValidity(); }
+                                return;
                             }
+                            // One submission only; the server also requires
+                            // the declaration, so a missing consent value can
+                            // never create an application.
+                            submit.disabled = true;
                         });
 
                         // ── formatting helpers ──────────────────────
@@ -702,6 +740,10 @@
                         var trailerBlock = document.getElementById("oo_semi_trailer");
                         var tractorNote = document.getElementById("oo_tractor_note");
                         var trailerType = document.getElementById("oo_TrailerType");
+                        var cab = document.getElementById("oo_CabType");
+                        var cabReq = document.getElementById("oo_cab_req");
+                        var cabNA = cab ? cab.querySelector(
+                            'option[value="not_applicable"]') : null;
 
                         function setVisible(el, visible) {
                             if (!el) { return; }
@@ -795,6 +837,29 @@
                                     });
                             }
                             ooSyncTrailer();
+                            ooSyncCab();
+                        };
+
+                        window.ooSyncCab = function () {
+                            if (!cab) { return; }
+                            var heavy = vehicle.value === "tractor" ||
+                                vehicle.value === "semi";
+                            if (cabNA) { cabNA.disabled = heavy; }
+                            if (heavy) {
+                                // "Not Applicable" is not a valid answer for
+                                // a tractor or semi-truck: force an explicit
+                                // Day Cab / Night Cab choice.
+                                if (cab.value === "not_applicable") {
+                                    cab.value = "";
+                                }
+                                cab.required = true;
+                            } else {
+                                cab.required = false;
+                                if (!cab.value) {
+                                    cab.value = "not_applicable";
+                                }
+                            }
+                            if (cabReq) { cabReq.hidden = !heavy; }
                         };
 
                         // ── operating-area chips ────────────────────

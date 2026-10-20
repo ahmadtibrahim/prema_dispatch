@@ -81,6 +81,14 @@ VEHICLE_TYPES = {
     "semi": "Semi-Truck",
 }
 
+CAB_TYPES = {
+    "not_applicable": "Not Applicable",
+    "day": "Day Cab",
+    "night": "Night Cab",
+}
+
+CAB_REQUIRED_VEHICLE_TYPES = {"tractor", "semi"}
+
 OWNERSHIPS = {"own": "Owned", "lease": "Leased", "financed": "Financed"}
 
 TRANSMISSIONS = {
@@ -216,6 +224,7 @@ FIELD_MAP = {
     "TDGSpecialTraining": "tdg_special_training",
     "RecentDrivingWork": "recent_driving_work",
     "VehicleType": "vehicle_type",
+    "CabType": "cab_type",
     "TruckMake": "truck_make",
     "TruckModel": "truck_model",
     "TruckMakeModel": "equipment_model",
@@ -547,6 +556,20 @@ def normalise_public(post, strict=True):
     vehicle_type = _choice(post.get("VehicleType"), set(VEHICLE_TYPES),
                            "vehicle type", errors)
     put("VehicleType", "vehicle_type", vehicle_type)
+    cab_type = _choice(post.get("CabType"), set(CAB_TYPES),
+                       "cab type", errors)
+    if vehicle_type in CAB_REQUIRED_VEHICLE_TYPES:
+        if cab_type not in ("day", "night"):
+            cab_type = False
+            if strict and not any(
+                    "cab type" in error for error in errors):
+                errors.append(
+                    "Choose Day Cab or Night Cab for a tractor or "
+                    "semi-truck.")
+    elif strict and not cab_type:
+        # Cargo vans and straight trucks may keep Not Applicable.
+        cab_type = "not_applicable"
+    put("CabType", "cab_type", cab_type)
     make = _text(post.get("TruckMake"))
     model = _text(post.get("TruckModel"))
     legacy_model = _text(post.get("TruckMakeModel"))

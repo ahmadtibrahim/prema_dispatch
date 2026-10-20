@@ -61,6 +61,8 @@ class OwnerOperatorNotificationLog(models.Model):
     channel = fields.Selection([
         ("whatsapp", "WhatsApp"),
         ("email", "Email"),
+        ("both", "WhatsApp and email"),
+        ("none", "Do not send load opportunities"),
     ], string="Channel")
     whatsapp_number = fields.Char(string="WhatsApp number")
     email = fields.Char(string="Load-notification email")
