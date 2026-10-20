@@ -100,6 +100,7 @@
                         <field name="category_id" readonly="1"/>
                         <field name="oo_plate_province" readonly="1"/>
                         <field name="oo_cargo_body_type" readonly="1"/>
+                        <field name="oo_cargo_door_style" readonly="1"/>
                         <field name="oo_cargo_width_in" readonly="1"/>
                         <field name="oo_cargo_height_in" readonly="1"/>
                         <field name="oo_reefer_temperature_range" readonly="1"/>
@@ -117,6 +118,7 @@
                        invisible="not operator_id or oo_vehicle_type != 'semi'">
                     <group>
                         <field name="oo_trailer_type" readonly="1"/>
+                        <field name="oo_trailer_door_style" readonly="1"/>
                         <field name="oo_trailer_year" readonly="1"/>
                         <field name="oo_trailer_unit" readonly="1"/>
                         <field name="oo_trailer_length_ft" readonly="1"/>

@@ -1,6 +1,6 @@
 {
     "name": "Prema Owner-Operator Onboarding",
-    "version": "18.0.1.3.4",
+    "version": "18.0.1.4.0",
     "summary": "Owner-operator application, qualification, contract signing and Fleet hand-off for logistics.premafirm.com",
     "category": "Logistics",
     "description": """

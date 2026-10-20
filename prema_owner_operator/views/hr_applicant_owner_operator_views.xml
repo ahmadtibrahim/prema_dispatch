@@ -114,6 +114,36 @@
                         </group>
                     </group>
 
+                    <group string="Operating authority / registration">
+                        <field name="owner_operator_authority_count" invisible="1"/>
+                        <div class="text-muted"
+                             invisible="owner_operator_authority_count">
+                            No authority entries.
+                        </div>
+                        <field name="owner_operator_authority_ids" readonly="1"
+                               nolabel="1"
+                               invisible="not owner_operator_authority_count">
+                            <list create="false" edit="false" delete="false">
+                                <field name="authority_type"/>
+                                <field name="jurisdiction_label"/>
+                                <field name="number"/>
+                                <field name="expiry_date" optional="show"/>
+                                <field name="review_status" widget="badge"/>
+                                <field name="file_name" optional="show"/>
+                                <field name="mimetype" column_invisible="1"/>
+                                <field name="can_preview"
+                                       widget="owner_operator_document_view"
+                                       options="{'route': 'authority'}"/>
+                                <button name="action_verify" type="object"
+                                        icon="fa-check" title="Verify authority"
+                                        invisible="review_status == 'verified'"/>
+                                <button name="action_reject" type="object"
+                                        icon="fa-times" title="Reject authority"
+                                        invisible="review_status == 'rejected'"/>
+                            </list>
+                        </field>
+                    </group>
+
                     <group string="What is missing or needs review">
                         <field name="oo_missing_initial" readonly="1"
                                invisible="not oo_missing_initial"/>
@@ -411,18 +441,16 @@
                         <group string="Cargo body">
                             <field name="oo_cargo_body_type" readonly="1"
                                    invisible="not oo_cargo_body_type"/>
+                            <field name="oo_cargo_door_style" readonly="1"
+                                   invisible="not oo_cargo_door_style"/>
                             <field name="oo_payload_lbs" readonly="1"
                                    invisible="not oo_payload_lbs"/>
                             <field name="oo_pallet_capacity" readonly="1"
                                    invisible="not oo_pallet_capacity"/>
                             <field name="oo_box_length_ft" readonly="1"
                                    invisible="not oo_box_length_ft"/>
-                            <field name="oo_cargo_width_in" readonly="1"
-                                   invisible="not oo_cargo_width_in"/>
                             <field name="oo_cargo_height_in" readonly="1"
                                    invisible="not oo_cargo_height_in"/>
-                            <field name="oo_door_width_in" readonly="1"
-                                   invisible="not oo_door_width_in"/>
                             <field name="oo_door_clearance_in" readonly="1"
                                    invisible="not oo_door_clearance_in"/>
                         </group>
@@ -444,6 +472,8 @@
                                    invisible="not oo_trailer_ownership"/>
                             <field name="oo_trailer_type" readonly="1"
                                    invisible="not oo_trailer_type"/>
+                            <field name="oo_trailer_door_style" readonly="1"
+                                   invisible="not oo_trailer_door_style"/>
                             <field name="oo_trailer_year" readonly="1"
                                    invisible="not oo_trailer_year"/>
                             <field name="oo_trailer_length_ft" readonly="1"

@@ -383,7 +383,9 @@ class TestFleetHandoff(OwnerOperatorCase):
             home_city="Mississauga", home_province="ON",
             home_province_code="ON", vehicle_type="straight")
         app.write({
-            "cargo_body_type": "dry", "box_length_ft": 26,
+            "cargo_body_type": "dry",
+            "cargo_door_style": "rollup",
+            "trailer_door_style": "rollup", "box_length_ft": 26,
             "gvwr_lbs": 26000, "air_ride": "yes", "liftgate": "no",
         })
         vehicle = app.action_approve()
