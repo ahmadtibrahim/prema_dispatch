@@ -840,6 +840,60 @@ class OwnerOperatorApplication(models.Model):
              "Final approval needs every required document VERIFIED.")
     licence_current = fields.Boolean(compute="_compute_missing")
     can_approve = fields.Boolean(compute="_compute_missing")
+    review_next_action = fields.Char(
+        string="Next action", compute="_compute_review_next_action",
+        help="The single next review step for the Recruitment workspace.")
+
+    @api.depends(
+        "state", "verification_status", "missing_initial",
+        "missing_qualification", "missing_verification", "missing_contract",
+        "equipment_missing", "home_base_tag_issue", "licence_current",
+        "can_approve", "operator_id", "sign_request_id", "contract_signed_on",
+        "fleet_vehicle_id")
+    def _compute_review_next_action(self):
+        for app in self:
+            app.review_next_action = app._review_next_action()
+
+    def _review_next_action(self):
+        self.ensure_one()
+        if self.state == "approved":
+            return _("Approved and handed to Fleet — no review action.")
+        if self.state == "rejected":
+            return _("Application rejected — no review action.")
+        if self.state in ("submitted", "qualifying"):
+            if self.missing_initial:
+                return _("Collect the missing initial documents: %s") % \
+                    self.missing_initial
+            if not self.licence_current:
+                return _("Verify a current driver licence.")
+            return _("Advance to Authority & Insurance Review.")
+        if self.state == "authority_review":
+            if self.verification_status == "review":
+                return _("Review the received COI and confirm the coverage.")
+            if self.verification_status == "pending":
+                return _("Await the insurer-direct COI or review the "
+                         "applicant copy.")
+            if self.missing_qualification:
+                return _("Complete the qualification documents: %s") % \
+                    self.missing_qualification
+            return _("Move to Contract Proposal.")
+        if self.state == "verified":
+            return _("Send the agreement for signature.") \
+                if not self.sign_request_id \
+                else _("Await the signed agreement.")
+        if self.state == "contract":
+            return _("Await the signed agreement and completed signature.")
+        if self.state == "signed":
+            if self.can_approve:
+                return _("Approve → Fleet.")
+            missing = ", ".join(p for p in (
+                self.missing_verification, self.equipment_missing,
+                self.home_base_tag_issue,
+                _("operator profile") if not self.operator_id else False,
+            ) if p)
+            return _("Approval is unavailable: %s") % (
+                missing or _("complete the remaining requirements."))
+        return _("Review the application.")
 
     # ------------------------------------------------------------------
     # completion

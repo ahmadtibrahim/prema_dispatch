@@ -68,17 +68,11 @@
                                     <field name="home_city"/>
                                     <field name="home_province"/>
                                     <field name="home_province_code"/>
-                                    <field name="home_city_place_id"/>
-                                    <field name="home_latitude"/>
-                                    <field name="home_longitude"/>
-                                    <field name="home_location_verified"/>
                                     <field name="home_location_review"/>
-                                    <field name="home_location_review_reason"/>
                                     <field name="service_province_ids" widget="many2many_tags"/>
                                 </group>
                                 <group string="Driver licence">
                                     <field name="licence_class"/>
-                                    <field name="licence_jurisdiction"/>
                                     <field name="licence_province"/>
                                     <field name="licence_expiry"/>
                                     <field name="licence_suspension"/>
@@ -186,11 +180,6 @@
                                     <field name="available_start_date"/>
                                     <field name="application_declaration"/>
                                 </group>
-                                <group string="Legacy single answers">
-                                    <field name="preferred_service_area" readonly="1"/>
-                                    <field name="work_preference" readonly="1"/>
-                                    <field name="whatsapp_consent" readonly="1"/>
-                                </group>
                             </group>
                             <group string="Load-notification contact">
                                 <group>
@@ -241,33 +230,6 @@
                                             class="btn-link"
                                             invisible="cvor_verification_status == 'rejected' or not cvor_number"/>
                                 </group>
-                                <group string="CVOR extraction (proposal only — not verification)">
-                                    <field name="cvor_extraction_status"/>
-                                    <field name="cvor_proposed_number" readonly="1"/>
-                                    <field name="cvor_extraction_confidence" readonly="1"/>
-                                    <field name="cvor_extraction_method" readonly="1"/>
-                                    <field name="cvor_extraction_mismatch" readonly="1"/>
-                                    <field name="cvor_extraction_reason" readonly="1"/>
-                                    <field name="cvor_extraction_candidates" readonly="1"/>
-                                    <field name="cvor_extraction_source_document_id"
-                                           readonly="1"/>
-                                    <field name="cvor_extraction_checked_on" readonly="1"/>
-                                    <button name="action_extract_cvor" type="object"
-                                            string="Extract CVOR number"
-                                            class="btn-link"/>
-                                    <button name="action_preview_cvor_source"
-                                            type="object" string="Preview source"
-                                            class="btn-link"
-                                            invisible="not cvor_extraction_source_document_id"/>
-                                    <button name="action_confirm_cvor_extraction"
-                                            type="object" string="Confirm proposed number"
-                                            class="btn-link"
-                                            invisible="not cvor_proposed_number or cvor_extraction_status == 'confirmed'"/>
-                                    <button name="action_reject_cvor_extraction"
-                                            type="object" string="Reject proposal"
-                                            class="btn-link"
-                                            invisible="not cvor_proposed_number or cvor_extraction_status == 'rejected'"/>
-                                </group>
                                 <group string="Canadian TDG certificate (reviewer)">
                                     <field name="tdg_certificate_result"
                                            widget="badge"
@@ -291,11 +253,6 @@
                                             string="Reject TDG certificate"
                                             class="btn-link"
                                             invisible="tdg_certificate_result == 'rejected'"/>
-                                </group>
-                                <group string="Insurance agent (legacy — not collected on the public form)">
-                                    <field name="insurance_agent_name" readonly="1"/>
-                                    <field name="insurance_agent_email" widget="email" readonly="1"/>
-                                    <field name="authority_state"/>
                                 </group>
                                 <group string="Driver licence verification (reviewer)">
                                     <field name="licence_class"/>
@@ -350,17 +307,8 @@
                                 </group>
                             </group>
                             <group string="Insurer-direct COI request">
-                                <group>
-                                    <field name="coi_request_sent_at" readonly="1"/>
-                                    <field name="coi_request_sent_by" readonly="1"/>
-                                    <field name="coi_request_count" readonly="1"/>
-                                    <field name="coi_request_last_subject" readonly="1"/>
-                                    <field name="coi_request_message_id" readonly="1"/>
-                                </group>
-                                <group string="Review thresholds (settings)">
-                                    <field name="coi_min_auto_liability" readonly="1"/>
-                                    <field name="coi_min_cargo" readonly="1"/>
-                                </group>
+                                <field name="coi_request_sent_at" readonly="1"/>
+                                <field name="coi_email_count" readonly="1"/>
                             </group>
                             <group string="COI versions (original documents)">
                                 <field name="coi_version_ids" readonly="1">
@@ -380,17 +328,6 @@
                                                widget="owner_operator_document_view"
                                                options="{'route': 'coi_version'}"
                                                readonly="1"/>
-                                    </list>
-                                </field>
-                            </group>
-                            <group string="COI emails">
-                                <field name="coi_email_ids" readonly="1">
-                                    <list>
-                                        <field name="received_date"/>
-                                        <field name="sender_email"/>
-                                        <field name="subject"/>
-                                        <field name="state" widget="badge"/>
-                                        <field name="match_reason"/>
                                     </list>
                                 </field>
                             </group>
@@ -429,6 +366,82 @@
                                     <field name="approved_by" readonly="1"/>
                                     <field name="home_base_tag_issue" readonly="1"/>
                                 </group>
+                            </group>
+                        </page>
+
+                        <page string="Advanced" name="advanced">
+                            <group>
+                                <group string="Location diagnostics">
+                                    <field name="home_city_place_id" readonly="1"/>
+                                    <field name="home_latitude" readonly="1"/>
+                                    <field name="home_longitude" readonly="1"/>
+                                    <field name="home_location_verified" readonly="1"/>
+                                    <field name="home_location_review_reason" readonly="1"/>
+                                </group>
+                                <group string="Legacy / duplicate values">
+                                    <field name="licence_jurisdiction" readonly="1"/>
+                                    <field name="plate_jurisdiction" readonly="1"/>
+                                    <field name="preferred_service_area" readonly="1"/>
+                                    <field name="work_preference" readonly="1"/>
+                                    <field name="whatsapp_consent" readonly="1"/>
+                                </group>
+                            </group>
+                            <group>
+                                <group string="CVOR extraction (proposal only — not verification)">
+                                    <field name="cvor_extraction_status"/>
+                                    <field name="cvor_proposed_number" readonly="1"/>
+                                    <field name="cvor_extraction_confidence" readonly="1"/>
+                                    <field name="cvor_extraction_method" readonly="1"/>
+                                    <field name="cvor_extraction_mismatch" readonly="1"/>
+                                    <field name="cvor_extraction_reason" readonly="1"/>
+                                    <field name="cvor_extraction_candidates" readonly="1"/>
+                                    <field name="cvor_extraction_source_document_id"
+                                           readonly="1"/>
+                                    <field name="cvor_extraction_checked_on" readonly="1"/>
+                                    <button name="action_extract_cvor" type="object"
+                                            string="Extract CVOR number"
+                                            class="btn-link"/>
+                                    <button name="action_preview_cvor_source"
+                                            type="object" string="Preview source"
+                                            class="btn-link"
+                                            invisible="not cvor_extraction_source_document_id"/>
+                                    <button name="action_confirm_cvor_extraction"
+                                            type="object" string="Confirm proposed number"
+                                            class="btn-link"
+                                            invisible="not cvor_proposed_number or cvor_extraction_status == 'confirmed'"/>
+                                    <button name="action_reject_cvor_extraction"
+                                            type="object" string="Reject proposal"
+                                            class="btn-link"
+                                            invisible="not cvor_proposed_number or cvor_extraction_status == 'rejected'"/>
+                                </group>
+                                <group string="Legacy insurance agent">
+                                    <field name="insurance_agent_name" readonly="1"/>
+                                    <field name="insurance_agent_email" widget="email" readonly="1"/>
+                                    <field name="authority_state"/>
+                                </group>
+                            </group>
+                            <group>
+                                <group string="COI request diagnostics">
+                                    <field name="coi_request_sent_by" readonly="1"/>
+                                    <field name="coi_request_count" readonly="1"/>
+                                    <field name="coi_request_last_subject" readonly="1"/>
+                                    <field name="coi_request_message_id" readonly="1"/>
+                                </group>
+                                <group string="Review thresholds (settings)">
+                                    <field name="coi_min_auto_liability" readonly="1"/>
+                                    <field name="coi_min_cargo" readonly="1"/>
+                                </group>
+                            </group>
+                            <group string="COI emails (raw queue)">
+                                <field name="coi_email_ids" readonly="1">
+                                    <list>
+                                        <field name="received_date"/>
+                                        <field name="sender_email"/>
+                                        <field name="subject"/>
+                                        <field name="state" widget="badge"/>
+                                        <field name="match_reason"/>
+                                    </list>
+                                </field>
                             </group>
                         </page>
                     </notebook>

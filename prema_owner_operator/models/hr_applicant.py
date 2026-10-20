@@ -62,6 +62,8 @@ class HrApplicant(models.Model):
     oo_transmission = fields.Selection(related="owner_operator_application_id.transmission", readonly=True)
     oo_odometer_km = fields.Float(related="owner_operator_application_id.odometer_km", readonly=True)
     oo_truck_plate_jurisdiction = fields.Char(related="owner_operator_application_id.truck_plate_jurisdiction", readonly=True)
+    oo_license_plate = fields.Char(
+        related="owner_operator_application_id.license_plate", readonly=True)
     oo_cargo_body_type = fields.Selection(related="owner_operator_application_id.cargo_body_type", readonly=True)
     oo_payload_lbs = fields.Float(related="owner_operator_application_id.payload_lbs", readonly=True)
     oo_pallet_capacity = fields.Integer(related="owner_operator_application_id.pallet_capacity", readonly=True)
@@ -171,6 +173,10 @@ class HrApplicant(models.Model):
     oo_coi_email_count = fields.Integer(
         related="owner_operator_application_id.coi_email_count",
         readonly=True)
+    oo_coi_version_ids = fields.One2many(
+        related="owner_operator_application_id.coi_version_ids", readonly=True)
+    oo_coi_email_ids = fields.One2many(
+        related="owner_operator_application_id.coi_email_ids", readonly=True)
     oo_setup_email_sent_at = fields.Datetime(
         related="owner_operator_application_id.setup_email_sent_at",
         readonly=True)
@@ -191,6 +197,12 @@ class HrApplicant(models.Model):
     oo_insurance_agent_email = fields.Char(related="owner_operator_application_id.insurance_agent_email", readonly=True)
     oo_licence_current = fields.Boolean(related="owner_operator_application_id.licence_current", readonly=True)
     oo_missing_verification = fields.Text(related="owner_operator_application_id.missing_verification", readonly=True)
+    oo_missing_initial = fields.Text(related="owner_operator_application_id.missing_initial", readonly=True)
+    oo_missing_qualification = fields.Text(related="owner_operator_application_id.missing_qualification", readonly=True)
+    oo_missing_contract = fields.Text(related="owner_operator_application_id.missing_contract", readonly=True)
+    oo_can_approve = fields.Boolean(related="owner_operator_application_id.can_approve", readonly=True)
+    oo_application_state = fields.Selection(related="owner_operator_application_id.state", readonly=True)
+    oo_review_next_action = fields.Char(related="owner_operator_application_id.review_next_action", readonly=True)
     oo_sign_request_id = fields.Many2one("sign.request", related="owner_operator_application_id.sign_request_id", readonly=True)
     oo_contract_signed_on = fields.Datetime(related="owner_operator_application_id.contract_signed_on", readonly=True)
     oo_operator_id = fields.Many2one("prema.owner.operator", related="owner_operator_application_id.operator_id", readonly=True)
@@ -368,6 +380,36 @@ class HrApplicant(models.Model):
         if not app:
             return False
         return app.action_open_coi_emails()
+
+    def action_owner_operator_advance(self):
+        self.ensure_one()
+        app = self.owner_operator_application_id
+        return app and app.action_advance()
+
+    def action_owner_operator_resend_coi(self):
+        self.ensure_one()
+        app = self.owner_operator_application_id
+        return app and app.action_resend_coi_request()
+
+    def action_owner_operator_approve_verification(self):
+        self.ensure_one()
+        app = self.owner_operator_application_id
+        return app and app.action_approve_verification()
+
+    def action_owner_operator_prepare_operator(self):
+        self.ensure_one()
+        app = self.owner_operator_application_id
+        return app and app.action_prepare_operator()
+
+    def action_owner_operator_send_contract(self):
+        self.ensure_one()
+        app = self.owner_operator_application_id
+        return app and app.action_send_contract()
+
+    def action_owner_operator_approve(self):
+        self.ensure_one()
+        app = self.owner_operator_application_id
+        return app and app.action_approve()
 
     def action_open_owner_operator_application(self):
         self.ensure_one()

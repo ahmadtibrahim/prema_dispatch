@@ -18,6 +18,10 @@ import logging
 import re
 from email.utils import parseaddr
 
+from markupsafe import Markup
+
+from odoo.tools import html_sanitize
+
 from odoo import _, api, fields, models
 from odoo.exceptions import UserError
 
@@ -403,7 +407,11 @@ class OwnerOperatorVerification(models.Model):
         return "image/jpeg"
 
     def _post_to_application(self, app, msg_dict, reason):
-        body = (
+        # Odoo 18 escapes a plain str body. Mark the intended structure as
+        # Markup, escape every header value, and sanitize the untrusted email
+        # body before embedding it in the internal note.
+        safe_email = Markup(html_sanitize(msg_dict.get("body") or ""))
+        body = Markup(
             "<p><strong>Verification email</strong><br/>"
             "From: %s<br/>To: %s<br/>Subject: %s<br/>Message-ID: %s</p>"
             "<p>%s</p><blockquote>%s</blockquote>"
@@ -413,7 +421,7 @@ class OwnerOperatorVerification(models.Model):
             msg_dict.get("subject") or "",
             msg_dict.get("message_id") or "",
             reason,
-            msg_dict.get("body") or "",
+            safe_email,
         )
         message = app.message_post(
             body=body,
