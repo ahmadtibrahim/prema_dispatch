@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 from . import owner_operator
 from . import owner_operator_config
+from . import owner_operator_authority
 from . import owner_operator_application
 from . import owner_operator_coi
 from . import owner_operator_tdg

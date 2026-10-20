@@ -167,6 +167,8 @@ EQUIPMENT_RAW_MAP = {
 
 EQUIPMENT_LABELS = {
     "cargo_body_type": "Cargo body type",
+    "cargo_door_style": "Straight-truck cargo door style",
+    "trailer_door_style": "Semi-trailer door style",
     "payload_lbs": "Legal payload",
     "gvwr_lbs": "GVWR",
     "pallet_capacity": "Pallet capacity",
@@ -205,11 +207,12 @@ SUBMISSION_FIELDS = {
     "truck_year", "unit_number", "vehicle_ownership", "transmission",
     "odometer_km", "truck_plate_jurisdiction", "license_plate",
     "plate_jurisdiction", "plate_province", "cargo_body_type",
+    "cargo_door_style", "trailer_door_style",
     "trailer_ownership",
     "trailer_type", "trailer_length_ft", "trailer_year", "trailer_unit",
     "payload_lbs",
-    "pallet_capacity", "box_length_ft", "cargo_width_in", "cargo_height_in",
-    "door_width_in", "door_clearance_in", "liftgate",
+    "pallet_capacity", "box_length_ft", "cargo_height_in",
+    "door_clearance_in", "liftgate",
     "liftgate_capacity_lb", "liftgate_platform_length_in",
     "liftgate_platform_width_in", "dock_height_capable", "air_ride",
     "reefer_applicable", "reefer_temperature_range", "cvor_number",
@@ -217,7 +220,8 @@ SUBMISSION_FIELDS = {
     "available_start_date", "work_preference", "preferred_service_area_codes",
     "work_preference_codes", "whatsapp_consent", "application_declaration",
     "equipment_provided", "load_notification_channel",
-    "load_notification_email", "whatsapp_number",
+    "load_notification_email", "use_application_email_for_notifications",
+    "whatsapp_number",
     "use_contact_phone_for_whatsapp",
     "whatsapp_consent_granted", "whatsapp_consent_text",
     "whatsapp_consent_version", "whatsapp_consent_at",
@@ -621,6 +625,12 @@ class OwnerOperatorApplication(models.Model):
         ("both", "Reefer and dry capable"),
         ("other", "Other / not applicable")],
         string="Cargo body type")
+    cargo_door_style = fields.Selection([
+        ("rollup", "Roll-up"), ("barn", "Barn doors")],
+        string="Straight-truck cargo door style")
+    trailer_door_style = fields.Selection([
+        ("rollup", "Roll-up"), ("barn", "Barn doors")],
+        string="Semi-trailer door style")
     cargo_width_in = fields.Float(string="Cargo interior width (in)")
     cargo_height_in = fields.Float(string="Cargo interior height (in)")
     liftgate = fields.Selection([
@@ -732,6 +742,11 @@ class OwnerOperatorApplication(models.Model):
     load_notification_email = fields.Char(
         string="Load-notification email", tracking=True,
         help="Stored separately from the application email.")
+    use_application_email_for_notifications = fields.Boolean(
+        string="Use the application email for load opportunities",
+        default=True, tracking=True,
+        help="When set, the application email is used. When cleared, "
+             "load_notification_email is the explicitly chosen alternate.")
     use_contact_phone_for_whatsapp = fields.Boolean(
         string="WhatsApp number is the contact phone", tracking=True,
         help="When set, whatsapp_number mirrors the normalized contact phone. "
@@ -803,6 +818,16 @@ class OwnerOperatorApplication(models.Model):
                                string="Recruitment stage", store=True)
     document_ids = fields.One2many(
         "prema.owner.operator.document", "application_id", string="Documents")
+    authority_ids = fields.One2many(
+        "prema.owner.operator.authority", "application_id",
+        string="Operating authority / registration")
+    authority_count = fields.Integer(
+        string="Authority entries", compute="_compute_authority_count")
+
+    @api.depends("authority_ids")
+    def _compute_authority_count(self):
+        for app in self:
+            app.authority_count = len(app.authority_ids)
     # The review workspace needs mutually exclusive groups. A view-level
     # domain on a readonly related One2many is not enough (it does not filter
     # the already-loaded rows consistently), so each group is computed here.
@@ -844,7 +869,9 @@ class OwnerOperatorApplication(models.Model):
         for app in self:
             docs = app.document_ids
             coi_types = ("coi_applicant", "coi_insurer")
-            main = docs.filtered(lambda d: d.document_type not in coi_types)
+            main = docs.filtered(
+                lambda d: d.document_type not in coi_types
+                and not (d.document_type == "cvor" and app.authority_ids))
             app.document_needs_upload_ids = main.filtered(
                 lambda d: d.required_stage != "contract"
                 and (not d.attachment_id or d.status == "pending"))
@@ -987,6 +1014,10 @@ class OwnerOperatorApplication(models.Model):
         self.ensure_one()
         initial = ["cvor", "coi_applicant", "photo_front", "photo_rear",
                    "photo_left", "photo_right", "photo_cargo_interior"]
+        if self.authority_ids:
+            # New applications prove authority through the repeatable
+            # authority entries; the legacy single CVOR row is not required.
+            initial.remove("cvor")
         if not self.is_sole_proprietor:
             initial.append("business_registration")
         qualification = ["licence_front", "licence_back", "coi_insurer"]
@@ -1041,12 +1072,12 @@ class OwnerOperatorApplication(models.Model):
             vehicle = app.vehicle_type
             if vehicle in ("cargo_van", "straight"):
                 need("cargo_body_type")
+                if vehicle == "straight":
+                    need("cargo_door_style")
                 need("payload_lbs")
                 need("pallet_capacity")
                 need("box_length_ft")
-                need("cargo_width_in")
                 need("cargo_height_in")
-                need("door_width_in")
                 need("door_clearance_in")
                 need("liftgate")
                 if app.liftgate == "yes":
@@ -1063,12 +1094,11 @@ class OwnerOperatorApplication(models.Model):
                 need("trailer_unit")
                 if app.trailer_type in ("dry", "reefer"):
                     need("cargo_body_type")
+                    need("trailer_door_style")
                     need("payload_lbs")
                     need("pallet_capacity")
                     need("box_length_ft")
-                    need("cargo_width_in")
                     need("cargo_height_in")
-                    need("door_width_in")
                     need("door_clearance_in")
                     need("liftgate")
                     if app.liftgate == "yes":
@@ -1078,7 +1108,6 @@ class OwnerOperatorApplication(models.Model):
                 elif app.trailer_type == "flatbed":
                     need("payload_lbs")
                     need("box_length_ft")
-                    need("cargo_width_in")
             else:
                 missing.append(_("Vehicle type"))
             app.equipment_missing = ", ".join(missing) or False
@@ -1121,10 +1150,22 @@ class OwnerOperatorApplication(models.Model):
             app.licence_current = bool(
                 app.licence_class and app.licence_expiry
                 and app.licence_expiry >= today)
+            def authority_verified(authority):
+                if authority.review_status == "verified":
+                    return True
+                # A legacy CVOR checklist document that has been VERIFIED is
+                # the same evidence; do not require a second review.
+                return bool(authority.document_id
+                            and authority.document_id.status == "verified")
+
+            authority_ok = (
+                bool(app.authority_ids)
+                and all(authority_verified(a) for a in app.authority_ids)
+            ) or (not app.authority_ids and bool(app.cvor_number))
             app.can_approve = bool(
                 not unverified and app.licence_current
                 and app.contract_signed_on
-                and app.equipment_complete
+                and app.equipment_complete and authority_ok
                 and app.operator_id and app.operator_id.compliance_ok
                 and not app.fleet_vehicle_id
                 and app.state not in ("rejected",))
@@ -1217,6 +1258,21 @@ class OwnerOperatorApplication(models.Model):
         app.name = "OO-%06d" % app.id
         app.apply_submission_data(vals)
         app._ensure_checklist()
+        Authority = self.env["prema.owner.operator.authority"].sudo()
+        cvor_doc = app.document_ids.filtered(
+            lambda d: d.document_type == "cvor")[:1]
+        AuthorityFields = Authority._fields
+        for entry in vals.get("authority_entries") or []:
+            values = {k: v for k, v in entry.items() if k in AuthorityFields}
+            values.update({
+                "application_id": app.id,
+                "sequence": (entry.get("index", 0) + 1) * 10,
+            })
+            authority = Authority.create(values)
+            if authority.authority_type == "ontario_cvor" and cvor_doc \
+                    and not Authority.search(
+                        [("document_id", "=", cvor_doc.id)], limit=1):
+                authority.document_id = cvor_doc.id
         app.message_post(body=_("Application received from the website."),
                          subtype_xmlid="mail.mt_note")
         return app
@@ -1252,10 +1308,13 @@ class OwnerOperatorApplication(models.Model):
             # Tractor only: no trailer, cargo body, capacity or reefer.
             for field in cargo_fields + trailer_fields:
                 vals[field] = False
+            vals["cargo_door_style"] = False
+            vals["trailer_door_style"] = False
             vals["trailer_ownership"] = "power_only"
             vals["reefer_applicable"] = "not_applicable"
         elif supplied_type == "semi":
             vals["trailer_ownership"] = "own"
+            vals["cargo_door_style"] = False
             trailer_kind = vals.get("trailer_type") or self.trailer_type
             if trailer_kind in ("dry", "reefer"):
                 vals["cargo_body_type"] = (
@@ -1263,6 +1322,7 @@ class OwnerOperatorApplication(models.Model):
                 vals["reefer_applicable"] = (
                     "yes" if trailer_kind == "reefer" else "no")
             elif trailer_kind == "flatbed":
+                vals["trailer_door_style"] = False
                 for field in ("cargo_body_type", "pallet_capacity",
                               "cargo_height_in", "door_width_in",
                               "door_clearance_in",
@@ -1270,12 +1330,16 @@ class OwnerOperatorApplication(models.Model):
                     vals[field] = False
                 vals["reefer_applicable"] = "not_applicable"
             else:
+                vals["trailer_door_style"] = False
                 for field in cargo_fields:
                     vals[field] = False
                 vals["reefer_applicable"] = "not_applicable"
         elif supplied_type in ("cargo_van", "straight"):
             for field in trailer_fields:
                 vals[field] = False
+            vals["trailer_door_style"] = False
+            if supplied_type == "cargo_van":
+                vals["cargo_door_style"] = False
             cargo_kind = vals.get("cargo_body_type") or self.cargo_body_type
             vals["reefer_applicable"] = (
                 "yes" if cargo_kind == "reefer" else "not_applicable")
@@ -2664,6 +2728,8 @@ class OwnerOperatorApplication(models.Model):
             "x_door_clearance_in": self.door_clearance_in or 0.0,
             "x_dock_height_in": self.dock_height_in or 0.0,
             "oo_cargo_body_type": self.cargo_body_type or False,
+            "oo_cargo_door_style": self.cargo_door_style or False,
+            "oo_trailer_door_style": self.trailer_door_style or False,
             "oo_cargo_width_in": self.cargo_width_in or 0.0,
             "oo_reefer_temperature_range":
                 self.reefer_temperature_range or False,
@@ -2687,14 +2753,17 @@ class OwnerOperatorApplication(models.Model):
                     "x_box_interior_height_ft", "x_overall_length_ft",
                     "x_vehicle_height_ft", "x_door_clearance_in",
                     "x_dock_height_in", "oo_cargo_body_type",
+                    "oo_cargo_door_style", "oo_trailer_door_style",
                     "oo_cargo_width_in", "oo_cargo_height_in",
                     "oo_reefer_temperature_range",
                     "x_studio_dock_height"):
                 vals.pop(field, None)
             vals.update({"x_reefer": False, "x_liftgate": False})
         elif self.vehicle_type == "semi":
+            vals.pop("oo_cargo_door_style", None)
             vals.update({
                 "oo_trailer_type": self.trailer_type or False,
+                "oo_trailer_door_style": self.trailer_door_style or False,
                 "oo_trailer_year": self.trailer_year or False,
                 "oo_trailer_unit": self.trailer_unit or False,
                 "oo_trailer_length_ft": self.trailer_length_ft or 0.0,
@@ -2702,7 +2771,8 @@ class OwnerOperatorApplication(models.Model):
             })
         else:
             for field in ("oo_trailer_type", "oo_trailer_year",
-                          "oo_trailer_unit", "oo_trailer_length_ft"):
+                          "oo_trailer_unit", "oo_trailer_length_ft",
+                          "oo_trailer_door_style"):
                 vals.pop(field, None)
         if not update:
             ready = self.env["fleet.vehicle.state"].sudo().search(

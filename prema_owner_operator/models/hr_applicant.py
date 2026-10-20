@@ -23,6 +23,11 @@ class HrApplicant(models.Model):
     owner_operator_document_ids = fields.One2many(
         related="owner_operator_application_id.document_ids",
         string="Owner-operator documents", readonly=True)
+    owner_operator_authority_ids = fields.One2many(
+        related="owner_operator_application_id.authority_ids",
+        string="Operating authority entries", readonly=True)
+    owner_operator_authority_count = fields.Integer(
+        related="owner_operator_application_id.authority_count", readonly=True)
     oo_document_needs_upload_ids = fields.One2many(
         related="owner_operator_application_id.document_needs_upload_ids",
         readonly=True)
@@ -101,6 +106,10 @@ class HrApplicant(models.Model):
     oo_license_plate = fields.Char(
         related="owner_operator_application_id.license_plate", readonly=True)
     oo_cargo_body_type = fields.Selection(related="owner_operator_application_id.cargo_body_type", readonly=True)
+    oo_cargo_door_style = fields.Selection(
+        related="owner_operator_application_id.cargo_door_style", readonly=True)
+    oo_trailer_door_style = fields.Selection(
+        related="owner_operator_application_id.trailer_door_style", readonly=True)
     oo_payload_lbs = fields.Float(related="owner_operator_application_id.payload_lbs", readonly=True)
     oo_pallet_capacity = fields.Integer(related="owner_operator_application_id.pallet_capacity", readonly=True)
     oo_box_length_ft = fields.Float(related="owner_operator_application_id.box_length_ft", readonly=True)

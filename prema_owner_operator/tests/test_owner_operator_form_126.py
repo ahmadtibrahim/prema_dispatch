@@ -43,6 +43,8 @@ def _raw(**overrides):
         "TruckPlateProvince": "ON",
         "GVWRLb": "26,000",
         "CargoBodyType": "dry",
+        "CargoDoorStyle": "rollup",
+        "TrailerDoorStyle": "rollup",
         "LegalPayloadLb": "12,000",
         "PalletCapacity": "13",
         "CargoLengthFt": "26",
@@ -188,13 +190,16 @@ class TestFormMapping126(OwnerOperatorCase):
         for vehicle in ("cargo_van", "straight"):
             _vals, errors = normalise_public(_raw(
                 VehicleType=vehicle, LegalPayloadLb="", PalletCapacity="",
-                CargoLengthFt="", CargoWidthIn="", CargoHeightIn="",
-                DoorWidthIn="", DoorHeightIn=""), strict=True)
+                CargoLengthFt="", CargoHeightIn="", DoorHeightIn="",
+                CargoDoorStyle=""), strict=True)
             joined = " ".join(errors)
             for label in ("legal payload", "pallet capacity", "cargo length",
-                          "cargo width", "cargo height", "rear door width",
-                          "rear door height"):
+                          "cargo height", "rear door height"):
                 self.assertIn(label, joined, (vehicle, label))
+            if vehicle == "straight":
+                self.assertIn("door style", joined)
+            else:
+                self.assertNotIn("door style", joined)
 
     def test_tractor_hides_and_clears_trailer_and_reefer(self):
         vals, errors = normalise_public(_raw(

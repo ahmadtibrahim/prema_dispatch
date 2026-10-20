@@ -89,6 +89,37 @@ CAB_TYPES = {
 
 CAB_REQUIRED_VEHICLE_TYPES = {"tractor", "semi"}
 
+AUTHORITY_TYPES = {
+    "ontario_cvor": "Ontario CVOR",
+    "canadian_provincial":
+        "Other Canadian provincial / territorial authority",
+    "usdot": "USDOT",
+    "mc": "MC",
+    "other": "Other",
+}
+
+AUTHORITY_REVIEW_STATES = {
+    "pending": "Pending",
+    "review": "Needs review",
+    "verified": "Verified",
+    "rejected": "Rejected",
+}
+
+
+def _authority_digits(value):
+    return "".join(ch for ch in (value or "") if ch.isdigit())
+
+
+def format_authority_number(authority_type, value):
+    """Format only the selected type; never impose CVOR on other types."""
+    raw = (value or "").strip()
+    if authority_type == "ontario_cvor":
+        digits = _authority_digits(raw)[:9]
+        return "-".join(digits[i:i + 3] for i in range(0, len(digits), 3))
+    if authority_type in ("usdot", "mc"):
+        return _authority_digits(raw)[:8]
+    return raw[:40]
+
 OWNERSHIPS = {"own": "Owned", "lease": "Leased", "financed": "Financed"}
 
 TRANSMISSIONS = {
@@ -432,6 +463,62 @@ def _equipment_provided(post):
     }
 
 
+def normalise_authorities(post, errors, strict=True, limit=5):
+    """Parse the repeatable authority rows (indexed public field names)."""
+    entries = []
+    for index in range(limit):
+        suffix = str(index)
+        raw_type = _text(post.get("AuthorityType" + suffix))
+        raw_number = _text(post.get("AuthorityNumber" + suffix))
+        if not raw_type and not raw_number:
+            continue
+        authority_type = _choice(
+            raw_type, set(AUTHORITY_TYPES), "authority type", errors)
+        if not raw_type and raw_number:
+            errors.append("Choose the authority type for entry %s." %
+                          (index + 1))
+        number = format_authority_number(authority_type, raw_number) \
+            if authority_type else raw_number
+        digits = _authority_digits(number)
+        if authority_type == "ontario_cvor" and len(digits) != 9:
+            errors.append(
+                "Ontario CVOR entry %s must contain exactly 9 digits." %
+                (index + 1))
+        elif authority_type in ("usdot", "mc") and not (1 <= len(digits) <= 8):
+            errors.append(
+                "USDOT/MC entry %s must contain 1–8 digits." % (index + 1))
+        elif authority_type and not number:
+            errors.append("Enter the authority number for entry %s." %
+                          (index + 1))
+        jurisdiction = _text(post.get("AuthorityJurisdiction" + suffix))
+        other = _text(post.get("AuthorityJurisdictionOther" + suffix))
+        if authority_type == "ontario_cvor":
+            jurisdiction = "CA-ON"
+        elif authority_type in ("usdot", "mc") and not jurisdiction:
+            jurisdiction = "US-FEDERAL"
+        if authority_type == "other":
+            if strict and not other:
+                errors.append(
+                    "Describe the issuing jurisdiction for authority entry "
+                    "%s." % (index + 1))
+        elif strict and not jurisdiction:
+            errors.append(
+                "Choose the issuing jurisdiction for authority entry %s." %
+                (index + 1))
+        expiry = _parse_date(
+            post.get("AuthorityExpiry" + suffix),
+            "authority expiry", errors)
+        entries.append({
+            "index": index,
+            "authority_type": authority_type,
+            "number": number,
+            "jurisdiction_code": jurisdiction,
+            "jurisdiction_other": other,
+            "expiry_date": expiry,
+        })
+    return entries
+
+
 def normalise_public(post, strict=True):
     """Map the public form's names to application fields.
 
@@ -634,11 +721,13 @@ def normalise_public(post, strict=True):
     if liftgate == "yes":
         put("LiftgateCapacityLb", "liftgate_capacity_lb",
             _number(post.get("LiftgateCapacityLb"), "liftgate capacity",
-                    errors, minimum=0, maximum=20000, integer=True,
+                    errors, minimum=1, maximum=20000, integer=True,
                     required=strict))
-    put("AirRide", "air_ride",
-        _choice(post.get("AirRide"), {"yes": "yes", "no": "no"},
-                "air-ride answer", errors))
+    air_ride = _choice(post.get("AirRide"), {"yes": "yes", "no": "no"},
+                       "air-ride answer", errors)
+    put("AirRide", "air_ride", air_ride)
+    if strict and not air_ride:
+        errors.append("Choose Yes or No for air-ride suspension.")
     # Legacy-only fields: the current form does not ask them, but an older
     # post or a saved note must not lose the historical answer.
     if vehicle_type != "tractor":
@@ -669,14 +758,8 @@ def normalise_public(post, strict=True):
         put("CargoLengthFt", "box_length_ft",
             _number(post.get("CargoLengthFt"), "cargo length", errors,
                     minimum=0, maximum=60, required=required))
-        put("CargoWidthIn", "cargo_width_in",
-            _number(post.get("CargoWidthIn"), "cargo width", errors,
-                    minimum=0, maximum=120, required=required))
         put("CargoHeightIn", "cargo_height_in",
             _number(post.get("CargoHeightIn"), "cargo height", errors,
-                    minimum=0, maximum=150, required=required))
-        put("DoorWidthIn", "door_width_in",
-            _number(post.get("DoorWidthIn"), "rear door width", errors,
                     minimum=0, maximum=150, required=required))
         put("DoorHeightIn", "door_clearance_in",
             _number(post.get("DoorHeightIn"), "rear door height", errors,
@@ -690,8 +773,18 @@ def normalise_public(post, strict=True):
         else:
             vals["reefer_applicable"] = "not_applicable"
 
+    door_styles = {"rollup": "rollup", "barn": "barn"}
     if vehicle_type in ("cargo_van", "straight"):
         cargo_fields(required=strict)
+        if vehicle_type == "straight":
+            put("CargoDoorStyle", "cargo_door_style",
+                _choice(post.get("CargoDoorStyle"), door_styles,
+                        "cargo door style", errors))
+            if strict and not vals.get("cargo_door_style"):
+                errors.append("Choose the straight-truck cargo door style.")
+        else:
+            vals.pop("cargo_door_style", None)
+        vals.pop("trailer_door_style", None)
         body = vals.get("cargo_body_type")
         reefer_fields(body == "reefer")
         if body != "reefer":
@@ -734,6 +827,11 @@ def normalise_public(post, strict=True):
             cargo_fields(required=strict)
             vals["cargo_body_type"] = (
                 "reefer" if trailer_kind == "reefer" else "dry")
+            put("TrailerDoorStyle", "trailer_door_style",
+                _choice(post.get("TrailerDoorStyle"), door_styles,
+                        "trailer door style", errors))
+            if strict and not vals.get("trailer_door_style"):
+                errors.append("Choose the semi-trailer door style.")
             reefer_fields(trailer_kind == "reefer")
         elif trailer_kind == "flatbed":
             put("LegalPayloadLb", "payload_lbs",
@@ -743,9 +841,7 @@ def normalise_public(post, strict=True):
             put("CargoLengthFt", "box_length_ft",
                 _number(post.get("CargoLengthFt"), "cargo length", errors,
                         minimum=0, maximum=60, required=strict))
-            put("CargoWidthIn", "cargo_width_in",
-                _number(post.get("CargoWidthIn"), "cargo width", errors,
-                        minimum=0, maximum=120, required=strict))
+            vals.pop("trailer_door_style", None)
             vals["reefer_applicable"] = "not_applicable"
             for field in ("cargo_body_type", "pallet_capacity",
                           "cargo_height_in", "door_width_in",
@@ -764,12 +860,32 @@ def normalise_public(post, strict=True):
         vals.pop("trailer_ownership", None)
         vals["trailer_ownership"] = "own"
 
+    legacy_cvor = None
     try:
-        cvor = format_cvor(_text(post.get("CVORNumber")))
-        if cvor:
-            vals["cvor_number"] = cvor
+        legacy_cvor = format_cvor(_text(post.get("CVORNumber")))
+        if legacy_cvor:
+            vals["cvor_number"] = legacy_cvor
     except ValueError as exc:
         errors.append(str(exc))
+
+    entries = normalise_authorities(post, errors, strict=strict)
+    if not entries and legacy_cvor:
+        # Old page/post compatibility: keep the CVOR as one entry without
+        # rewriting the historical cvor_number field.
+        entries = [{
+            "index": 0,
+            "legacy": True,
+            "authority_type": "ontario_cvor",
+            "number": legacy_cvor,
+            "jurisdiction_code": "CA-ON",
+            "jurisdiction_other": False,
+            "expiry_date": False,
+        }]
+    if entries:
+        vals["authority_entries"] = entries
+    elif strict:
+        errors.append(
+            "Add at least one operating authority or registration.")
 
     # ── operating area and work preferences (each exactly once) ─────
     service_codes = [
@@ -843,9 +959,16 @@ def normalise_public(post, strict=True):
             if not wants_email:
                 vals["whatsapp_number"] = False
         if wants_email:
-            use_app_email = _truthy(
-                post.get("UseApplicationEmailForNotifications"))
-            if use_app_email or not _text(post.get("LoadNotificationEmail")):
+            choice = _text(post.get("LoadNotificationEmailChoice"))
+            if choice:
+                use_app_email = choice == "application"
+            else:
+                # Legacy page/post compatibility.
+                use_app_email = _truthy(
+                    post.get("UseApplicationEmailForNotifications")) \
+                    or not _text(post.get("LoadNotificationEmail"))
+            vals["use_application_email_for_notifications"] = use_app_email
+            if use_app_email:
                 vals["load_notification_email"] = vals.get("email")
             else:
                 raw_email = _text(post.get("LoadNotificationEmail")).lower()

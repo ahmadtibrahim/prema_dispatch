@@ -24,7 +24,8 @@ from odoo.exceptions import AccessError, ValidationError
 from werkzeug.urls import url_quote
 
 from ..application_mapping import (
-    PROVINCE_CHOICES, PROVINCES, UPLOAD_MAP, normalise_public)
+    AUTHORITY_TYPES, PROVINCE_CHOICES, PROVINCES, UPLOAD_MAP,
+    normalise_public)
 
 try:  # the canonical Places integration lives in Prema Dispatch
     from odoo.addons.prema_logistics_booking.services.google_places_service \
@@ -157,9 +158,27 @@ class OwnerOperatorController(http.Controller):
     def _apply_impl(self, job, post):
         """Shared implementation for both entry points: the dedicated route
         and the job's own /jobs/apply/<job> page."""
+        State = http.request.env["res.country.state"].sudo()
+        canadian = State.search(
+            [("country_id.code", "=", "CA")], order="code")
+        american = State.search(
+            [("country_id.code", "=", "US")], order="code")
+        authority_jurisdictions = [
+            ("CA-%s" % state.code, "%s, Canada" % state.name)
+            for state in canadian
+        ] + [
+            ("US-FEDERAL", "United States — federal (USDOT / MC)"),
+        ] + [
+            ("US-%s" % state.code, "%s, United States" % state.name)
+            for state in american
+        ] + [
+            ("OTHER", "Other / not listed"),
+        ]
         values = {"errors": [], "post": post, "job": job,
                   "provinces": PROVINCES,
                   "province_choices": PROVINCE_CHOICES,
+                  "authority_types": list(AUTHORITY_TYPES.items()),
+                  "authority_jurisdictions": authority_jurisdictions,
                   "tdg_classes": http.request.env[
                       "prema.owner.operator.tdg.class"].sudo().search(
                           [("active", "=", True)], order="sequence, id")}
@@ -197,6 +216,30 @@ class OwnerOperatorController(http.Controller):
                 else:
                     uploads[doc_type] = upload
 
+        authority_uploads = {}
+        authority_indexes = {
+            entry.get("index") for entry in vals.get("authority_entries") or []}
+        for index in range(5):
+            upload = post.get("AuthorityDocument%d" % index)
+            if not (upload and getattr(upload, "filename", None)):
+                continue
+            problem = self._check_upload(upload)
+            if problem:
+                errors.append("AuthorityDocument%d: %s" % (index, problem))
+            elif index not in authority_indexes:
+                errors.append(
+                    "Provide the type, jurisdiction and number for the "
+                    "uploaded authority certificate.")
+            else:
+                authority_uploads[index] = upload
+        for entry in vals.get("authority_entries") or []:
+            if entry.get("legacy"):
+                continue
+            if entry.get("index") not in authority_uploads:
+                errors.append(
+                    "Upload the authority certificate for authority entry %s."
+                    % (entry.get("index", 0) + 1))
+
         if errors:
             values["errors"] = errors
             return http.request.render(
@@ -211,6 +254,11 @@ class OwnerOperatorController(http.Controller):
                 "prema_owner_operator.apply_form", values)
         for doc_type, upload in uploads.items():
             self._store_upload(app, doc_type, upload)
+        for index, upload in authority_uploads.items():
+            authority = app.authority_ids.filtered(
+                lambda a: a.sequence == (index + 1) * 10)[:1]
+            if authority:
+                self._store_authority_upload(authority, upload)
         try:
             http.request.env.ref(
                 "prema_owner_operator.mail_template_ack"
@@ -308,6 +356,30 @@ class OwnerOperatorController(http.Controller):
                 app.sudo().action_extract_cvor()
             except Exception:  # noqa: BLE001 — extraction never loses the file
                 _logger.warning("CVOR extraction failed", exc_info=True)
+
+    def _store_authority_upload(self, authority, upload):
+        payload = upload.read()
+        attachment = http.request.env["ir.attachment"].sudo().create({
+            "name": upload.filename,
+            "datas": base64.b64encode(payload),
+            "mimetype": _sniff_mimetype(payload) or "application/octet-stream",
+            "res_model": "prema.owner.operator.authority",
+            "res_id": authority.id,
+            "public": False,
+        })
+        authority.sudo().write({"attachment_id": attachment.id})
+        doc = authority.document_id
+        if doc and not doc.attachment_id:
+            doc.sudo().write({
+                "attachment_id": attachment.id,
+                "status": "received",
+                "source": "applicant",
+                "received_on": doc._fields["received_on"].now(),
+            })
+            try:
+                authority.application_id.sudo().action_extract_cvor()
+            except Exception:  # noqa: BLE001 — extraction never loses the file
+                _logger.warning("CVOR extraction failed", exc_info=True)
         return doc
 
     # ------------------------------------------------------------------
@@ -340,6 +412,24 @@ class OwnerOperatorController(http.Controller):
             ("X-Content-Type-Options", "nosniff"),
             ("Cache-Control", "private, no-store"),
         ])
+
+    @http.route("/owner_operator/authority/<int:authority_id>", type="http",
+                auth="user", website=False, csrf=False, sitemap=False)
+    def authority(self, authority_id, download=0, **kw):
+        """Private delivery for an authority certificate."""
+        self._require_reviewer()
+        authority = http.request.env[
+            "prema.owner.operator.authority"].browse(authority_id)
+        if not authority.exists() or not authority.attachment_id:
+            raise NotFound()
+        try:
+            authority.check_access("read")
+            authority.application_id.check_access("read")
+        except AccessError:
+            raise NotFound()
+        attachment = authority.attachment_id.sudo()
+        return self._serve_attachment(
+            attachment, attachment.name or "authority", download)
 
     @http.route("/owner_operator/coi_version/<int:version_id>", type="http",
                 auth="user", website=False, csrf=False, sitemap=False)

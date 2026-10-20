@@ -74,13 +74,19 @@ class OwnerOperatorCase(TransactionCase):
             "email_from": email,
             "company_id": self.env.company.id,
         })
-        return self.env["hr.applicant"].create({
+        applicant = self.env["hr.applicant"].create({
             "candidate_id": candidate.id,
             "job_id": self.job.id,
             "partner_name": "Test Driver",
             "email_from": email,
             "company_id": self.env.company.id,
         })
+        app = applicant.owner_operator_application_id
+        if app:
+            # Directly created fixtures predate the repeatable authority
+            # entries; keep the legacy CVOR evidence for the approval path.
+            app.write({"cvor_number": "123-456-789"})
+        return applicant
 
     def _public_vals(self, **overrides):
         """A complete, valid structured submission (internal field names)."""
@@ -110,6 +116,8 @@ class OwnerOperatorCase(TransactionCase):
             "odometer_km": 350000,
             "truck_plate_jurisdiction": "TEST 123 / Ontario",
             "cargo_body_type": "reefer",
+            "cargo_door_style": "rollup",
+            "trailer_door_style": "rollup",
             "payload_lbs": 13000,
             "pallet_capacity": 13,
             "box_length_ft": 26,
@@ -150,6 +158,8 @@ class OwnerOperatorCase(TransactionCase):
             "home_province": "Ontario",
             "vehicle_type": "straight",
             "cargo_body_type": "dry",
+            "cargo_door_style": "rollup",
+            "trailer_door_style": "rollup",
             "payload_lbs": 13000,
             "pallet_capacity": 13,
             "box_length_ft": 26,
@@ -676,7 +686,7 @@ class TestStructuredSubmission(OwnerOperatorCase):
         self.assertEqual(app.payload_lbs, 13000)
         self.assertEqual(app.pallet_capacity, 13)
         self.assertEqual(app.box_length_ft, 26)
-        self.assertEqual(app.cargo_width_in, 100)
+        self.assertEqual(app.cargo_door_style, "rollup")
         self.assertEqual(app.cargo_height_in, 96)
         self.assertEqual(app.door_clearance_in, 87)
         self.assertEqual(app.liftgate, "yes")
@@ -697,7 +707,6 @@ class TestStructuredSubmission(OwnerOperatorCase):
         self.assertEqual(
             set(app.work_preference_ids.mapped("code")), {"regional"})
         self.assertEqual(app.whatsapp_consent, "no")
-        self.assertEqual(app.door_width_in, 96)
         self.assertEqual(app.liftgate_platform_length_in, 72)
         self.assertEqual(app.liftgate_platform_width_in, 40)
         self.assertEqual(app.load_notification_channel, "email")
@@ -1026,6 +1035,8 @@ class TestPublicRoutes(HttpCase):
             "TruckPlateProvince": "ON",
             "GVWRLb": "26,000",
             "CargoBodyType": "reefer",
+        "CargoDoorStyle": "rollup",
+        "TrailerDoorStyle": "rollup",
             "LegalPayloadLb": "13000",
             "PalletCapacity": "13",
             "CargoLengthFt": "26",
@@ -1061,7 +1072,11 @@ class TestPublicRoutes(HttpCase):
         self.assertIn('name="TruckPlateProvince"', response.text)
         self.assertIn('name="GVWRLb"', response.text)
         self.assertIn("ServiceProvinceON", response.text)
-        self.assertIn("DoorWidthIn", response.text)
+        self.assertNotIn("DoorWidthIn", response.text)
+        self.assertNotIn("CargoWidthIn", response.text)
+        self.assertIn("CargoDoorStyle", response.text)
+        self.assertIn("TrailerDoorStyle", response.text)
+        self.assertIn("AuthorityType0", response.text)
         self.assertIn('name="DriverLicenceFront"', response.text)
         self.assertIn('name="DriverLicenceBack"', response.text)
         self.assertIn("WorkPreferenceLocal", response.text)

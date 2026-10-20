@@ -128,12 +128,12 @@
                             <group string="Cargo body (van / straight truck; trailer specs when an owned trailer is supplied)">
                                 <group>
                                     <field name="cargo_body_type"/>
+                                    <field name="cargo_door_style"
+                                           invisible="vehicle_type != 'straight'"/>
                                     <field name="payload_lbs"/>
                                     <field name="pallet_capacity"/>
                                     <field name="box_length_ft"/>
-                                    <field name="cargo_width_in"/>
                                     <field name="cargo_height_in"/>
-                                    <field name="door_width_in"/>
                                     <field name="door_clearance_in"/>
                                 </group>
                                 <group>
@@ -152,6 +152,8 @@
                                     <field name="trailer_ownership"/>
                                     <field name="trailer_type"
                                            invisible="vehicle_type not in ('tractor', 'semi')"/>
+                                    <field name="trailer_door_style"
+                                           invisible="vehicle_type != 'semi' or trailer_type not in ('dry', 'reefer')"/>
                                     <field name="trailer_year"
                                            invisible="vehicle_type != 'semi'"/>
                                     <field name="trailer_length_ft"
@@ -184,7 +186,9 @@
                             <group string="Load-notification contact">
                                 <group>
                                     <field name="load_notification_channel"/>
-                                    <field name="load_notification_email"/>
+                                    <field name="use_application_email_for_notifications"/>
+                                    <field name="load_notification_email"
+                                           invisible="use_application_email_for_notifications"/>
                                     <field name="whatsapp_number"/>
                                     <field name="use_contact_phone_for_whatsapp"/>
                                     <field name="load_notification_opt_out"/>
@@ -309,6 +313,28 @@
                             <group string="Insurer-direct COI request">
                                 <field name="coi_request_sent_at" readonly="1"/>
                                 <field name="coi_email_count" readonly="1"/>
+                            </group>
+                            <group string="Operating authority / registration">
+                                <field name="authority_ids" readonly="1">
+                                    <list create="false" edit="false" delete="false">
+                                        <field name="authority_type"/>
+                                        <field name="jurisdiction_label"/>
+                                        <field name="number"/>
+                                        <field name="expiry_date" optional="show"/>
+                                        <field name="review_status" widget="badge"/>
+                                        <field name="file_name" optional="show"/>
+                                        <field name="mimetype" column_invisible="1"/>
+                                        <field name="can_preview"
+                                               widget="owner_operator_document_view"
+                                               options="{'route': 'authority'}"/>
+                                        <button name="action_verify" type="object"
+                                                icon="fa-check" title="Verify authority"
+                                                invisible="review_status == 'verified'"/>
+                                        <button name="action_reject" type="object"
+                                                icon="fa-times" title="Reject authority"
+                                                invisible="review_status == 'rejected'"/>
+                                    </list>
+                                </field>
                             </group>
                             <group string="COI versions (original documents)">
                                 <field name="coi_version_ids" readonly="1">
