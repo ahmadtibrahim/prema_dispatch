@@ -34,6 +34,68 @@ class TestReviewWorkspace(OwnerOperatorCase):
         self.assertTrue(app.review_next_action)
         self.assertFalse(app.can_approve)
 
+    def test_document_groups_are_mutually_exclusive_and_reactive(self):
+        app = self._application()
+        groups = (
+            app.document_needs_upload_ids,
+            app.document_received_ids,
+            app.document_verified_ids,
+            app.document_later_ids,
+            app.document_coi_applicant_ids,
+            app.document_coi_insurer_ids,
+        )
+        ids = [set(group.ids) for group in groups]
+        for index, left in enumerate(ids):
+            for right in ids[index + 1:]:
+                self.assertFalse(left & right)
+        self.assertEqual(len(ids[0]), app.document_needs_upload_count)
+        self.assertEqual(len(ids[0]) + len(ids[1]) + len(ids[2]) +
+                         len(ids[3]) + len(ids[4]) + len(ids[5]),
+                         len(app.document_ids))
+        self.assertEqual(
+            app.document_later_ids.mapped("document_type"),
+            ["signed_agreement"])
+        self.assertEqual(
+            app.document_coi_applicant_ids.mapped("document_type"),
+            ["coi_applicant"])
+        self.assertEqual(
+            app.document_coi_insurer_ids.mapped("document_type"),
+            ["coi_insurer"])
+        for doc_type in ("coi_applicant", "coi_insurer"):
+            self.assertNotIn(
+                doc_type, app.document_needs_upload_ids.mapped(
+                    "document_type"))
+
+        cvor = app.document_ids.filtered(
+            lambda d: d.document_type == "cvor")[:1]
+        attachment = self.env["ir.attachment"].create({
+            "name": "cvor.pdf",
+            "raw": b"%PDF-1.4\nreview",
+            "mimetype": "application/pdf",
+            "res_model": "prema.owner.operator.document",
+            "res_id": cvor.id,
+            "public": False,
+        })
+        cvor.write({"attachment_id": attachment.id, "status": "received"})
+        self.assertIn(cvor, app.document_received_ids)
+        self.assertNotIn(cvor, app.document_needs_upload_ids)
+        cvor.write({"status": "verified"})
+        self.assertIn(cvor, app.document_verified_ids)
+        self.assertNotIn(cvor, app.document_received_ids)
+
+    def test_received_coi_outranks_missing_documents(self):
+        app = self._application()
+        self.assertTrue(app.missing_initial)
+        app.write({"state": "submitted", "verification_status": "review"})
+        self.assertIn("Review the received COI", app.review_next_action)
+        app.write({"verification_status": "pending"})
+        self.env["prema.owner.operator.coi.version"].create({
+            "application_id": app.id,
+            "source": "unknown",
+            "verification_status": "review",
+        })
+        self.assertIn("Review the received COI", app.review_next_action)
+
     def test_review_workspace_is_on_the_recruitment_record(self):
         root = etree.fromstring(
             self.env["hr.applicant"].get_view(False, "form")["arch"])
@@ -46,7 +108,7 @@ class TestReviewWorkspace(OwnerOperatorCase):
         self.assertTrue(root.xpath(
             '//page[@name="oo_review"]//button[@name="action_owner_operator_approve"]'))
         self.assertTrue(root.xpath(
-            '//page[@name="oo_review"]//field[@name="owner_operator_document_ids"]'))
+            '//page[@name="oo_review"]//field[@name="oo_document_needs_upload_ids"]'))
         options = root.xpath(
             '//field[@name="can_preview"]/@options')
         self.assertTrue(any("coi_version" in value for value in options))
@@ -56,6 +118,35 @@ class TestReviewWorkspace(OwnerOperatorCase):
                          "Applicant / forwarded COI copy",
                          "Insurer-direct COI (requested)"):
             self.assertIn(expected, strings)
+        for field in ("oo_document_needs_upload_ids",
+                      "oo_document_received_ids",
+                      "oo_document_verified_ids",
+                      "oo_document_later_ids",
+                      "oo_document_coi_applicant_ids",
+                      "oo_document_coi_insurer_ids"):
+            self.assertTrue(
+                review[0].xpath('.//field[@name="%s"]' % field), field)
+        for text in ("No documents need upload.",
+                     "No received files are waiting for review.",
+                     "No documents verified yet.",
+                     "Nothing is required at the contract stage yet."):
+            self.assertIn(text, review[0].xpath("string(.)"))
+
+    def test_external_chatter_fixes_are_tracked_in_the_release(self):
+        base = os.path.join(
+            os.path.dirname(__file__), "..", "deployment", "external")
+        mail = open(os.path.join(
+            base, "prema_mail_tracking", "controllers", "main.py")).read()
+        auditor = open(os.path.join(
+            base, "prema_ai_auditor", "services", "crm_operator.py")).read()
+        self.assertIn("from markupsafe import Markup", mail)
+        self.assertIn("body=Markup(body)", mail)
+        self.assertIn("from markupsafe import Markup", auditor)
+        self.assertIn('Markup("Prema AI moved', auditor)
+        apply_script = os.path.join(
+            os.path.dirname(__file__), "..", "deployment",
+            "apply_external_chatter_fixes.sh")
+        self.assertTrue(os.path.exists(apply_script))
 
     def test_duplicated_hr_fields_are_hidden_only_for_job_5(self):
         root = etree.fromstring(

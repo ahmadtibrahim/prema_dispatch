@@ -13,7 +13,7 @@ CODE_DIR=${CODE_DIR:-/opt/odoo/releases/prema_dispatch}
 MODULE_ADDONS_DIR=${MODULE_ADDONS_DIR:-/opt/odoo/releases/prema_owner_operator}
 
 mkdir -p "$BK"
-echo "== 1/5 backup code =="
+echo "== 1/6 backup code =="
 git -C "$CODE_DIR" rev-parse HEAD > "$BK/code_rev.txt"
 git -C "$CODE_DIR" status --short > "$BK/code_status.txt"
 # The live tree carries uncommitted changes; a rev alone cannot restore it.
@@ -23,11 +23,11 @@ if [ -d "$MODULE_ADDONS_DIR" ]; then
     "$(basename "$MODULE_ADDONS_DIR")"
 fi
 
-echo "== 2/5 backup database =="
+echo "== 2/6 backup database =="
 sudo -u postgres pg_dump -Fc "$DB" -f "/tmp/ownerop_$STAMP.dump"
 sudo mv "/tmp/ownerop_$STAMP.dump" "$BK/db.dump"
 
-echo "== 3/5 backup filestore =="
+echo "== 3/6 backup filestore =="
 tar czf "$BK/filestore.tgz" -C "$(dirname "$FILESTORE")" "$(basename "$FILESTORE")"
 # 38 attachments referenced by the DB were written by earlier root-run
 # processes and live only in the legacy store. Back it up too.
@@ -37,12 +37,12 @@ if [ -d "$LEGACY_FILESTORE" ]; then
     "$(basename "$LEGACY_FILESTORE")"
 fi
 
-echo "== 4/5 pause crons =="
+echo "== 4/6 pause crons =="
 IDS=$(sudo -u postgres psql -d "$DB" -A -t -c "SELECT id FROM ir_cron WHERE active ORDER BY id;" | paste -sd, -)
 echo "$IDS" > "$BK/cron_ids.txt"
 sudo -u postgres psql -d "$DB" -c "UPDATE ir_cron SET active=false;"
 
-echo "== 5/5 install or upgrade =="
+echo "== 5/6 install or upgrade =="
 cd /opt/odoo/odoo18
 ACTION=-u
 if [ "$(sudo -u postgres psql -d "$DB" -A -t -c \
@@ -54,6 +54,9 @@ fi
 sudo -u odoo18 env HOME=/opt/odoo /opt/odoo/venv-18/bin/python3 odoo-bin \
   -c "$CONF" -d "$DB" --stop-after-init --no-http $ACTION prema_owner_operator \
   --max-cron-threads 0
+echo "== 6/6 apply tracked external chatter fixes =="
+"$MODULE_ADDONS_DIR/deployment/apply_external_chatter_fixes.sh"
+
 sudo -u postgres psql -d "$DB" -c "UPDATE ir_cron SET active=true WHERE id IN ($IDS);"
 [ -n "${SKIP_RESTART:-}" ] || systemctl restart "${SERVICE:-odoo18}"
 
