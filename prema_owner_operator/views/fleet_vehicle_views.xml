@@ -96,6 +96,7 @@
                 <group string="Owner-Operator Details" invisible="not operator_id">
                     <group>
                         <field name="oo_vehicle_type" readonly="1"/>
+                        <field name="oo_cab_type" readonly="1"/>
                         <field name="category_id" readonly="1"/>
                         <field name="oo_plate_province" readonly="1"/>
                         <field name="oo_cargo_body_type" readonly="1"/>
@@ -134,6 +135,21 @@
                         <field name="application_id" readonly="1"/>
                     </group>
                 </group>
+            </xpath>
+        </field>
+    </record>
+
+    <record id="view_fleet_vehicle_search_owner_operator" model="ir.ui.view">
+        <field name="name">fleet.vehicle.search.owner_operator</field>
+        <field name="model">fleet.vehicle</field>
+        <field name="inherit_id" ref="fleet.fleet_vehicle_view_search"/>
+        <field name="arch" type="xml">
+            <xpath expr="//field[@name='tag_ids']" position="after">
+                <field string="Cab" name="oo_cab_type"/>
+            </xpath>
+            <xpath expr="//group[@expand='1']" position="inside">
+                <filter string="Cab" name="groupby_cab"
+                        context="{'group_by': 'oo_cab_type'}"/>
             </xpath>
         </field>
     </record>

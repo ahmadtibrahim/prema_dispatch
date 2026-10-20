@@ -106,6 +106,7 @@
                             <group>
                                 <group string="Vehicle">
                                     <field name="vehicle_type"/>
+                                    <field name="cab_type"/>
                                     <field name="truck_make"/>
                                     <field name="truck_model"/>
                                     <field name="equipment_model"
@@ -452,6 +453,7 @@
                 <field name="home_city"/>
                 <field name="home_province"/>
                 <field name="vehicle_type"/>
+                <field name="cab_type"/>
                 <field name="preferred_service_area_ids" widget="many2many_tags"/>
                 <field name="state" widget="badge"/>
                 <field name="missing_verification" optional="hide"/>
@@ -460,10 +462,37 @@
         </field>
     </record>
 
+    <record id="view_application_search" model="ir.ui.view">
+        <field name="name">prema.owner.operator.application.search</field>
+        <field name="model">prema.owner.operator.application</field>
+        <field name="arch" type="xml">
+            <search string="Applications">
+                <field name="name"/>
+                <field name="contact_name"/>
+                <field name="email"/>
+                <field name="vehicle_type"/>
+                <field name="cab_type"/>
+                <filter string="Day Cab" name="cab_day"
+                        domain="[('cab_type', '=', 'day')]"/>
+                <filter string="Night Cab" name="cab_night"
+                        domain="[('cab_type', '=', 'night')]"/>
+                <filter string="Not Applicable" name="cab_not_applicable"
+                        domain="[('cab_type', '=', 'not_applicable')]"/>
+                <group expand="0" string="Group By">
+                    <filter string="Cab" name="groupby_cab"
+                            context="{'group_by': 'cab_type'}"/>
+                    <filter string="Vehicle type" name="groupby_vehicle_type"
+                            context="{'group_by': 'vehicle_type'}"/>
+                </group>
+            </search>
+        </field>
+    </record>
+
     <record id="action_application" model="ir.actions.act_window">
         <field name="name">Owner-Operator Applications</field>
         <field name="res_model">prema.owner.operator.application</field>
         <field name="view_mode">list,form</field>
+        <field name="search_view_id" ref="view_application_search"/>
     </record>
 
     <menuitem id="menu_application" name="Applications"

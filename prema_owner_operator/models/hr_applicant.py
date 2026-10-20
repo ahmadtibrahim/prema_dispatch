@@ -54,6 +54,7 @@ class HrApplicant(models.Model):
     oo_recent_convictions = fields.Selection(related="owner_operator_application_id.recent_convictions", readonly=True)
     oo_recent_driving_work = fields.Text(related="owner_operator_application_id.recent_driving_work", readonly=True)
     oo_vehicle_type = fields.Selection(related="owner_operator_application_id.vehicle_type", readonly=True)
+    oo_cab_type = fields.Selection(related="owner_operator_application_id.cab_type", readonly=True)
     oo_equipment_model = fields.Char(related="owner_operator_application_id.equipment_model", readonly=True)
     oo_truck_year = fields.Char(related="owner_operator_application_id.truck_year", readonly=True)
     oo_unit_number = fields.Char(related="owner_operator_application_id.unit_number", readonly=True)

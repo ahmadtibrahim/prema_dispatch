@@ -15,8 +15,9 @@ from odoo import _, api, fields, models
 from odoo.exceptions import AccessError, UserError, ValidationError
 
 from ..application_mapping import (
-    CARGO_BODIES, PROVINCES, REQUIRED_INTERNAL, TRAILER_TYPES, VEHICLE_TYPES,
-    normalise_public, parse_other_information, split_plate_jurisdiction)
+    CAB_TYPES, CARGO_BODIES, PROVINCES, REQUIRED_INTERNAL, TRAILER_TYPES,
+    VEHICLE_TYPES, normalise_public, parse_other_information,
+    split_plate_jurisdiction)
 
 _logger = logging.getLogger(__name__)
 
@@ -199,7 +200,7 @@ SUBMISSION_FIELDS = {
     "licence_suspension", "recent_collisions", "recent_convictions",
     "tdg_training", "tdg_status", "tdg_class_codes",
     "tdg_special_training", "recent_driving_work", "vehicle_type",
-    "equipment_model",
+    "cab_type", "equipment_model",
     "truck_make", "truck_model", "gvwr_lbs",
     "truck_year", "unit_number", "vehicle_ownership", "transmission",
     "odometer_km", "truck_plate_jurisdiction", "license_plate",
@@ -579,6 +580,13 @@ class OwnerOperatorApplication(models.Model):
         ("tractor", "Tractor Truck"),
         ("semi", "Semi-Truck"),
     ], string="Vehicle type")
+    cab_type = fields.Selection(
+        list(CAB_TYPES.items()), string="Cab",
+        default="not_applicable", required=True,
+        help="Not Applicable for cargo vans and straight trucks; an explicit "
+             "Day Cab or Night Cab is required for tractors and semi-trucks. "
+             "A Night Cab supports long-range planning but never by itself "
+             "guarantees long-haul availability.")
     truck_make = fields.Char(
         string="Make",
         help="Separate from Model for new records; equipment_model keeps the "
@@ -1090,6 +1098,12 @@ class OwnerOperatorApplication(models.Model):
         self.ensure_one()
         vals = dict(vals)
         supplied_type = vals.get("vehicle_type") or self.vehicle_type
+        if supplied_type in ("cargo_van", "straight") \
+                and not vals.get("cab_type"):
+            # Van/straight keep the explicit Not Applicable value. Tractor
+            # and semi submissions are gated by normalise_public(strict=True)
+            # before this point, so a blank cab is never invented for them.
+            vals["cab_type"] = "not_applicable"
         cargo_fields = (
             "cargo_body_type", "payload_lbs", "pallet_capacity",
             "box_length_ft", "cargo_width_in", "cargo_height_in",
@@ -2489,6 +2503,7 @@ class OwnerOperatorApplication(models.Model):
             "model_year": self.truck_year or False,
             "oo_plate_province": self.plate_province or False,
             "oo_vehicle_type": self.vehicle_type or False,
+            "oo_cab_type": self.cab_type or "not_applicable",
             "oo_home_province_code": code or False,
             "oo_home_place_id": self.home_city_place_id or False,
             "home_city": self.home_city or False,
@@ -2568,6 +2583,8 @@ class OwnerOperatorApplication(models.Model):
         self.ensure_one()
         labels = dict(VEHICLE_TYPES)
         names = ["Type: %s" % labels.get(self.vehicle_type, self.vehicle_type)]
+        if self.cab_type in ("day", "night"):
+            names.append("Cab: %s" % self.cab_type.title())
         if self.cargo_body_type:
             names.append("Body: %s" % dict(CARGO_BODIES).get(
                 self.cargo_body_type, self.cargo_body_type))

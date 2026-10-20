@@ -198,7 +198,8 @@ class TestFormMapping126(OwnerOperatorCase):
 
     def test_tractor_hides_and_clears_trailer_and_reefer(self):
         vals, errors = normalise_public(_raw(
-            VehicleType="tractor", TrailerType="reefer",
+            VehicleType="tractor", CabType="day",
+            TrailerType="reefer",
             TrailerYear="2020", TrailerUnit="TR-1",
             TrailerLengthFt="53", CargoBodyType="reefer",
             LegalPayloadLb="10000", PalletCapacity="12",
@@ -220,14 +221,14 @@ class TestFormMapping126(OwnerOperatorCase):
 
     def test_semi_requires_trailer_details_and_stores_them(self):
         _vals, errors = normalise_public(_raw(
-            VehicleType="semi", TrailerType="dry",
+            VehicleType="semi", CabType="night", TrailerType="dry",
             TrailerYear="", TrailerUnit="", TrailerLengthFt=""),
             strict=True)
         joined = " ".join(errors)
         self.assertIn("trailer length", joined)
         self.assertIn("trailer model year", joined)
         vals, errors = normalise_public(_raw(
-            VehicleType="semi", TrailerType="reefer",
+            VehicleType="semi", CabType="night", TrailerType="reefer",
             TrailerYear="2022", TrailerUnit="TR-9", TrailerLengthFt="53",
             ReeferTemperatureRange="-18 to 4 C"), strict=True)
         self.assertFalse(errors)

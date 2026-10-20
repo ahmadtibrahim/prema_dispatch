@@ -17,7 +17,7 @@ COI lapsed overnight would keep being offered.
 from odoo import _, api, fields, models
 from odoo.exceptions import ValidationError
 
-from ..application_mapping import PROVINCE_CHOICES
+from ..application_mapping import CAB_TYPES, PROVINCE_CHOICES
 
 
 class FleetVehicle(models.Model):
@@ -51,6 +51,12 @@ class FleetVehicle(models.Model):
         ("tractor", "Tractor Truck"),
         ("semi", "Semi-Truck"),
     ], string="Owner-operator vehicle type")
+    oo_cab_type = fields.Selection(
+        list(CAB_TYPES.items()), string="Cab",
+        help="Carried from the approved application. Day Cab or Night Cab "
+             "for tractors and semi-trucks; Not Applicable otherwise. Cab "
+             "type informs range planning but does not by itself make the "
+             "vehicle eligible for long-haul work.")
     oo_plate_province = fields.Selection(
         PROVINCE_CHOICES, string="Plate province / territory")
     oo_cargo_body_type = fields.Selection([
