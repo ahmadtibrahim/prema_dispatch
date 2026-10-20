@@ -313,6 +313,34 @@ class OwnerOperatorController(http.Controller):
     # ------------------------------------------------------------------
     # private document delivery
     # ------------------------------------------------------------------
+    def _serve_attachment(self, attachment, filename, download=0):
+        """Serve a private attachment or fail cleanly.
+
+        A DB row whose filestore file was deleted used to return an empty
+        200, which PDF.js renders as “0 of 0 pages”. A missing or non-PDF
+        payload now raises NotFound so the client can show a useful message.
+        """
+        try:
+            payload = attachment.raw
+        except Exception:  # noqa: BLE001 — missing/unreadable filestore file
+            raise NotFound()
+        if not payload:
+            raise NotFound()
+        mimetype = attachment.mimetype or "application/octet-stream"
+        if mimetype.startswith("application/pdf") and not payload.startswith(b"%PDF"):
+            raise NotFound()
+        previewable = mimetype.startswith(("application/pdf", "image/"))
+        wants_download = str(download).lower() not in ("", "0", "false", "none")
+        disposition = "inline" if previewable and not wants_download \
+            else "attachment"
+        return http.request.make_response(payload, headers=[
+            ("Content-Type", mimetype),
+            ("Content-Disposition", "%s; filename=\"%s\"" % (
+                disposition, (filename or "document").replace('"', ""))),
+            ("X-Content-Type-Options", "nosniff"),
+            ("Cache-Control", "private, no-store"),
+        ])
+
     @http.route("/owner_operator/coi_version/<int:version_id>", type="http",
                 auth="user", website=False, csrf=False, sitemap=False)
     def coi_version(self, version_id, download=0, **kw):
@@ -328,19 +356,8 @@ class OwnerOperatorController(http.Controller):
         except AccessError:
             raise NotFound()
         attachment = version.attachment_id.sudo()
-        filename = attachment.name or "coi"
-        previewable = (attachment.mimetype or "").startswith(
-            ("application/pdf", "image/"))
-        wants_download = str(download).lower() not in ("", "0", "false", "none")
-        disposition = "inline" if previewable and not wants_download \
-            else "attachment"
-        return http.request.make_response(attachment.raw or b"", headers=[
-            ("Content-Type", attachment.mimetype or "application/octet-stream"),
-            ("Content-Disposition", "%s; filename=\"%s\"" % (
-                disposition, filename.replace('"', ""))),
-            ("X-Content-Type-Options", "nosniff"),
-            ("Cache-Control", "private, no-store"),
-        ])
+        return self._serve_attachment(
+            attachment, attachment.name or "coi", download)
 
     @http.route("/owner_operator/document/<int:document_id>", type="http",
                 auth="user", website=False, csrf=False, sitemap=False)
@@ -355,21 +372,8 @@ class OwnerOperatorController(http.Controller):
         except AccessError:
             raise NotFound()
         attachment = doc.attachment_id.sudo()
-        filename = attachment.name or "document"
-        # Only PDFs and images are shown inline; anything else is offered as
-        # a download even if the caller omits ?download=1.
-        previewable = (attachment.mimetype or "").startswith(
-            ("application/pdf", "image/"))
-        wants_download = str(download).lower() not in ("", "0", "false", "none")
-        disposition = "inline" if previewable and not wants_download \
-            else "attachment"
-        return http.request.make_response(attachment.raw or b"", headers=[
-            ("Content-Type", attachment.mimetype or "application/octet-stream"),
-            ("Content-Disposition", "%s; filename=\"%s\"" % (
-                disposition, filename.replace('"', ""))),
-            ("X-Content-Type-Options", "nosniff"),
-            ("Cache-Control", "private, no-store"),
-        ])
+        return self._serve_attachment(
+            attachment, attachment.name or "document", download)
 
     @http.route("/owner_operator/documents/<int:document_id>", type="http",
                 auth="user", website=False, csrf=False, sitemap=False)
@@ -385,19 +389,8 @@ class OwnerOperatorController(http.Controller):
         except AccessError:
             raise NotFound()
         attachment = document.attachment_id.sudo()
-        filename = attachment.name or "document"
-        previewable = (attachment.mimetype or "").startswith(
-            ("application/pdf", "image/"))
-        wants_download = str(download).lower() not in ("", "0", "false", "none")
-        disposition = "inline" if previewable and not wants_download \
-            else "attachment"
-        return http.request.make_response(attachment.raw or b"", headers=[
-            ("Content-Type", attachment.mimetype or "application/octet-stream"),
-            ("Content-Disposition", "%s; filename=\"%s\"" % (
-                disposition, filename.replace('"', ""))),
-            ("X-Content-Type-Options", "nosniff"),
-            ("Cache-Control", "private, no-store"),
-        ])
+        return self._serve_attachment(
+            attachment, attachment.name or "document", download)
 
 
 class OwnerOperatorJobApply(WebsiteHrRecruitment):

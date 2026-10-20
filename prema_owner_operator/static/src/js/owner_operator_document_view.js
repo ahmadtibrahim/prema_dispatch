@@ -52,9 +52,12 @@ export class OwnerOperatorDocumentView extends Component {
         return this.props.record.data.file_name || _t("Document");
     }
 
+    get routeName() {
+        return this.props.route || "document";
+    }
+
     get fileRoute() {
-        const route = this.props.route || "document";
-        return `/owner_operator/${route}/${this.documentId}`;
+        return `/owner_operator/${this.routeName}/${this.documentId}`;
     }
 
     get fileSource() {
@@ -91,7 +94,7 @@ export class OwnerOperatorDocumentView extends Component {
         const mimetype = item.mimetype || "";
         const isPdf = mimetype.startsWith("application/pdf");
         const isImage = mimetype.startsWith("image/");
-        const route = `/owner_operator/document/${item.id}`;
+        const route = `/owner_operator/${this.routeName}/${item.id}`;
         const source = isPdf
             ? `/web/static/lib/pdfjs/web/viewer.html?file=${encodeURIComponent(
                   url(route)
@@ -124,16 +127,41 @@ export class OwnerOperatorDocumentView extends Component {
             link.remove();
             return;
         }
-        let files = [];
         try {
-            const siblings = await this.env.services.orm.call(
-                "prema.owner.operator.document",
-                "_viewer_files",
-                [this.documentId]
+            // Check the actual private route before opening PDF.js. A deleted
+            // filestore file or a stale id otherwise renders 0 of 0 pages.
+            const response = await fetch(url(this.fileRoute), {
+                method: "HEAD",
+                credentials: "same-origin",
+            });
+            const mimetype = response.headers.get("content-type") || "";
+            const usable = response.ok && (
+                mimetype.startsWith("application/pdf") ||
+                mimetype.startsWith("image/")
             );
-            files = (siblings || []).map((item) => this._fileFor(item));
+            if (!usable) {
+                throw new Error("file unavailable");
+            }
         } catch (error) {
-            files = [];
+            this.env.services.notification.add(
+                _t("This document file is missing or cannot be opened. " +
+                   "Use Download or contact an administrator."),
+                { type: "danger" }
+            );
+            return;
+        }
+        let files = [];
+        if (this.routeName === "document") {
+            try {
+                const siblings = await this.env.services.orm.call(
+                    "prema.owner.operator.document",
+                    "_viewer_files",
+                    [this.documentId]
+                );
+                files = (siblings || []).map((item) => this._fileFor(item));
+            } catch (error) {
+                files = [];
+            }
         }
         const current = files.find((file) => file.id === this.documentId);
         if (current) {

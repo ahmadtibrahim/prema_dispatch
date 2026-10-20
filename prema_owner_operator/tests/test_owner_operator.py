@@ -1230,6 +1230,13 @@ class TestDocumentDelivery(HttpCase):
         response = self.url_open("/owner_operator/document/%d" % doc.id)
         self.assertEqual(response.status_code, 404)
 
+    def test_invalid_pdf_payload_is_not_served_as_blank(self):
+        doc = self._doc("coi_applicant", b"this is not a pdf",
+                        "application/pdf", "coi.pdf")
+        self.authenticate(self.reviewer.login, "Reviewer#123")
+        response = self.url_open("/owner_operator/document/%d" % doc.id)
+        self.assertEqual(response.status_code, 404)
+
     def test_user_without_the_group_cannot_open_the_file(self):
         doc = self._doc("coi_applicant", b"%PDF-1.4\nprivate",
                         "application/pdf", "coi.pdf")
